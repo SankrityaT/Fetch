@@ -27,7 +27,7 @@ absurd. It turned into a full product.
 - **The camera bubble can be moved and resized after recording.** The camera is captured
   to its own file and composited at export rather than burned into the screen pixels.
   This is the Screen Studio-class feature and the strongest single differentiator
-- **On-device transcription** (FluidAudio / Parakeet, roughly 116x realtime). Editable
+- **On-device transcription** (FluidAudio / Parakeet): a 2-minute recording transcribes in about 1.4s on an M5 Pro. Editable
   cues, burn-in captions with full styling, dragged captions land where you put them
 - **Auto-zoom on cursor clicks**, driven by a cursor track sampled during the take
 - Backdrops and output shapes (9:16, 1:1, 16:9) for social crops
@@ -88,7 +88,10 @@ These are real and specific, which is what makes launch copy credible:
   `NSWindow.sharingType = .none` and composited at export
 - Window enumeration uses **ScreenCaptureKit**, which finds windows that Electron's
   `desktopCapturer` never lists
-- Transcription is **Parakeet running locally**, roughly 116x realtime
+- Transcription is **Parakeet running locally**: a 2-minute recording transcribes in about 1.4s on an M5 Pro. Measured 79-88x
+  realtime on speech-dense audio and up to 368x on sparse audio, because the work
+  scales with how much speech there is, not how long the clip is. Quote the concrete
+  number, not a realtime multiple
 - ffmpeg 9 is bundled, with libass, freetype, fontconfig and libvpx-vp9
 - Signed with Developer ID, hardened runtime, notarised
 
