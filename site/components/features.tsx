@@ -19,36 +19,63 @@ import Image from "next/image";
 const FEATURES = [
   {
     shot: "range",
+    h: 500,
     title: "Trim to a range",
     body: "Set the start and the end from wherever the playhead is, and reset to the full clip when you change your mind.",
     alt: "The range panel, with start and end fields and set to playhead buttons.",
   },
   {
     shot: "cut",
+    h: 370,
     title: "Cut out the middle",
     body: "Turn the cut tool on and drag across the timeline. The section goes, and the video and audio stay in sync.",
     alt: "The tool panel, with select and cut modes.",
   },
   {
     shot: "deadair",
+    h: 300,
     title: "Remove dead air",
     body: "It finds the silent gaps and takes them out for you, so a rambling take tightens up without you hunting for the pauses.",
     alt: "The clean up panel, with the remove dead air button.",
   },
   {
+    shot: "zoom",
+    h: 510,
+    title: "Zoom where you clicked",
+    body: "Fetch samples a cursor track while you record, then pushes in on the clicks when you export. You set how hard it pushes.",
+    alt: "The auto zoom panel, with a follow my clicks toggle and an amount slider.",
+  },
+  {
+    shot: "backdrops",
+    h: 740,
+    title: "Sit it on a backdrop",
+    body: "Six gradients, or drop in an image of your own. The recording is inset over the top with rounded corners.",
+    alt: "The backdrop panel, showing none, dusk, ember, mint, violet, slate, ink and your image.",
+  },
+  {
+    shot: "shapes",
+    h: 350,
+    title: "Crop it for anywhere",
+    body: "16:9, 1:1, 9:16 or 4:3. The recording is fitted inside whichever shape you pick, so it is ready for the place it is going.",
+    alt: "The output shape panel, with auto, 16:9, 1:1, 9:16 and 4:3 options.",
+  },
+  {
     shot: "transcribe",
+    h: 370,
     title: "Transcribe on the machine",
     body: "Parakeet on the Neural Engine, roughly 116x realtime. Keep the cues editable or bake them into the file so they play anywhere.",
     alt: "The transcript panel, with a transcribe button and a burn into video toggle.",
   },
   {
     shot: "captions",
+    h: 890,
     title: "Style the captions",
     body: "Font, size, colour, and placement top, middle or bottom. A pill background, or an outline if you turn it off.",
     alt: "The caption style panel, with font, size, colour, placement and pill background controls.",
   },
   {
     shot: "sound",
+    h: 790,
     title: "Clean up the audio",
     body: "Denoise the hiss and hum, normalise the loudness so levels stay even, and ride the gain from one slider.",
     alt: "The sound panel, with denoise, normalise loudness and gain controls.",
@@ -90,7 +117,7 @@ export function Features() {
                 src={`/shots/features/${f.shot}.png`}
                 alt={f.alt}
                 width={1240}
-                height={890}
+                height={f.h}
                 sizes="(max-width: 640px) 76vw, 400px"
                 className="max-h-full w-full rounded-inset border border-ink-3/70 object-contain"
               />
