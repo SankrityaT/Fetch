@@ -14,6 +14,16 @@ import Image from "next/image";
  *
  * Nothing here is drawn by us. If a label reads "Finds silent gaps and removes
  * them for you", that string is in the product.
+ *
+ * There is no auto zoom card, temporarily. The feature is real, but its panel
+ * is labelled "Follow my clicks / pushes in where you clicked" and that is not
+ * what happens: main.js registers a cursor-click handler that nothing ever
+ * sends, so data.clicks is always empty and zoomMoments always takes its dwell
+ * fallback, zooming where the pointer moved a long way and then settled. The
+ * app's own label is being corrected on another branch. Any caption written now
+ * would either repeat the false claim or contradict the label visible in its
+ * own screenshot, so the card comes back once the fix lands and it can be
+ * re-shot. public/shots/features/zoom.png is kept for that.
  */
 
 const FEATURES = [
@@ -37,13 +47,6 @@ const FEATURES = [
     title: "Remove dead air",
     body: "It finds the silent gaps and takes them out for you, so a rambling take tightens up without you hunting for the pauses.",
     alt: "The clean up panel, with the remove dead air button.",
-  },
-  {
-    shot: "zoom",
-    h: 510,
-    title: "Zoom where you clicked",
-    body: "Fetch samples a cursor track while you record, then pushes in on the clicks when you export. You set how hard it pushes.",
-    alt: "The auto zoom panel, with a follow my clicks toggle and an amount slider.",
   },
   {
     shot: "backdrops",

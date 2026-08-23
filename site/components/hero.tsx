@@ -30,7 +30,7 @@ export function Hero() {
             className="rise mt-6 max-w-[50ch] text-24 leading-[1.4] text-text-1"
             style={{ ["--i" as string]: 1 }}
           >
-            A full editor with captions, click-zoom and a movable camera. No
+            A full editor with captions, auto zoom and a movable camera. No
             account, no upload, no subscription.
           </p>
 

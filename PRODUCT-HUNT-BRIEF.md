@@ -29,7 +29,11 @@ absurd. It turned into a full product.
   This is the Screen Studio-class feature and the strongest single differentiator
 - **On-device transcription** (FluidAudio / Parakeet, roughly 116x realtime). Editable
   cues, burn-in captions with full styling, dragged captions land where you put them
-- **Auto-zoom on cursor clicks**, driven by a cursor track sampled during the take
+- **Auto-zoom**, driven by a cursor track sampled during the take. Do not write
+  "zooms where you click" anywhere: `cursor-click` is registered in `main.js` and
+  never sent, so `data.clicks` is always empty and `zoomMoments` always uses its
+  dwell fallback. What it actually does is zoom where the pointer moved a long way
+  and then settled, which is a fine thing to say and happens to be true
 - Backdrops (6 built-in gradients, plus any image you drop in) and output shapes
   (9:16, 1:1, 16:9) for social crops. Note for copy: the gradients ship, the
   10 designed backdrop images have not been generated yet, so do not promise artwork

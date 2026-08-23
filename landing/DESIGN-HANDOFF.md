@@ -174,7 +174,8 @@ Use these as-is. Every one describes something the app actually does.
 - "Move the camera bubble after you record." (the camera is captured to its own file,
   not burned into the screen, so it can be repositioned and resized in the editor)
 - "Transcribed on your Mac, in seconds. Nothing is uploaded."
-- "It zooms where you click, on its own."
+- "It zooms where your cursor settles, on its own." (not "where you click":
+  the click path has never fired, see PRODUCT-HUNT-BRIEF.md)
 - "Your recordings never leave your machine."
 
 ## The one screenshot rule
