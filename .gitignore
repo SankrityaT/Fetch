@@ -19,6 +19,7 @@ WindowList
 .playwright-mcp/
 mosaic-home.png
 
-# recordings and scratch media. The mascot clips are real assets, keep those.
+# recordings and scratch media. The mascot clips are real assets, keep those
+# wherever they live: assets/, landing/assets/, site/public/.
 *.webm
-!**/assets/**/*.webm
+!**/mascot/**/*.webm
