@@ -1008,17 +1008,20 @@ const BD_CSS = {
 // max-height:100% does not clamp a replaced element whose height is derived from
 // its own intrinsic aspect: the video kept its width-driven height, overflowed the
 // stage, and overflow:hidden cut off the bottom of the frame, captions included.
-function fitVideoToStage(v) {
-  const stage = $('edCanvas')
-  if (!stage || !v) return
+function fitVideoInto(v, availW, availH) {
+  if (!v || !availW || !availH) return
   const ar = (ed.videoW && ed.videoH) ? ed.videoW / ed.videoH
     : (v.videoWidth && v.videoHeight) ? v.videoWidth / v.videoHeight : 16 / 9
-  const availW = stage.clientWidth, availH = stage.clientHeight
-  if (!availW || !availH) return
   let w = availW, h = w / ar
   if (h > availH) { h = availH; w = h * ar }
   v.style.width = Math.round(w) + 'px'
   v.style.height = Math.round(h) + 'px'
+}
+
+function fitVideoToStage(v) {
+  const stage = $('edCanvas')
+  if (!stage || !v) return
+  fitVideoInto(v, stage.clientWidth, stage.clientHeight)
 }
 function paintBackdrop() {
   const frame = $('stageFrame'), v = $('edVideo')
@@ -1028,10 +1031,24 @@ function paintBackdrop() {
     frame.style.background = ''
     frame.style.aspectRatio = ''
     frame.style.padding = '0'
-    frame.style.height = ''; frame.style.width = ''
     v.style.objectFit = ''
     v.style.borderRadius = ''
-    fitVideoToStage(v)
+    // An output shape has to change the preview even with no backdrop, otherwise
+    // the stage shows the source shape while the export letterboxes into another
+    // one. Mirrors the scale+pad the exporter applies in this same case.
+    if (ed.outAspect) {
+      const stage = $('edCanvas')
+      const availW = stage.clientWidth, availH = stage.clientHeight
+      let boxW = availW, boxH = boxW / ed.outAspect
+      if (boxH > availH) { boxH = availH; boxW = boxH * ed.outAspect }
+      frame.style.width = Math.round(boxW) + 'px'
+      frame.style.height = Math.round(boxH) + 'px'
+      frame.style.background = ed.padColor || '#000'
+      fitVideoInto(v, boxW, boxH)
+    } else {
+      frame.style.height = ''; frame.style.width = ''
+      fitVideoToStage(v)
+    }
     renderTexts(); paintCam()
     return
   }
