@@ -94,7 +94,7 @@ export function SiteHeader() {
           </nav>
 
           <a
-            href="/api/download?ref=nav"
+            href="/download?ref=nav"
             className="ml-1 inline-flex h-10 items-center gap-1.5 rounded-pill border border-fur-1 bg-fur-1 px-4 text-13 font-semibold text-[#231703] shadow-[inset_0_1px_0_rgb(255_255_255/0.22)] transition-[background-color,border-color,transform] duration-[120ms] ease-entrance hover:border-fur-0 hover:bg-fur-0 active:translate-y-px"
           >
             <Icon name="download-simple" className="size-4" />
