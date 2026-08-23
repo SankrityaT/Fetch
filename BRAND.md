@@ -25,30 +25,26 @@ emotional narrator. He reacts to state, and that is the whole personality mechan
 | done | tail up, holding the file in his mouth |
 | error | ears down, apologetic |
 
-Rules: Biscuit is never photorealistic, never a 3D render, never wears human clothes.
-He is a flat illustration on the gold ramp, with soft shading and no outline. He does
-not speak in first person in the UI.
+He is drawn as a soft, illustrated golden retriever puppy: rounded shapes, warm gold
+coat with a cream chest and muzzle, large dark eyes, long floppy ears. Shaded, but
+never rendered as 3D, never photorealistic, and never in human clothes. He does not
+speak in first person in the UI.
 
-**There is exactly one Biscuit, and he lives in `assets/mascot/`.** The seventeen
-stills and the four alpha clips are the identity, at every size, in every surface,
-including the titlebar mark and the site.
+The single source of truth is `assets/mascot/`: `idle.png` is the face of the product
+and appears in the titlebar, the hero, the app icon and the menu bar. The other 16
+stills are the same puppy in the states above, and the four clips in
+`assets/mascot/motion/` are the same character in motion.
 
-There used to be a second one: `assets/biscuit.svg`, a flatter geometric head built
-from circles and rounded rectangles, kept on the theory that the painted art turned to
-mush below 48px. It was deleted, because every part of that theory had stopped being
-true:
+There was briefly a second, flat geometric Biscuit built from circles and rounded
+rectangles. Two mascots meant two brands, so it is gone. If a mark is ever needed
+below about 20px, crop `idle.png` to the head rather than drawing a new dog.
 
-- the titlebar shipped the painted `idle.png` at 26px, not the vector
-- the vector's only remaining use was a 96px empty state, which is the size range the
-  painted art was supposed to own
-- `make_tray.swift` draws the menu bar icons from its own `NSBezierPath` geometry. It
-  never read the SVG
-- downscaled and inspected, `idle.png` is legible at 24px and still reads as Biscuit
-  at 20px
-
-Two marks means two characters, and a visitor sees the difference immediately even
-when a spec sheet says they are the same dog. If something ever genuinely needs vector
-geometry, redraw it *from* the painted art and say so here.
+It was deleted rather than kept for small sizes, because every argument for keeping
+it had stopped being true: the titlebar already shipped the painted `idle.png` at
+26px, the vector's last use was a 96px empty state, `make_tray.swift` draws the menu
+bar icons from its own `NSBezierPath` geometry and never read the SVG at all, and
+downscaled and inspected, `idle.png` is legible at 24px and still reads as Biscuit at
+20px.
 
 ## Voice
 

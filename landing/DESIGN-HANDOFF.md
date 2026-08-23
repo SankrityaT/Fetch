@@ -107,13 +107,13 @@ corner. He reacts to state:
 `running.png` has a film strip in his mouth, so it reads as delivering the export,
 not as recording. Do not use it for the record state.
 
-Rules: never photorealistic, never 3D, never in human clothes. He is a flat
-illustration on the gold ramp, soft shading, no outline. He does not speak in first
-person.
+He is a soft, illustrated golden retriever puppy: rounded shapes, warm gold coat, cream
+chest and muzzle, large dark eyes, long floppy ears. Shaded, but never 3D, never
+photorealistic, never in human clothes, and he does not speak in first person.
 
-Use the stills in `assets/mascot/` for the logo mark too, at any size. There is no
-separate vector wordmark or vector head. A second geometric mark used to exist and was
-deleted for drifting into a different-looking dog. See `BRAND.md`.
+`idle.png` is the logo. It is the app icon, the titlebar mark and the hero, so use it
+as the site's mark and favicon too. There is exactly one Biscuit: do not draw or
+generate a second, simplified version for small sizes, crop this one to the head.
 
 The motion clips are **VP9 WebM with alpha**. They composite over any background in a
 browser. Three things to know.
@@ -173,9 +173,8 @@ Use these as-is. Every one describes something the app actually does.
 - "Record your screen, your camera and your voice. Edit it. Ship it. No subscription."
 - "Move the camera bubble after you record." (the camera is captured to its own file,
   not burned into the screen, so it can be repositioned and resized in the editor)
-- "Transcribed on your Mac, in seconds. Nothing is uploaded."
-- "It zooms where your cursor settles, on its own." (not "where you click":
-  the click path has never fired, see PRODUCT-HUNT-BRIEF.md)
+- "Transcribed on your Mac, in seconds. The audio never leaves the machine."
+- "It zooms where your cursor settles, on its own."
 - "Your recordings never leave your machine."
 
 ## The one screenshot rule

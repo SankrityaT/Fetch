@@ -43,8 +43,14 @@ absurd. It turned into a full product.
 - Auto-update: the client is built, but the feed it reads does not exist yet. See
   section 5. Do not put "automatic updates" in the listing until it does
 
-**Nothing is uploaded. There is no account. There is no server.** That is the privacy
-angle and it is literally true: there is no backend at all.
+**Your recordings never leave your machine. There is no account and no cloud
+processing.** That is the privacy angle and it stays literally true: recording,
+editing, transcription and export all happen on-device.
+
+Be precise in copy, because two network calls do exist and both are off-switchable:
+an update check, and a once-a-day anonymous install count (a random id, the app
+version, the macOS version). Claim "your recordings never leave your machine", which
+is true. Do not claim "no server" or "zero network", which is not.
 
 ### Pricing position
 

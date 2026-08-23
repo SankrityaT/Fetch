@@ -1,11 +1,11 @@
 {
-  "name": "quickrec",
+  "name": "fetch",
   "version": "1.0.0",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "fixtures": "./test/fixtures.sh",
-    "test": "node test/engine.test.js /tmp/qrt/test.webm && node test/formats.test.js"
+    "test": "node test/engine.test.js /tmp/fetch-test/test.webm && node test/formats.test.js"
   },
   "devDependencies": {
     "electron": "^33.2.0"
@@ -14,11 +14,7 @@
     "electron-updater": "^6.8.9"
   },
   "build": {
-    "appId": "com.fetch.app",
-    "publish": {
-      "provider": "github",
-      "owner": "SankrityaT",
-      "repo": "fetch"
-    }
+    "appId": "com.sankritya.fetch",
+    "publish": { "provider": "github", "owner": "SankrityaT", "repo": "Fetch" }
   }
 }

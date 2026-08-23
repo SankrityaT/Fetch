@@ -11,6 +11,7 @@ app.setPath('userData', path.join(app.getPath('appData'), 'Fetch'))
 let control, cam
 
 const updater = require('./ui/updater')
+const telemetry = require('./ui/telemetry')
 
 // ---------- preferences ----------
 // Persisted to <userData>/prefs.json. Loaded lazily and cached in memory;
@@ -27,6 +28,7 @@ const DEFAULT_PREFS = {
   keepOriginal: true,
   quickRecord: false,
   autoUpdate: true,        // let Fetch check and download updates in the background
+  telemetry: true,         // anonymous install count: a random id, the version, the OS
 }
 let prefsCache = null
 function loadPrefs() {
@@ -48,11 +50,11 @@ function resolvedSaveDir() {
   try { fs.accessSync(dir, fs.constants.W_OK); return dir } catch { return app.getPath('desktop') }
 }
 
-ipcMain.handle('prefs-get', () => loadPrefs())
 ipcMain.on('prefs-get-sync', e => { e.returnValue = loadPrefs() })
 ipcMain.handle('prefs-set', (e, patch) => {
   const next = writePrefs(patch || {})
   if (patch && 'autoUpdate' in patch) updater.setAutoUpdate(next.autoUpdate)
+  if (patch && 'telemetry' in patch && !next.telemetry) telemetry.stop()
   return next
 })
 
@@ -127,9 +129,6 @@ function createWindows() {
       control.webContents.executeJavaScript(`openInEditor(${JSON.stringify(process.env.FETCH_OPEN)})`)
         .catch(e => console.log('[open] ' + e.message)), 1200))
   }
-  if (process.argv.includes('--selftest')) {
-    control.webContents.once('did-finish-load', () => control.webContents.send('selftest'))
-  }
   if (process.argv.includes('--uitest')) {
     control.webContents.once('did-finish-load', () => {
       console.log('[uitest] page loaded')
@@ -154,7 +153,7 @@ function createWindows() {
     })
   }
 
-  if (process.env.QUICKREC_ELECTRON_CAM !== '1') return   // bubble handled by the native helper
+  if (process.env.FETCH_ELECTRON_CAM !== '1') return   // bubble handled by the native helper
   const d = screen.getPrimaryDisplay().workAreaSize
   cam = new BrowserWindow({
     width: 240, height: 240,
@@ -167,11 +166,15 @@ function createWindows() {
   cam.setAlwaysOnTop(true, 'screen-saver')
   cam.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   cam.loadFile('cam.html')
-  cam.webContents.on('console-message', (e, lvl, msg) => console.log('[cam]', msg))
-  control.webContents.on('console-message', (e, lvl, msg) => console.log('[ctl]', msg))
+  if (!app.isPackaged) cam.webContents.on('console-message', (e, lvl, msg) => console.log('[cam]', msg))
+  if (!app.isPackaged) control.webContents.on('console-message', (e, lvl, msg) => console.log('[ctl]', msg))
 }
 
 app.whenReady().then(() => {
+  // Anonymous install count. Waits 30s so it never competes with launch, and does
+  // nothing at all unless a metrics endpoint was configured at build time.
+  telemetry.start(loadPrefs)
+
   // Auto-answer getDisplayMedia with the user's chosen source (or the primary screen)
   let chosenSourceId = null
   let chosenWindow = null          // { id, name } from the ScreenCaptureKit list
@@ -198,8 +201,7 @@ app.whenReady().then(() => {
     (request, callback) => callback({}), { useSystemPicker: true })
 
   useOurPicker()
-  ipcMain.on('capture-mode', (e, mode) => mode === 'system' ? useSystemPicker() : useOurPicker())
-
+  
   // source picker: screens + windows with thumbnails
   // Big enough to stay sharp on retina, JPEG so polling every couple of seconds
   // does not push megabytes of base64 through IPC.
@@ -299,7 +301,6 @@ function showBorder(on) {
   border.setContentProtection(true)          // excluded from the recording
   border.loadFile('border.html')
 }
-ipcMain.on('border', (e, on) => showBorder(!!on))
 
 // ---------- recording toolbar ----------
 // Its own window so it sits above everything and outside the app, and content
@@ -383,14 +384,7 @@ ipcMain.on('rec-state', (e, state) => {
 ipcMain.on('reveal', (e, p) => shell.showItemInFolder(p))
 ipcMain.on('open-folder', () => shell.openPath(app.getPath('desktop')))
 
-ipcMain.on('cam-size', (e, px) => {
-  if (!cam) return
-  const b = cam.getBounds()
-  const cx = b.x + b.width / 2, cy = b.y + b.height / 2
-  cam.setBounds({ x: Math.round(cx - px / 2), y: Math.round(cy - px / 2), width: px, height: px })
-})
 
-ipcMain.on('cam-zoom', (e, z) => { if (cam) cam.webContents.send('zoom', z) })
 
 // the camera bubble is its own native app, toggled by the switch
 function bubblePath() {
@@ -473,18 +467,14 @@ ipcMain.on('cursor-track', (e, on) => {
   }, 50)                                    // 20 Hz is plenty to drive a smooth zoom
 })
 
-ipcMain.on('cursor-click', () => {
-  if (!cursorSamples) return
-  const p = screen.getCursorScreenPoint()
-  ;(cursorSamples.clicks || (cursorSamples.clicks = [])).push([Date.now() - cursorSamples.t0, p.x, p.y])
-})
 
 ipcMain.handle('save', async (e, buf) => {
   const file = path.join(resolvedSaveDir(), `recording-${Date.now()}.webm`)
   fs.writeFileSync(file, Buffer.from(buf))
   clearInterval(cursorTimer); cursorTimer = null
   if (cursorSamples && cursorSamples.points.length) {
-    try { fs.writeFileSync(proc.sidecarOut(file, '.cursor.json'), JSON.stringify(cursorSamples)) } catch {}
+    try { fs.writeFileSync(proc.sidecarOut(file, '.cursor.json'), JSON.stringify(cursorSamples)) }
+    catch (e) { console.error('cursor track not saved, auto-zoom will have nothing to work with:', e.message) }
   }
   cursorSamples = null
 
@@ -529,6 +519,119 @@ ipcMain.handle('save', async (e, buf) => {
   return file
 })
 
+// ---------- native recorder ----------
+// ScreenCaptureKit in, AVAssetWriter out, via a bundled Swift helper. The Chromium
+// path stays as the fallback: it works everywhere, this needs macOS 13 (15 for the
+// microphone) and does not exist in a plain `npx electron .` checkout until the
+// helper has been built.
+function recorderPath() {
+  for (const dir of [process.resourcesPath || '.', __dirname]) {
+    const p = path.join(dir, 'Recorder')
+    if (fs.existsSync(p)) return p
+  }
+  return null
+}
+
+let nativeRec = null      // { proc, out, started, resolveStop }
+
+function majorOSVersion() {
+  return parseInt(String(require('os').release()).split('.')[0], 10) || 0
+}
+
+ipcMain.handle('native-available', () => ({
+  // Darwin 22 is macOS 13, which is where ScreenCaptureKit became usable for this
+  ok: !!recorderPath() && majorOSVersion() >= 22,
+  mic: majorOSVersion() >= 24,          // Darwin 24 is macOS 15: mic capture in SCK
+}))
+
+ipcMain.handle('native-start', async (e, opts = {}) => {
+  const bin = recorderPath()
+  if (!bin) return { ok: false, error: 'the recorder helper is not in this build' }
+  if (nativeRec) return { ok: false, error: 'already recording' }
+
+  const out = path.join(os.tmpdir(), `fetch-take-${Date.now()}.mov`)
+  const args = ['--out', out, '--fps', String(opts.fps || 60)]
+  if (opts.windowId) args.push('--window', String(opts.windowId))
+  else if (opts.displayId) args.push('--display', String(opts.displayId))
+  if (opts.systemAudio) args.push('--system-audio')
+  if (opts.mic) { args.push('--mic'); if (opts.micDeviceId) args.push('--mic-device', opts.micDeviceId) }
+  if (opts.hevc) args.push('--hevc')
+  if (opts.hideCursor) args.push('--no-cursor')
+
+  const child = require('child_process').spawn(bin, args)
+  const take = { proc: child, out, started: null, resolveStop: null, error: null }
+  nativeRec = take
+
+  let buf = ''
+  child.stdout.on('data', d => {
+    buf += d
+    let i
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i); buf = buf.slice(i + 1)
+      if (!line.trim()) continue
+      let ev; try { ev = JSON.parse(line) } catch { continue }
+      if (ev.event === 'started') take.started = ev
+      if (ev.event === 'error') { take.error = ev.message; console.log('recorder:', ev.message) }
+      if (ev.event === 'stopped' && take.resolveStop) take.resolveStop(ev)
+    }
+  })
+  child.stderr.on('data', d => { if (!app.isPackaged) console.log('recorder stderr:', String(d).trim()) })
+  child.on('close', () => {
+    if (take.resolveStop) take.resolveStop(null)   // died without reporting
+    if (nativeRec === take) nativeRec = null
+  })
+
+  // wait for it to actually be capturing, so the countdown does not lie
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 6000) {
+    if (take.started) return { ok: true, ...take.started }
+    if (take.error) { nativeRec = null; return { ok: false, error: take.error } }
+    if (child.exitCode !== null) { nativeRec = null; return { ok: false, error: 'the recorder exited before it started' } }
+    await new Promise(r => setTimeout(r, 60))
+  }
+  try { child.kill() } catch {}
+  nativeRec = null
+  return { ok: false, error: 'the recorder did not start in time' }
+})
+
+ipcMain.on('native-pause', () => { try { nativeRec && nativeRec.proc.stdin.write('pause\n') } catch {} })
+ipcMain.on('native-resume', () => { try { nativeRec && nativeRec.proc.stdin.write('resume\n') } catch {} })
+
+ipcMain.handle('native-stop', async () => {
+  const take = nativeRec
+  if (!take) return { ok: false, error: 'not recording' }
+  const done = new Promise(res => { take.resolveStop = res })
+  try { take.proc.stdin.write('stop\n') } catch {}
+  const ev = await Promise.race([done, new Promise(r => setTimeout(() => r(null), 20000))])
+  nativeRec = null
+  if (!ev || !fs.existsSync(take.out)) return { ok: false, error: take.error || 'the take was not written' }
+  return { ok: true, tmp: take.out, frames: ev.frames, dropped: ev.dropped }
+})
+
+// Move a finished native take into the save folder, reusing the same naming and
+// sidecar handling the Chromium path already goes through.
+ipcMain.handle('native-commit', async (e, tmp) => {
+  const file = path.join(resolvedSaveDir(), `recording-${Date.now()}.mov`)
+  try {
+    // system audio and the mic arrive as separate tracks; fold them together before
+    // this leaves the temp folder, or everything downstream hears only the first one
+    let source = tmp
+    try { source = await proc.flattenAudio(tmp, 'native-commit') } catch {}
+    fs.copyFileSync(source, file)
+    try { fs.unlinkSync(source) } catch {}
+    if (source !== tmp) { try { fs.unlinkSync(tmp) } catch {} }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
+  clearInterval(cursorTimer); cursorTimer = null
+  if (cursorSamples && cursorSamples.points.length) {
+    try { fs.writeFileSync(proc.sidecarOut(file, '.cursor.json'), JSON.stringify(cursorSamples)) }
+    catch (err) { console.error('cursor track not saved:', err.message) }
+  }
+  cursorSamples = null
+  return { ok: true, file }
+})
+
 // ---------- edit / post-production ----------
 const proc = require('./processor')
 
@@ -555,7 +658,6 @@ ipcMain.handle('backdrops', () => proc.backdropList())
 ipcMain.handle('has-cursor', (e, src) =>
   fs.existsSync(proc.sidecarIn(String(src), '.cursor.json')))
 ipcMain.handle('import-file', (e, src) => proc.importFile(src))
-ipcMain.handle('forget-file', (e, src) => proc.forgetFile(src))
 
 // "Import...": any container ffmpeg can read
 ipcMain.handle('pick-file', async () => {
@@ -617,10 +719,5 @@ ipcMain.handle('edit-job', async (e, payload) => {
   }
 })
 
-ipcMain.handle('save-fallback', async (e, buf) => {
-  const { filePath } = await dialog.showSaveDialog({ defaultPath: 'recording.webm' })
-  if (filePath) { fs.writeFileSync(filePath, Buffer.from(buf)); return filePath }
-  return null
-})
 
 app.on('window-all-closed', () => app.quit())

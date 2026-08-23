@@ -30,7 +30,6 @@ const c = document.getElementById('c')
 const ctx = c.getContext('2d')
 let zoom = 1, frames = 0, drawing = false
 
-ipcRenderer.on('zoom', (e, z) => { zoom = z })
 
 function sizeCanvas() {
   const r = c.getBoundingClientRect()

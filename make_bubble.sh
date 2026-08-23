@@ -23,7 +23,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp /tmp/fetch-bubble.bin "$APP/Contents/MacOS/Fetch"
 rm -f /tmp/fetch-bubble.bin
 rm -rf "$APP/Contents/_CodeSignature"
-[ -f CamBubble.icns ] && cp CamBubble.icns "$APP/Contents/Resources/CamBubble.icns"
+[ -f Fetch.icns ] && cp Fetch.icns "$APP/Contents/Resources/Fetch.icns"
 
 # Written every time, so the bundle does not depend on a previous build existing.
 # Without NSCameraUsageDescription macOS terminates the process on first camera use.

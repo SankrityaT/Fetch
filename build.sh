@@ -14,7 +14,7 @@ swiftc -O CamBubble.swift -o /tmp/CamBubble.bin
 rm -rf /tmp/FetchBubble
 mkdir -p /tmp/FetchBubble/Fetch.app/Contents/{MacOS,Resources}
 cp /tmp/CamBubble.bin /tmp/FetchBubble/Fetch.app/Contents/MacOS/Fetch
-cp CamBubble.icns /tmp/FetchBubble/Fetch.app/Contents/Resources/CamBubble.icns
+cp Fetch.icns /tmp/FetchBubble/Fetch.app/Contents/Resources/CamBubble.icns   # same art, one file
 cat > /tmp/FetchBubble/Fetch.app/Contents/Info.plist <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -47,6 +47,7 @@ cp vendor/ffmpeg "$APP/Contents/Resources/app/vendor/ffmpeg"
 cp Fetch.icns "$APP/Contents/Resources/Fetch.icns"
 cp -R /tmp/FetchBubble/Fetch.app "$APP/Contents/Resources/Fetch.app"
 swiftc -O WindowList.swift -o "$APP/Contents/Resources/WindowList"
+swiftc -O Recorder.swift  -o "$APP/Contents/Resources/Recorder"
 cp -R Transcribe.app "$APP/Contents/Resources/Transcribe.app"
 
 P="$APP/Contents/Info.plist"
@@ -71,7 +72,7 @@ for h in "" " (GPU)" " (Plugin)" " (Renderer)"; do
 done
 
 # ---------- 3. sign (hardened runtime, inside-out) ----------
-cat > /tmp/qr.entitlements <<'EOF'
+cat > /tmp/fetch.entitlements <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -83,14 +84,23 @@ cat > /tmp/qr.entitlements <<'EOF'
 </dict></plist>
 EOF
 
-sign() { codesign --force --timestamp --options runtime --entitlements /tmp/qr.entitlements -s "$ID" "$1"; }
+sign() { codesign --force --timestamp --options runtime --entitlements /tmp/fetch.entitlements -s "$ID" "$1"; }
 
 # strictly inside-out: dylibs → crashpad → frameworks → helpers → bubble → transcribe → ffmpeg → app
 find "$APP/Contents/Frameworks" \( -name "*.dylib" -o -name "*.node" \) -print0 | while IFS= read -r -d '' f; do sign "$f"; done
+# Helper executables tucked inside a framework's Resources are separate Mach-O
+# binaries. Signing the framework does not cover them, and notarisation rejects the
+# whole archive over one of them: Squirrel ships ShipIt in there, which is what
+# failed the first submission. Sign anything executable in there, not just ShipIt.
+find "$APP/Contents/Frameworks" -path "*/Resources/*" -type f -perm -111 -print0 |
+  while IFS= read -r -d '' f; do
+    file "$f" | grep -q "Mach-O" && sign "$f"
+  done
 find "$APP/Contents/Frameworks" -name "chrome_crashpad_handler" -print0 | while IFS= read -r -d '' f; do sign "$f"; done
 for f in "$APP/Contents/Frameworks/"*.framework; do sign "$f/Versions/A"; done
 for h in "$APP/Contents/Frameworks/"*.app; do sign "$h/Contents/MacOS/"*; sign "$h"; done
 sign "$APP/Contents/Resources/WindowList"
+sign "$APP/Contents/Resources/Recorder"
 sign "$APP/Contents/Resources/Fetch.app/Contents/MacOS/Fetch"
 sign "$APP/Contents/Resources/Fetch.app"
 sign "$APP/Contents/Resources/Transcribe.app/Contents/MacOS/Transcribe"
@@ -101,7 +111,7 @@ sign "$APP"
 codesign --verify --deep --strict --verbose=1 "$APP"
 
 # ---------- 4. dmg ----------
-STAGE=/tmp/qr-dmg; rm -rf $STAGE; mkdir -p $STAGE
+STAGE=/tmp/fetch-dmg; rm -rf $STAGE; mkdir -p $STAGE
 cp -R "$APP" $STAGE/
 ln -s /Applications $STAGE/Applications
 hdiutil create -volname Fetch -srcfolder $STAGE -ov -format UDZO "$DMG" >/dev/null

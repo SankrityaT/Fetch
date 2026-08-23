@@ -15,11 +15,15 @@ Built because Loom costs $20/month.
   being burned into the screen capture, so it can be repositioned and resized in the editor
 - **Transcribe on-device** (FluidAudio / Parakeet, roughly 116x realtime), edit the cues,
   and burn captions in
-- **Auto-zoom** on cursor clicks, driven by a cursor track sampled during the take
+- **Auto-zoom** on the places your pointer settles, from a cursor track sampled during the take
 - **Backdrops**, output shapes, crop, trim, a cut tool, and a second audio track
 - **Export** to MP4, WebM, GIF, and audio-only formats
 
-Everything runs locally. Nothing is uploaded anywhere.
+Your recordings, transcripts and exports never leave your machine: there is no
+account, no cloud processing and nothing to sign into. The app talks to the network
+for exactly two things, both switchable off in Settings: checking for updates, and a
+once-a-day ping that counts the install (a random id, the app version, the macOS
+version, and nothing else).
 
 ## Layout
 

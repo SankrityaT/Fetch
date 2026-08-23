@@ -28,22 +28,33 @@
     if (!img || img.dataset.sleeping === 'true') return
     if (!onRecordView() || busy() || counting()) return
 
+    // Show the sleeping still first. A covered window has its media throttled, and a
+    // video that never gets to paint leaves the hero empty, which is far worse than a
+    // static dog. The clip only takes over once it can actually play.
+    const cls = img.className.replace(/\s*biscuit-asleep/, '') + ' biscuit-asleep'
+    img.src = STILL
+    img.className = cls
+    img.dataset.sleeping = 'true'
+
     const v = document.createElement('video')
     v.id = 'biscuit'
-    v.className = img.className.replace(/\s*biscuit-asleep/, '') + ' biscuit-asleep'
+    v.className = cls
     v.src = CLIP
     v.poster = STILL
     v.autoplay = v.loop = v.muted = v.playsInline = true
     v.dataset.sleeping = 'true'
-    // if the clip cannot decode, the still is a perfectly good sleeping dog
-    v.onerror = () => v.replaceWith(Object.assign(new Image(),
-      { id: 'biscuit', className: img.className, src: STILL }))
     // a covered window gets its media throttled, so pick the nap back up on return
     v.addEventListener('pause', () => {
       if (document.visibilityState === 'visible' && v.dataset.sleeping === 'true') v.play().catch(() => {})
     })
-    img.replaceWith(v)
-    v.play().catch(() => {})
+    v.addEventListener('canplay', () => {
+      const still = hero()
+      if (still && still.tagName === 'IMG' && still.dataset.sleeping === 'true') {
+        still.replaceWith(v)
+        v.play().catch(() => {})
+      }
+    }, { once: true })
+    v.load()
   }
 
   function wake() {
@@ -53,7 +64,7 @@
     img.id = 'biscuit'
     img.className = el.className.replace(/\s*biscuit-asleep/, '')
     img.src = AWAKE
-    el.replaceWith(img)
+    el.replaceWith(img)          // works whether he was the still or the clip
   }
 
   // getting up is a deliberate act: only the record controls do it

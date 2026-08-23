@@ -81,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
         window.contentView = view
 
         startCamera(in: view)
-        // controls from the QuickRec window arrive through a tiny JSON file
+        // controls from the Fetch window arrive through a tiny JSON file
         Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { _ in self.applyState() }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

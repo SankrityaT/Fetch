@@ -108,7 +108,15 @@ async function buildStream() {
   let screenStream
   const wantSys = setup.sys
   try {
-    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: wantSys })
+    // `video: true` left everything to Chromium: 30fps and whatever bitrate it felt
+    // like, which for a Retina screen worked out at about 0.02 bits per pixel.
+    screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        frameRate: { ideal: PREFERRED_FPS, max: PREFERRED_FPS },
+        width: { ideal: 4096 }, height: { ideal: 4096 },   // never scale the display down
+      },
+      audio: wantSys,
+    })
   } catch (e) {
     throw new Error('Screen recording is blocked. Allow Fetch in System Settings → Privacy → Screen Recording.')
   }
@@ -140,14 +148,29 @@ async function buildStream() {
       ctx.createMediaStreamSource(m).connect(dest); any = true
     } catch { toast('Microphone unavailable', 'bad') }
   }
-  const tracks = [screenStream.getVideoTracks()[0]]
+  const vt = screenStream.getVideoTracks()[0]
+  // tells the encoder this is sharp-edged UI, not camera footage
+  try { vt.contentHint = 'text' } catch {}
+  const tracks = [vt]
   if (any) tracks.push(dest.stream.getAudioTracks()[0])
   return new MediaStream(tracks)
 }
 
+// Screen content is mostly static with hard edges, so it wants a far bigger budget
+// than Chromium's default. Scaled from the pixels actually being captured rather
+// than hardcoded, so a small window does not get a firehose and a 6K display does
+// not get starved.
+const PREFERRED_FPS = 60
+function bitrateFor(track) {
+  const s = track.getSettings ? track.getSettings() : {}
+  const w = s.width || 1920, h = s.height || 1080, fps = s.frameRate || 30
+  const bits = Math.round(w * h * fps * 0.09)          // ~0.09 bits per pixel
+  return Math.max(12e6, Math.min(60e6, bits))
+}
+
 function tick() {
   const secs = (Date.now() - startedAt - pausedFor) / 1000
-  ipcRenderer.send('hud-tick', { time: fmtTime(secs), paused: rec && rec.state === 'paused' })
+  ipcRenderer.send('hud-tick', { time: fmtTime(secs), paused: nativeTake ? recState === 'paused' : !!(rec && rec.state === 'paused') })
 }
 
 async function countdown() {
@@ -172,16 +195,108 @@ async function countdown() {
   $('countdown').hidden = true
 }
 
+// Everything that happens once a take exists on disk, whichever recorder made it.
+function finishTake(file, mb) {
+  mood('done')
+  refreshLibrary()
+  const pf = window.prefs || {}
+  if (pf.autoConvertMp4) runJob({ op: 'mp4', src: file }, 'Converting to MP4').then(() => refreshLibrary())
+  if (pf.openEditorAfter) { openInEditor(file); return }     // straight to the editor, no prompt
+  afterRecording(file, mb)
+}
+
+// The native recorder captures with ScreenCaptureKit and encodes on the media
+// engine, so it holds 60fps without stealing CPU from whatever is being recorded.
+// It is not available everywhere, so this returns false and the caller falls back.
+let nativeTake = false
+
+function nativeTarget() {
+  // desktopCapturer ids look like "screen:<CGDirectDisplayID>:0" and our own window
+  // ids like "window:<CGWindowID>:0"
+  if (setup.mode === 'window' && setup.window) return { windowId: +setup.window.id }
+  const id = setup.source && setup.source.id
+  const m = /^screen:(\d+)/.exec(id || '')
+  return m ? { displayId: +m[1] } : {}
+}
+
+async function startNative() {
+  let avail
+  try { avail = await ipcRenderer.invoke('native-available') } catch { return false }
+  if (!avail || !avail.ok) return false
+  const r = await ipcRenderer.invoke('native-start', {
+    ...nativeTarget(),
+    fps: 60,
+    systemAudio: !!setup.sys,
+    mic: !!setup.mic && avail.mic,
+    hevc: false,
+  })
+  if (!r || !r.ok) {
+    // a real failure is worth knowing about, but it must not stop the take
+    if (r && r.error) console.log('native recorder unavailable:', r.error)
+    return false
+  }
+  console.log(`native capture ${r.width}x${r.height} @${r.fps}fps ${r.codec}`)
+  // The mic only rides along on macOS 15+. Below that the Chromium path is the only
+  // way to get voice, so do not silently record a mute take.
+  if (setup.mic && !avail.mic) {
+    await ipcRenderer.invoke('native-stop')
+    return false
+  }
+  return true
+}
+
+async function stopNative() {
+  const r = await ipcRenderer.invoke('native-stop')
+  ipcRenderer.send('cam-record', false)
+  ipcRenderer.send('cam-visible', false)
+  ipcRenderer.send('rec-state', 'idle')
+  ipcRenderer.send('cursor-track', false)
+  clearInterval(ticker); ticker = null
+  $('start').disabled = false
+  nativeTake = false
+  if (!r || !r.ok) { mood('error'); toast(r && r.error ? r.error : 'Nothing was captured', 'bad'); return }
+  mood('working')
+  const c = await ipcRenderer.invoke('native-commit', r.tmp)
+  if (!c || !c.ok) { mood('error'); toast('Could not save the recording', 'bad'); return }
+  if (r.dropped) console.log(`dropped ${r.dropped} frames of ${r.frames}`)
+  const mb = (require('fs').statSync(c.file).size / 1e6).toFixed(1)
+  finishTake(c.file, mb)
+}
+
 async function startRecording() {
   try {
     mood('arming')
     $('start').disabled = true
     await countdown()
+
+    nativeTake = await startNative()
+    if (nativeTake) {
+      startedAt = Date.now(); pausedFor = 0
+      if (setup.cam) {
+        ipcRenderer.send('cam-visible', true)
+        ipcRenderer.send('cam-record', true, startedAt)
+      }
+      ipcRenderer.send('rec-state', 'recording')
+      ipcRenderer.send('cursor-track', true)
+      ticker = setInterval(tick, 250); tick()
+      mood('rec')
+      return
+    }
+
     stream = await buildStream()
     const chunks = []                       // per-take buffer, never shared between takes
     let mime = 'video/webm;codecs=vp9,opus'
     if (!MediaRecorder.isTypeSupported(mime)) mime = 'video/webm'
-    rec = new MediaRecorder(stream, { mimeType: mime })
+    const vTrack = stream.getVideoTracks()[0]
+    const vbps = bitrateFor(vTrack)
+    rec = new MediaRecorder(stream, {
+      mimeType: mime,
+      videoBitsPerSecond: vbps,
+      audioBitsPerSecond: 192e3,
+    })
+    const got = vTrack.getSettings ? vTrack.getSettings() : {}
+    console.log(`capture ${got.width}x${got.height} @${Math.round(got.frameRate || 0)}fps, ` +
+                `video ${(vbps / 1e6).toFixed(1)} Mbit/s`)
     const owned = rec
     rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data) }
     rec.onstop = async () => {
@@ -200,9 +315,7 @@ async function startRecording() {
       mood('done')
       refreshLibrary()
       const pf = window.prefs || {}
-      if (pf.autoConvertMp4) runJob({ op: 'mp4', src: file }, 'Converting to MP4').then(() => refreshLibrary())
-      if (pf.openEditorAfter) { openInEditor(file); return }     // straight to the editor, no prompt
-      afterRecording(file, (blob.size / 1e6).toFixed(1))
+      finishTake(file, (blob.size / 1e6).toFixed(1))
     }
     stream.getVideoTracks()[0].onended = () => { if (rec && rec.state !== 'inactive') rec.stop() }
     rec.start(1000)
@@ -224,8 +337,20 @@ async function startRecording() {
 }
 
 $('start').onclick = startRecording
-function stopRecording() { if (rec && rec.state !== 'inactive') { rec.requestData(); rec.stop() } }
+function stopRecording() {
+  if (nativeTake) { stopNative(); return }
+  if (rec && rec.state !== 'inactive') { rec.requestData(); rec.stop() }
+}
 function togglePause() {
+  if (nativeTake) {
+    const paused = recState === 'paused'
+    ipcRenderer.send(paused ? 'native-resume' : 'native-pause')
+    if (paused) { pausedFor += Date.now() - pauseMark; mood('rec'); recState = 'recording' }
+    else { pauseMark = Date.now(); mood('paused'); recState = 'paused' }
+    ipcRenderer.send('rec-state', recState)
+    tick()
+    return
+  }
   if (!rec) return
   if (rec.state === 'recording') {
     rec.pause(); pauseMark = Date.now(); mood('paused')
@@ -236,7 +361,8 @@ function togglePause() {
   }
   tick()
 }
-const recording = () => rec && rec.state !== 'inactive'
+let recState = 'idle'
+const recording = () => nativeTake || (rec && rec.state !== 'inactive')
 function hotkey(action) {
   if (action === 'start') { if (!recording()) startRecording() }
   else if (action === 'stop') stopRecording()
@@ -372,7 +498,8 @@ function renameFileWithSidecars(oldPath, newBase) {
 // the Library the moment it is renamed. Add it there so a rename never looks like deletion.
 async function ensureListed(newPath) {
   if (/^recording-/i.test(path.basename(newPath))) return
-  try { await ipcRenderer.invoke('import-file', newPath) } catch {}
+  try { await ipcRenderer.invoke('import-file', newPath) }
+  catch (e) { toast('Renamed, but it fell out of the Library. Import it again.', 'bad', 6000) }
 }
 // derived exports (name-edit.mp4, name-cut.mp4, ...) keep their suffix when renamed
 function derivedSuffix(name) {

@@ -65,7 +65,7 @@ const cleanup = []
     r => { cleanup.push(r.file); const m = probe(r.file); return m.a === 'aac' && m.dur > 1 ? null : 'bad ' + JSON.stringify(m) })
 
   // synthetic clip: tone 0-2, 4-6, 8-10 with silence between → expect 4 kept segments, ~6.9s
-  await test('removeSilence (ground truth)', () => p.removeSilence('/tmp/qrt/silence.webm', {}),
+  await test('removeSilence (ground truth)', () => p.removeSilence('/tmp/fetch-test/silence.webm', {}),
     r => { cleanup.push(r.file); const m = probe(r.file)
            if (r.cuts !== 4) return `kept ${r.cuts} segments, expected 4`
            if (Math.abs(m.dur - 6.9) > 0.6) return `duration ${m.dur}, expected ~6.9`
