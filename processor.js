@@ -366,7 +366,8 @@ async function transcribe(srcArg, opts, onProgress, jobId) {
     const txtPath = sidecarOut(srcArg, '.txt'), srtPath = sidecarOut(srcArg, '.srt')
     fs.writeFileSync(txtPath, j.text || '')
 
-    const cues = groupWords(words).map(l => ({ start: l.start, end: l.end, text: l.words.join(' ') }))
+    const raw = groupWords(words).map(l => ({ start: l.start, end: l.end, text: l.words.join(' ') }))
+    const cues = snapCues(raw, await speechRegions(wav, j.durationSeconds || 0, jobId))
     fs.writeFileSync(srtPath, cuesToSrt(cues))
 
     return { file: txtPath, srt: srtPath, cues, words: words.length, text: j.text || '',
@@ -375,6 +376,58 @@ async function transcribe(srcArg, opts, onProgress, jobId) {
     try { fs.unlinkSync(wav) } catch {}
     try { fs.unlinkSync(jsonPath) } catch {}
   }
+}
+
+// The recogniser's word timings drift, and a cue's end often runs well past the last
+// word actually spoken, so a caption sits on screen over silence and reads as being
+// "at the wrong time". Snap each cue onto the speech it belongs to, then give it back
+// enough time to be read.
+async function speechRegions(wav, dur, jobId) {
+  const lines = []
+  try {
+    await run(FFMPEG, ['-hide_banner', '-i', wav, '-af', 'silencedetect=noise=-35dB:d=0.30',
+                       '-f', 'null', '-'], l => lines.push(l), jobId)
+  } catch { return [] }
+  const text = lines.join('\n')
+  const starts = [...text.matchAll(/silence_start: ([\d.]+)/g)].map(m => +m[1])
+  const ends = [...text.matchAll(/silence_end: ([\d.]+)/g)].map(m => +m[1])
+  const sil = []
+  let i = 0, j = 0
+  if (ends.length && (!starts.length || ends[0] < starts[0])) { sil.push([0, ends[0]]); j = 1 }
+  while (i < starts.length) { sil.push([starts[i], j < ends.length ? ends[j] : dur]); i++; j++ }
+  const speech = []
+  let cur = 0
+  for (const [a, b] of sil) { if (a > cur) speech.push([cur, a]); cur = Math.max(cur, b) }
+  if (cur < dur) speech.push([cur, dur])
+  return speech.filter(([a, b]) => b - a > 0.08)
+}
+
+function snapCues(cues, speech) {
+  if (!speech.length) return cues
+  const out = cues.map(c => {
+    let best = null
+    for (const [a, b] of speech) {
+      const ov = Math.min(c.end, b) - Math.max(c.start, a)
+      if (ov > 0 && (!best || ov > best[0])) best = [ov, a, b]
+    }
+    if (best) {
+      const [, a, b] = best
+      return { ...c, start: Math.max(c.start, a), end: Math.min(c.end, b) }
+    }
+    // nothing is being said under it at all: move it to the nearest speech
+    const near = speech.reduce((p, r) => Math.abs(r[0] - c.start) < Math.abs(p[0] - c.start) ? r : p)
+    return { ...c, start: near[0], end: Math.min(near[1], near[0] + (c.end - c.start)) }
+  })
+  // a caption clipped to a short burst of speech can end up too brief to read, so
+  // give it room to breathe, as long as it does not run into the next one
+  for (let i = 0; i < out.length; i++) {
+    const need = Math.max(1.0, Math.min(6, out[i].text.length / 16))
+    const ceiling = i + 1 < out.length ? out[i + 1].start - 0.05 : Infinity
+    if (out[i].end - out[i].start < need) {
+      out[i].end = Math.max(out[i].end, Math.min(out[i].start + need, ceiling))
+    }
+  }
+  return out.filter(c => c.end > c.start + 0.05)
 }
 
 // read an existing .srt back into cue objects so the editor can show/edit them

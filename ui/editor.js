@@ -346,6 +346,9 @@ async function openInEditor(src) {
 
   loadCamTake(src)
   ed.cues = await ipcRenderer.invoke('read-cues', src)
+  // If a clip has a transcript, the person wants the captions in the file. Leaving
+  // this off by default meant exports silently came out with no captions at all.
+  if ($('burnCaps')) $('burnCaps').checked = ed.cues.length > 0
   renderCues(); paintCaption(); dragCaption()
 
   runJob({ op: 'waveform', src, opts: { buckets: 1200 } }, 'Waveform').then(r => {
@@ -497,6 +500,7 @@ function wireEditor() {
     $('trProg').hidden = true; $('doTranscribe').disabled = false
     if (r) {
       ed.cues = r.cues || []; renderCues(); paintCaption(); dragCaption()
+      if ($('burnCaps') && ed.cues.length) $('burnCaps').checked = true
       toast(`${r.words} words${r.rtfx ? ` · ${r.rtfx}x realtime` : ''}`, 'ok')
     }
     paintTranscribeBtn()
