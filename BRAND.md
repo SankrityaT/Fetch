@@ -25,9 +25,19 @@ emotional narrator. He reacts to state, and that is the whole personality mechan
 | done | tail up, holding the file in his mouth |
 | error | ears down, apologetic |
 
-Rules: Biscuit is never photorealistic, never a 3D render, never wears human clothes.
-He is geometric, flat, two-tone gold, built from circles and rounded rectangles so he
-survives being drawn at 20px. He does not speak in first person in the UI.
+He is drawn as a soft, illustrated golden retriever puppy: rounded shapes, warm gold
+coat with a cream chest and muzzle, large dark eyes, long floppy ears. Shaded, but
+never rendered as 3D, never photorealistic, and never in human clothes. He does not
+speak in first person in the UI.
+
+The single source of truth is `assets/mascot/`: `idle.png` is the face of the product
+and appears in the titlebar, the hero, the app icon and the menu bar. The other 16
+stills are the same puppy in the states above, and the four clips in
+`assets/mascot/motion/` are the same character in motion.
+
+There was briefly a second, flat geometric Biscuit built from circles and rounded
+rectangles. Two mascots meant two brands, so it is gone. If a mark is ever needed
+below about 20px, crop `idle.png` to the head rather than drawing a new dog.
 
 ## Voice
 

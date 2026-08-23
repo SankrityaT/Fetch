@@ -83,9 +83,13 @@ corner. He reacts to state:
 | done | `done.png`, `celebrating.png`, `sit-film.png` |
 | error | `sad.png` |
 
-Rules: never photorealistic, never 3D, never in human clothes. He is geometric and
-flat, built from circles and rounded rectangles so he survives at 20px. He does not
-speak in first person.
+He is a soft, illustrated golden retriever puppy: rounded shapes, warm gold coat, cream
+chest and muzzle, large dark eyes, long floppy ears. Shaded, but never 3D, never
+photorealistic, never in human clothes, and he does not speak in first person.
+
+`idle.png` is the logo. It is the app icon, the titlebar mark and the hero, so use it
+as the site's mark and favicon too. There is exactly one Biscuit: do not draw or
+generate a second, simplified version for small sizes, crop this one to the head.
 
 The motion clips are **VP9 WebM with alpha**. They composite over any background in a
 browser. Two gotchas: ffmpeg reports them as `yuv420p` with no alpha because its VP9
