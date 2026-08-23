@@ -44,8 +44,23 @@ fi
 echo "→ zipping app for submission"
 ditto -c -k --keepParent "$APP" /tmp/Fetch-notarize.zip
 
+# notarytool exits 0 even when Apple rejects the build, so the status has to be
+# read back. Without this the script cheerfully went on to staple an Invalid app.
+submit () {
+  local target="$1" out id
+  out=$(xcrun notarytool submit "$target" "${AUTH[@]}" --wait 2>&1) || true
+  echo "$out"
+  if ! grep -q "status: Accepted" <<< "$out"; then
+    id=$(grep -oE "id: [0-9a-f-]{36}" <<< "$out" | head -1 | awk '{print $2}')
+    echo
+    echo "Notarisation failed. Apple's reasons:"
+    [ -n "$id" ] && xcrun notarytool log "$id" "${AUTH[@]}" 2>&1 | sed -n '1,80p'
+    exit 1
+  fi
+}
+
 echo "→ submitting the app (usually 1 to 5 minutes)"
-xcrun notarytool submit /tmp/Fetch-notarize.zip "${AUTH[@]}" --wait
+submit /tmp/Fetch-notarize.zip
 
 echo "→ stapling the app"
 xcrun stapler staple "$APP"
@@ -58,7 +73,7 @@ hdiutil create -volname Fetch -srcfolder $STAGE -ov -format UDZO "$DMG" >/dev/nu
 codesign --force --timestamp -s "$ID" "$DMG"
 
 echo "→ submitting the dmg"
-xcrun notarytool submit "$DMG" "${AUTH[@]}" --wait
+submit "$DMG"
 xcrun stapler staple "$DMG"
 
 echo

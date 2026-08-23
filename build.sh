@@ -87,6 +87,14 @@ sign() { codesign --force --timestamp --options runtime --entitlements /tmp/qr.e
 
 # strictly inside-out: dylibs → crashpad → frameworks → helpers → bubble → transcribe → ffmpeg → app
 find "$APP/Contents/Frameworks" \( -name "*.dylib" -o -name "*.node" \) -print0 | while IFS= read -r -d '' f; do sign "$f"; done
+# Helper executables tucked inside a framework's Resources are separate Mach-O
+# binaries. Signing the framework does not cover them, and notarisation rejects the
+# whole archive over one of them: Squirrel ships ShipIt in there, which is what
+# failed the first submission. Sign anything executable in there, not just ShipIt.
+find "$APP/Contents/Frameworks" -path "*/Resources/*" -type f -perm -111 -print0 |
+  while IFS= read -r -d '' f; do
+    file "$f" | grep -q "Mach-O" && sign "$f"
+  done
 find "$APP/Contents/Frameworks" -name "chrome_crashpad_handler" -print0 | while IFS= read -r -d '' f; do sign "$f"; done
 for f in "$APP/Contents/Frameworks/"*.framework; do sign "$f/Versions/A"; done
 for h in "$APP/Contents/Frameworks/"*.app; do sign "$h/Contents/MacOS/"*; sign "$h"; done
