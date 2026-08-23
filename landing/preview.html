@@ -1,0 +1,21 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fetch kit preview</title>
+<!-- Smoke test for the kit, not a design. Proves the token chain, the four fonts,
+     the sprite and an alpha clip all resolve from a deployed folder layout.
+     External <use href> needs http, so serve it:  cd landing && python3 -m http.server 8000 -->
+<link rel="stylesheet" href="./css/fetch-tokens.css">
+<link rel="stylesheet" href="./css/fetch-web.css">
+<style>body{padding:48px}main{display:grid;gap:24px}.row{display:flex;gap:16px;align-items:center}</style>
+</head><body><main>
+<h1>Record it. Fetch it. <em class="accent">Ship</em> it.</h1>
+<p class="dim">A macOS screen recorder and editor that runs entirely on your machine.</p>
+<div class="row">
+  <svg class="icon-xl" style="color:var(--rec)"><use href="./assets/sprite.svg#i-record-fill"></use></svg>
+  <svg class="icon-xl" style="color:var(--fur-1)"><use href="./assets/sprite.svg#i-gear"></use></svg>
+  <span class="mono">00:04:17</span>
+</div>
+<div class="row">
+  <video class="biscuit-clip" style="width:240px" autoplay loop muted playsinline
+    src="./assets/mascot/motion/sleeping.webm" poster="./assets/mascot/motion/sleeping-poster.png"></video>
+  <img src="./assets/mascot/motion/fetch-away-poster.png" width="240" alt="">
+</div>
+</main></body></html>

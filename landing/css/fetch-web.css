@@ -1,0 +1,31 @@
+/* Web overrides for fetch-tokens.css.
+   fetch-tokens.css is a byte-for-byte copy of ui/tokens.css so the site cannot
+   drift from the app. That file is written for an Electron shell, and three of
+   its rules are wrong for a page you scroll and read. Undo those here rather
+   than editing the token file. Load order matters:
+
+     <link rel="stylesheet" href="./css/fetch-tokens.css">
+     <link rel="stylesheet" href="./css/fetch-web.css">
+*/
+
+/* The app is a fixed-size window, so it locks scrolling and selection.
+   A landing page needs both. */
+html, body { height:auto; min-height:100%; overflow:visible; }
+body { user-select:text; }
+
+/* The app's display ramp tops out at 48px because it lives in a 1280px window.
+   Marketing display type scales up freely; body text stays on the app's ramp. */
+:root {
+  --t-64:64px; --t-80:80px; --t-104:104px;
+  --s-9:96px; --s-10:128px;   /* section rhythm, still on the 8px grid */
+  --measure:62ch;             /* nothing readable runs wider than this */
+}
+h1 { font-size:clamp(var(--t-48), 7vw, var(--t-104)); }
+h2 { font-size:clamp(var(--t-32), 4vw, var(--t-64)); }
+h3 { font-size:var(--t-24); }
+p  { max-width:var(--measure); }
+
+/* Biscuit's motion clips are VP9 with alpha. Safari cannot decode that and
+   falls back to the poster, which is the clip's real first frame, also with
+   alpha. Both paths composite over the page background, so neither shows a box. */
+.biscuit-clip { display:block; width:100%; height:auto; background:none; }

@@ -8,11 +8,31 @@ subset a landing page needs.
 
 | file | use |
 |---|---|
-| `fetch-tokens.css` | The app's actual CSS custom properties. Drop it in and use the variables. |
-| `assets/fonts/` | All four faces, woff2, self-hosted. No Google Fonts request. |
-| `assets/mascot/` | 17 stills of Biscuit plus 4 alpha motion clips |
+| `css/fetch-tokens.css` | The app's actual CSS custom properties, byte-identical to `ui/tokens.css`. Never edit it. |
+| `css/fetch-web.css` | Overrides for the three token rules written for an Electron window, not a page. Load it second. |
+| `assets/fonts.css` | The `@font-face` block. `fetch-tokens.css` imports this, which is why it sits one level up from `css/`. |
+| `assets/fonts/` | All four families, 10 woff2 files, self-hosted. No Google Fonts request. |
+| `assets/mascot/` | 17 stills of Biscuit |
+| `assets/mascot/motion/` | 4 alpha motion clips, each with a matching `-poster.png` |
 | `assets/sprite.svg` | 78 Phosphor icons as an SVG sprite (`<use href="sprite.svg#i-record-fill">`) |
-| `assets/fetch-icon-1024.png` | App icon, for the hero, favicon and the Product Hunt thumbnail |
+| `assets/fetch-icon-1024.png` | App icon, for the hero and favicon. Product Hunt wants 240x240, so downscale it. |
+| `preview.html` | Smoke test, not a design. Proves the whole chain resolves. `cd landing && python3 -m http.server 8000`, then open `/preview.html`. |
+
+Drop-in, and keep this layout. `fetch-tokens.css` imports `../assets/fonts.css`,
+so the stylesheet has to sit one directory below `assets/` or the fonts 404.
+
+```
+site/
+  index.html
+  css/fetch-tokens.css
+  css/fetch-web.css
+  assets/...
+```
+
+```html
+<link rel="stylesheet" href="./css/fetch-tokens.css">
+<link rel="stylesheet" href="./css/fetch-web.css">
+```
 
 ## Positioning
 
@@ -77,20 +97,61 @@ corner. He reacts to state:
 | state | asset |
 |---|---|
 | idle, ready | `idle.png`, or `motion/sleeping.webm` for a resting hero |
-| recording | `recording.png`, `running.png` |
+| recording starts | `motion/fetch-away.webm` (the sprinter's crouch, then he bolts) |
+| recording | `recording.png`, `excited.png` |
 | thinking, processing | `thinking.png`, `motion/thinking.webm` |
-| exporting | `motion/exporting.webm` (running with the film reel) |
+| exporting | `motion/exporting.webm`, or `running.png` (both carry the film strip) |
 | done | `done.png`, `celebrating.png`, `sit-film.png` |
 | error | `sad.png` |
+
+`running.png` has a film strip in his mouth, so it reads as delivering the export,
+not as recording. Do not use it for the record state.
 
 Rules: never photorealistic, never 3D, never in human clothes. He is geometric and
 flat, built from circles and rounded rectangles so he survives at 20px. He does not
 speak in first person.
 
 The motion clips are **VP9 WebM with alpha**. They composite over any background in a
-browser. Two gotchas: ffmpeg reports them as `yuv420p` with no alpha because its VP9
-decoder ignores WebM alpha, so do not "fix" them based on what ffmpeg says. And Safari
-does not support VP9 alpha, so pair each `<video>` with a PNG poster fallback.
+browser. Three things to know.
+
+**The alpha is real, and ffmpeg lies about it by default.** ffmpeg's built-in VP9
+decoder ignores WebM alpha and reports `yuv420p`, so do not "fix" the clips based on
+that. Force the libvpx decoder and it tells the truth:
+
+```bash
+ffprobe -v error -c:v libvpx-vp9 -show_entries stream=pix_fmt -of default=nw=1 sleeping.webm
+# pix_fmt=yuva420p
+ffprobe -v error -show_entries stream_tags=alpha_mode -of default=nw=1 sleeping.webm
+# TAG:alpha_mode=1
+```
+
+**Safari does not support VP9 alpha**, so every `<video>` needs a poster. The four
+`-poster.png` files are the real first frame of each clip, extracted through the
+libvpx decoder, so they carry the same transparency and line up exactly with frame 0.
+
+```html
+<video class="biscuit-clip" autoplay loop muted playsinline
+       src="./assets/mascot/motion/sleeping.webm"
+       poster="./assets/mascot/motion/sleeping-poster.png"></video>
+```
+
+**They are small.** 480x270 at the largest, 420x236 for `thinking`. That is fine at
+hero-inset or section-accent size, and soft if you scale one to full width on a 2x
+display. Budget them at roughly 240 to 400 CSS pixels wide.
+
+| clip | size | length | poster |
+|---|---|---|---|
+| `sleeping.webm` | 460x258 | 4s loop | `sleeping-poster.png` |
+| `thinking.webm` | 420x236 | 4s loop | `thinking-poster.png` |
+| `exporting.webm` | 480x270 | 10s loop | `exporting-poster.png` |
+| `fetch-away.webm` | 480x270 | 4s | `fetch-away-poster.png` |
+
+One gap worth knowing before you plan the hero. `assets/MOTION-MOMENTS.md` designs
+`fetch-away` as half of a pair with a **fetch-back** clip, and calls fetch-back "the
+payoff, the most watched, and the one that explains the product." Fetch-back was never
+generated. So `fetch-away` is currently the weaker half of a missing pair. Either
+commission fetch-back, or use `sleeping` or `exporting` as the hero clip, both of which
+stand alone.
 
 ## Voice
 

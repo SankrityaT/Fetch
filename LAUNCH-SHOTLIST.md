@@ -29,9 +29,9 @@ state (idle, recording, thinking, done, sad) instead of the UI narrating at you.
 | Feature | File(s) | Status |
 |---|---|---|
 | Screen recording (full display, via `getDisplayMedia`) | `main.js`, `ui/app.js` | built |
-| Window recording (single app window) | `main.js` (`WindowList` helper), `ui/setup.js` | partial — `main.js` comments note macOS's own window enumeration "returns almost nothing," so this depends on a bundled Swift helper binary as a workaround |
+| Window recording (single app window) | `main.js` (`WindowList` helper), `ui/setup.js` | partial: `main.js` comments note macOS's own window enumeration "returns almost nothing," so this depends on a bundled Swift helper binary as a workaround |
 | System audio (loopback) + microphone mixing | `ui/app.js` `buildStream()` | built |
-| Camera bubble (draggable, resizable, native overlay) | `main.js`, `CamBubble.swift`, `ui/setup.js` | built — `main.js` has a silent reload-retry loop for when another app holds the camera |
+| Camera bubble (draggable, resizable, native overlay) | `main.js`, `CamBubble.swift`, `ui/setup.js` | built: `main.js` has a silent reload-retry loop for when another app holds the camera |
 | Mic level meter + device pickers in setup | `ui/setup.js` | built |
 | 3-2-1 countdown before recording | `ui/app.js` | built |
 | Global hotkeys (⇧⌘R start/stop, ⇧⌘P pause) | `main.js` | built |
@@ -40,29 +40,29 @@ state (idle, recording, thinking, done, sad) instead of the UI narrating at you.
 | Tray icon + menu | `main.js` | built |
 | Cursor + click tracking during recording (feeds auto zoom) | `main.js` (`cursor-track`, `cursor-click`) | built |
 | Library: list, group takes with their exports, thumbnails | `ui/app.js`, `processor.js` `listRecordings/describe` | built |
-| Import any ffmpeg-readable file into the library | `main.js`, `processor.js` `importFile` | verified — `test/formats.test.js` |
+| Import any ffmpeg-readable file into the library | `main.js`, `processor.js` `importFile` | verified: `test/formats.test.js` |
 | Reveal in Finder / delete to Trash (with sidecar cleanup) | `ui/app.js` | built |
-| Auto thumbnail generation | `processor.js` `thumbnail` | verified — `test/engine.test.js` |
-| Convert to another container/format from the Library | `processor.js` `convert` | verified — `test/formats.test.js` (all formats) |
-| Trim | `processor.js` `trim` | verified — `test/engine.test.js` |
-| Remove dead air (silence detect + cut, video+audio synced) | `processor.js` `removeSilence` | verified — `test/engine.test.js` (ground-truth clip) |
-| Enhance audio: denoise, loudness normalise, gain | `processor.js` `enhanceAudio` | verified — `test/engine.test.js` |
-| Crop with aspect presets (free, 16:9, 9:16, 1:1, 4:3) | `ui/editor.js`, `processor.js` `applyEdit` | verified — `test/engine.test.js` |
-| Resize on export (original, 1080p, 720p) | `processor.js` `applyEdit`/`convert` | verified — `test/engine.test.js` |
-| Text overlays (multi-layer, font, colour, size, position, timing, background pill) | `ui/editor.js`, `processor.js` `applyEdit` | verified — `test/engine.test.js` (incl. quotes/`%`/`:` in text) |
-| Fade in/out (video and audio) | `processor.js` `applyEdit` | verified — exercised in `test/engine.test.js`'s combined export |
-| On-device transcription (Parakeet TDT via bundled `Transcribe.app`) | `processor.js` `transcribe` | built — not covered by the JS test suite; depends on a compiled native binary |
+| Auto thumbnail generation | `processor.js` `thumbnail` | verified: `test/engine.test.js` |
+| Convert to another container/format from the Library | `processor.js` `convert` | verified: `test/formats.test.js` (all formats) |
+| Trim | `processor.js` `trim` | verified: `test/engine.test.js` |
+| Remove dead air (silence detect + cut, video+audio synced) | `processor.js` `removeSilence` | verified: `test/engine.test.js` (ground-truth clip) |
+| Enhance audio: denoise, loudness normalise, gain | `processor.js` `enhanceAudio` | verified: `test/engine.test.js` |
+| Crop with aspect presets (free, 16:9, 9:16, 1:1, 4:3) | `ui/editor.js`, `processor.js` `applyEdit` | verified: `test/engine.test.js` |
+| Resize on export (original, 1080p, 720p) | `processor.js` `applyEdit`/`convert` | verified: `test/engine.test.js` |
+| Text overlays (multi-layer, font, colour, size, position, timing, background pill) | `ui/editor.js`, `processor.js` `applyEdit` | verified: `test/engine.test.js` (incl. quotes/`%`/`:` in text) |
+| Fade in/out (video and audio) | `processor.js` `applyEdit` | verified: exercised in `test/engine.test.js`'s combined export |
+| On-device transcription (Parakeet TDT via bundled `Transcribe.app`) | `processor.js` `transcribe` | built: not covered by the JS test suite; depends on a compiled native binary |
 | Editable transcript, click-to-seek cues | `ui/editor.js` `renderCues` | built |
 | Burn captions into video (font, size, colour, position, box/outline) | `processor.js` `burnCaptions`/`applyEdit` | built |
 | Auto zoom (pushes in on clicks/dwell points) | `processor.js` `autoZoomFilter`, `ui/editor.js` | built, and only works on recordings **made by Fetch**: it reads a `.cursor.json` sidecar written during capture. The code explicitly excludes window recordings ("a window recording has a different origin"), and imported files never have this sidecar. |
 | Framed "backdrop" look (rounded corners, shadow, inset) | `processor.js` `backdropChain` | built |
 | 6 built-in gradient backdrops (Dusk, Ember, Mint, Violet, Slate, Ink) | `processor.js` `BACKDROPS` | built |
-| Custom image backdrops (drop a jpg/png in `assets/backdrops/`) | `processor.js` `imageBackdrops` | partial — the mechanism works, but the 10 backdrop images described in `assets/backdrops/PROMPTS.md` have not been generated yet; the folder currently holds only prompt text and a README |
-| GIF export | `processor.js` `toGif` | verified — `test/engine.test.js`, `test/formats.test.js` |
-| Waveform for the editor timeline | `processor.js` `waveform` | verified — `test/engine.test.js` |
-| Cancel an in-progress export job | `processor.js` `cancel` | verified — `test/engine.test.js` |
-| Multi-format export (MP4, MOV, WebM, GIF, M4A, MP3, WAV) | `processor.js` `FORMATS` | verified — `test/formats.test.js` across every format, both via `convert()` and the full editor export |
-| Dev capture harness (`FETCH_EVAL`, `FETCH_SHOT`, `FETCH_OPEN`, `FETCH_EXPORT`) | `main.js` | built — this is how the developer stages and checks the UI today |
+| Custom image backdrops (drop a jpg/png in `assets/backdrops/`) | `processor.js` `imageBackdrops` | partial: the mechanism works, but the 10 backdrop images described in `assets/backdrops/PROMPTS.md` have not been generated yet; the folder currently holds only prompt text and a README |
+| GIF export | `processor.js` `toGif` | verified: `test/engine.test.js`, `test/formats.test.js` |
+| Waveform for the editor timeline | `processor.js` `waveform` | verified: `test/engine.test.js` |
+| Cancel an in-progress export job | `processor.js` `cancel` | verified: `test/engine.test.js` |
+| Multi-format export (MP4, MOV, WebM, GIF, M4A, MP3, WAV) | `processor.js` `FORMATS` | verified: `test/formats.test.js` across every format, both via `convert()` and the full editor export |
+| Dev capture harness (`FETCH_EVAL`, `FETCH_SHOT`, `FETCH_OPEN`, `FETCH_EXPORT`) | `main.js` | built: this is how the developer stages and checks the UI today |
 
 ---
 
@@ -100,78 +100,78 @@ thumbnail size and it is instantly not-Loom.
 
 ## 4. Shot list
 
-1. **Record hero, idle** — still.
+1. **Record hero, idle**: still.
    Launch the app fresh (or `FETCH_SHOT=/tmp/1.png FETCH_SHOT_DELAY=2000 npx electron .`).
    Capture the Record view before any setup: Biscuit idle, the headline "What are
    we recording today?", and the gold "Set up recording" button.
    *Caption: "One click, and Biscuit is watching your screen."*
 
-2. **Setup wizard, source step** — still.
+2. **Setup wizard, source step**: still.
    `FETCH_EVAL="openSetup()" FETCH_SHOT=/tmp/2.png FETCH_SHOT_DELAY=2500 npx electron .`
    Shows the live screen thumbnails with the "Live" badge and the stepper
    (Source → Camera → Audio) across the top.
    *Caption: "Pick a screen or a single window. See it before you hit record."*
 
-3. **Setup wizard, camera step** — still.
+3. **Setup wizard, camera step**: still.
    From the wizard, click Next once to land on the camera step. Shows the 3D
    "slab" with the nine placement slots and the floating bubble preview.
    *Caption: "Drag your face anywhere. It stays put while you record."*
 
-4. **Setup wizard, audio step** — still.
+4. **Setup wizard, audio step**: still.
    Click Next again. Shows the mic level meter actually moving (say something
    while capturing) plus the mic/system-audio toggles.
    *Caption: "Your voice, your speakers, or both."*
 
-5. **Countdown into recording** — clip, 4-5s.
+5. **Countdown into recording**: clip, 4-5s.
    Click "Start recording," let the 3-2-1 countdown play, and let it resolve into
    the HUD bar appearing at the bottom of the screen.
    *Caption: "Three, two, one. Go."*
 
-6. **Recording in progress** — still.
+6. **Recording in progress**: still.
    Mid-recording, capture the full display: the breathing gold border around the
    screen edge, the HUD pill with a live timer, and the camera bubble in its
    corner. This has to be a real screen capture of the desktop, not the app
    window, since the border and HUD are separate always-on-top windows.
    *Caption: "You always know what's being captured, and what isn't."*
 
-7. **"Got it" modal** — still.
+7. **"Got it" modal**: still.
    Stop the recording. Capture the post-recording modal: Biscuit in the "done"
    pose, file size and Desktop confirmation, and the two big choices, "Export it"
    and "Enhance & edit."
    *Caption: "Saved to your Desktop before you've even decided what's next."*
 
-8. **Library, grouped takes** — still.
+8. **Library, grouped takes**: still.
    `show('library')` or click the Library tab. Record 2-3 clips beforehand and
    export a couple of variants so the grid shows the "N versions" gold badge and
    the CC badge on a captioned clip.
    *Caption: "Every take, every export, grouped together. Nothing scattered."*
 
-9. **Editor, trim on the waveform** — clip, 5-6s.
+9. **Editor, trim on the waveform**: clip, 5-6s.
    Open a clip in the editor, Trim tab active. Drag the in/out handles on the
    waveform timeline and let the playhead move.
    *Caption: "Scrub the waveform, set your in and out points."*
 
-10. **Remove dead air** — still (or short clip catching the toast).
+10. **Remove dead air**: still (or short clip catching the toast).
     Trim tab, click "Remove dead air." Capture the toast that reads "Cut 43%, 4
     segments kept" (numbers will vary with real footage).
     *Caption: "Cuts the silence. Keeps the good parts, in sync."*
 
-11. **Captions, on-device transcript** — still.
+11. **Captions, on-device transcript**: still.
     Captions tab, after running Transcribe. Show the cue list with editable
     lines and the "Burn into video" toggle.
     *Caption: "Transcribed on your Mac. Nothing leaves it."*
 
-12. **Text overlay, live on stage** — still.
+12. **Text overlay, live on stage**: still.
     Text tab, a layer selected and visibly draggable on the video canvas, with
     the font/colour/alignment controls open in the inspector.
     *Caption: "Drop in a headline, drag it where it belongs."*
 
-13. **Export modal** — clip, 6-8s.
+13. **Export modal**: clip, 6-8s.
     Click Export, show format/quality/resolution chips being picked, then the
     progress bar filling, ending on the "Exported · N MB" toast.
     *Caption: "MP4, MOV, WebM, GIF, or audio only. Pick one and go."*
 
-14. **Convert from the Library** — still.
+14. **Convert from the Library**: still.
     Library view, click the export icon on a card to open the quick-convert
     modal with all seven format tiles visible.
     *Caption: "Need a different format later? One click, no re-recording."*

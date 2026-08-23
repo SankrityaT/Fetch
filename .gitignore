@@ -21,4 +21,4 @@ mosaic-home.png
 
 # recordings and scratch media. The mascot clips are real assets, keep those.
 *.webm
-!assets/**/*.webm
+!**/assets/**/*.webm

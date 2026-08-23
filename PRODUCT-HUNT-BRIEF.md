@@ -30,7 +30,9 @@ absurd. It turned into a full product.
 - **On-device transcription** (FluidAudio / Parakeet, roughly 116x realtime). Editable
   cues, burn-in captions with full styling, dragged captions land where you put them
 - **Auto-zoom on cursor clicks**, driven by a cursor track sampled during the take
-- Backdrops and output shapes (9:16, 1:1, 16:9) for social crops
+- Backdrops (6 built-in gradients, plus any image you drop in) and output shapes
+  (9:16, 1:1, 16:9) for social crops. Note for copy: the gradients ship, the
+  10 designed backdrop images have not been generated yet, so do not promise artwork
 - Trim, crop, a cut tool, text layers, a second audio track that can be mixed or replace
 - Export to MP4, WebM, GIF and audio-only
 - Folders, rename, in-app player, autosave and crash recovery, onboarding, auto-update
@@ -83,19 +85,29 @@ These are real and specific, which is what makes launch copy credible:
 - Window enumeration uses **ScreenCaptureKit**, which finds windows that Electron's
   `desktopCapturer` never lists
 - Transcription is **Parakeet running locally**, roughly 116x realtime
-- ffmpeg 9 is bundled, with libass, freetype, fontconfig and libvpx-vp9
-- Signed with Developer ID, hardened runtime, notarised
+- ffmpeg is bundled inside the app, built with libass, freetype, fontconfig and
+  libvpx-vp9. The binary itself is not in the repo (`vendor/` is gitignored, since
+  shipping a prebuilt GPL binary in-tree is a licensing headache), so confirm the
+  version against the build you actually ship before quoting one
+- Signed with Developer ID and a hardened runtime. **Not notarised yet**, so do not
+  write "notarised" in launch copy until `./notarize.sh` has run and stapled. See
+  section 5
 
 ## 5. Launch status
 
 - Code: **pushed to `github.com/SankrityaT/Fetch`** (currently **private**, decide
   whether to make it public for the launch)
-- Build: `./build.sh` produces a signed `dist/Fetch.app` and a 144MB `dist/Fetch.dmg`.
-  Developer ID cert is valid to July 2031
-- Notarisation: **the one open item.** Needs an app-specific password stored via
-  `xcrun notarytool store-credentials fetch-notary`. Until then Gatekeeper reports
-  "Unnotarized Developer ID" and users get a warning
-- Distribution: no website yet. The landing page is being built from `landing/`
+- Build: `./build.sh` produces a signed `dist/Fetch.app` and a roughly 144MB
+  `dist/Fetch.dmg`. `dist/` is gitignored, so that size is from a previous local build
+- Notarisation: **still open, and it blocks launch.** The `fetch-notary` keychain
+  profile does not exist on this machine (verified: `notarytool history` returns
+  "No Keychain password item found"). It needs an app-specific password from
+  appleid.apple.com, stored once via `xcrun notarytool store-credentials fetch-notary`.
+  Until then Gatekeeper reports "Unnotarized Developer ID" and every downloader gets a
+  scare dialog. Nothing about the launch copy fixes that, only running the command does
+- Developer ID cert verified present and valid: `notAfter=Jul 27 02:10:36 2031 GMT`
+- Distribution: no website yet. The landing page is being built from `landing/`,
+  which is now self-contained: drop the folder on a host and it renders
 - `LAUNCH-SHOTLIST.md` lists the screenshots and clips worth capturing for the gallery
 
 ## 6. Open questions for the launch chat
@@ -111,8 +123,15 @@ These are real and specific, which is what makes launch copy credible:
 
 ## 7. Assets available right now
 
-- App icon at 1024px, `landing/assets/fetch-icon-1024.png`
-- Mascot: 17 stills, 4 alpha motion clips (VP9 WebM, needs a PNG poster for Safari)
+- App icon at 1024px, `landing/assets/fetch-icon-1024.png`. Product Hunt's thumbnail
+  is 240x240, so downscale it rather than shipping a 970KB PNG
+- Mascot: 17 stills, and 4 alpha motion clips in `landing/assets/mascot/motion/`, each
+  with a matching `-poster.png` for Safari, which cannot decode VP9 alpha
+- The clips are small, 480x270 at most. Section accents, not full-bleed heroes
+- `assets/MOTION-MOMENTS.md` designs a **fetch-back** clip and calls it "the payoff,
+  the most watched, and the one that explains the product." It was never generated.
+  `fetch-away` is the other half of that pair and is weaker alone. If the launch video
+  or hero wants the money shot, that clip is the thing to commission
 - Real product screenshots can be captured on demand from the running app
 - The editor screenshot is the most persuasive single frame: timeline lanes, transcript
   panel, camera bubble on canvas, all visibly a real editor
