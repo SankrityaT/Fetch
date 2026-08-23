@@ -18,6 +18,14 @@ import Image from "next/image";
  *     media permission API
  *   - saveDir defaults to null, which main.js resolves to the Desktop
  *
+ * One number here is not verified and should be. "Roughly 116x realtime" traces
+ * to a single line in README.md and nothing else: no benchmark, no constant in
+ * the code, and Transcribe.app is untracked so it cannot be measured from the
+ * repo. It is probably right, it is hedged with "roughly", and it is still the
+ * one figure on this site that nobody has put a stopwatch to. Measure it before
+ * launch or drop the number, because "116x on what?" is the obvious question
+ * and not having an answer costs more than the number earns.
+ *
  * The telemetry module landed after this section was first written and made the
  * "one thing it contacts" claim false. Rather than soften the section, it now
  * states the payload exactly. A specific claim someone can verify is stronger
