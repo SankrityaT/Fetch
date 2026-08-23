@@ -31,10 +31,10 @@ export function CameraBubble() {
   const chipRef = useRef<HTMLDivElement>(null);
 
   /* Fractions of the canvas box: top-left of the bubble, and its diameter.
-     It starts sitting on top of the recorded content on purpose. The headline
-     claims a badly placed camera does not cost you the take, and the fastest
-     way to believe that is to drag this off the thing it is covering. */
-  const pos = useRef<Vec>({ x: 0.5, y: 0.47 });
+     Resting position, lower left, which is where the app puts it. It is still
+     draggable for anyone who finds it, but the hero no longer argues from it,
+     so it does not get to sit on top of the frame demanding attention. */
+  const pos = useRef<Vec>({ x: 0.06, y: 0.6 });
   const size = useRef(0.17);
 
   const drag = useRef<{
@@ -45,7 +45,6 @@ export function CameraBubble() {
   } | null>(null);
 
   const [active, setActive] = useState(false);
-  const [moved, setMoved] = useState(false);
 
   const paint = useCallback(() => {
     const canvas = canvasRef.current;
@@ -88,7 +87,6 @@ export function CameraBubble() {
       startSize: size.current,
     };
     setActive(true);
-    setMoved(true);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -149,7 +147,6 @@ export function CameraBubble() {
     if (nudge[e.key]) {
       e.preventDefault();
       nudge[e.key]();
-      setMoved(true);
       paint();
     }
   };
@@ -208,8 +205,6 @@ export function CameraBubble() {
             "border border-ink-3 bg-ink-1 shadow-[inset_0_1px_0_rgb(255_255_255/0.06),0_10px_30px_-8px_rgb(0_0_0/0.8)]",
             "outline-offset-4 focus-visible:outline-2 focus-visible:outline-fur-1",
             active ? "cursor-grabbing" : "cursor-grab",
-            /* one nudge on load to say "this is grabbable", then never again */
-            !moved ? "motion-safe:animate-[bubble-hint_2.6s_var(--ease-entrance)_1.2s_2]" : "",
           ].join(" ")}
           style={{ willChange: "transform" }}
         >

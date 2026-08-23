@@ -269,15 +269,6 @@
   }
 }
 
-/* The bubble is draggable and nothing on screen says so. Two small nudges on
-   load teach the affordance, then it never moves on its own again. */
-@keyframes bubble-hint {
-  0%, 62%, 100% { translate: 0 0; }
-  70% { translate: 5px 0; }
-  78% { translate: -4px 0; }
-  86% { translate: 2px 0; }
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

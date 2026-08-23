@@ -7,19 +7,22 @@ export function Hero() {
       <div className="mx-auto grid max-w-[1400px] items-center gap-14 px-6 pb-24 pt-28 md:px-10 lg:min-h-dvh lg:grid-cols-12 lg:gap-10 lg:pb-24 lg:pt-28">
         {/* ── the argument ────────────────────────────────────────────── */}
         <div className="lg:col-span-7">
-          {/* "Move the camera later" is the mechanism, not the reason to care.
-              The reason is that a badly placed webcam normally costs you the
-              whole take. That is the sentence. The clause split gives a short
-              line over a long one; below sm they flow inline instead, because
-              forcing the break there orphans the last word. */}
+          {/* Nobody goes looking for a screen recorder because of where the
+              webcam sits. They go looking because Loom wants $20 a month and
+              uploads their screen. So the hero is the category and the reason
+              to switch, and the camera trick is one clause in the subtext,
+              which is the weight it actually carries.
+
+              No price claim here on purpose: pricing is undecided, and "no
+              subscription" is as far as the brief lets us commit. */}
           <h1
-            className="rise text-[clamp(2.15rem,4vw,3.6rem)]"
+            className="rise text-[clamp(2.4rem,4.9vw,4.4rem)]"
             style={{ ["--i" as string]: 0 }}
           >
-            <span className="sm:block">Never re-record because </span>
+            <span className="sm:block">Record your screen. </span>
             <span className="sm:block">
-              your face was in the{" "}
-              <em className="accent pr-[0.06em] leading-[1.1]">way</em>.
+              Keep it on your{" "}
+              <em className="accent pr-[0.06em] leading-[1.1]">Mac</em>.
             </span>
           </h1>
 
@@ -27,8 +30,8 @@ export function Hero() {
             className="rise mt-6 max-w-[50ch] text-24 leading-[1.4] text-text-1"
             style={{ ["--i" as string]: 1 }}
           >
-            The camera records to its own track, so you can move it in the
-            editor. Nothing is uploaded. No subscription.
+            A full editor with captions, click-zoom and a movable camera. No
+            account, no upload, no subscription.
           </p>
 
           <div
@@ -84,7 +87,7 @@ export function Hero() {
                 done with layout width, not a transform, because the bubble
                 measures its bounds and a scaled ancestor would double-count. */}
             <div className="relative aspect-4/3 overflow-hidden rounded-card sm:aspect-3/2 lg:aspect-auto">
-              <div className="ml-[-28.5%] mt-[-19.3%] w-[210%] max-w-none lg:m-0 lg:w-full">
+              <div className="ml-[-14.8%] mt-[-19.3%] w-[210%] max-w-none lg:m-0 lg:w-full">
                 <CameraBubble />
               </div>
             </div>
