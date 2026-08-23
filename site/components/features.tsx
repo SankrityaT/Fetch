@@ -15,15 +15,16 @@ import Image from "next/image";
  * Nothing here is drawn by us. If a label reads "Finds silent gaps and removes
  * them for you", that string is in the product.
  *
- * There is no auto zoom card, temporarily. The feature is real, but its panel
- * is labelled "Follow my clicks / pushes in where you clicked" and that is not
- * what happens: main.js registers a cursor-click handler that nothing ever
- * sends, so data.clicks is always empty and zoomMoments always takes its dwell
- * fallback, zooming where the pointer moved a long way and then settled. The
- * app's own label is being corrected on another branch. Any caption written now
- * would either repeat the false claim or contradict the label visible in its
- * own screenshot, so the card comes back once the fix lands and it can be
- * re-shot. public/shots/features/zoom.png is kept for that.
+ * The auto zoom card was pulled for one commit and is back. Its panel used to
+ * say "Follow my clicks / pushes in where you clicked", which was never what
+ * happened: cursor-click is registered in main.js and nothing ever sends it, so
+ * zoomMoments always takes its dwell fallback. The app now says "Follow my
+ * cursor / pushes in where you stop and settle", and this caption matches the
+ * label inside its own screenshot again.
+ *
+ * Every shot here was re-taken after merging main, because that merge replaced
+ * the capture path and touched editor.js. Screenshots of someone else's branch
+ * go stale silently, which is the worst way for them to go stale.
  */
 
 const FEATURES = [
@@ -47,6 +48,13 @@ const FEATURES = [
     title: "Remove dead air",
     body: "It finds the silent gaps and takes them out for you, so a rambling take tightens up without you hunting for the pauses.",
     alt: "The clean up panel, with the remove dead air button.",
+  },
+  {
+    shot: "zoom",
+    h: 510,
+    title: "Zoom where your cursor settles",
+    body: "Fetch samples your cursor while you record, then pushes in where the pointer travelled a long way and stopped. You set how hard it pushes.",
+    alt: "The auto zoom panel, with a follow my cursor toggle and an amount slider.",
   },
   {
     shot: "backdrops",
