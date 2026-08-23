@@ -366,8 +366,7 @@ async function transcribe(srcArg, opts, onProgress, jobId) {
     const txtPath = sidecarOut(srcArg, '.txt'), srtPath = sidecarOut(srcArg, '.srt')
     fs.writeFileSync(txtPath, j.text || '')
 
-    const raw = groupWords(words).map(l => ({ start: l.start, end: l.end, text: l.words.join(' ') }))
-    const cues = snapCues(raw, await speechRegions(wav, j.durationSeconds || 0, jobId))
+    const cues = buildCues(words, await speechRegions(wav, j.durationSeconds || 0, jobId))
     fs.writeFileSync(srtPath, cuesToSrt(cues))
 
     return { file: txtPath, srt: srtPath, cues, words: words.length, text: j.text || '',
@@ -376,6 +375,91 @@ async function transcribe(srcArg, opts, onProgress, jobId) {
     try { fs.unlinkSync(wav) } catch {}
     try { fs.unlinkSync(jsonPath) } catch {}
   }
+}
+
+// Word end times from the recogniser are padded and unreliable, so phrasing is taken
+// from the audio itself: a caption breaks wherever the speaker actually paused. Without
+// this, several separate phrases merge into one block that appears all at once, showing
+// words seconds before they are spoken.
+function mergeRegions(speech, joinUnder = 0.28) {
+  const out = []
+  for (const [a, b] of speech) {
+    const last = out[out.length - 1]
+    if (last && a - last[1] < joinUnder) last[1] = b
+    else out.push([a, b])
+  }
+  return out
+}
+
+function regionIndex(regions, t) {
+  for (let i = 0; i < regions.length; i++) {
+    if (t >= regions[i][0] - 0.25 && t <= regions[i][1] + 0.25) return i
+  }
+  let best = 0, d = Infinity
+  regions.forEach((r, i) => {
+    const dd = Math.min(Math.abs(r[0] - t), Math.abs(r[1] - t))
+    if (dd < d) { d = dd; best = i }
+  })
+  return best
+}
+
+function buildCues(words, speech, { maxWords = 8, maxDur = 3.4, minPause = 0.45 } = {}) {
+  const plain = () => groupWords(words).map(l => ({ start: l.start, end: l.end, text: l.words.join(' ') }))
+  const clean = words.filter(w => (w.word || '').trim())
+  if (!speech || speech.length < 2 || !clean.length) return plain()
+
+  // the quiet spans between phrases
+  const sil = []
+  for (let i = 0; i + 1 < speech.length; i++) sil.push([speech[i][1], speech[i + 1][0]])
+  // A break belongs between two words only when the speaker actually stopped between
+  // them. Comparing against word start times, never the padded end times, keeps a
+  // long-sounding word from being mistaken for a pause.
+  const pauseBetween = (aStart, bStart) =>
+    sil.find(([x, y]) => y - x >= minPause && x >= aStart - 0.05 && y <= bStart + 0.15)
+
+  const groups = []
+  let cur = null, prevStart = 0
+  for (const w of clean) {
+    const word = (w.word || '').trim()
+    if (!cur) { cur = { start: w.startTime, end: w.endTime, words: [word] }; prevStart = w.startTime; continue }
+    const gap = pauseBetween(prevStart, w.startTime)
+    const full = cur.words.length >= maxWords || (w.endTime - cur.start) > maxDur
+    if (gap || full) {
+      if (gap) cur.end = Math.min(cur.end, gap[0])       // stop when the talking stopped
+      groups.push(cur)
+      cur = { start: w.startTime, end: w.endTime, words: [word] }
+    } else {
+      cur.end = w.endTime; cur.words.push(word)
+    }
+    prevStart = w.startTime
+  }
+  if (cur) groups.push(cur)
+
+  // A phrase cut purely by length can leave a stray word stranded on its own line.
+  // If no real pause separates it, fold it back into the line it belongs to.
+  for (let i = groups.length - 2; i >= 0; i--) {
+    const a = groups[i], b = groups[i + 1]
+    const noPause = !pauseBetween(a.start, b.start) && b.start - a.end < 0.3
+    // Only if folding it back does not make the line show words long before they are
+    // said. Staying in sync matters more than avoiding a short line.
+    if (noPause && b.words.length <= 2 && a.words.length + b.words.length <= maxWords + 2 &&
+        b.start - a.start <= 2.0) {
+      a.words.push(...b.words); a.end = b.end
+      groups.splice(i + 1, 1)
+    }
+  }
+
+  const cues = groups.map(g => ({ start: g.start, end: Math.max(g.end, g.start + 0.4), text: g.words.join(' ') }))
+  for (let i = 0; i < cues.length; i++) {
+    const next = cues[i + 1]
+    const ceiling = next ? next.start - 0.02 : Infinity
+    if (cues[i].end > ceiling) cues[i].end = ceiling
+    const need = Math.max(1.0, Math.min(5, cues[i].text.length / 16))
+    if (cues[i].end - cues[i].start < need) {
+      cues[i].end = Math.max(cues[i].end, Math.min(cues[i].start + need, ceiling))
+    }
+  }
+  return cues.filter(c => c.end > c.start + 0.05)
 }
 
 // The recogniser's word timings drift, and a cue's end often runs well past the last
