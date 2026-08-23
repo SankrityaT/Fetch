@@ -26,8 +26,29 @@ emotional narrator. He reacts to state, and that is the whole personality mechan
 | error | ears down, apologetic |
 
 Rules: Biscuit is never photorealistic, never a 3D render, never wears human clothes.
-He is geometric, flat, two-tone gold, built from circles and rounded rectangles so he
-survives being drawn at 20px. He does not speak in first person in the UI.
+He is a flat illustration on the gold ramp, with soft shading and no outline. He does
+not speak in first person in the UI.
+
+**There is exactly one Biscuit, and he lives in `assets/mascot/`.** The seventeen
+stills and the four alpha clips are the identity, at every size, in every surface,
+including the titlebar mark and the site.
+
+There used to be a second one: `assets/biscuit.svg`, a flatter geometric head built
+from circles and rounded rectangles, kept on the theory that the painted art turned to
+mush below 48px. It was deleted, because every part of that theory had stopped being
+true:
+
+- the titlebar shipped the painted `idle.png` at 26px, not the vector
+- the vector's only remaining use was a 96px empty state, which is the size range the
+  painted art was supposed to own
+- `make_tray.swift` draws the menu bar icons from its own `NSBezierPath` geometry. It
+  never read the SVG
+- downscaled and inspected, `idle.png` is legible at 24px and still reads as Biscuit
+  at 20px
+
+Two marks means two characters, and a visitor sees the difference immediately even
+when a spec sheet says they are the same dog. If something ever genuinely needs vector
+geometry, redraw it *from* the painted art and say so here.
 
 ## Voice
 
@@ -90,8 +111,8 @@ Display tracking is tight (-0.03em); 11 to 12px UI text is loose (+0.01em).
 Radii: 10 (thumbnail insets, tooltips, compact list rows), 14 (cards, tiles, popovers),
 20 (primary cards, panels, modals), 999 (pills: buttons, chips, badges, tags, segmented
 controls). Square icon-only controls and small icon avatars go all the way to a full
-circle instead of sitting at a small fixed radius, the same geometry Biscuit is built
-from.
+circle instead of sitting at a small fixed radius, which is also the shape the camera
+bubble takes.
 A card's inner padding is never smaller than 14px, and never mismatched top/bottom.
 
 Elevation is done with *light*, not black shadow: a 1px `--ink-3` hairline plus a

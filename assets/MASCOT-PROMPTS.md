@@ -140,10 +140,12 @@ invisible on white and obvious on black.
   head jump.
 - Keep the flat PNGs in `assets/mascot/`. They are used everywhere at 48px and above:
   the hero, the wizard, empty states and the post-recording prompt.
-- Below 48px the painted art turns to mush. The menu bar icons are drawn from the SVG
-  geometry by `make_tray.swift`, and `assets/biscuit.svg` stays authoritative for the
-  titlebar mark. This was measured, not assumed: at 22pt the painted head is noticeably
-  noisier than the drawn one.
+- The painted art is used at every size, including the 26px titlebar mark. It is a
+  little noisier than drawn geometry down at 22pt, but it is legible at 24px and still
+  reads as Biscuit at 20px, and one identity beats a cleaner second one.
+- The menu bar icons are a separate thing: `make_tray.swift` draws them from its own
+  `NSBezierPath` geometry, because a template image in the macOS menu bar has to be a
+  flat monochrome silhouette regardless of what the mascot looks like.
 
 ## 5. Consistency checklist
 

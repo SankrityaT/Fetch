@@ -1,18 +1,22 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "./icon";
 
 /* A floating glass pill rather than a bar welded to the top edge.
  *
- * The logo is the app's own vector Biscuit, not the .icns export. The icon
- * ships a dark rounded plate baked into the artwork, which vanished against
- * a warm near-black bar. The mark is gold, drawn from the brand ramp, and
- * built to hold up at 16px.
+ * The logo is assets/mascot/idle.png, the same file the app's own titlebar
+ * uses at 26px. Not the .icns export, which bakes a dark rounded plate into
+ * the artwork and vanished against a warm near-black bar.
  *
- * Biscuit is the app's emotional narrator, so he reacts here too: he is alert
- * at rest and happy when you touch him. That is the same mechanic the app
- * uses, not decoration bolted onto a website.
+ * There is exactly one Biscuit and this is him. A second, flatter geometric
+ * mark used to exist for small sizes and has been deleted: it read as a
+ * different dog, which is worse than being slightly noisier at 20px.
+ *
+ * Biscuit is the app's emotional narrator, so he reacts here too: alert at
+ * rest, happy when you touch him. Same mechanic the app uses, not decoration
+ * bolted onto a website.
  */
 export function SiteHeader() {
   const sentinel = useRef<HTMLDivElement>(null);
@@ -51,18 +55,21 @@ export function SiteHeader() {
             className="group/logo relative flex items-center gap-2 rounded-pill py-1.5 pl-2 pr-3"
           >
             <span className="relative block size-8">
-              <svg
-                className="absolute inset-0 size-8 transition-opacity duration-[200ms] ease-entrance group-hover/logo:opacity-0"
-                aria-hidden="true"
-              >
-                <use href="/biscuit.svg#biscuit-mark" />
-              </svg>
-              <svg
-                className="absolute inset-0 size-8 opacity-0 transition-opacity duration-[200ms] ease-entrance group-hover/logo:opacity-100"
-                aria-hidden="true"
-              >
-                <use href="/biscuit.svg#biscuit-happy" />
-              </svg>
+              <Image
+                src="/mascot/idle.png"
+                alt=""
+                width={128}
+                height={128}
+                className="absolute inset-0 size-8 object-contain transition-opacity duration-[200ms] ease-entrance group-hover/logo:opacity-0"
+                preload
+              />
+              <Image
+                src="/mascot/happy.png"
+                alt=""
+                width={128}
+                height={128}
+                className="absolute inset-0 size-8 object-contain opacity-0 transition-opacity duration-[200ms] ease-entrance group-hover/logo:opacity-100"
+              />
             </span>
             <span className="font-display text-18 font-extrabold tracking-[-0.03em] text-text-0">
               Fetch

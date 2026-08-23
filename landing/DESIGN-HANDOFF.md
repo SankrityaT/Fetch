@@ -107,9 +107,13 @@ corner. He reacts to state:
 `running.png` has a film strip in his mouth, so it reads as delivering the export,
 not as recording. Do not use it for the record state.
 
-Rules: never photorealistic, never 3D, never in human clothes. He is geometric and
-flat, built from circles and rounded rectangles so he survives at 20px. He does not
-speak in first person.
+Rules: never photorealistic, never 3D, never in human clothes. He is a flat
+illustration on the gold ramp, soft shading, no outline. He does not speak in first
+person.
+
+Use the stills in `assets/mascot/` for the logo mark too, at any size. There is no
+separate vector wordmark or vector head. A second geometric mark used to exist and was
+deleted for drifting into a different-looking dog. See `BRAND.md`.
 
 The motion clips are **VP9 WebM with alpha**. They composite over any background in a
 browser. Three things to know.
