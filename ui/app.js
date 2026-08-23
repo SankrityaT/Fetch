@@ -108,7 +108,15 @@ async function buildStream() {
   let screenStream
   const wantSys = setup.sys
   try {
-    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: wantSys })
+    // `video: true` left everything to Chromium: 30fps and whatever bitrate it felt
+    // like, which for a Retina screen worked out at about 0.02 bits per pixel.
+    screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        frameRate: { ideal: PREFERRED_FPS, max: PREFERRED_FPS },
+        width: { ideal: 4096 }, height: { ideal: 4096 },   // never scale the display down
+      },
+      audio: wantSys,
+    })
   } catch (e) {
     throw new Error('Screen recording is blocked. Allow Fetch in System Settings → Privacy → Screen Recording.')
   }
@@ -140,9 +148,24 @@ async function buildStream() {
       ctx.createMediaStreamSource(m).connect(dest); any = true
     } catch { toast('Microphone unavailable', 'bad') }
   }
-  const tracks = [screenStream.getVideoTracks()[0]]
+  const vt = screenStream.getVideoTracks()[0]
+  // tells the encoder this is sharp-edged UI, not camera footage
+  try { vt.contentHint = 'text' } catch {}
+  const tracks = [vt]
   if (any) tracks.push(dest.stream.getAudioTracks()[0])
   return new MediaStream(tracks)
+}
+
+// Screen content is mostly static with hard edges, so it wants a far bigger budget
+// than Chromium's default. Scaled from the pixels actually being captured rather
+// than hardcoded, so a small window does not get a firehose and a 6K display does
+// not get starved.
+const PREFERRED_FPS = 60
+function bitrateFor(track) {
+  const s = track.getSettings ? track.getSettings() : {}
+  const w = s.width || 1920, h = s.height || 1080, fps = s.frameRate || 30
+  const bits = Math.round(w * h * fps * 0.09)          // ~0.09 bits per pixel
+  return Math.max(12e6, Math.min(60e6, bits))
 }
 
 function tick() {
@@ -181,7 +204,16 @@ async function startRecording() {
     const chunks = []                       // per-take buffer, never shared between takes
     let mime = 'video/webm;codecs=vp9,opus'
     if (!MediaRecorder.isTypeSupported(mime)) mime = 'video/webm'
-    rec = new MediaRecorder(stream, { mimeType: mime })
+    const vTrack = stream.getVideoTracks()[0]
+    const vbps = bitrateFor(vTrack)
+    rec = new MediaRecorder(stream, {
+      mimeType: mime,
+      videoBitsPerSecond: vbps,
+      audioBitsPerSecond: 192e3,
+    })
+    const got = vTrack.getSettings ? vTrack.getSettings() : {}
+    console.log(`capture ${got.width}x${got.height} @${Math.round(got.frameRate || 0)}fps, ` +
+                `video ${(vbps / 1e6).toFixed(1)} Mbit/s`)
     const owned = rec
     rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data) }
     rec.onstop = async () => {
