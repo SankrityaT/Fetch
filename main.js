@@ -519,6 +519,119 @@ ipcMain.handle('save', async (e, buf) => {
   return file
 })
 
+// ---------- native recorder ----------
+// ScreenCaptureKit in, AVAssetWriter out, via a bundled Swift helper. The Chromium
+// path stays as the fallback: it works everywhere, this needs macOS 13 (15 for the
+// microphone) and does not exist in a plain `npx electron .` checkout until the
+// helper has been built.
+function recorderPath() {
+  for (const dir of [process.resourcesPath || '.', __dirname]) {
+    const p = path.join(dir, 'Recorder')
+    if (fs.existsSync(p)) return p
+  }
+  return null
+}
+
+let nativeRec = null      // { proc, out, started, resolveStop }
+
+function majorOSVersion() {
+  return parseInt(String(require('os').release()).split('.')[0], 10) || 0
+}
+
+ipcMain.handle('native-available', () => ({
+  // Darwin 22 is macOS 13, which is where ScreenCaptureKit became usable for this
+  ok: !!recorderPath() && majorOSVersion() >= 22,
+  mic: majorOSVersion() >= 24,          // Darwin 24 is macOS 15: mic capture in SCK
+}))
+
+ipcMain.handle('native-start', async (e, opts = {}) => {
+  const bin = recorderPath()
+  if (!bin) return { ok: false, error: 'the recorder helper is not in this build' }
+  if (nativeRec) return { ok: false, error: 'already recording' }
+
+  const out = path.join(os.tmpdir(), `fetch-take-${Date.now()}.mov`)
+  const args = ['--out', out, '--fps', String(opts.fps || 60)]
+  if (opts.windowId) args.push('--window', String(opts.windowId))
+  else if (opts.displayId) args.push('--display', String(opts.displayId))
+  if (opts.systemAudio) args.push('--system-audio')
+  if (opts.mic) { args.push('--mic'); if (opts.micDeviceId) args.push('--mic-device', opts.micDeviceId) }
+  if (opts.hevc) args.push('--hevc')
+  if (opts.hideCursor) args.push('--no-cursor')
+
+  const child = require('child_process').spawn(bin, args)
+  const take = { proc: child, out, started: null, resolveStop: null, error: null }
+  nativeRec = take
+
+  let buf = ''
+  child.stdout.on('data', d => {
+    buf += d
+    let i
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i); buf = buf.slice(i + 1)
+      if (!line.trim()) continue
+      let ev; try { ev = JSON.parse(line) } catch { continue }
+      if (ev.event === 'started') take.started = ev
+      if (ev.event === 'error') { take.error = ev.message; console.log('recorder:', ev.message) }
+      if (ev.event === 'stopped' && take.resolveStop) take.resolveStop(ev)
+    }
+  })
+  child.stderr.on('data', d => { if (!app.isPackaged) console.log('recorder stderr:', String(d).trim()) })
+  child.on('close', () => {
+    if (take.resolveStop) take.resolveStop(null)   // died without reporting
+    if (nativeRec === take) nativeRec = null
+  })
+
+  // wait for it to actually be capturing, so the countdown does not lie
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 6000) {
+    if (take.started) return { ok: true, ...take.started }
+    if (take.error) { nativeRec = null; return { ok: false, error: take.error } }
+    if (child.exitCode !== null) { nativeRec = null; return { ok: false, error: 'the recorder exited before it started' } }
+    await new Promise(r => setTimeout(r, 60))
+  }
+  try { child.kill() } catch {}
+  nativeRec = null
+  return { ok: false, error: 'the recorder did not start in time' }
+})
+
+ipcMain.on('native-pause', () => { try { nativeRec && nativeRec.proc.stdin.write('pause\n') } catch {} })
+ipcMain.on('native-resume', () => { try { nativeRec && nativeRec.proc.stdin.write('resume\n') } catch {} })
+
+ipcMain.handle('native-stop', async () => {
+  const take = nativeRec
+  if (!take) return { ok: false, error: 'not recording' }
+  const done = new Promise(res => { take.resolveStop = res })
+  try { take.proc.stdin.write('stop\n') } catch {}
+  const ev = await Promise.race([done, new Promise(r => setTimeout(() => r(null), 20000))])
+  nativeRec = null
+  if (!ev || !fs.existsSync(take.out)) return { ok: false, error: take.error || 'the take was not written' }
+  return { ok: true, tmp: take.out, frames: ev.frames, dropped: ev.dropped }
+})
+
+// Move a finished native take into the save folder, reusing the same naming and
+// sidecar handling the Chromium path already goes through.
+ipcMain.handle('native-commit', async (e, tmp) => {
+  const file = path.join(resolvedSaveDir(), `recording-${Date.now()}.mov`)
+  try {
+    // system audio and the mic arrive as separate tracks; fold them together before
+    // this leaves the temp folder, or everything downstream hears only the first one
+    let source = tmp
+    try { source = await proc.flattenAudio(tmp, 'native-commit') } catch {}
+    fs.copyFileSync(source, file)
+    try { fs.unlinkSync(source) } catch {}
+    if (source !== tmp) { try { fs.unlinkSync(tmp) } catch {} }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
+  clearInterval(cursorTimer); cursorTimer = null
+  if (cursorSamples && cursorSamples.points.length) {
+    try { fs.writeFileSync(proc.sidecarOut(file, '.cursor.json'), JSON.stringify(cursorSamples)) }
+    catch (err) { console.error('cursor track not saved:', err.message) }
+  }
+  cursorSamples = null
+  return { ok: true, file }
+})
+
 // ---------- edit / post-production ----------
 const proc = require('./processor')
 

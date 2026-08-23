@@ -95,7 +95,7 @@ const timeWatcher = (onProgress, total) => l => {
 async function probeMeta(src) {
   let out = ''
   await run(FFMPEG, ['-hide_banner', '-i', src], l => { out += l + '\n' }).catch(() => {})
-  const meta = { duration: 0, width: 0, height: 0, fps: 0, hasAudio: false, vcodec: null, acodec: null }
+  const meta = { duration: 0, width: 0, height: 0, fps: 0, hasAudio: false, vcodec: null, acodec: null, audioTracks: 0 }
   const d = /Duration: (\d+):(\d+):(\d+\.\d+)/.exec(out)
   if (d) meta.duration = +d[1] * 3600 + +d[2] * 60 + +d[3]
   const v = /Stream #\d+:\d+.*?: Video: (\w+).*?, (\d+)x(\d+)/s.exec(out)
@@ -104,6 +104,8 @@ async function probeMeta(src) {
   if (f) meta.fps = +f[1]
   const a = /Stream #\d+:\d+.*?: Audio: (\w+)/.exec(out)
   if (a) { meta.hasAudio = true; meta.acodec = a[1] }
+  // a native take can carry system audio and the mic as two separate tracks
+  meta.audioTracks = (out.match(/Stream #\d+:\d+.*?: Audio: /g) || []).length
   return meta
 }
 
@@ -169,11 +171,33 @@ async function toMp4(srcArg, onProgress, jobId) {
   try {
     let dest = srcArg.replace(/\.(webm|mkv)$/i, '.mp4')
     if (dest === srcArg) dest = outName(srcArg, 'converted', 'mp4')
-    const args = ['-y', '-fflags', '+genpts', '-i', src, ...VIDEO_OUT]
+    // A native take is already H.264, so re-encoding it only loses quality: the
+    // first version of this halved the bitrate of a perfectly good file. Copy the
+    // video stream whenever the codec already matches the container's default.
+    const canCopy = meta.vcodec === 'h264' || meta.vcodec === 'hevc'
+    const video = canCopy ? ['-c:v', 'copy'] : VIDEO_OUT
+    const args = ['-y', '-fflags', '+genpts', '-i', src, ...video]
     args.push(...(meta.hasAudio ? AUDIO_OUT : ['-an']), ...FAST_START, dest)
     await run(FFMPEG, args, timeWatcher(onProgress, meta.duration), jobId)
     return { file: dest, duration: +meta.duration.toFixed(1) }
   } finally { done() }
+}
+
+// A native take carries system audio and the microphone as separate tracks, since
+// that is how ScreenCaptureKit delivers them. Almost everything downstream maps only
+// the first audio stream, so a two-track file silently loses whichever one is not
+// first. Fold them into one track. Video is copied, so this costs no quality.
+async function flattenAudio(srcArg, jobId) {
+  const meta = await probeMeta(srcArg)
+  if (!meta || (meta.audioTracks || 0) < 2) return srcArg
+  const dest = srcArg.replace(/\.[^.]+$/, '') + '.mixed.mov'
+  await run(FFMPEG, ['-y', '-i', srcArg,
+    '-filter_complex', '[0:a:0][0:a:1]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95[a]',
+    '-map', '0:v:0', '-map', '[a]',
+    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', dest], null, jobId)
+  if (!fs.existsSync(dest)) return srcArg
+  try { fs.unlinkSync(srcArg) } catch {}
+  return dest
 }
 
 // ---- convert to any supported container -------------------------------
@@ -1396,6 +1420,6 @@ module.exports = {
   backdropList, filmstrip,
   toMp4, convert, removeSilence, enhanceAudio, trim, transcribe, burnCaptions, toGif,
   thumbnail, waveform, applyEdit, listRecordings, importFile, forgetFile,
-  probeMeta, readCues, writeCues, cancel, formatList, FFMPEG,
+  probeMeta, readCues, writeCues, cancel, formatList, FFMPEG, flattenAudio,
   sidecarOut, sidecarIn, migrateSidecars,
 }
