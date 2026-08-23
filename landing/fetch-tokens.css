@@ -1,0 +1,88 @@
+/* Fetch design tokens. Single source of truth; see BRAND.md. */
+@import url('../assets/fonts.css');
+
+:root {
+  /* ink ramp: warm near-black, never pure #000 */
+  --ink-0:#0A0908; --ink-1:#1A1714; --ink-2:#241F1B; --ink-3:#37302B; --ink-4:#524941;
+  /* Biscuit's coat */
+  --fur-0:#FFD9A0; --fur-1:#F0A93C; --fur-2:#C97F1E;
+  --rec:#FF4438; --good:#4ADE80; --warn:#FBBF24;
+  --text-0:#FBFAF8; --text-1:#BDB5AC; --text-2:#8E857C;
+
+  --font-display:'Bricolage Grotesque','Geist',system-ui,sans-serif;
+  --font-ui:'Geist',-apple-system,system-ui,sans-serif;
+  --font-serif:'Instrument Serif',Georgia,serif;
+  --font-mono:'Geist Mono',ui-monospace,monospace;
+
+  /* type scale: nothing between these steps */
+  --t-11:11px; --t-12:12px; --t-13:13px; --t-15:15px; --t-18:18px; --t-24:24px; --t-32:32px; --t-48:48px;
+
+  /* 8px grid */
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:24px; --s-6:32px; --s-7:48px; --s-8:64px;
+
+  --r-sm:10px; --r-md:14px; --r-lg:20px; --r-pill:999px;
+
+  /* elevation is light, not shadow */
+  --edge:1px solid var(--ink-3);
+  --sheen:inset 0 1px 0 rgba(255,255,255,.04);
+  --shadow-modal:0 24px 70px -12px rgba(0,0,0,.75), 0 0 0 1px var(--ink-3);
+
+  --ease-in:cubic-bezier(.2,.8,.2,1);
+  --ease-out:cubic-bezier(.4,0,1,1);
+  --dur-1:120ms; --dur-2:200ms; --dur-3:320ms;
+
+  --titlebar:52px;
+}
+
+*,*::before,*::after { box-sizing:border-box; margin:0; padding:0; }
+
+/* the UA rule for [hidden] is weaker than any class that sets display, so any
+   element with display:grid or flex ignored it. Make hidden actually hidden. */
+[hidden] { display:none !important; }
+
+/* form elements opt out of inheritance by default: opt them back in */
+button, input, select, textarea { font:inherit; color:inherit; background:none; border:none; }
+button { cursor:pointer; }
+
+html,body { height:100%; }
+body {
+  background:var(--ink-0);
+  color:var(--text-0);
+  font:400 var(--t-13)/1.5 var(--font-ui);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  user-select:none;
+  overflow:hidden;
+}
+
+/* headline pairing: heavy grotesk with a single serif-italic accent */
+h1,h2,h3 { font-family:var(--font-display); font-weight:800; letter-spacing:-.03em; line-height:1.1; }
+h1 { font-size:var(--t-32); }
+h2 { font-size:var(--t-24); }
+h3 { font-size:var(--t-18); }
+em.accent { font-family:var(--font-serif); font-style:italic; font-weight:400; letter-spacing:-.01em; }
+.mono { font-family:var(--font-mono); font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+.dim { color:var(--text-1); }
+.dimmer { color:var(--text-2); }
+.micro { font-size:var(--t-11); letter-spacing:.01em; }
+.caps { font-size:var(--t-11); font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--text-2); }
+
+:focus { outline:none; }
+:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; border-radius:var(--r-sm); }
+
+::-webkit-scrollbar { width:10px; height:10px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--ink-3); border-radius:var(--r-pill); border:3px solid var(--ink-0); }
+::-webkit-scrollbar-thumb:hover { background:var(--ink-4); }
+
+.icon, .icon-sm, .icon-lg, .icon-xl {
+  flex:none; fill:currentColor; stroke:none;   /* size classes were missing fill → UA black */
+  width:18px; height:18px;
+}
+.icon-sm { width:15px; height:15px; }
+.icon-lg { width:24px; height:24px; }
+.icon-xl { width:34px; height:34px; }
+
+@media (prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation-duration:.01ms !important; transition-duration:.01ms !important; }
+}
