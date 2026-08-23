@@ -50,10 +50,10 @@ export function Hero() {
 
             {/* .btn, the neutral sibling */}
             <a
-              href="#how"
+              href="#editor"
               className="inline-flex h-[46px] items-center gap-2 rounded-pill border border-ink-3 bg-ink-2 px-5 text-15 font-semibold tracking-[-0.01em] text-text-0 shadow-[inset_0_1px_0_rgb(255_255_255/0.04)] transition-[background-color,border-color,transform] duration-[120ms] ease-entrance hover:border-ink-4 hover:bg-ink-3 active:translate-y-px"
             >
-              How it works
+              See the editor
               <Icon name="arrow-right" className="size-4 text-text-1" />
             </a>
           </div>

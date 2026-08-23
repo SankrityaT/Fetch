@@ -80,7 +80,7 @@ export function SiteHeader() {
 
           <nav className="hidden items-center sm:flex">
             {[
-              ["How it works", "#how"],
+              ["The editor", "#editor"],
               ["Privacy", "#privacy"],
             ].map(([label, href]) => (
               <a
