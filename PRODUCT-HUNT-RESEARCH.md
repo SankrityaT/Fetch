@@ -88,19 +88,16 @@ fix. Everything above is a day of work. This is weeks.
 ## 5. The six open questions, answered
 
 **1. Pricing: free, one-time, or freemium?**
-One-time. The comparable set is unambiguous: Screen Studio $89 to $229 one-time,
-CleanShot X ~$29 one-time, both healthy businesses. Loom's subscription is the thing
-you are positioning against, so a subscription undercuts the entire pitch. Cap went
-open source plus paid cloud, which only works if you want to run a cloud, and the whole
-point of Fetch is that there is no server. Suggested: one price, one-time, somewhere
-between CleanShot and Screen Studio, with a free tier limited by export length rather
-than by features, so the editor sells itself.
+**Decided: free.** Which is a bigger decision than it looks, because it removes the
+only real argument against open sourcing, and open sourcing is the distribution engine.
+See section 7. Free also sharpens the position: not "cheaper than Loom" but "no
+account, no server, no price". Nothing to compare on.
 
 **2. Public repo or closed source?**
-Open it, but not for the reason you think. Cap's 18k stars were a distribution asset
-before they were a philosophy. A public repo gives you something to build an audience
-*with* during the four to six weeks of prep. It also makes every claim in the privacy
-section independently checkable, which is the strongest thing Fetch has.
+**Open it.** With the product free, there is no longer a case against it, and the case
+for it is the entire audience plan in section 7. It also makes every claim in the
+privacy section independently checkable, which is the strongest asset Fetch has and is
+worth nothing while the repo is private.
 Caveats already noted: no LICENSE file exists, and the bundled ffmpeg is a GPL build,
 so settle licensing before flipping the switch, not after.
 
@@ -140,19 +137,73 @@ has no server at all*. Then pick non-AI topics on the submission, so you face th
 to 700 bar rather than the 800 to 1,200 one, while still getting the AI story in the
 copy.
 
-## 6. What to actually do
+## 6. Where the audience actually comes from
 
-**Before anything else:** notarise. It is the only item here that is both fatal and
-entirely in your hands.
+The assumption worth correcting: Product Hunt is not where an audience gets built. It
+is where one gets spent. The ranking is decided by velocity in the first six hours,
+and that velocity comes from people who already know you. Launch without them and you
+place, quietly, and the day is over.
 
-**Then, in order:** build and ship a DMG, put the site up with a real download, repoint
-the update feed at the site host, decide the price, sort the LICENSE and the ffmpeg
-question, make the repo public.
+**Cap is the proof, and the sequence is the opposite of what it looks like.**
 
-**Then spend four to six weeks on the only thing that moves the number:** build in
-public, get the repo in front of people, collect emails on the site, and be somewhere
-Mac developers already are. Launch when you have a few hundred people who would
-actually show up, not before.
+| when | what | result |
+|---|---|---|
+| April 2024 | **Show HN** | **#1 on Hacker News**, thousands of users, trending on GitHub, **5,000+ stars** |
+| November 2024 | Product Hunt | 739 upvotes |
+
+**Seven months apart.** Cap built the audience on Hacker News and spent it on Product
+Hunt. By November it was cashing in a following that already existed. Fetch is
+currently at the April step, not the November one.
+
+### Why Hacker News is the right room for this specific product
+
+Hacker News favours open source, self-hosted, local-first, developer tools, and things
+you can try immediately. Fetch is all five. The measured returns:
+
+- A front-page Show HN brings **5,000 to 30,000 visitors in 24 hours**.
+- Open-source projects convert at roughly **1.4 GitHub stars per HN upvote** within 48
+  hours. A 300-point post is around 400 stars, which is a real audience.
+- Post Tuesday, Wednesday or Thursday, 8 to 11am ET.
+
+And Fetch has more genuinely interesting engineering than most Show HN posts, which is
+the currency there. Not the feature list, the decisions:
+
+- **There is no server.** One outbound URL in the entire codebase, an update check.
+  Nothing else. That claim is worth nothing while the repo is private and a lot the
+  moment anyone can grep it.
+- **On-device transcription.** Parakeet on the Neural Engine, roughly 116x realtime.
+- **The camera bubble is native Swift because Chromium cannot open the camera on some
+  Macs**, and it is excluded from its own capture with `NSWindow.sharingType = .none`.
+- **Window enumeration uses ScreenCaptureKit** because Electron's `desktopCapturer`
+  silently misses windows.
+- ffmpeg with libass, VP9 alpha, and the surrounding pile of sharp edges.
+
+One warning. Hacker News is harsher than Product Hunt and it will find the Electron
+part. The honest answer is already in the codebase and it is a good one: Fetch drops to
+native Swift precisely where Chromium could not do the job. Lead with that rather than
+waiting to be asked.
+
+### The other rooms, in order of how much they are worth
+
+1. **Show HN.** The main event. Everything above.
+2. **r/macapps.** Free Mac apps do well there. Check the current self-promotion rules
+   before posting rather than trusting this file, they change.
+3. **Write the engineering up.** The `sharingType` trick and the ScreenCaptureKit
+   discovery are each a post, and each is a second bite at Hacker News that is not a
+   launch post.
+4. **Product Hunt, four to eight weeks later**, converting whatever the above built.
+
+## 7. What to actually do, in order
+
+1. **Notarise.** Fatal, and only you can do it.
+2. Build and ship a DMG. Put the site up with a real download on it.
+3. Repoint the update feed at the site host so it stops depending on the repo.
+4. Add a LICENSE and settle the bundled GPL ffmpeg question.
+5. **Make the repo public.**
+6. **Show HN.** This is the audience event.
+7. r/macapps, then the engineering write-ups.
+8. **Product Hunt**, four to eight weeks after step 6, when there are a few hundred
+   people who would actually turn up.
 
 The product is ready enough to win. The launch is not, and no amount of listing copy
 substitutes for that.
@@ -170,3 +221,6 @@ substitutes for that.
 - AI category saturation and thresholds: https://www.tooljunction.io/guides/product-hunt-launch-checklist-2026
 - Hunter vs maker in 2026: https://poindeo.com/blog/product-hunt-hunter-vs-maker
 - Launch day guidance: https://getlaunchlist.com/blog/how-to-launch-on-product-hunt-2026
+- Cap's Show HN and early traction: https://cap.so/about
+- Show HN traffic and stars-per-upvote: https://business.daily.dev/resources/hacker-news-marketing-developer-tools-show-hn-launch-day-sustained-coverage/
+- Hacker News launch guidance: https://www.markepear.dev/blog/dev-tool-hacker-news-launch
