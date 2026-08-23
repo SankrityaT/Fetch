@@ -35,7 +35,9 @@ absurd. It turned into a full product.
   10 designed backdrop images have not been generated yet, so do not promise artwork
 - Trim, crop, a cut tool, text layers, a second audio track that can be mixed or replace
 - Export to MP4, WebM, GIF and audio-only
-- Folders, rename, in-app player, autosave and crash recovery, onboarding, auto-update
+- Folders, rename, in-app player, autosave and crash recovery, onboarding
+- Auto-update: the client is built, but the feed it reads does not exist yet. See
+  section 5. Do not put "automatic updates" in the listing until it does
 
 **Nothing is uploaded. There is no account. There is no server.** That is the privacy
 angle and it is literally true: there is no backend at all.
@@ -108,13 +110,31 @@ These are real and specific, which is what makes launch copy credible:
 - Developer ID cert verified present and valid: `notAfter=Jul 27 02:10:36 2031 GMT`
 - Distribution: no website yet. The landing page is being built from `landing/`,
   which is now self-contained: drop the folder on a host and it renders
+- Auto-update is **broken, and it is a launch-day problem.** `ui/updater.js` reads
+  `https://raw.githubusercontent.com/SankrityaT/fetch/main/latest.json`. That returns
+  404 today for two stacked reasons: the repo is private, so `raw.githubusercontent.com`
+  serves nothing, and `latest.json` does not exist in the repo anyway. Verified both,
+  and both spellings of the repo name. The client handles the 404 without crashing, it
+  just shows "Could not check for updates" to every user, forever. The consequence is
+  that a day-one bug cannot be shipped to day-two users. Fix is either publish the repo
+  and commit `latest.json`, or repoint `MANIFEST_URL` at the landing page host, which is
+  the better answer since it decouples updates from the repo decision entirely
+- No `LICENSE` file, and no third-party attribution shipped with the app. The bundled
+  ffmpeg is a GPL build (libass pulls it into GPL, not LGPL). Distributing that inside a
+  paid closed-source app carries obligations: ship ffmpeg's licence text and a written
+  offer for its source. Worth getting a real answer on before charging money, and worth
+  settling before anyone asks in the PH comments
 - `LAUNCH-SHOTLIST.md` lists the screenshots and clips worth capturing for the gallery
 
 ## 6. Open questions for the launch chat
 
 1. Pricing: free, one-time, or freemium? What does the comparable set suggest?
 2. Public repo or closed source? Open source is a strong PH signal but this is a
-   product they may want to charge for
+   product they may want to charge for. Note two things that were not known when this
+   list was written: the history is 7 commits from 2026-08-19 with no secrets in it
+   (scanned), so "exposing the history" is not the risk it sounds like, and the
+   auto-updater currently depends on the repo being public, which should be decoupled
+   rather than used as an argument either way
 3. Hunter: self-hunt or find one? Current thinking is unresolved
 4. Launch day and time (PH resets at 12:01am PT), and which day of the week
 5. Gallery order: what is the first frame someone sees?
