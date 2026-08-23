@@ -112,7 +112,7 @@ Use these as-is. Every one describes something the app actually does.
 - "Record your screen, your camera and your voice. Edit it. Ship it. No subscription."
 - "Move the camera bubble after you record." (the camera is captured to its own file,
   not burned into the screen, so it can be repositioned and resized in the editor)
-- "Transcribed on your Mac, in seconds. Nothing is uploaded."
+- "Transcribed on your Mac, in seconds. The audio never leaves the machine."
 - "It zooms where you click, on its own."
 - "Your recordings never leave your machine."
 

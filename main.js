@@ -11,6 +11,7 @@ app.setPath('userData', path.join(app.getPath('appData'), 'Fetch'))
 let control, cam
 
 const updater = require('./ui/updater')
+const telemetry = require('./ui/telemetry')
 
 // ---------- preferences ----------
 // Persisted to <userData>/prefs.json. Loaded lazily and cached in memory;
@@ -27,6 +28,7 @@ const DEFAULT_PREFS = {
   keepOriginal: true,
   quickRecord: false,
   autoUpdate: true,        // let Fetch check and download updates in the background
+  telemetry: true,         // anonymous install count: a random id, the version, the OS
 }
 let prefsCache = null
 function loadPrefs() {
@@ -53,6 +55,7 @@ ipcMain.on('prefs-get-sync', e => { e.returnValue = loadPrefs() })
 ipcMain.handle('prefs-set', (e, patch) => {
   const next = writePrefs(patch || {})
   if (patch && 'autoUpdate' in patch) updater.setAutoUpdate(next.autoUpdate)
+  if (patch && 'telemetry' in patch && !next.telemetry) telemetry.stop()
   return next
 })
 
@@ -172,6 +175,10 @@ function createWindows() {
 }
 
 app.whenReady().then(() => {
+  // Anonymous install count. Waits 30s so it never competes with launch, and does
+  // nothing at all unless a metrics endpoint was configured at build time.
+  telemetry.start(loadPrefs)
+
   // Auto-answer getDisplayMedia with the user's chosen source (or the primary screen)
   let chosenSourceId = null
   let chosenWindow = null          // { id, name } from the ScreenCaptureKit list

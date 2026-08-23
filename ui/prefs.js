@@ -19,6 +19,7 @@
     openEditorAfter: false,
     keepOriginal: true,
     quickRecord: false,
+    telemetry: true,
   }
 
   window.prefs = Object.assign({}, DEFAULT_PREFS)

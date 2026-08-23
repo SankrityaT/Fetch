@@ -156,6 +156,14 @@
             </div>
           </div>
         </div>
+
+        <div class="card">
+          <div class="card-head"><h3>Privacy</h3></div>
+          ${row('rowTelemetry', 'paw-print', 'Count this install',
+            'Sends a random id, the app version and your macOS version, once a day. ' +
+            'Never your recordings, filenames or transcripts. Turn it off and Fetch says nothing.',
+            'telemetryToggle', p.telemetry !== false)}
+        </div>
       </div>`
 
     const bindToggle = (checkboxId, key, rowId) => {
@@ -175,6 +183,7 @@
     bindToggle('defOpenEditor', 'openEditorAfter', 'rowEditor')
     bindToggle('defKeepOriginal', 'keepOriginal', 'rowKeep')
     bindToggle('updateAutoToggle', 'autoUpdate', 'rowAutoUpdate')
+    bindToggle('telemetryToggle', 'telemetry', 'rowTelemetry')
 
     wireUpdater()
 

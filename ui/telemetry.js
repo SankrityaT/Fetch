@@ -1,0 +1,94 @@
+// Anonymous install counting. Main-process module, required from main.js.
+//
+// What it sends: a random id generated on this machine, the app version, and the
+// macOS version. That is the whole payload. It never sees a filename, a recording,
+// a transcript, or anything a person typed, and there is no account to attach it to.
+// The id is random bytes, not derived from the hardware, so it identifies an install
+// and nothing else.
+//
+// It is off the hot path entirely: the first ping waits until the app has settled,
+// every failure is swallowed, and nothing here can block the UI or a recording.
+
+const fs = require('fs')
+const path = require('path')
+const os = require('os')
+const https = require('https')
+const crypto = require('crypto')
+
+let app
+try { ({ app } = require('electron')) } catch {}
+
+// Set FETCH_METRICS_URL at build time to point this somewhere. With no endpoint
+// configured the module does nothing at all, which is the right default for a fork.
+const ENDPOINT = process.env.FETCH_METRICS_URL || ''
+const FIRST_PING_MS = 30 * 1000          // let launch finish before touching the network
+const EVERY_MS = 24 * 60 * 60 * 1000
+const TIMEOUT_MS = 5000
+
+let timer = null
+let getPrefs = () => ({})
+
+function idPath() {
+  const dir = app ? app.getPath('userData') : path.join(os.homedir(), '.fetch')
+  try { fs.mkdirSync(dir, { recursive: true }) } catch {}
+  return path.join(dir, 'install.json')
+}
+
+// One random id per install, created once and reused. Deleting it just makes this
+// install look new, which is a fine thing for a person to be able to do.
+function installId() {
+  const p = idPath()
+  try {
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'))
+    if (j && typeof j.id === 'string' && j.id.length >= 16) return j.id
+  } catch {}
+  const id = crypto.randomBytes(16).toString('hex')
+  try { fs.writeFileSync(p, JSON.stringify({ id, since: new Date().toISOString().slice(0, 10) })) } catch {}
+  return id
+}
+
+function send(event) {
+  if (!ENDPOINT) return
+  let body
+  try {
+    body = JSON.stringify({
+      id: installId(),
+      event,
+      v: app ? app.getVersion() : '0',
+      os: os.release(),
+      arch: process.arch,
+    })
+  } catch { return }
+
+  try {
+    const u = new URL(ENDPOINT)
+    const req = https.request({
+      hostname: u.hostname,
+      port: u.port || 443,
+      path: u.pathname + u.search,
+      method: 'POST',
+      timeout: TIMEOUT_MS,
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+    }, res => res.resume())          // drain and forget, the response is of no interest
+    req.on('error', () => {})        // offline, blocked, endpoint down: all fine
+    req.on('timeout', () => req.destroy())
+    req.write(body)
+    req.end()
+  } catch {}
+}
+
+function tick() {
+  const p = getPrefs() || {}
+  if (p.telemetry === false) return   // opted out, stay quiet
+  send('active')
+}
+
+function start(readPrefs) {
+  if (typeof readPrefs === 'function') getPrefs = readPrefs
+  if (!ENDPOINT || timer) return
+  setTimeout(() => { tick(); timer = setInterval(tick, EVERY_MS) }, FIRST_PING_MS)
+}
+
+function stop() { clearInterval(timer); timer = null }
+
+module.exports = { start, stop, installId, enabled: () => !!ENDPOINT }
