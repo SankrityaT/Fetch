@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  html, body { margin:0; height:100%; background:transparent; overflow:hidden;
+               display:flex; align-items:center; justify-content:center; }
+  #wrap {
+    position:relative;
+    width:calc(100vw - 14px); height:calc(100vw - 14px); border-radius:50%; overflow:hidden;
+    -webkit-app-region: drag;   /* drag the circle anywhere on screen */
+    box-shadow: 0 0 0 4px rgba(255,255,255,.9), 0 8px 30px rgba(0,0,0,.45);
+    background:#111;
+  }
+  canvas { width:100%; height:100%; display:block; }
+  video { display:none; }
+  #err { position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+         color:#fff; font:10px/1.5 -apple-system,sans-serif; padding:14px; text-align:center; }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="c"></canvas>
+    <video id="v" autoplay muted playsinline></video>
+    <div id="err"></div>
+  </div>
+<script>
+const { ipcRenderer } = require('electron')
+const v = document.getElementById('v')
+const c = document.getElementById('c')
+const ctx = c.getContext('2d')
+let zoom = 1, frames = 0, drawing = false
+
+ipcRenderer.on('zoom', (e, z) => { zoom = z })
+
+function sizeCanvas() {
+  const r = c.getBoundingClientRect()
+  const dpr = window.devicePixelRatio || 2
+  c.width = Math.max(1, Math.round(r.width * dpr))
+  c.height = Math.max(1, Math.round(r.height * dpr))
+}
+window.addEventListener('resize', sizeCanvas)
+
+function draw() {
+  const vw = v.videoWidth, vh = v.videoHeight
+  if (vw && vh) {
+    frames++
+    const W = c.width, H = c.height
+    // cover-crop the camera frame into the square canvas, then apply zoom
+    const s = Math.max(W / vw, H / vh) * zoom
+    const dw = vw * s, dh = vh * s
+    ctx.save()
+    ctx.translate(W, 0); ctx.scale(-1, 1)          // mirror
+    ctx.drawImage(v, (W - dw) / 2, (H - dh) / 2, dw, dh)
+    ctx.restore()
+  }
+  requestAnimationFrame(draw)
+}
+
+const errEl = document.getElementById('err')
+function msg(t) { errEl.innerHTML = t; errEl.style.display = t ? 'flex' : 'none' }
+
+async function startCam() {
+  try {
+    // each watchdog reload bumps ?try= so we cycle through the available cameras
+    const attempt = parseInt(new URLSearchParams(location.search).get('try') || '0', 10)
+    const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput')
+    const pick = cams.length ? cams[attempt % cams.length] : null
+    console.log('attempt ' + attempt + ' → ' + (pick ? (pick.label || pick.deviceId.slice(0, 8)) : 'default') +
+                '  (' + cams.length + ' cameras seen)')
+    const s = await Promise.race([
+      navigator.mediaDevices.getUserMedia({
+        video: pick ? { deviceId: { exact: pick.deviceId } } : { width: 1280, height: 720 }
+      }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('camera busy')), 6000))
+    ])
+    v.srcObject = s
+    await v.play().catch(e => console.log('play() rejected: ' + e.name))
+    msg('')
+    ipcRenderer.send('cam-ok')
+    console.log('camera OK: ' + s.getVideoTracks()[0].label)
+    sizeCanvas()
+    if (!drawing) { drawing = true; requestAnimationFrame(draw) }
+    setTimeout(() => console.log('diag: videoWidth=' + v.videoWidth + ' readyState=' + v.readyState +
+      ' paused=' + v.paused + ' framesDrawn=' + frames + ' trackState=' + s.getVideoTracks()[0].readyState +
+      ' muted=' + s.getVideoTracks()[0].muted), 3000)
+  } catch (e) {
+    console.log('getUserMedia failed: ' + e.name + ': ' + e.message)
+    msg('camera unavailable<br>(' + e.message + ')<br><br>turn OFF Presenter Overlay in the<br>screen-share menu, or quit other<br>apps using the camera. Retrying...')
+    setTimeout(startCam, 4000)
+  }
+}
+startCam()
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+/* Bundled locally so the app renders identically with no network. */
+@font-face{font-family:'Geist';font-style:normal;font-weight:400;font-display:block;src:url('./fonts/Geist-400.woff2') format('woff2');}
+@font-face{font-family:'Geist';font-style:normal;font-weight:500;font-display:block;src:url('./fonts/Geist-500.woff2') format('woff2');}
+@font-face{font-family:'Geist';font-style:normal;font-weight:600;font-display:block;src:url('./fonts/Geist-600.woff2') format('woff2');}
+@font-face{font-family:'Geist';font-style:normal;font-weight:700;font-display:block;src:url('./fonts/Geist-700.woff2') format('woff2');}
+@font-face{font-family:'Bricolage Grotesque';font-style:normal;font-weight:600;font-display:block;src:url('./fonts/BricolageGrotesque-600.woff2') format('woff2');}
+@font-face{font-family:'Bricolage Grotesque';font-style:normal;font-weight:800;font-display:block;src:url('./fonts/BricolageGrotesque-800.woff2') format('woff2');}
+@font-face{font-family:'Instrument Serif';font-style:italic;font-weight:400;font-display:block;src:url('./fonts/InstrumentSerif-400-italic.woff2') format('woff2');}
+@font-face{font-family:'Instrument Serif';font-style:normal;font-weight:400;font-display:block;src:url('./fonts/InstrumentSerif-400.woff2') format('woff2');}
+@font-face{font-family:'Geist Mono';font-style:normal;font-weight:400;font-display:block;src:url('./fonts/GeistMono-400.woff2') format('woff2');}
+@font-face{font-family:'Geist Mono';font-style:normal;font-weight:500;font-display:block;src:url('./fonts/GeistMono-500.woff2') format('woff2');}

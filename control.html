@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fetch</title>
+<link rel="stylesheet" href="./ui/tokens.css">
+<link rel="stylesheet" href="./ui/components.css">
+<link rel="stylesheet" href="./ui/dropdown.css">
+<link rel="stylesheet" href="./ui/app.css">
+<link rel="stylesheet" href="./ui/editor.css">
+<link rel="stylesheet" href="./ui/settings.css">
+</head>
+<body>
+
+<!-- draggable titlebar: traffic lights live at 18px, so content starts at 92 -->
+<header id="titlebar">
+  <div class="tb-brand">
+    <img class="tb-mark" src="./assets/mascot/idle.png" alt="">
+    <span class="tb-name">Fetch</span>
+  </div>
+
+  <nav class="seg" id="nav" role="tablist">
+    <button role="tab" data-view="record" aria-selected="true">
+      <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-record-fill"/></svg> Record</button>
+    <button role="tab" data-view="library" aria-selected="false">
+      <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-film-strip"/></svg> Library</button>
+    <button role="tab" data-view="editor" aria-selected="false" disabled>
+      <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-scissors"/></svg> Edit</button>
+  </nav>
+
+  <div class="tb-right">
+    <button class="btn btn-ghost btn-icon btn-sm" id="importBtn" data-tip="Import a video">
+      <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-upload-simple"/></svg></button>
+    <button class="btn btn-ghost btn-icon btn-sm" id="folderBtn" data-tip="Open Desktop">
+      <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-folder-open"/></svg></button>
+    <button class="btn btn-ghost btn-icon btn-sm" id="gearBtn" data-tip="Settings">
+      <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-gear"/></svg></button>
+  </div>
+</header>
+
+<main id="stage">
+
+  <!-- ═══════════════ RECORD (hero) ═══════════════ -->
+  <section class="view" data-view="record">
+    <div class="hero">
+      <img class="biscuit hero-dog" id="biscuit" src="./assets/mascot/idle.png" alt="">
+
+      <h1 class="hero-title">What are we recording <em class="accent">today</em>?</h1>
+      <p class="hero-sub" id="biscuitLine">Screen, camera and mic. Set it up once and go.</p>
+
+      <div class="hero-cta">
+        <button class="btn btn-lg btn-primary" id="setupBtn">
+          <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-sliders-horizontal"/></svg>
+          Set up recording
+        </button>
+      </div>
+
+      <!-- shown once a setup exists -->
+      <div class="hero-ready" id="heroReady" hidden>
+        <div class="ready-card" id="readyCard">
+          <div class="ready-shot"><img id="sourceThumb" alt=""><div class="ready-empty">
+            <svg class="icon-xl"><use href="./assets/icons/sprite.svg#i-monitor"/></svg></div></div>
+          <div class="ready-info">
+            <span class="caps">Recording</span>
+            <span class="ready-name" id="sourceName">Entire screen</span>
+            <div class="ready-chips" id="readyChips"></div>
+          </div>
+          <button class="btn btn-sm btn-ghost" id="editSetup">Change</button>
+        </div>
+        <button class="btn btn-record" id="start"><span class="dot"></span> Start recording</button>
+        <p class="micro dimmer">⌘⇧R to start or stop from anywhere</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ LIBRARY ═══════════════ -->
+  <section class="view" data-view="library" hidden>
+    <div class="lib-head">
+      <h2>Library</h2>
+      <span class="chip chip-static" id="libCount">0 clips</span>
+      <div style="flex:1"></div>
+      <button class="btn btn-sm" id="libImport">
+        <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-upload-simple"/></svg> Import</button>
+    </div>
+    <div id="libGrid" class="lib-grid"></div>
+  </section>
+
+  <!-- ═══════════════ EDITOR ═══════════════ -->
+  <section class="view" data-view="editor" hidden>
+    <div id="editorMount" class="empty">
+      <svg class="biscuit biscuit-lg"><use href="./assets/biscuit.svg#biscuit-idle"/></svg>
+      <p>Pick a clip in the Library to start editing.</p>
+    </div>
+  </section>
+
+  <!-- ═══════════════ SETTINGS ═══════════════ -->
+  <section class="view" data-view="settings" hidden>
+    <div id="settingsMount"></div>
+  </section>
+</main>
+
+<!-- ═══════════════ COUNTDOWN ═══════════════ -->
+<div id="countdown" hidden><span id="countNum">3</span></div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="./ui/prefs.js"></script>
+<script src="./ui/dropdown.js"></script>
+<script src="./ui/setup.js"></script>
+<script src="./ui/app.js"></script>
+<script src="./ui/player.js"></script>
+<script src="./ui/editor.js"></script>
+<script src="./ui/onboarding.js"></script>
+<script src="./ui/autosave.js"></script>
+<script src="./ui/toast-guard.js"></script>
+<script src="./ui/idle.js"></script>
+<script src="./ui/settings.js"></script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+/* Fetch first-run onboarding. Injected by ui/onboarding.js, not linked from
+   control.html. Reuses tokens.css variables and components.css primitives
+   (.btn, .card, .opt, .switch, .seg, .chip, .scrim, .modal, .caps) and adds
+   only the layout pieces those files do not already provide. Mirrors the
+   structural shape of ui/setup.js (horizontal track, step indicator, footer)
+   without depending on ui/app.css, which other agents are still editing. */
+
+.ob-modal { width:min(760px,calc(100vw - 64px)); }
+
+/* three real grid tracks, not flex + absolute positioning: back and skip get
+   their own columns so the centred middle column can never be overlapped by
+   either one, at any width down to the app's minWidth. */
+.ob-chrome { display:grid; grid-template-columns:auto 1fr auto; align-items:center; column-gap:var(--s-3); }
+.ob-back { grid-column:1; justify-self:start; }
+.ob-skip { grid-column:3; justify-self:end; white-space:nowrap; }
+
+.ob-steps-wrap { grid-column:2; justify-self:center; position:relative; padding-top:38px; }
+.ob-steps { display:flex; align-items:center; gap:var(--s-2); }
+.ob-step {
+  display:flex; align-items:center; gap:7px;
+  font:600 var(--t-11)/1 var(--font-ui); letter-spacing:.01em; color:var(--text-2);
+}
+.ob-step-ico {
+  width:26px; height:26px; border-radius:50%; flex:none; display:grid; place-items:center;
+  background:var(--ink-2); color:var(--text-2); border:var(--edge);
+  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in), border-color var(--dur-1) var(--ease-in);
+}
+.ob-step[data-state="active"] { color:var(--text-0); }
+.ob-step[data-state="active"] .ob-step-ico { background:var(--fur-1); border-color:var(--fur-1); color:#231703; }
+.ob-step[data-state="done"] { color:var(--text-1); }
+.ob-step[data-state="done"] .ob-step-ico { background:rgba(240,169,60,.14); border-color:rgba(240,169,60,.45); color:var(--fur-1); }
+.ob-steps-line { width:18px; height:1px; background:var(--ink-3); flex:none; }
+.ob-steps-line[data-done="true"] { background:var(--fur-1); }
+
+/* Biscuit stands in for the progress bar: sitting on the active step, and
+   hopping to the next one when it changes (see updateRunner in onboarding.js) */
+.ob-runner-slot {
+  position:absolute; left:0; top:0;
+  width:36px; height:36px; pointer-events:none; z-index:2;
+}
+.ob-runner { display:block; width:100%; height:100%; object-fit:contain; transition:none; }
+.ob-runner.ob-flip { transform:scaleX(-1); }
+.ob-runner.ob-settle { animation:obSettle 220ms var(--ease-in); }
+@keyframes obSettle { 30% { transform:translateY(-3px) } 100% { transform:translateY(0) } }
+
+.ob-view { overflow:hidden; }
+.ob-track { display:flex; width:400%; transition:transform var(--dur-3) var(--ease-in); }
+.ob-pane {
+  width:25%; flex:none; box-sizing:border-box;
+  padding:var(--s-6) var(--s-6) var(--s-5); display:flex; flex-direction:column; gap:var(--s-4);
+  max-height:70vh; overflow-y:auto;
+}
+.ob-pane[aria-hidden="true"] { pointer-events:none; }
+
+.ob-pane-center { align-items:center; text-align:center; padding-top:var(--s-7); padding-bottom:var(--s-7); }
+.ob-pane-center h1 { max-width:26ch; }
+.ob-pane-center .ob-cta { align-self:center; }
+.ob-lede { color:var(--text-1); font-size:var(--t-13); max-width:40ch; }
+
+.ob-head { display:flex; align-items:center; gap:var(--s-4); }
+.ob-head img.biscuit { width:52px; height:52px; flex:none; }
+.ob-head h3 { font-size:var(--t-18); }
+.ob-head p { color:var(--text-1); font-size:var(--t-12); max-width:44ch; margin-top:2px; }
+
+.ob-perm-card { display:flex; flex-direction:column; }
+.ob-perm-row { cursor:default; align-items:flex-start; }
+.ob-req {
+  display:inline-block; margin-left:8px; padding:1px 7px; border-radius:var(--r-pill);
+  font-size:var(--t-11); font-weight:600; color:var(--fur-1); background:rgba(240,169,60,.14);
+  vertical-align:1px;
+}
+.ob-perm-actions { display:flex; align-items:center; gap:var(--s-3); flex:none; }
+.ob-perm-actions .btn { white-space:nowrap; }
+.ob-cam-note { padding:0 var(--s-2); line-height:1.5; }
+
+.ob-pill { min-width:78px; justify-content:center; cursor:default; }
+.ob-pill[data-state="granted"] { background:rgba(74,222,128,.14); border-color:rgba(74,222,128,.4); color:var(--good); }
+.ob-pill[data-state="denied"] { background:rgba(255,68,56,.12); border-color:rgba(255,68,56,.4); color:#FFB4AD; }
+
+.ob-perm-note { text-align:center; }
+
+.ob-cta { margin-top:var(--s-2); }
+
+/* exit: same idea as the pop-in, run in reverse with the exit easing curve */
+.ob-scrim.ob-exit { animation:obFadeOut var(--dur-2) var(--ease-out) forwards; }
+.ob-scrim.ob-exit .ob-modal { animation:obPopOut var(--dur-2) var(--ease-out) forwards; }
+@keyframes obFadeOut { to { opacity:0 } }
+@keyframes obPopOut { to { opacity:0; transform:translateY(6px) scale(.99) } }

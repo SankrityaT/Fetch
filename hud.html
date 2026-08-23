@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="./ui/tokens.css">
+<link rel="stylesheet" href="./ui/components.css">
+<style>
+  /* Named .hud, not .bar: components.css .bar is the 4px progress track, and
+     inheriting its height plus overflow:hidden collapsed the pill and clipped the icons. */
+  html,body { background:transparent; height:100%; overflow:hidden; }
+  body { display:grid; place-items:center; padding:11px; }
+
+  .hud { display:flex; align-items:center; gap:10px;
+    height:52px; padding:0 9px 0 18px; border-radius:var(--r-pill);
+    background:rgba(22,19,17,.94); backdrop-filter:blur(26px) saturate(1.4);
+    border:1px solid rgba(255,255,255,.10);
+    box-shadow:0 5px 18px rgba(0,0,0,.30), inset 0 1px 0 rgba(255,255,255,.07);
+    -webkit-app-region:drag; }
+  .hud button { -webkit-app-region:no-drag; }
+
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--rec); flex:none;
+    box-shadow:0 0 0 4px rgba(255,68,56,.16);
+    animation:pulse 1.3s infinite; }
+  body.paused .dot { animation:none; background:var(--warn); box-shadow:0 0 0 4px rgba(251,191,36,.16); }
+
+  .t { font-family:var(--font-mono); font-size:15px; font-weight:500; min-width:52px;
+    color:var(--text-0); font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+
+  .sep { width:1px; height:22px; background:rgba(255,255,255,.12); flex:none; }
+
+  .rnd { width:36px; height:36px; border-radius:50%; display:grid; place-items:center;
+    background:rgba(255,255,255,.08); color:var(--text-0); border:0; flex:none;
+    cursor:pointer; transition:background var(--dur-1) var(--ease-in),
+                              transform var(--dur-1) var(--ease-in); }
+  .rnd .icon-sm { width:17px; height:17px; }
+  .rnd:hover { background:rgba(255,255,255,.17); transform:scale(1.06); }
+  .rnd:active { transform:scale(.94); }
+  .stop { background:var(--rec); color:#fff; }
+  .stop:hover { background:#FF5B50; }
+
+  @keyframes pulse { 50% { opacity:.28 } }
+  @media (prefers-reduced-motion:reduce) { .dot { animation:none } .rnd { transition:none } }
+</style>
+</head>
+<body>
+  <div class="hud">
+    <span class="dot"></span>
+    <span class="t" id="t">0:00</span>
+    <span class="sep"></span>
+    <button class="rnd" id="pause" title="Pause (⌘⇧P)">
+      <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-pause-fill"/></svg></button>
+    <button class="rnd stop" id="stop" title="Stop (⌘⇧R)">
+      <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-stop-fill"/></svg></button>
+  </div>
+<script>
+  const { ipcRenderer } = require('electron')
+  const $ = id => document.getElementById(id)
+  $('pause').onclick = () => ipcRenderer.send('hud-action', 'pause')
+  $('stop').onclick  = () => ipcRenderer.send('hud-action', 'stop')
+  ipcRenderer.on('hud', (e, s) => {
+    $('t').textContent = s.time
+    document.body.classList.toggle('paused', !!s.paused)
+    $('pause').innerHTML = `<svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-${s.paused ? 'play' : 'pause'}-fill"/></svg>`
+  })
+</script>
+</body>
+</html>

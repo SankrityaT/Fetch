@@ -1,0 +1,74 @@
+/* Fetch: styles for virtual folders in the Library. Injected by ui/library.js
+   so control.html never has to reference this file directly. Reuses the
+   tokens and component classes from tokens.css and components.css. */
+
+/* ── folder bar, a horizontal row of chips above the grid ─────────────── */
+.folder-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2);
+  margin-bottom: var(--s-4);
+}
+.folder-chip { position: relative; }
+.folder-chip .chip-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 16px; padding: 0 5px;
+  border-radius: var(--r-pill); background: rgba(255, 255, 255, .08);
+  font-size: 10px; font-weight: 700; color: var(--text-1);
+}
+.folder-chip[aria-pressed="true"] .chip-count { background: rgba(240, 169, 60, .2); color: var(--fur-0); }
+
+.chip-more {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; margin-left: 1px; border-radius: 50%;
+  color: var(--text-2); opacity: 0; flex: none;
+  transition: opacity var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in);
+}
+.folder-chip:hover .chip-more, .folder-chip:focus-within .chip-more { opacity: 1; }
+.chip-more:hover { background: rgba(255, 255, 255, .12); color: var(--text-0); }
+
+.new-folder-chip { border-style: dashed; color: var(--text-2); }
+.new-folder-chip:hover { color: var(--text-0); }
+
+/* ── folder tag shown on a card that belongs to at least one folder ────── */
+.clip-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.clip-name-row .clip-name { min-width: 0; flex: 1; cursor: text; }
+
+/* ── inline rename, in place on the card, no modal ──────────────────────── */
+.clip-name-edit {
+  width: 100%; min-width: 0;
+  background: var(--ink-2); border: 1px solid var(--ink-4);
+  border-radius: var(--r-sm); padding: 1px 6px; margin: -1px -6px;
+  color: var(--text-0); cursor: text;
+  transition: border-color var(--dur-1) var(--ease-in);
+}
+.clip-name-edit:hover { border-color: var(--ink-4); }
+.clip-name-edit:focus { border-color: var(--fur-1); }
+.folder-tag {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  height: 18px; padding: 0 7px; border-radius: var(--r-pill);
+  background: var(--ink-2); border: 1px solid var(--ink-3);
+  font-size: 10px; font-weight: 600; color: var(--text-1); white-space: nowrap;
+}
+.folder-tag .icon-sm { width: 11px; height: 11px; color: var(--fur-1); }
+
+/* ── floating popover menu, used for folder rename/delete and card assign ── */
+.lib-menu {
+  position: fixed; z-index: 70; min-width: 168px; max-width: 240px;
+  padding: 5px; background: var(--ink-2); border: var(--edge); border-radius: var(--r-md);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, .7);
+  animation: libMenuIn var(--dur-1) var(--ease-in);
+}
+@keyframes libMenuIn { from { opacity: 0; transform: translateY(-4px); } }
+.lib-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 9px;
+  border-radius: var(--r-sm); background: transparent; color: var(--text-1);
+  font-size: var(--t-12); text-align: left;
+  transition: background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in);
+}
+.lib-menu-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-menu-item .icon-sm { flex: none; color: var(--text-2); }
+.lib-menu-item:hover { background: var(--ink-3); color: var(--text-0); }
+.lib-menu-item.danger { color: #FFB4AD; }
+.lib-menu-item.danger:hover { background: rgba(255, 68, 56, .12); color: #FFD5D1; }
+.lib-menu-item.danger .icon-sm { color: inherit; }
+.lib-menu-empty { padding: 9px 10px; font-size: var(--t-12); color: var(--text-2); }

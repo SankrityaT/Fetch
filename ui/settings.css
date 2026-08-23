@@ -1,0 +1,24 @@
+/* Fetch settings view. Reuses tokens and components; only layout lives here. */
+
+.view[data-view="settings"] { padding:var(--s-6); }
+.set-wrap { display:flex; flex-direction:column; gap:var(--s-4); max-width:640px; margin:0 auto; }
+
+.set-head { margin-bottom:var(--s-1); }
+.set-head p { margin-top:2px; }
+
+.set-quick { border-color:rgba(240,169,60,.35); }
+.set-quick .opt { border-top:0; }
+
+/* option rows inside settings cards get the icon avatar + text + control layout */
+.set-row { display:flex; align-items:center; gap:var(--s-3); padding:var(--s-3) 0; }
+.set-row + .set-row { border-top:1px solid var(--ink-2); }
+.set-row .opt-ico { width:32px; height:32px; flex:none; display:grid; place-items:center;
+  border-radius:50%; background:var(--ink-2); color:var(--text-1); border:var(--edge); }
+.set-row[data-on="true"] .opt-ico { background:rgba(240,169,60,.14); color:var(--fur-1); border-color:rgba(240,169,60,.35); }
+.set-row .opt-txt { min-width:0; flex:1; display:flex; flex-direction:column; gap:1px; }
+.set-row .opt-title { font-weight:500; font-size:var(--t-13); line-height:1.35; }
+.set-row .opt-sub { font-size:var(--t-11); color:var(--text-2); line-height:1.35; }
+
+.set-path { font-family:var(--font-mono); font-size:var(--t-11); color:var(--text-2);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.set-actions { display:flex; gap:6px; flex:none; }

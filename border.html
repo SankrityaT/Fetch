@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  html,body { margin:0; height:100%; background:transparent; overflow:hidden; }
+  /* Thin recording frame. Two stacked gradients so the corners stay smooth
+     instead of showing the hard seam a single border-image gives you. */
+  .frame { position:fixed; inset:0; border-radius:12px; pointer-events:none;
+           padding:3px; box-sizing:border-box;
+           background:linear-gradient(135deg,#FFD9A0,#F0A93C 28%,#C97F1E 55%,#F0A93C 78%,#FFD9A0);
+           -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+           -webkit-mask-composite:xor; mask-composite:exclude;
+           animation:breathe 3.6s ease-in-out infinite; }
+  .glow { position:fixed; inset:0; border-radius:12px; pointer-events:none;
+          box-shadow:inset 0 0 22px rgba(240,169,60,.20); }
+  @keyframes breathe { 50% { opacity:.62 } }
+  @media (prefers-reduced-motion:reduce) { .frame { animation:none } }
+</style></head>
+<body><div class="frame"></div><div class="glow"></div></body></html>

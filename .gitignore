@@ -1,0 +1,24 @@
+# dependencies and build output
+node_modules/
+dist/
+
+# bundled ffmpeg build (~50MB, and shipping a prebuilt GPL binary in-tree is a
+# licensing headache). See README for how to put it back.
+vendor/
+
+# native helpers that build.sh compiles, and their compiled bundles
+Fetch.app/
+CamBubble.app/
+Transcribe.app/
+transcribe
+WindowList
+
+# scratch, editor and session junk
+.DS_Store
+.context/
+.playwright-mcp/
+mosaic-home.png
+
+# recordings and scratch media. The mascot clips are real assets, keep those.
+*.webm
+!assets/**/*.webm

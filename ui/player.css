@@ -1,0 +1,38 @@
+/* In-app player */
+.player { width:min(1020px,calc(100vw - 80px)); max-height:calc(100vh - 90px);
+  display:flex; flex-direction:column; overflow:hidden;
+  background:var(--ink-1); border-radius:var(--r-lg); box-shadow:var(--shadow-modal);
+  animation:pop var(--dur-3) var(--ease-in); }
+
+.pl-head { display:flex; align-items:center; gap:var(--s-2); padding:var(--s-3) var(--s-4);
+  border-bottom:var(--edge); }
+.pl-name { font-size:var(--t-13); font-weight:600; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; max-width:60%; }
+
+.pl-stage { position:relative; background:#000; display:grid; place-items:center;
+  min-height:0; flex:1; }
+.pl-stage video { max-width:100%; max-height:calc(100vh - 250px); display:block; }
+.pl-tapzone { position:absolute; inset:0; background:transparent; border:0; cursor:pointer; }
+.pl-big { position:absolute; width:66px; height:66px; border-radius:50%; pointer-events:none;
+  background:rgba(10,9,8,.62); backdrop-filter:blur(10px); color:#fff;
+  display:grid; place-items:center; transition:opacity var(--dur-2) var(--ease-in),
+  transform var(--dur-2) var(--ease-in); }
+.scrim[data-playing="true"] .pl-big { opacity:0; transform:scale(1.3); }
+
+.pl-bar { flex:none; display:flex; align-items:center; gap:var(--s-3);
+  padding:var(--s-3) var(--s-4); border-top:var(--edge); }
+.pl-btn { width:32px; height:32px; border-radius:50%; display:grid; place-items:center;
+  background:var(--ink-2); border:var(--edge); color:var(--text-0); box-shadow:var(--sheen);
+  transition:background var(--dur-1) var(--ease-in); }
+.pl-btn:hover { background:var(--ink-3); }
+.pl-time { font-size:var(--t-12); min-width:42px; }
+
+.pl-track { position:relative; flex:1; height:22px; cursor:pointer; display:flex; align-items:center; }
+.pl-track::before { content:''; position:absolute; left:0; right:0; height:5px;
+  border-radius:var(--r-pill); background:var(--ink-3); }
+.pl-fill { position:absolute; left:0; height:5px; width:0; border-radius:var(--r-pill);
+  background:linear-gradient(90deg,var(--fur-2),var(--fur-1)); }
+.pl-knob { position:absolute; width:13px; height:13px; border-radius:50%; background:#fff;
+  transform:translateX(-50%); box-shadow:0 1px 4px rgba(0,0,0,.6);
+  transition:transform var(--dur-1) var(--ease-in); }
+.pl-track:hover .pl-knob { transform:translateX(-50%) scale(1.2); }
