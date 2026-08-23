@@ -41,7 +41,7 @@ export function Hero() {
             {/* .btn-primary, lifted straight out of the app: gold pill, ink
                 label, hover washes to --fur-0, active presses down 1px */}
             <a
-              href="#download"
+              href="/api/download?ref=hero"
               className="group inline-flex h-[46px] items-center gap-2 rounded-pill border border-fur-1 bg-fur-1 px-6 text-15 font-semibold tracking-[-0.01em] text-[#231703] shadow-[inset_0_1px_0_rgb(255_255_255/0.14)] transition-[background-color,border-color,transform] duration-[120ms] ease-entrance hover:border-fur-0 hover:bg-fur-0 active:translate-y-px"
             >
               <Icon name="download-simple" className="size-[18px]" />

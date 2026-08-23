@@ -4,20 +4,24 @@ import Image from "next/image";
  * that constantly and it is usually worth nothing, so this section does not
  * assert it again. It shows the working.
  *
- * Every line here was checked against the shipping code before it was written:
+ * Every line here was checked against the shipping code before it was written,
+ * and it has already gone stale once, so re-run these before a release rather
+ * than trusting this comment:
  *
- *   - grep for every http(s) URL across main.js, processor.js and ui/*.js
- *     returns exactly one, the update manifest
- *   - grep for fetch / XMLHttpRequest / net.request / axios / WebSocket returns
- *     exactly one call site, https.get in ui/updater.js
- *   - grep for analytics, telemetry, posthog, mixpanel, segment, sentry,
- *     amplitude and gtag returns nothing
+ *   - grep every http(s) URL across main.js, processor.js and ui/*.js. One
+ *     literal, the update manifest. The metrics endpoint is an env var rather
+ *     than a literal, so a URL grep alone will not find it. Check
+ *     ui/telemetry.js as well.
+ *   - grep fetch / XMLHttpRequest / net.request / axios / WebSocket. Two call
+ *     sites now: https.get in ui/updater.js, https.request in ui/telemetry.js
  *   - there is no auth code. The only `session` hits are Electron's display
  *     media permission API
  *   - saveDir defaults to null, which main.js resolves to the Desktop
  *
- * If any of that stops being true, this section becomes a lie, so it is worth
- * re-running those greps before a release rather than trusting this comment.
+ * The telemetry module landed after this section was first written and made the
+ * "one thing it contacts" claim false. Rather than soften the section, it now
+ * states the payload exactly. A specific claim someone can verify is stronger
+ * than a vague one they cannot, and it survives being grepped.
  *
  * Layout is a hairline-separated claim/receipt list. Deliberately not cards and
  * deliberately not centred: the hero is an asymmetric split and the editor
@@ -30,9 +34,13 @@ const RECEIPTS = [
     body: "There is no backend, so there is nothing to sign in to. Fetch has never had a server, which is a stronger promise than a privacy policy is.",
   },
   {
-    claim: "One thing it contacts",
-    body: "Fetch asks GitHub whether a newer version exists. That is the only thing it ever reaches for, and turning auto-update off stops it asking.",
-    mono: "raw.githubusercontent.com",
+    claim: "Two things it contacts",
+    body: "It asks GitHub whether a newer version exists, and once a day it says that one more copy of Fetch exists. That second one sends a random id, the app version and your macOS version. Never a filename, a recording, a transcript, or anything you typed. There is no account to attach it to.",
+    mono: "raw.githubusercontent.com  ·  /api/ping",
+  },
+  {
+    claim: "Both have an off switch",
+    body: "Turn off auto-update and it stops asking. Turn off the install count in Settings and Fetch says nothing at all. Build it yourself without a metrics endpoint and that code path does not exist.",
   },
   {
     claim: "Transcription runs on your Mac",
