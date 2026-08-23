@@ -156,8 +156,8 @@ export function CameraBubble() {
       {/* the real editor, captured from the running app */}
       <Image
         src="/shots/editor.png"
-        width={2480}
-        height={1600}
+        width={4960}
+        height={3200}
         sizes="(max-width: 1024px) 94vw, 62vw"
         alt="The Fetch editor: a clip on the canvas, video and audio lanes on the timeline, and the range inspector open on the right."
         className="block h-auto w-full"

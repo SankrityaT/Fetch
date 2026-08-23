@@ -89,8 +89,8 @@ export function Features() {
               <Image
                 src={`/shots/features/${f.shot}.png`}
                 alt={f.alt}
-                width={620}
-                height={445}
+                width={1240}
+                height={890}
                 sizes="(max-width: 640px) 76vw, 400px"
                 className="max-h-full w-full rounded-inset border border-ink-3/70 object-contain"
               />
