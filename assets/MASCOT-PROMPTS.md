@@ -140,10 +140,11 @@ invisible on white and obvious on black.
   head jump.
 - Keep the flat PNGs in `assets/mascot/`. They are used everywhere at 48px and above:
   the hero, the wizard, empty states and the post-recording prompt.
-- Below 48px the painted art turns to mush. The menu bar icons are drawn from the SVG
-  geometry by `make_tray.swift`. `assets/mascot/idle.png` is authoritative for the
-  titlebar mark. This was measured, not assumed: at 22pt the painted head is noticeably
-  noisier than the drawn one.
+- Below 48px the painted art turns to mush. `make_tray.swift` draws the menu bar icons
+  itself, as plain NSBezierPath ovals: it has never read an SVG, and nativeImage cannot
+  decode one anyway. `assets/mascot/idle.png` is authoritative for the titlebar mark.
+  This was measured, not assumed: at 22pt the painted head is noticeably noisier than
+  the drawn one.
 
 ## 5. Consistency checklist
 
