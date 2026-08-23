@@ -9,6 +9,7 @@
   const DIR = path.join(os.homedir(), 'Library/Application Support/Fetch')
   const FILE = path.join(DIR, 'editor-state.json')
   const SAVE_EVERY = 1200
+  let warned = false
 
   const read = () => { try { return JSON.parse(fs.readFileSync(FILE, 'utf8')) } catch { return null } }
   const write = obj => {
@@ -18,7 +19,13 @@
       const tmp = FILE + '.tmp'
       fs.writeFileSync(tmp, JSON.stringify(obj, null, 2))
       fs.renameSync(tmp, FILE)
-    } catch {}
+      warned = false
+    } catch (e) {
+      // Crash recovery that fails quietly is worse than none: the person believes
+      // their work is safe. Say it once, not every 1.2 seconds.
+      if (!warned) { warned = true; console.error('autosave failed:', e.message)
+        if (typeof toast === 'function') toast('Autosave is not working, so a crash would lose edits', 'bad', 7000) }
+    }
   }
 
   // only the fields worth restoring, so the snapshot stays small and comparable

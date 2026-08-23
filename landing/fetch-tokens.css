@@ -1,5 +1,5 @@
 /* Fetch design tokens. Single source of truth; see BRAND.md. */
-@import url('../assets/fonts.css');
+@import url('./assets/fonts.css');
 
 :root {
   /* ink ramp: warm near-black, never pure #000 */

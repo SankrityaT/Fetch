@@ -14,7 +14,7 @@ swiftc -O CamBubble.swift -o /tmp/CamBubble.bin
 rm -rf /tmp/FetchBubble
 mkdir -p /tmp/FetchBubble/Fetch.app/Contents/{MacOS,Resources}
 cp /tmp/CamBubble.bin /tmp/FetchBubble/Fetch.app/Contents/MacOS/Fetch
-cp CamBubble.icns /tmp/FetchBubble/Fetch.app/Contents/Resources/CamBubble.icns
+cp Fetch.icns /tmp/FetchBubble/Fetch.app/Contents/Resources/CamBubble.icns   # same art, one file
 cat > /tmp/FetchBubble/Fetch.app/Contents/Info.plist <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -71,7 +71,7 @@ for h in "" " (GPU)" " (Plugin)" " (Renderer)"; do
 done
 
 # ---------- 3. sign (hardened runtime, inside-out) ----------
-cat > /tmp/qr.entitlements <<'EOF'
+cat > /tmp/fetch.entitlements <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -83,7 +83,7 @@ cat > /tmp/qr.entitlements <<'EOF'
 </dict></plist>
 EOF
 
-sign() { codesign --force --timestamp --options runtime --entitlements /tmp/qr.entitlements -s "$ID" "$1"; }
+sign() { codesign --force --timestamp --options runtime --entitlements /tmp/fetch.entitlements -s "$ID" "$1"; }
 
 # strictly inside-out: dylibs → crashpad → frameworks → helpers → bubble → transcribe → ffmpeg → app
 find "$APP/Contents/Frameworks" \( -name "*.dylib" -o -name "*.node" \) -print0 | while IFS= read -r -d '' f; do sign "$f"; done
@@ -109,7 +109,7 @@ sign "$APP"
 codesign --verify --deep --strict --verbose=1 "$APP"
 
 # ---------- 4. dmg ----------
-STAGE=/tmp/qr-dmg; rm -rf $STAGE; mkdir -p $STAGE
+STAGE=/tmp/fetch-dmg; rm -rf $STAGE; mkdir -p $STAGE
 cp -R "$APP" $STAGE/
 ln -s /Applications $STAGE/Applications
 hdiutil create -volname Fetch -srcfolder $STAGE -ov -format UDZO "$DMG" >/dev/null

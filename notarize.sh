@@ -66,7 +66,7 @@ echo "→ stapling the app"
 xcrun stapler staple "$APP"
 
 echo "→ rebuilding the dmg around the stapled app"
-STAGE=/tmp/qr-dmg; rm -rf $STAGE; mkdir -p $STAGE
+STAGE=/tmp/fetch-dmg; rm -rf $STAGE; mkdir -p $STAGE
 cp -R "$APP" $STAGE/
 ln -s /Applications $STAGE/Applications
 hdiutil create -volname Fetch -srcfolder $STAGE -ov -format UDZO "$DMG" >/dev/null

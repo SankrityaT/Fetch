@@ -551,7 +551,11 @@ const pushBubble = () => {
     fs.writeFileSync(path.join(os.homedir(), '.cambubble.json'),
       JSON.stringify({ size: setup.camSize, zoom: setup.camZoom,
                        anchor: setup.camAnchor, camera: setup.camId }))
-  } catch {}
+  } catch (e) {
+    // the only channel to the native bubble: if this fails, size and position
+    // changes silently do nothing at all
+    console.error('could not reach the camera bubble:', e.message)
+  }
 }
 
 // ── live previews inside the wizard ─────────────────────────────────────

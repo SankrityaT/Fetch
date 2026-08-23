@@ -15,7 +15,7 @@ Built because Loom costs $20/month.
   being burned into the screen capture, so it can be repositioned and resized in the editor
 - **Transcribe on-device** (FluidAudio / Parakeet, roughly 116x realtime), edit the cues,
   and burn captions in
-- **Auto-zoom** on cursor clicks, driven by a cursor track sampled during the take
+- **Auto-zoom** on the places your pointer settles, from a cursor track sampled during the take
 - **Backdrops**, output shapes, crop, trim, a cut tool, and a second audio track
 - **Export** to MP4, WebM, GIF, and audio-only formats
 

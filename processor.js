@@ -812,7 +812,7 @@ function describe(full) {
   }
 }
 
-// anything QuickRec recorded on the Desktop, plus whatever the user imported
+// anything Fetch recorded on the Desktop, plus whatever the user imported
 function listRecordings() {
   const out = new Map()
   const dir = app_desktop()
@@ -1393,9 +1393,9 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
 }
 
 module.exports = {
-  autoZoomFilter, backdropList, backdropChain, filmstrip,
+  backdropList, filmstrip,
   toMp4, convert, removeSilence, enhanceAudio, trim, transcribe, burnCaptions, toGif,
   thumbnail, waveform, applyEdit, listRecordings, importFile, forgetFile,
-  probeDuration, probeMeta, readCues, writeCues, cancel, formatList, FFMPEG,
-  sidecarPath, sidecarOut, sidecarIn, migrateSidecars, SIDE_DIR, SIDE_EXT,
+  probeMeta, readCues, writeCues, cancel, formatList, FFMPEG,
+  sidecarOut, sidecarIn, migrateSidecars,
 }

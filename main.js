@@ -50,7 +50,6 @@ function resolvedSaveDir() {
   try { fs.accessSync(dir, fs.constants.W_OK); return dir } catch { return app.getPath('desktop') }
 }
 
-ipcMain.handle('prefs-get', () => loadPrefs())
 ipcMain.on('prefs-get-sync', e => { e.returnValue = loadPrefs() })
 ipcMain.handle('prefs-set', (e, patch) => {
   const next = writePrefs(patch || {})
@@ -130,9 +129,6 @@ function createWindows() {
       control.webContents.executeJavaScript(`openInEditor(${JSON.stringify(process.env.FETCH_OPEN)})`)
         .catch(e => console.log('[open] ' + e.message)), 1200))
   }
-  if (process.argv.includes('--selftest')) {
-    control.webContents.once('did-finish-load', () => control.webContents.send('selftest'))
-  }
   if (process.argv.includes('--uitest')) {
     control.webContents.once('did-finish-load', () => {
       console.log('[uitest] page loaded')
@@ -157,7 +153,7 @@ function createWindows() {
     })
   }
 
-  if (process.env.QUICKREC_ELECTRON_CAM !== '1') return   // bubble handled by the native helper
+  if (process.env.FETCH_ELECTRON_CAM !== '1') return   // bubble handled by the native helper
   const d = screen.getPrimaryDisplay().workAreaSize
   cam = new BrowserWindow({
     width: 240, height: 240,
@@ -170,8 +166,8 @@ function createWindows() {
   cam.setAlwaysOnTop(true, 'screen-saver')
   cam.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   cam.loadFile('cam.html')
-  cam.webContents.on('console-message', (e, lvl, msg) => console.log('[cam]', msg))
-  control.webContents.on('console-message', (e, lvl, msg) => console.log('[ctl]', msg))
+  if (!app.isPackaged) cam.webContents.on('console-message', (e, lvl, msg) => console.log('[cam]', msg))
+  if (!app.isPackaged) control.webContents.on('console-message', (e, lvl, msg) => console.log('[ctl]', msg))
 }
 
 app.whenReady().then(() => {
@@ -205,8 +201,7 @@ app.whenReady().then(() => {
     (request, callback) => callback({}), { useSystemPicker: true })
 
   useOurPicker()
-  ipcMain.on('capture-mode', (e, mode) => mode === 'system' ? useSystemPicker() : useOurPicker())
-
+  
   // source picker: screens + windows with thumbnails
   // Big enough to stay sharp on retina, JPEG so polling every couple of seconds
   // does not push megabytes of base64 through IPC.
@@ -306,7 +301,6 @@ function showBorder(on) {
   border.setContentProtection(true)          // excluded from the recording
   border.loadFile('border.html')
 }
-ipcMain.on('border', (e, on) => showBorder(!!on))
 
 // ---------- recording toolbar ----------
 // Its own window so it sits above everything and outside the app, and content
@@ -390,14 +384,7 @@ ipcMain.on('rec-state', (e, state) => {
 ipcMain.on('reveal', (e, p) => shell.showItemInFolder(p))
 ipcMain.on('open-folder', () => shell.openPath(app.getPath('desktop')))
 
-ipcMain.on('cam-size', (e, px) => {
-  if (!cam) return
-  const b = cam.getBounds()
-  const cx = b.x + b.width / 2, cy = b.y + b.height / 2
-  cam.setBounds({ x: Math.round(cx - px / 2), y: Math.round(cy - px / 2), width: px, height: px })
-})
 
-ipcMain.on('cam-zoom', (e, z) => { if (cam) cam.webContents.send('zoom', z) })
 
 // the camera bubble is its own native app, toggled by the switch
 function bubblePath() {
@@ -480,18 +467,14 @@ ipcMain.on('cursor-track', (e, on) => {
   }, 50)                                    // 20 Hz is plenty to drive a smooth zoom
 })
 
-ipcMain.on('cursor-click', () => {
-  if (!cursorSamples) return
-  const p = screen.getCursorScreenPoint()
-  ;(cursorSamples.clicks || (cursorSamples.clicks = [])).push([Date.now() - cursorSamples.t0, p.x, p.y])
-})
 
 ipcMain.handle('save', async (e, buf) => {
   const file = path.join(resolvedSaveDir(), `recording-${Date.now()}.webm`)
   fs.writeFileSync(file, Buffer.from(buf))
   clearInterval(cursorTimer); cursorTimer = null
   if (cursorSamples && cursorSamples.points.length) {
-    try { fs.writeFileSync(proc.sidecarOut(file, '.cursor.json'), JSON.stringify(cursorSamples)) } catch {}
+    try { fs.writeFileSync(proc.sidecarOut(file, '.cursor.json'), JSON.stringify(cursorSamples)) }
+    catch (e) { console.error('cursor track not saved, auto-zoom will have nothing to work with:', e.message) }
   }
   cursorSamples = null
 
@@ -562,7 +545,6 @@ ipcMain.handle('backdrops', () => proc.backdropList())
 ipcMain.handle('has-cursor', (e, src) =>
   fs.existsSync(proc.sidecarIn(String(src), '.cursor.json')))
 ipcMain.handle('import-file', (e, src) => proc.importFile(src))
-ipcMain.handle('forget-file', (e, src) => proc.forgetFile(src))
 
 // "Import...": any container ffmpeg can read
 ipcMain.handle('pick-file', async () => {
@@ -624,10 +606,5 @@ ipcMain.handle('edit-job', async (e, payload) => {
   }
 })
 
-ipcMain.handle('save-fallback', async (e, buf) => {
-  const { filePath } = await dialog.showSaveDialog({ defaultPath: 'recording.webm' })
-  if (filePath) { fs.writeFileSync(filePath, Buffer.from(buf)); return filePath }
-  return null
-})
 
 app.on('window-all-closed', () => app.quit())

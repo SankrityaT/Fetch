@@ -372,7 +372,8 @@ function renameFileWithSidecars(oldPath, newBase) {
 // the Library the moment it is renamed. Add it there so a rename never looks like deletion.
 async function ensureListed(newPath) {
   if (/^recording-/i.test(path.basename(newPath))) return
-  try { await ipcRenderer.invoke('import-file', newPath) } catch {}
+  try { await ipcRenderer.invoke('import-file', newPath) }
+  catch (e) { toast('Renamed, but it fell out of the Library. Import it again.', 'bad', 6000) }
 }
 // derived exports (name-edit.mp4, name-cut.mp4, ...) keep their suffix when renamed
 function derivedSuffix(name) {

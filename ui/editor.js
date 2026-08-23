@@ -208,8 +208,8 @@ const EDITOR_HTML = `
       <section class="insp-panel" data-panel="look" hidden>
         <div class="insp-sec">Auto zoom</div>
         <label class="opt" style="padding:8px 0"><span class="opt-txt">
-          <span class="opt-title">Follow my clicks</span>
-          <span class="opt-sub">pushes in where you clicked</span></span>
+          <span class="opt-title">Follow my cursor</span>
+          <span class="opt-sub">pushes in where you stop and settle</span></span>
           <span class="switch"><input type="checkbox" id="autoZoom"><span class="track"></span></span></label>
         <div class="row"><span class="row-lbl">Amount</span>
           <input type="range" class="slider" id="zoomAmt" min="120" max="240" value="170">
