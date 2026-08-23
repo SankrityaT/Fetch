@@ -30,8 +30,11 @@ export function CameraBubble() {
   const bubbleRef = useRef<HTMLDivElement>(null);
   const chipRef = useRef<HTMLDivElement>(null);
 
-  /* fractions of the canvas box: top-left of the bubble, and its diameter */
-  const pos = useRef<Vec>({ x: 0.06, y: 0.6 });
+  /* Fractions of the canvas box: top-left of the bubble, and its diameter.
+     It starts sitting on top of the recorded content on purpose. The headline
+     claims a badly placed camera does not cost you the take, and the fastest
+     way to believe that is to drag this off the thing it is covering. */
+  const pos = useRef<Vec>({ x: 0.5, y: 0.47 });
   const size = useRef(0.17);
 
   const drag = useRef<{

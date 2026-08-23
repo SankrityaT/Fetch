@@ -4,27 +4,31 @@ import { Icon } from "./icon";
 export function Hero() {
   return (
     <section className="relative isolate overflow-hidden">
-      <div className="mx-auto grid max-w-[1400px] items-center gap-14 px-6 pb-24 pt-14 md:px-10 lg:min-h-[calc(100dvh-9rem)] lg:grid-cols-12 lg:gap-10 lg:pb-24 lg:pt-20">
+      <div className="mx-auto grid max-w-[1400px] items-center gap-14 px-6 pb-24 pt-28 md:px-10 lg:min-h-dvh lg:grid-cols-12 lg:gap-10 lg:pb-24 lg:pt-28">
         {/* ── the argument ────────────────────────────────────────────── */}
-        <div className="lg:col-span-6">
-          {/* Sized to break after "camera" on its own. Two lines at every
-              width from 480px up, which is the rule, and the reason the
-              display face is capped well under what the column could take. */}
+        <div className="lg:col-span-7">
+          {/* "Move the camera later" is the mechanism, not the reason to care.
+              The reason is that a badly placed webcam normally costs you the
+              whole take. That is the sentence. The clause split gives a short
+              line over a long one; below sm they flow inline instead, because
+              forcing the break there orphans the last word. */}
           <h1
-            className="rise text-[clamp(2.5rem,5vw,4.5rem)]"
+            className="rise text-[clamp(2.15rem,4vw,3.6rem)]"
             style={{ ["--i" as string]: 0 }}
           >
-            Move the camera{" "}
-            <em className="accent pr-[0.06em] leading-[1.1]">after</em> you
-            record.
+            <span className="sm:block">Never re-record because </span>
+            <span className="sm:block">
+              your face was in the{" "}
+              <em className="accent pr-[0.06em] leading-[1.1]">way</em>.
+            </span>
           </h1>
 
           <p
             className="rise mt-6 max-w-[50ch] text-24 leading-[1.4] text-text-1"
             style={{ ["--i" as string]: 1 }}
           >
-            A screen recorder and editor that runs entirely on your Mac. No
-            account, no upload, no subscription.
+            The camera records to its own track, so you can move it in the
+            editor. Nothing is uploaded. No subscription.
           </p>
 
           <div
@@ -56,7 +60,7 @@ export function Hero() {
             Not a picture of the editor. The editor, with the one thing no
             other recorder does live on top of it. */}
         <div
-          className="rise relative lg:col-span-6 lg:-mr-[16vw] xl:-mr-[13vw]"
+          className="rise relative lg:col-span-5 lg:-mr-[18vw] xl:-mr-[15vw]"
           style={{ ["--i" as string]: 3 }}
         >
           {/* The room is dark and the screen is the only thing lighting it.
@@ -64,7 +68,7 @@ export function Hero() {
               which is the only reason it is allowed to be here at all. */}
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute -inset-[12%] -z-10 opacity-[0.13] blur-[100px]"
+            className="pointer-events-none absolute -left-[14%] -right-[14%] -bottom-[14%] -top-[70%] -z-10 opacity-[0.15] blur-[110px]"
             style={{
               background:
                 "radial-gradient(closest-side, var(--color-fur-1) 0%, var(--color-fur-2) 55%, transparent 100%)",
@@ -80,7 +84,7 @@ export function Hero() {
                 done with layout width, not a transform, because the bubble
                 measures its bounds and a scaled ancestor would double-count. */}
             <div className="relative aspect-4/3 overflow-hidden rounded-card sm:aspect-3/2 lg:aspect-auto">
-              <div className="ml-[-14.8%] mt-[-19.3%] w-[210%] max-w-none lg:m-0 lg:w-full">
+              <div className="ml-[-28.5%] mt-[-19.3%] w-[210%] max-w-none lg:m-0 lg:w-full">
                 <CameraBubble />
               </div>
             </div>
