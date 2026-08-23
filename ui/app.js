@@ -637,12 +637,17 @@ window.addEventListener('load', () => {
   } catch {}
 })
 
+// The hero's state depends only on prefs, which prefs.js has already settled
+// synchronously, so paint it now. Leaving it until after get-sources meant the
+// wrong button sat on screen for that whole round trip (about 300ms), which reads
+// as the label flickering on launch.
+mood('idle')
+paintHeroCta()
+
 ;(async () => {
   try {
     const list = await ipcRenderer.invoke('get-sources')
     setup.source = list.find(s => s.isScreen) || list[0] || null   // sensible default for the wizard
   } catch {}
-  mood('idle')
-  paintHeroCta()
   refreshLibrary()
 })()
