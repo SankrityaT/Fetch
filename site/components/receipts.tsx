@@ -50,7 +50,7 @@ export function Receipts() {
   return (
     <section
       id="privacy"
-      className="relative border-t border-ink-3/60 py-24 lg:py-32"
+      className="relative scroll-mt-24 border-t border-ink-3/60 py-24 lg:py-32"
     >
       <div className="mx-auto max-w-[1100px] px-6 md:px-10">
         <h2 className="max-w-[18ch] text-[clamp(2rem,3.6vw,3.25rem)]">

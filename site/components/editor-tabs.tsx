@@ -62,7 +62,7 @@ export function EditorTabs() {
   };
 
   return (
-    <section id="editor" className="relative border-t border-ink-3/60 py-24 lg:py-32">
+    <section id="editor" className="relative scroll-mt-24 border-t border-ink-3/60 py-24 lg:py-32">
       <div className="mx-auto max-w-[1200px] px-6 md:px-10">
         <div className="mx-auto max-w-[46rem] text-center">
           {/* "A real editor, not a share link" was an X-not-Y construction,
