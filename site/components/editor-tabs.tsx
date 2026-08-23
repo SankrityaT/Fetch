@@ -4,7 +4,7 @@ import Image from "next/image";
 import { useRef, useState } from "react";
 import { Icon } from "./icon";
 
-/* The hero says it is a full editor. This is the receipt.
+/* The hero says it is a full editor. This section is where that gets proved.
  *
  * One window, one pinned frame, and a segmented control that swaps which
  * inspector pane is open. Every frame is a real capture of the running app
@@ -64,10 +64,13 @@ export function EditorTabs() {
   return (
     <section id="editor" className="relative border-t border-ink-3/60 py-24 lg:py-32">
       <div className="mx-auto max-w-[1200px] px-6 md:px-10">
-        <div className="mx-auto max-w-[36ch] text-center">
+        <div className="mx-auto max-w-[46rem] text-center">
+          {/* "A real editor, not a share link" was an X-not-Y construction,
+              which is a tell. The section's job is the work that happens after
+              you stop recording, so the headline just says that. */}
           <h2 className="text-[clamp(2rem,3.6vw,3.25rem)]">
-            A real editor, not a share{" "}
-            <em className="accent pr-[0.06em] leading-[1.1]">link</em>.
+            Everything you need after you hit{" "}
+            <em className="accent pr-[0.06em] leading-[1.1]">stop</em>.
           </h2>
           <p className="mx-auto mt-5 max-w-[46ch] text-18 leading-[1.55] text-text-1">
             Trim, caption and mix on one timeline, then export to MP4, WebM,
