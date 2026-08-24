@@ -187,6 +187,14 @@ app.whenReady().then(() => {
     isRecording: () => recState === 'recording' || recState === 'paused',
   })
 
+  // Onboarding's Connect screen. Resolving binaries needs a login shell, which costs
+  // about a second, so warm it now: by the time anyone reaches that screen the answer
+  // is already cached and the rows paint immediately.
+  const agentConnect = require('./ui/agent-connect')
+  agentConnect.detect().catch(() => {})
+  ipcMain.handle('agents-detect', () => agentConnect.detect())
+  ipcMain.handle('agents-connect', (e, id) => agentConnect.connect(id))
+
   // Auto-answer getDisplayMedia with the user's chosen source (or the primary screen)
   let chosenSourceId = null
   let chosenWindow = null          // { id, name } from the ScreenCaptureKit list

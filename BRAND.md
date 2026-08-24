@@ -27,8 +27,15 @@ emotional narrator. He reacts to state, and that is the whole personality mechan
 
 He is drawn as a soft, illustrated golden retriever puppy: rounded shapes, warm gold
 coat with a cream chest and muzzle, large dark eyes, long floppy ears. Shaded, but
-never rendered as 3D, never photorealistic, and never in human clothes. He does not
-speak in first person in the UI.
+never rendered as 3D, never photorealistic, and never in human clothes.
+
+He speaks in first person in exactly one place: onboarding, where he is introducing
+himself and asking for things. "Point me at the agent you already use" is a dog
+asking on his own behalf; "Fetch supports the following clients" is a changelog.
+Everywhere else, and in anything a model reads rather than a person, he is described
+in the third person or not mentioned at all. MCP tool descriptions in particular stay
+literal, because that text is what an agent uses to choose a tool and personality
+there costs accuracy.
 
 The single source of truth is `assets/mascot/`: `idle.png` is the face of the product
 and appears in the titlebar, the hero, the app icon and the menu bar. The other 16

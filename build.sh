@@ -45,6 +45,13 @@ mkdir -p "$APP/Contents/Resources/app"
 cp main.js control.html cam.html hud.html border.html processor.js package.json "$APP/Contents/Resources/app/"
 cp -R ui "$APP/Contents/Resources/app/ui"
 cp -R assets "$APP/Contents/Resources/app/assets"
+
+# The MCP shim ships inside the bundle so connecting an agent needs no npm install
+# and the server can never drift out of step with the app driving it. Pure JS, no
+# native binaries, so it needs no signing of its own.
+mkdir -p "$APP/Contents/Resources/app/mcp"
+cp mcp/index.js mcp/bridge.js mcp/package.json "$APP/Contents/Resources/app/mcp/"
+cp -R mcp/node_modules "$APP/Contents/Resources/app/mcp/node_modules"
 mkdir -p "$APP/Contents/Resources/app/vendor"
 cp vendor/ffmpeg "$APP/Contents/Resources/app/vendor/ffmpeg"
 # The packaged app has no environment, so the metrics endpoint has to be written in.

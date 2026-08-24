@@ -13,23 +13,36 @@ API key or a token.
 
 ## Install
 
+Easiest: open Fetch and use the **Connect** screen in onboarding. It detects which
+clients you have, writes the right config for each one, and reads it back to confirm.
+For Codex it also raises `tool_timeout_sec`, which otherwise cuts off any recording
+longer than a minute.
+
+To wire it up by hand, point your client at the copy that ships inside the app:
+
 ```bash
-claude mcp add --scope user fetch -- npx -y @fetch-app/mcp
-codex  mcp add fetch -- npx -y @fetch-app/mcp
+NODE=$(command -v node)
+SHIM=/Applications/Fetch.app/Contents/Resources/app/mcp/index.js
+
+claude mcp add --scope user fetch -- "$NODE" "$SHIM"
+codex  mcp add fetch -- "$NODE" "$SHIM"
 ```
 
-Cursor, Cline, Zed and Windsurf take the same stdio command. Zed uses
-`context_servers` rather than `mcpServers`.
+Cursor, Cline and Windsurf take the same stdio command under `mcpServers`. Zed uses
+`context_servers` instead.
 
-**Codex users:** raise `tool_timeout_sec` in `~/.codex/config.toml`. It defaults to 60
-seconds, and a recording longer than that will be cut off mid-call.
+**Codex users installing by hand:** `tool_timeout_sec` defaults to 60 seconds, so a
+recording longer than that is cut off mid-call. Set it yourself:
 
 ```toml
 [mcp_servers.fetch]
-command = "npx"
-args = ["-y", "@fetch-app/mcp"]
 tool_timeout_sec = 900
+command = "/usr/local/bin/node"
+args = ["/Applications/Fetch.app/Contents/Resources/app/mcp/index.js"]
 ```
+
+Use an absolute path to `node`. Your client does not inherit a login shell's `PATH`,
+so a bare `node` will not resolve for nvm installs.
 
 ## Tools
 
