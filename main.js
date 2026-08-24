@@ -13,6 +13,7 @@ let control, cam
 const updater = require('./ui/updater')
 const telemetry = require('./ui/telemetry')
 const agentBridge = require('./ui/agent-bridge')
+const jobQueue = require('./ui/job-queue')
 
 // ---------- preferences ----------
 // Persisted to <userData>/prefs.json. Loaded lazily and cached in memory;
@@ -706,7 +707,13 @@ ipcMain.handle('list-recordings', () => { tidySaveFolders(); return proc.listRec
 ipcMain.handle('probe', (e, src) => proc.probeMeta(src))
 ipcMain.handle('read-cues', (e, src) => proc.readCues(src))
 ipcMain.handle('write-cues', (e, src, cues) => proc.writeCues(src, cues))
-ipcMain.handle('cancel-job', (e, id) => proc.cancel(id))
+ipcMain.handle('cancel-job', (e, id) => {
+  // A job waiting in the queue has no child process to kill yet, so drop it from the
+  // lane; otherwise cancelling something tenth in line would wait for the nine ahead.
+  const dropped = jobQueue.dropIfQueued(id)
+  return proc.cancel(id) || dropped
+})
+ipcMain.handle('queue-stats', () => jobQueue.stats())
 ipcMain.handle('formats', () => proc.formatList())
 ipcMain.handle('backdrops', () => proc.backdropList())
 ipcMain.handle('has-cursor', (e, src) =>
@@ -729,7 +736,9 @@ let jobSeq = 0
 let jobsActive = 0   // reported to the updater, so it never installs mid-export
 
 ipcMain.handle('edit-job', async (e, payload) => {
-  const id = payload.jobId != null ? payload.jobId : ++jobSeq
+  // Namespace caller-supplied ids. processor.cancel() keys off this, so a renderer
+  // job and an agent job sharing a number would cancel each other.
+  const id = payload.jobId != null ? `ext:${payload.jobId}` : ++jobSeq
   const cid = payload.cid
   const wc = e.sender
   const send = (status, extra) => { if (!wc.isDestroyed()) wc.send('edit-job', { id, cid, status, ...extra }) }
@@ -739,7 +748,8 @@ ipcMain.handle('edit-job', async (e, payload) => {
   updater.setJobsActive(jobsActive)
   try {
     try {
-      send('running', { id })
+      send('queued', { id })
+      return await jobQueue.submit({ id, op: payload.op, onStart: () => send('running', { id }), run: async () => {
       const o = payload.opts || {}
       let result
       switch (payload.op) {
@@ -762,6 +772,7 @@ ipcMain.handle('edit-job', async (e, payload) => {
       }
       send('done', { result })
       return { ok: true, ...result }
+      } })
     } catch (err) {
       if (err && err.cancelled) { send('cancelled', {}); return { ok: false, cancelled: true } }
       send('error', { message: String(err.message || err) })
