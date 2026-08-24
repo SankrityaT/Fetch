@@ -60,8 +60,15 @@ function send(event) {
     })
   } catch { return }
 
+  post(ENDPOINT, body, 1)
+}
+
+// Hosts routinely redirect between the apex and www, and a POST that ignores the
+// response would swallow that 308 and never reach the endpoint again. One hop is
+// enough to survive it; more than one and something is wrong anyway.
+function post(endpoint, body, hopsLeft) {
   try {
-    const u = new URL(ENDPOINT)
+    const u = new URL(endpoint)
     const req = https.request({
       hostname: u.hostname,
       port: u.port || 443,
@@ -69,7 +76,14 @@ function send(event) {
       method: 'POST',
       timeout: TIMEOUT_MS,
       headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
-    }, res => res.resume())          // drain and forget, the response is of no interest
+    }, res => {
+      const loc = res.headers && res.headers.location
+      if (hopsLeft > 0 && res.statusCode >= 300 && res.statusCode < 400 && loc) {
+        res.resume()
+        return post(new URL(loc, endpoint).toString(), body, hopsLeft - 1)
+      }
+      res.resume()                   // drain and forget, the body is of no interest
+    })
     req.on('error', () => {})        // offline, blocked, endpoint down: all fine
     req.on('timeout', () => req.destroy())
     req.write(body)
