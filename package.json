@@ -1,6 +1,6 @@
 {
   "name": "fetch",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "main": "main.js",
   "license": "GPL-3.0-or-later",
   "scripts": {
@@ -16,6 +16,10 @@
   },
   "build": {
     "appId": "com.sankritya.fetch",
-    "publish": { "provider": "github", "owner": "SankrityaT", "repo": "Fetch" }
+    "publish": {
+      "provider": "github",
+      "owner": "SankrityaT",
+      "repo": "Fetch"
+    }
   }
 }
