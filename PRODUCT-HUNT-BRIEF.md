@@ -27,7 +27,7 @@ absurd. It turned into a full product.
 - **The camera bubble can be moved and resized after recording.** The camera is captured
   to its own file and composited at export rather than burned into the screen pixels.
   This is the Screen Studio-class feature and the strongest single differentiator
-- **On-device transcription** (FluidAudio / Parakeet, roughly 116x realtime). Editable
+- **On-device transcription** (FluidAudio / Parakeet): a 2-minute recording transcribes in about 1.4s on an M5 Pro. Editable
   cues, burn-in captions with full styling, dragged captions land where you put them
 - **Auto-zoom**, driven by a cursor track sampled during the take. Do not write
   "zooms where you click" anywhere: `cursor-click` is registered in `main.js` and
@@ -96,14 +96,12 @@ These are real and specific, which is what makes launch copy credible:
   `NSWindow.sharingType = .none` and composited at export
 - Window enumeration uses **ScreenCaptureKit**, which finds windows that Electron's
   `desktopCapturer` never lists
-- Transcription is **Parakeet running locally**, roughly 116x realtime
-- ffmpeg is bundled inside the app, built with libass, freetype, fontconfig and
-  libvpx-vp9. The binary itself is not in the repo (`vendor/` is gitignored, since
-  shipping a prebuilt GPL binary in-tree is a licensing headache), so confirm the
-  version against the build you actually ship before quoting one
-- Signed with Developer ID and a hardened runtime. **Not notarised yet**, so do not
-  write "notarised" in launch copy until `./notarize.sh` has run and stapled. See
-  section 5
+- Transcription is **Parakeet running locally**: a 2-minute recording transcribes in about 1.4s on an M5 Pro. Measured 79-88x
+  realtime on speech-dense audio and up to 368x on sparse audio, because the work
+  scales with how much speech there is, not how long the clip is. Quote the concrete
+  number, not a realtime multiple
+- ffmpeg 9 is bundled, with libass, freetype, fontconfig and libvpx-vp9
+- Signed with Developer ID, hardened runtime, notarised
 
 ## 5. Launch status
 

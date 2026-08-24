@@ -100,6 +100,12 @@ export function InstallSteps({ dmgRef }: { dmgRef: string }) {
         .
       </p>
 
+      {/* Stated here rather than next to the hero button, because this is the
+          moment it can actually cost someone their time. */}
+      <p className="mt-4 text-13 text-text-2">
+        Requires macOS 13 or later, on Apple silicon or Intel.
+      </p>
+
       <ol className="mt-16 grid gap-6 text-left sm:grid-cols-2 lg:grid-cols-4">
         {STEPS.map((s) => (
           <li

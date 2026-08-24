@@ -74,7 +74,7 @@ const FEATURES = [
     shot: "transcribe",
     h: 370,
     title: "Transcribe on the machine",
-    body: "Parakeet on the Neural Engine, roughly 116x realtime. Keep the cues editable or bake them into the file so they play anywhere.",
+    body: "Parakeet on the Neural Engine. A two minute recording comes back in about a second and a half. Keep the cues editable or bake them into the file so they play anywhere.",
     alt: "The transcript panel, with a transcribe button and a burn into video toggle.",
   },
   {

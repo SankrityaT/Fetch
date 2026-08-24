@@ -82,6 +82,7 @@ export function SiteHeader() {
             {[
               ["The editor", "#editor"],
               ["Privacy", "#privacy"],
+              ["Source", "https://github.com/SankrityaT/Fetch"],
             ].map(([label, href]) => (
               <a
                 key={href}

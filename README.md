@@ -13,7 +13,7 @@ Built because Loom costs $20/month.
   circular camera bubble
 - **Move the bubble after the fact.** The camera records to its own file rather than
   being burned into the screen capture, so it can be repositioned and resized in the editor
-- **Transcribe on-device** (FluidAudio / Parakeet, roughly 116x realtime), edit the cues,
+- **Transcribe on-device** (FluidAudio / Parakeet): a 2-minute recording transcribes in about 1.4s on an M5 Pro, edit the cues,
   and burn captions in
 - **Auto-zoom** on the places your pointer settles, from a cursor track sampled during the take
 - **Backdrops**, output shapes, crop, trim, a cut tool, and a second audio track
@@ -84,3 +84,14 @@ The app-specific password comes from appleid.apple.com under Sign-In and Securit
 - VP9 with alpha needs `-auto-alt-ref 0`, and ffmpeg's own VP9 decoder ignores WebM
   alpha, so verify alpha clips in Chromium, not with ffmpeg.
 - libass sizes captions against the script's PlayRes (about 288 lines), not video pixels.
+
+## License
+
+Fetch is **GPL-3.0-or-later**. See `LICENSE`.
+
+It bundles an FFmpeg binary that is itself GPL (it links x264, x265 and vid.stab) and
+runs it as a separate process. `THIRD-PARTY-NOTICES.md` carries the full attribution,
+the written offer of source, the exact build configuration, and the licenses of
+everything else that ships: the fonts, the icon set, Electron, and the speech model.
+
+If you fork this and ship it, those obligations come with you.

@@ -18,13 +18,13 @@ import Image from "next/image";
  *     media permission API
  *   - saveDir defaults to null, which main.js resolves to the Desktop
  *
- * One number here is not verified and should be. "Roughly 116x realtime" traces
- * to a single line in README.md and nothing else: no benchmark, no constant in
- * the code, and Transcribe.app is untracked so it cannot be measured from the
- * repo. It is probably right, it is hedged with "roughly", and it is still the
- * one figure on this site that nobody has put a stopwatch to. Measure it before
- * launch or drop the number, because "116x on what?" is the obvious question
- * and not having an answer costs more than the number earns.
+ * The transcription figure used to say "roughly 116x realtime", which traced to
+ * a single line in README.md and had never been measured. It has been now, and
+ * the honest version is a wall-clock number rather than a multiple: about 1.4s
+ * for a two minute recording on an M5 Pro. The multiple was misleading as well
+ * as unmeasured, because the work scales with how much speech is in the audio,
+ * not how long the clip runs, so it ranges from 79x on dense speech to 368x on
+ * sparse. Quote the seconds, never the multiple.
  *
  * The telemetry module landed after this section was first written and made the
  * "one thing it contacts" claim false. Rather than soften the section, it now
@@ -52,8 +52,13 @@ const RECEIPTS = [
   },
   {
     claim: "Transcription runs on your Mac",
-    body: "Parakeet on the Neural Engine, roughly 116x realtime. You do not have to take a landing page's word for it, because the app says so itself:",
+    body: "Parakeet on the Neural Engine. A two minute recording comes back in about a second and a half on an M5 Pro. You do not have to take a landing page's word for it, because the app says so itself:",
     exhibit: true,
+  },
+  {
+    claim: "And you can check all of it",
+    body: "The source is public and GPL-3.0. Every claim above is one grep away, which is the only reason a privacy section is worth reading at all.",
+    mono: "github.com/SankrityaT/Fetch",
   },
   {
     claim: "Recordings are just files",

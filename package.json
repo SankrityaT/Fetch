@@ -2,6 +2,7 @@
   "name": "fetch",
   "version": "1.0.0",
   "main": "main.js",
+  "license": "GPL-3.0-or-later",
   "scripts": {
     "start": "electron .",
     "fixtures": "./test/fixtures.sh",
