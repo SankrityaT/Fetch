@@ -12,6 +12,7 @@ let control, cam
 
 const updater = require('./ui/updater')
 const telemetry = require('./ui/telemetry')
+const agentBridge = require('./ui/agent-bridge')
 
 // ---------- preferences ----------
 // Persisted to <userData>/prefs.json. Loaded lazily and cached in memory;
@@ -175,6 +176,15 @@ app.whenReady().then(() => {
   // nothing at all unless a metrics endpoint was configured at build time.
   telemetry.start(loadPrefs)
   sweepStaleTakes()
+
+  // The socket an MCP server talks to. Recording is driven through the renderer so
+  // an agent-run take still shows the border, the HUD and the mascot.
+  agentBridge.start({
+    getWindow: () => control,
+    toRenderer,
+    proc: require('./processor'),
+    isRecording: () => recState === 'recording' || recState === 'paused',
+  })
 
   // Auto-answer getDisplayMedia with the user's chosen source (or the primary screen)
   let chosenSourceId = null
@@ -765,3 +775,4 @@ ipcMain.handle('edit-job', async (e, payload) => {
 
 
 app.on('window-all-closed', () => app.quit())
+app.on('before-quit', () => agentBridge.stop())

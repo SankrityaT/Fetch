@@ -249,6 +249,9 @@ async function countdown() {
 
 // Everything that happens once a take exists on disk, whichever recorder made it.
 function finishTake(file, mb) {
+  // Tell main a take landed. hotkey() is fire-and-forget, so without this an agent
+  // that asked for a recording has no way to learn where the file went.
+  try { ipcRenderer.send('take-finished', { file, mb: +mb }) } catch {}
   mood('done')
   refreshLibrary()
   const pf = window.prefs || {}
@@ -305,7 +308,11 @@ async function stopNative() {
   clearInterval(ticker); ticker = null
   $('start').disabled = false
   nativeTake = false
-  if (!r || !r.ok) { mood('error'); toast(r && r.error ? r.error : 'Nothing was captured', 'bad'); return }
+  if (!r || !r.ok) {
+    const why = r && r.error ? r.error : 'Nothing was captured'
+    try { ipcRenderer.send('take-failed', { error: why }) } catch {}
+    mood('error'); toast(why, 'bad'); return
+  }
   mood('working')
   const c = await ipcRenderer.invoke('native-commit', r.tmp)
   if (!c || !c.ok) {
@@ -365,7 +372,10 @@ async function startRecording() {
       clearInterval(ticker); ticker = null
       $('start').disabled = false
       const blob = new Blob(chunks, { type: 'video/webm' })
-      if (!blob.size) { mood('error'); toast('Nothing was captured', 'bad'); return }
+      if (!blob.size) {
+        try { ipcRenderer.send('take-failed', { error: 'Nothing was captured' }) } catch {}
+        mood('error'); toast('Nothing was captured', 'bad'); return
+      }
       mood('working')
       const file = await ipcRenderer.invoke('save', new Uint8Array(await blob.arrayBuffer()))
       mood('done')
@@ -388,6 +398,7 @@ async function startRecording() {
   } catch (e) {
     $('countdown').hidden = true
     $('start').disabled = false
+    try { ipcRenderer.send('take-failed', { error: e.message }) } catch {}
     if (/screen recording is blocked/i.test(e.message || '')) screenBlocked()
     else { mood('error'); toast(e.message, 'bad', 7000) }
   }
