@@ -4,8 +4,12 @@
 // Counting uniques with sets means the store holds a set of opaque ids rather than
 // a row per person. There is no IP, no user agent and nothing to join against.
 
-const URL_ = process.env.UPSTASH_REDIS_REST_URL
-const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN
+// Two names for the same thing. Upstash's own docs say UPSTASH_REDIS_REST_*,
+// but provisioning it through the Vercel marketplace injects KV_REST_API_*
+// instead. Accept either, or the store silently reads as unconfigured and every
+// write becomes a no-op that still returns 200.
+const URL_ = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL
+const TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN
 
 export const configured = () => !!(URL_ && TOKEN)
 

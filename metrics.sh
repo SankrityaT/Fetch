@@ -24,8 +24,12 @@ fi
 
 echo
 echo "── clicks and installs ────────────────────────────────"
+# Vercel's marketplace injects KV_REST_API_*, Upstash's own docs say
+# UPSTASH_REDIS_REST_*. Take whichever is set.
+: "${UPSTASH_REDIS_REST_URL:=${KV_REST_API_URL:-}}"
+: "${UPSTASH_REDIS_REST_TOKEN:=${KV_REST_API_TOKEN:-}}"
 if [ -z "${UPSTASH_REDIS_REST_URL:-}" ] || [ -z "${UPSTASH_REDIS_REST_TOKEN:-}" ]; then
-  echo "  no store configured (set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN)"
+  echo "  no store configured (set UPSTASH_REDIS_REST_URL or KV_REST_API_URL, and the matching token)"
   echo "  see landing/api/README.md"
   exit 0
 fi
