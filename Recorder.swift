@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import CoreMedia
 import Foundation
@@ -111,11 +112,18 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 fail("window \(wid) is not on screen any more")
             }
             filter = SCContentFilter(desktopIndependentWindow: win)
-            width = Int(win.frame.width); height = Int(win.frame.height)
-            // a window's frame is in points, so scale to the backing store
-            let scale = content.displays.first(where: { $0.frame.intersects(win.frame) })
-                .map { d -> Int in Int((CGDisplayScreenSize(d.displayID).width > 0) ? 2 : 2) } ?? 2
-            width *= scale; height *= scale
+            // A window's frame is in points. Derive the backing scale from the display
+            // it sits on by comparing that display's pixel mode against its point size,
+            // rather than assuming 2x: a non-Retina external monitor is 1x.
+            // CGDisplayScreenSize is deliberately not used here, it needs a GUI
+            // connection this process does not have and aborts with CGS_REQUIRE_INIT.
+            var scale = 2.0
+            if let d = content.displays.first(where: { $0.frame.intersects(win.frame) }),
+               let mode = CGDisplayCopyDisplayMode(d.displayID), d.width > 0 {
+                scale = Double(mode.pixelWidth) / Double(d.width)
+            }
+            width = Int((win.frame.width * scale).rounded())
+            height = Int((win.frame.height * scale).rounded())
         } else {
             let display: SCDisplay
             if let did = opts.displayID, let d = content.displays.first(where: { $0.displayID == did }) {
@@ -355,6 +363,14 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 }
 
 // ---------- main ----------
+// SCContentFilter(desktopIndependentWindow:) talks to the window server, and a plain
+// command line tool has no connection to it: without this it aborts inside
+// CGS_REQUIRE_INIT the moment you capture a window rather than a display. Touching
+// NSApplication sets that connection up. .prohibited keeps it out of the Dock and
+// the menu bar, since this is a helper and should never look like an app.
+_ = NSApplication.shared
+NSApplication.shared.setActivationPolicy(.prohibited)
+
 let opts = parseArgs()
 guard !opts.out.isEmpty else { fail("--out is required") }
 guard #available(macOS 13.0, *) else { fail("ScreenCaptureKit needs macOS 13 or newer") }
