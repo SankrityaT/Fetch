@@ -48,7 +48,6 @@ export const metadata: Metadata = {
   title: "Fetch. Record it. Fetch it. Ship it.",
   description:
     "A macOS screen recorder and editor that runs entirely on your Mac. Move the camera bubble after you record. No account, no upload, no subscription.",
-  icons: { icon: "/fetch-icon-1024.png" },
   openGraph: {
     title: "Fetch. Record it. Fetch it. Ship it.",
     description:
