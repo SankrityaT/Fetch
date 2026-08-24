@@ -22,13 +22,30 @@ function palette(css, prefix) {
   return out;
 }
 
+/* The two files are not equally available. globals.css always ships with the
+   site; ui/tokens.css lives in the desktop app, one level above this directory,
+   and a host that deploys only the site subtree cannot see it. Vercel is
+   exactly that: root directory `site`, so the app source is simply not there
+   and this check has nothing to compare against.
+   Skip loudly in that case rather than failing the deploy, and keep failing
+   hard whenever the file IS readable and the values have drifted. Silence
+   would be worse than either. */
 let app, site;
 try {
-  app = palette(readFileSync(APP, "utf8"), "");
   site = palette(readFileSync(SITE, "utf8"), "color-");
 } catch (err) {
-  console.error(`tokens: could not read a token file. ${err.message}`);
+  console.error(`tokens: cannot read the site's own tokens at ${SITE}. ${err.message}`);
   process.exit(1);
+}
+try {
+  app = palette(readFileSync(APP, "utf8"), "");
+} catch {
+  console.log(
+    "tokens: skipped. The app's ui/tokens.css is not in this checkout, which is " +
+    "expected when only the site subtree is deployed. Run this from a full clone " +
+    "to actually check for drift."
+  );
+  process.exit(0);
 }
 
 /* Only the tokens the site actually adopted are checked. The app has some the
