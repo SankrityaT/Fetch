@@ -62,15 +62,29 @@ $('nav').addEventListener('click', e => {
 
 // ── source preview on the hero card stays live ──────────────────────────
 const usableThumb = t => typeof t === 'string' && t.length > 512   // empty captures come back as a stub
-setInterval(async () => {
+// get-sources enumerates every screen and window, grabs a 1000x640 thumbnail of each
+// and base64s the lot over IPC: about 300ms of work. Running it every two seconds
+// cost roughly 15% of a core for as long as the app sat open, purely to keep one tile
+// fresh. Refresh when attention actually returns instead, and keep only a slow
+// heartbeat while the window is genuinely being looked at.
+let thumbBusy = false
+async function refreshSourceThumb() {
+  if (thumbBusy) return
   if (!setup.source || setup.mode !== 'screen') return
   if (document.querySelector('.view[data-view="record"]').hidden) return
   if (document.querySelector('.scrim')) return                      // the wizard is polling instead
+  if (document.visibilityState !== 'visible' || !document.hasFocus()) return
+  thumbBusy = true
   try {
     const fresh = (await ipcRenderer.invoke('get-sources')).find(x => x.id === setup.source.id)
     if (fresh && usableThumb(fresh.thumb)) { setup.source.thumb = fresh.thumb; $('sourceThumb').src = fresh.thumb }
-  } catch {}
-}, 2000)
+  } catch {} finally { thumbBusy = false }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refreshSourceThumb()
+})
+window.addEventListener('focus', refreshSourceThumb)
+setInterval(refreshSourceThumb, 20000)
 
 // With quick record on, the hero button is the record button. Anything else is a
 // lie about what pressing it does.

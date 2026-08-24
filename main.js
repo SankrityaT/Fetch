@@ -274,7 +274,10 @@ app.on('before-quit', () => {
 // holds the device, so reload the window until it comes back
 let camOk = false, camTry = 0
 ipcMain.on('cam-ok', () => { camOk = true })
-setInterval(() => {
+// Only arm this when the Electron camera fallback actually exists: it is created
+// solely under FETCH_ELECTRON_CAM=1, so in a normal build the timer woke every nine
+// seconds forever to do nothing.
+if (cam) setInterval(() => {
   if (!camOk && cam && !cam.isDestroyed()) {
     camTry++
     console.log('[main] camera not up, retrying with camera #' + camTry)
