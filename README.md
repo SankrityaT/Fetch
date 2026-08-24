@@ -84,3 +84,14 @@ The app-specific password comes from appleid.apple.com under Sign-In and Securit
 - VP9 with alpha needs `-auto-alt-ref 0`, and ffmpeg's own VP9 decoder ignores WebM
   alpha, so verify alpha clips in Chromium, not with ffmpeg.
 - libass sizes captions against the script's PlayRes (about 288 lines), not video pixels.
+
+## License
+
+Fetch is **GPL-3.0-or-later**. See `LICENSE`.
+
+It bundles an FFmpeg binary that is itself GPL (it links x264, x265 and vid.stab) and
+runs it as a separate process. `THIRD-PARTY-NOTICES.md` carries the full attribution,
+the written offer of source, the exact build configuration, and the licenses of
+everything else that ships: the fonts, the icon set, Electron, and the speech model.
+
+If you fork this and ship it, those obligations come with you.
