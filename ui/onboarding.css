@@ -111,6 +111,13 @@
   background:var(--ink-2); border:var(--edge); display:grid; place-items:center; overflow:hidden;
 }
 .ob-mark img { position:relative; z-index:1; width:18px; height:18px; object-fit:contain; }
+
+/* Codex, Cursor and Windsurf carry their own background in the official artwork.
+   Nesting that inside our tile reads as a light square framed by a dark one, so
+   those marks become the tile: no chrome of ours, artwork clipped to the radius.
+   The logos themselves are never recoloured or redrawn. */
+.ob-mark[data-chrome="0"] { background:none; border:none; }
+.ob-mark[data-chrome="0"] img { width:100%; height:100%; }
 .ob-mark-fallback {
   position:absolute; inset:0; display:grid; place-items:center;
   font:700 var(--t-11)/1 var(--font-display); letter-spacing:.02em; color:var(--text-2);

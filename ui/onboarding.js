@@ -190,19 +190,23 @@
   // `mark` is the monogram shown until a real logo file exists. Two letters, because
   // Claude Code, Codex and Cursor all start with C and a single letter tells you
   // nothing about which row you are looking at.
+  // `chrome: true` means the mark is a bare glyph and needs our tile behind it.
+  // Codex, Cursor and Windsurf ship their own background in the artwork, so they
+  // become the tile themselves rather than sitting as a light square inside a dark
+  // one. `mark` is the monogram shown only if the logo file is ever missing.
   var AGENTS = [
-    { id: 'claude',   label: 'Claude Code', sub: 'Anthropic', mark: 'CL' },
-    { id: 'codex',    label: 'Codex',       sub: 'OpenAI',    mark: 'CX' },
-    { id: 'cursor',   label: 'Cursor',      sub: 'Editor',    mark: 'CU' },
-    { id: 'windsurf', label: 'Windsurf',    sub: 'Editor',    mark: 'WS' },
-    { id: 'zed',      label: 'Zed',         sub: 'Editor',    mark: 'ZD' },
+    { id: 'claude',   label: 'Claude Code', sub: 'Anthropic', mark: 'CL', chrome: true },
+    { id: 'codex',    label: 'Codex',       sub: 'OpenAI',    mark: 'CX', chrome: false },
+    { id: 'cursor',   label: 'Cursor',      sub: 'Editor',    mark: 'CU', chrome: false },
+    { id: 'windsurf', label: 'Windsurf',    sub: 'Editor',    mark: 'WS', chrome: false },
+    { id: 'zed',      label: 'Zed',         sub: 'Editor',    mark: 'ZD', chrome: true },
   ]
 
   // Real marks live in assets/agents/<id>.svg. Until one is dropped in, the slot
   // falls back to a monogram rather than an invented logo or a broken image icon.
   function agentMark(a) {
     return (
-      '<span class="ob-mark" data-agent="' + a.id + '">' +
+      '<span class="ob-mark" data-agent="' + a.id + '" data-chrome="' + (a.chrome ? '1' : '0') + '">' +
         '<img src="./assets/agents/' + a.id + '.svg" alt="" ' +
              'onerror="this.remove()">' +
         '<span class="ob-mark-fallback">' + a.mark + '</span>' +
