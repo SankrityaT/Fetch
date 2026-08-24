@@ -104,6 +104,44 @@ $('editSetup').onclick = () => openSetup()
 // ── recording ────────────────────────────────────────────────────────────
 let rec = null, stream = null, ticker = null, startedAt = 0, pausedFor = 0, pauseMark = 0
 
+// Screen recording refused is the one failure that cannot be retried in place:
+// macOS never asks twice, and the grant only takes effect on relaunch. A toast
+// saying "go to System Settings" is where a first run dies, so hand over the two
+// buttons that actually resolve it.
+function screenBlocked() {
+  mood('error')
+  const scrim = el('div', 'scrim')
+  scrim.innerHTML = `
+    <div class="modal" style="width:min(460px,92vw)">
+      <div class="modal-body" style="text-align:center;display:grid;gap:12px;justify-items:center">
+        <img class="biscuit" src="./assets/mascot/sad.png" alt="" style="width:96px;height:96px">
+        <h3 style="font-family:var(--font-display);font-size:var(--t-24);letter-spacing:-.03em">
+          macOS will not let Fetch see your screen</h3>
+        <p class="dim" style="font-size:var(--t-13);line-height:1.5">
+          Turn Fetch on under Screen &amp; System Audio Recording, then come back and relaunch.
+          macOS only applies it on a restart.</p>
+      </div>
+      <div class="modal-foot" style="gap:8px">
+        <button class="btn btn-sm btn-ghost" id="pbSetup">Run setup again</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-sm btn-ghost" data-close>Not now</button>
+        <button class="btn btn-sm" id="pbRelaunch">Relaunch</button>
+        <button class="btn btn-sm btn-primary" id="pbOpen">Open System Settings</button>
+      </div>
+    </div>`
+  document.body.appendChild(scrim)
+  const close = () => scrim.remove()
+  scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)
+  scrim.onclick = e => { if (e.target === scrim) close() }
+  scrim.querySelector('#pbOpen').onclick = () => ipcRenderer.invoke('open-privacy', 'screen')
+  scrim.querySelector('#pbRelaunch').onclick = () => ipcRenderer.invoke('relaunch')
+  scrim.querySelector('#pbSetup').onclick = () => {
+    close()
+    if (typeof window.startOnboarding === 'function') window.startOnboarding()
+  }
+}
+window.screenBlocked = screenBlocked
+
 async function buildStream() {
   let screenStream
   const wantSys = setup.sys
@@ -336,7 +374,8 @@ async function startRecording() {
   } catch (e) {
     $('countdown').hidden = true
     $('start').disabled = false
-    mood('error'); toast(e.message, 'bad', 7000)
+    if (/screen recording is blocked/i.test(e.message || '')) screenBlocked()
+    else { mood('error'); toast(e.message, 'bad', 7000) }
   }
 }
 

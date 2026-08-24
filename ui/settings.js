@@ -158,6 +158,21 @@
         </div>
 
         <div class="card">
+          <div class="card-head"><h3>Permissions</h3></div>
+          <div class="set-row">
+            <div class="opt-ico">${ico('monitor', 'icon-sm')}</div>
+            <div class="opt-txt">
+              <span class="opt-title">Screen, camera and microphone</span>
+              <span class="opt-sub">Run the first-run setup again, or open the macOS privacy settings.</span>
+            </div>
+            <div class="set-actions">
+              <button class="btn btn-sm" id="rerunSetup">Run setup again</button>
+              <button class="btn btn-sm" id="openPrivacy">System Settings</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
           <div class="card-head"><h3>Privacy</h3></div>
           ${row('rowTelemetry', 'paw-print', 'Count this install',
             'Sends a random id, the app version and your macOS version, once a day. ' +
@@ -184,6 +199,11 @@
     bindToggle('defKeepOriginal', 'keepOriginal', 'rowKeep')
     bindToggle('updateAutoToggle', 'autoUpdate', 'rowAutoUpdate')
     bindToggle('telemetryToggle', 'telemetry', 'rowTelemetry')
+    if ($('rerunSetup')) $('rerunSetup').onclick = () => {
+      if (typeof window.startOnboarding === 'function') window.startOnboarding()
+      else toast('Setup is unavailable in this build', 'bad')
+    }
+    if ($('openPrivacy')) $('openPrivacy').onclick = () => ipcRenderer.invoke('open-privacy', 'screen')
 
     wireUpdater()
 

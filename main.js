@@ -1,5 +1,5 @@
 const { app, BrowserWindow, desktopCapturer, session, ipcMain, dialog, screen, shell,
-        globalShortcut, Tray, Menu, nativeImage } = require('electron')
+        globalShortcut, Tray, Menu, nativeImage, systemPreferences } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
@@ -518,6 +518,29 @@ ipcMain.handle('save', async (e, buf) => {
     if (take.killWhenDone) { take.killWhenDone = false; stopBubble() }
   }
   return file
+})
+
+// ---------- permission recovery ----------
+// macOS gives no way to re-prompt once screen recording has been refused: the only
+// route is the Privacy pane. Telling someone to "go to System Settings" and leaving
+// them to find it is where a first run dies, so open the exact pane for them.
+const PRIVACY_PANES = {
+  screen: 'Privacy_ScreenCapture',
+  mic: 'Privacy_Microphone',
+  camera: 'Privacy_Camera',
+}
+ipcMain.handle('open-privacy', (e, which) => {
+  const pane = PRIVACY_PANES[which] || PRIVACY_PANES.screen
+  return shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`)
+})
+
+// Screen Recording only takes effect on relaunch, so offer to do it rather than
+// letting someone grant it and wonder why nothing changed.
+ipcMain.handle('relaunch', () => { app.relaunch(); app.exit(0) })
+
+// Whether macOS will actually let us capture, asked of the system rather than guessed
+ipcMain.handle('screen-permission', () => {
+  try { return systemPreferences.getMediaAccessStatus('screen') } catch { return 'unknown' }
 })
 
 // ---------- native recorder ----------
