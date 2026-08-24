@@ -223,11 +223,16 @@ async function startNative() {
   let avail
   try { avail = await ipcRenderer.invoke('native-available') } catch { return false }
   if (!avail || !avail.ok) return false
+  // The mic only rides along on macOS 15+. Below that the Chromium path is the only
+  // way to get voice, so bail out here rather than after starting: the old order
+  // spawned a recorder, wrote a file, stopped it and orphaned it in the temp folder
+  // on every single take.
+  if (setup.mic && !avail.mic) return false
   const r = await ipcRenderer.invoke('native-start', {
     ...nativeTarget(),
     fps: 60,
     systemAudio: !!setup.sys,
-    mic: !!setup.mic && avail.mic,
+    mic: !!setup.mic,
     hevc: false,
   })
   if (!r || !r.ok) {
@@ -236,12 +241,6 @@ async function startNative() {
     return false
   }
   console.log(`native capture ${r.width}x${r.height} @${r.fps}fps ${r.codec}`)
-  // The mic only rides along on macOS 15+. Below that the Chromium path is the only
-  // way to get voice, so do not silently record a mute take.
-  if (setup.mic && !avail.mic) {
-    await ipcRenderer.invoke('native-stop')
-    return false
-  }
   return true
 }
 
@@ -257,7 +256,12 @@ async function stopNative() {
   if (!r || !r.ok) { mood('error'); toast(r && r.error ? r.error : 'Nothing was captured', 'bad'); return }
   mood('working')
   const c = await ipcRenderer.invoke('native-commit', r.tmp)
-  if (!c || !c.ok) { mood('error'); toast('Could not save the recording', 'bad'); return }
+  if (!c || !c.ok) {
+    // the take is still on disk, so say where rather than losing someone's recording
+    mood('error')
+    toast(`Could not save it. The recording is at ${r.tmp}`, 'bad', 12000)
+    return
+  }
   if (r.dropped) console.log(`dropped ${r.dropped} frames of ${r.frames}`)
   const mb = (require('fs').statSync(c.file).size / 1e6).toFixed(1)
   finishTake(c.file, mb)

@@ -27,5 +27,8 @@ export async function GET(req) {
     redis('HINCRBY', 'dl:ref', ref, '1'),
   ])
 
-  return Response.redirect(DMG_URL, 302)
+  // Response.redirect() returns a response whose headers are immutable, and Next's
+  // route handler writes to them, which throws TypeError: immutable and turns the
+  // download button into a 500. Building it by hand keeps the headers mutable.
+  return new Response(null, { status: 302, headers: { Location: DMG_URL } })
 }

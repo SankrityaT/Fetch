@@ -126,7 +126,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             height = Int((win.frame.height * scale).rounded())
         } else {
             let display: SCDisplay
-            if let did = opts.displayID, let d = content.displays.first(where: { $0.displayID == did }) {
+            if let did = opts.displayID {
+                // Falling back to displays.first here would silently record the wrong
+                // screen on a multi-display Mac. Failing lets the app drop to the
+                // Chromium path, which does honour the chosen display.
+                guard let d = content.displays.first(where: { $0.displayID == did }) else {
+                    fail("display \(did) is not attached any more")
+                }
                 display = d
             } else if let d = content.displays.first {
                 display = d

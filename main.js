@@ -174,6 +174,7 @@ app.whenReady().then(() => {
   // Anonymous install count. Waits 30s so it never competes with launch, and does
   // nothing at all unless a metrics endpoint was configured at build time.
   telemetry.start(loadPrefs)
+  sweepStaleTakes()
 
   // Auto-answer getDisplayMedia with the user's chosen source (or the primary screen)
   let chosenSourceId = null
@@ -533,6 +534,23 @@ function recorderPath() {
 }
 
 let nativeRec = null      // { proc, out, started, resolveStop }
+
+// v1.0.1 could abandon a take in the temp folder without cleaning it up: on macOS 13
+// and 14 the microphone check ran after the recorder had already started writing.
+// That is fixed, but anyone who ran that build has strays to clear.
+function sweepStaleTakes() {
+  const dir = os.tmpdir()
+  const DAY = 24 * 60 * 60 * 1000
+  let files = []
+  try { files = fs.readdirSync(dir) } catch { return }
+  for (const f of files) {
+    if (!/^fetch-take-.*\.(mov|start\.json)$/.test(f) && !/^fetch-cam-/.test(f)) continue
+    const p = path.join(dir, f)
+    try {
+      if (Date.now() - fs.statSync(p).mtimeMs > DAY) fs.unlinkSync(p)
+    } catch {}
+  }
+}
 
 function majorOSVersion() {
   return parseInt(String(require('os').release()).split('.')[0], 10) || 0
