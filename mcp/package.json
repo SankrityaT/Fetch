@@ -1,0 +1,14 @@
+{
+  "name": "@fetch-app/mcp",
+  "version": "0.1.0",
+  "description": "Drive Fetch, the macOS screen recorder, from any MCP client",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "bin": { "fetch-mcp": "./index.js" },
+  "files": ["index.js", "bridge.js", "install.js", "README.md"],
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.0.0"
+  }
+}
