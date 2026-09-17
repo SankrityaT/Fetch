@@ -505,6 +505,57 @@ ipcMain.on('cursor-track', (e, on) => {
 })
 
 
+// Park the camera take beside the finished recording, with a sidecar describing how the
+// two line up in time.
+//
+// This lived inline in the 'save' handler, which is the Chromium webm path. The native
+// ScreenCaptureKit path commits through native-commit and never ran any of it, so on
+// macOS 13 and later, where native is the default, the bubble recorded to a temp file
+// that was then discarded. The screen take looked correct and the face was simply
+// absent in the editor, with nothing reporting an error. Both paths call this now,
+// which is the only way it stays fixed.
+async function parkCamTake(file) {
+  if (!camTake) return
+  const take = camTake; camTake = null
+  patchBubbleState({ record: false })
+  try {
+    if (take.pausedAt) take.gaps.push([take.pausedAt, Date.now()])
+    const dest = proc.sidecarOut(file, '.cam.mov')
+    // AVFoundation finalises the movie atom after stopRecording returns
+    for (let i = 0; i < 40 && !fs.existsSync(take.out); i++) await new Promise(r => setTimeout(r, 100))
+    let lastSize = -1
+    for (let i = 0; i < 40; i++) {
+      const sz = fs.existsSync(take.out) ? fs.statSync(take.out).size : 0
+      if (sz > 0 && sz === lastSize) break
+      lastSize = sz
+      await new Promise(r => setTimeout(r, 100))
+    }
+    if (fs.existsSync(take.out) && fs.statSync(take.out).size > 0) {
+      fs.copyFileSync(take.out, dest)          // tmpdir and the save dir can be different volumes
+      // read the start sidecar before deleting the take it is named after
+      let started = null
+      try { started = JSON.parse(fs.readFileSync(take.out.replace(/\.[^.]+$/, '.start.json'), 'utf8')) } catch {}
+      try { fs.unlinkSync(take.out) } catch {}
+      const d = screen.getPrimaryDisplay()
+      fs.writeFileSync(proc.sidecarOut(file, '.cam.json'), JSON.stringify({
+        file: dest,
+        screenStartedAt: take.screenStartedAt,
+        camStartedAt: started && started.startedAt || null,
+        bubbleSize: started && started.size || 260,
+        bubbleX: started ? started.x : null,
+        bubbleY: started ? started.y : null,
+        screenW: started ? started.screenW : null,
+        screenH: started ? started.screenH : null,
+        gaps: take.gaps,
+        display: { w: d.bounds.width, h: d.bounds.height },
+      }))
+    } else {
+      console.error('the camera take was empty, so this recording has no face video')
+    }
+  } catch (err) { console.error('cam take failed: ' + err.message) }
+  if (take.killWhenDone) { take.killWhenDone = false; stopBubble() }
+}
+
 ipcMain.handle('save', async (e, buf) => {
   const file = path.join(resolvedSaveDir(), `recording-${Date.now()}.webm`)
   fs.writeFileSync(file, Buffer.from(buf))
@@ -515,44 +566,7 @@ ipcMain.handle('save', async (e, buf) => {
   }
   cursorSamples = null
 
-  // park the camera take beside the recording and record how the two line up
-  if (camTake) {
-    const take = camTake; camTake = null
-    patchBubbleState({ record: false })
-    try {
-      if (take.pausedAt) take.gaps.push([take.pausedAt, Date.now()])
-      const dest = proc.sidecarOut(file, '.cam.mov')
-      // AVFoundation finalises the movie atom after stopRecording returns
-      for (let i = 0; i < 40 && !fs.existsSync(take.out); i++) await new Promise(r => setTimeout(r, 100))
-      let lastSize = -1
-      for (let i = 0; i < 40; i++) {
-        const sz = fs.existsSync(take.out) ? fs.statSync(take.out).size : 0
-        if (sz > 0 && sz === lastSize) break
-        lastSize = sz
-        await new Promise(r => setTimeout(r, 100))
-      }
-      if (fs.existsSync(take.out) && fs.statSync(take.out).size > 0) {
-        fs.copyFileSync(take.out, dest)          // tmpdir and the save dir can be different volumes
-        try { fs.unlinkSync(take.out) } catch {}
-        let started = null
-        try { started = JSON.parse(fs.readFileSync(take.out.replace(/\.[^.]+$/, '.start.json'), 'utf8')) } catch {}
-        const d = screen.getPrimaryDisplay()
-        fs.writeFileSync(proc.sidecarOut(file, '.cam.json'), JSON.stringify({
-          file: dest,
-          screenStartedAt: take.screenStartedAt,
-          camStartedAt: started && started.startedAt || null,
-          bubbleSize: started && started.size || 260,
-          bubbleX: started ? started.x : null,
-          bubbleY: started ? started.y : null,
-          screenW: started ? started.screenW : null,
-          screenH: started ? started.screenH : null,
-          gaps: take.gaps,
-          display: { w: d.bounds.width, h: d.bounds.height },
-        }))
-      }
-    } catch (err) { console.log('cam take failed: ' + err.message) }
-    if (take.killWhenDone) { take.killWhenDone = false; stopBubble() }
-  }
+  await parkCamTake(file)
   return file
 })
 
@@ -720,6 +734,8 @@ ipcMain.handle('native-commit', async (e, tmp) => {
     catch (err) { console.error('cursor track not saved:', err.message) }
   }
   cursorSamples = null
+  // the native path never did this, which is why camera takes vanished on macOS 13+
+  await parkCamTake(file)
   return { ok: true, file }
 })
 
