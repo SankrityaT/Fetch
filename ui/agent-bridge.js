@@ -91,6 +91,33 @@ const ops = {
     return { toggled: true }
   },
 
+  // Discovery. Without these an agent cannot target anything: record.start takes a
+  // window or display id and had no way to find one, so the only reachable behaviour
+  // was "record the main display". Driving a browser or a Simulator and then
+  // recording that window needs this.
+  //
+  // Icons are stripped. The helper attaches a ~20KB base64 PNG per window, which for
+  // a typical desktop is most of a megabyte of base64 in the agent's context for no
+  // benefit, and this server's rule is paths and summaries rather than payloads.
+  async 'windows.list'() {
+    const list = await deps.listWindows()
+    return (list || [])
+      .filter(w => w.width > 120 && w.height > 120)   // drop tooltips and shadow panes
+      .map(w => ({ id: w.id, app: w.app, title: w.title, width: w.width, height: w.height }))
+  },
+
+  async 'displays.list'() {
+    const { screen } = require('electron')
+    const primary = screen.getPrimaryDisplay().id
+    return screen.getAllDisplays().map(d => ({
+      id: String(d.id),
+      primary: d.id === primary,
+      width: d.size.width,
+      height: d.size.height,
+      scale: d.scaleFactor,
+    }))
+  },
+
   async 'recordings.list'() {
     // Through the app, never through processor directly: listRecordings falls back to
     // a different, empty library index outside Electron and ignores the saveDir pref.

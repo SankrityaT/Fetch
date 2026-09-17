@@ -44,6 +44,29 @@ args = ["/Applications/Fetch.app/Contents/Resources/app/mcp/index.js"]
 Use an absolute path to `node`. Your client does not inherit a login shell's `PATH`,
 so a bare `node` will not resolve for nvm installs.
 
+## Driving something, then recording it
+
+Fetch records. It does not drive a browser or a simulator, because mature tools
+already do: Playwright MCP for the web, `xcrun simctl` for the iOS Simulator, a shell
+command for anything else. The agent composes them.
+
+```
+list_windows({ app: "Chrome" })   ->  find the window the driver just opened
+record_start({ window: "12049" }) ->  record that window, not the whole screen
+```
+
+**Run the driver headed.** Playwright defaults to headless, and a headless browser has
+no window on screen, so there is nothing for any screen recorder to capture. Started
+headless it will silently produce a recording of your desktop with no browser in it.
+Launch Playwright MCP with `--headed`, or set `"headless": false` in its config.
+
+The iOS Simulator is an ordinary window, so it needs nothing special:
+
+```
+list_windows({ app: "Simulator" })
+record_start({ window: "<id>" })
+```
+
 ## Tools
 
 | tool | what it does |
@@ -51,6 +74,8 @@ so a bare `node` will not resolve for nvm installs.
 | `record_start` | Starts recording a display or a single window. Returns when the file exists. |
 | `record_stop` | Stops the current recording. |
 | `record_status` | Whether Fetch is recording. |
+| `list_windows` | Windows open on screen, with the id `record_start` takes. Filter with `app`. |
+| `list_displays` | Displays attached, with the id `record_start` takes. |
 | `list_recordings` | Known recordings, newest first, with paths. |
 | `probe` | Duration, resolution, frame rate, audio tracks. |
 | `transcribe` | On-device transcript, writes a `.srt` beside the file. |

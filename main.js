@@ -185,6 +185,9 @@ app.whenReady().then(() => {
     toRenderer,
     proc: require('./processor'),
     isRecording: () => recState === 'recording' || recState === 'paused',
+    // Lazily resolved: runHelper is declared further down this same scope, and this
+    // arrow is only ever invoked long after that runs.
+    listWindows: () => runHelper([]).then(o => { try { return JSON.parse(o || '[]') } catch { return [] } }),
   })
 
   // Onboarding's Connect screen. Resolving binaries needs a login shell, which costs

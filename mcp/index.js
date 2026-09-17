@@ -60,6 +60,38 @@ function build() {
     },
     async () => text(await call('record.status')))
 
+  // Discovery, so a target can actually be chosen. The usual shape is: something
+  // else (Playwright, simctl, a shell command) opens the window, then list_windows
+  // finds it and record_start captures that window rather than the whole screen.
+  server.registerTool(
+    'list_windows',
+    {
+      description:
+        'List the windows currently open on screen, with the id record_start takes. ' +
+        'Use this to record one application window rather than a whole display, for ' +
+        'example a browser a test driver just opened, or the iOS Simulator.',
+      inputSchema: z.object({
+        app: z.string().optional()
+          .describe('Only return windows whose application or title contains this, case insensitive.'),
+      }),
+    },
+    async (args = {}) => {
+      const all = await call('windows.list')
+      const q = (args.app || '').toLowerCase()
+      const hits = q
+        ? all.filter(w => (w.app || '').toLowerCase().includes(q) || (w.title || '').toLowerCase().includes(q))
+        : all
+      return text(hits)
+    })
+
+  server.registerTool(
+    'list_displays',
+    {
+      description: 'List the displays attached, with the id record_start takes.',
+      inputSchema: z.object({}),
+    },
+    async () => text(await call('displays.list')))
+
   server.registerTool(
     'list_recordings',
     {
