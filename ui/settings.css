@@ -22,3 +22,71 @@
 .set-path { font-family:var(--font-mono); font-size:var(--t-11); color:var(--text-2);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .set-actions { display:flex; gap:6px; flex:none; }
+
+/* ── recording access ─────────────────────────────────────────────────────
+   The trust surface: what an agent may record, and what it can never see.
+   Rhythm is deliberately uneven. The mode row and its note sit tight together
+   because they are one thought, then a wider gap before the never list, which
+   is a separate promise. */
+
+.acc-lede { font-size:var(--t-12); color:var(--text-1); max-width:62ch; margin:-4px 0 var(--s-4); line-height:1.5; }
+
+/* natural width, not stretched across the card: a three-item switch spread over
+   900px leaves each label floating in the middle of an oversized target */
+.acc-seg { align-self:flex-start; }
+.acc-seg button { padding:0 var(--s-4); }
+
+/* tied to the segment above it, not floating between two sections */
+.acc-note {
+  font-size:var(--t-12); color:var(--text-1); line-height:1.5;
+  margin:var(--s-3) 0 var(--s-6); max-width:62ch;
+}
+
+.acc-sub { margin-bottom:var(--s-3); }
+.acc-sub-title { display:block; font-weight:600; font-size:var(--t-13); margin-bottom:var(--s-1); }
+.acc-sub-note { font-size:var(--t-11); color:var(--text-2); line-height:1.55; max-width:68ch; }
+
+.acc-chips { display:flex; flex-wrap:wrap; gap:var(--s-2); }
+.acc-chip { padding-right:4px; }
+
+/* the × is a real target, not a 10px hitbox, and only colours on hover so a wall
+   of chips does not read as a wall of delete buttons */
+/* dim at rest, because thirteen chips at full contrast read as a wall of delete
+   buttons rather than a list of protected apps. The chip is the content; the x is
+   an affordance that steps forward when you reach for it. */
+.acc-chip-x {
+  display:grid; place-items:center; width:18px; height:18px; flex:none;
+  margin-left:2px; border-radius:50%; color:var(--ink-4); opacity:.7;
+  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in),
+             opacity var(--dur-1) var(--ease-in);
+}
+.acc-chip:hover .acc-chip-x { opacity:1; color:var(--text-2); }
+.acc-chip-x:hover { background:rgba(255,68,56,.16); color:#FFB4AD; opacity:1; }
+.acc-chip-x svg { width:11px; height:11px; }
+
+.acc-empty { font-size:var(--t-12); color:var(--warn); line-height:1.5; }
+
+.acc-add { display:flex; gap:var(--s-2); margin-top:var(--s-3); }
+/* an app name is a short string, so the field is sized for one rather than
+   stretched to the card */
+.acc-add input {
+  width:240px; min-width:0; height:30px; padding:0 var(--s-3);
+  background:var(--ink-1); border:var(--edge); border-radius:var(--r-pill);
+  font-size:var(--t-12); color:var(--text-0);
+}
+.acc-add input::placeholder { color:var(--text-2); }
+.acc-add input:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
+
+/* the reassurance, set apart from the controls by a rule rather than a card,
+   because a nested card inside a settings card is always wrong */
+.acc-seen {
+  display:flex; gap:var(--s-2); align-items:flex-start;
+  margin-top:var(--s-5); padding-top:var(--s-4); border-top:1px solid var(--ink-2);
+  font-size:var(--t-11); color:var(--text-2); line-height:1.55; max-width:68ch;
+}
+.acc-seen svg { flex:none; margin-top:1px; color:var(--text-2); }
+.acc-seen kbd {
+  display:inline-block; padding:1px 5px; margin:0 1px; border-radius:5px;
+  background:var(--ink-2); border:var(--edge);
+  font:500 10px/1.5 var(--font-mono); color:var(--text-1);
+}

@@ -26,6 +26,7 @@
 const fs = require('fs')
 const net = require('net')
 const path = require('path')
+const policy = require('./record-policy')
 
 let app, ipcMain
 try { ({ app, ipcMain } = require('electron')) } catch {}
@@ -61,6 +62,11 @@ const ops = {
 
     const win = deps.getWindow()
     if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
+
+    // Access check before anything starts. This is the enforcement point: the rule
+    // lives here rather than in the MCP tool description, because a description is
+    // prose and prose is a suggestion.
+    await enforceAccess(args)
 
     await applySetup(win, args)
     deps.toRenderer('start')
@@ -139,6 +145,30 @@ const ops = {
     if (args.include_text) out.text = r.text
     return out
   },
+}
+
+// Refuse the take if the policy says so, with a reason the agent can relay verbatim.
+// Window targets are resolved to their owning app first, since the policy is written in
+// terms of apps and the caller only gives us an id.
+async function enforceAccess(args) {
+  const prefs = deps.getPrefs ? deps.getPrefs() : {}
+  const p = {
+    mode: prefs.recordAccess,
+    neverRecord: prefs.neverRecord,
+    allowedApps: prefs.allowedRecordApps,
+  }
+
+  let app = null
+  if (args.window != null) {
+    const list = await deps.listWindows()
+    const hit = (list || []).find(w => String(w.id) === String(args.window))
+    app = hit && hit.app
+  }
+
+  const verdict = policy.decide(
+    { by: 'agent', kind: args.window != null ? 'window' : 'display', app }, p)
+
+  if (!verdict.allow) throw new Error(`Fetch refused to record: ${verdict.reason}`)
 }
 
 // Point the renderer's setup at what was asked for, reusing the same state the UI

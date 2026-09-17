@@ -83,10 +83,46 @@
     ipcRenderer.invoke('updater-get-state').then(applyUpdateState).catch(() => {})
   }
 
+  // Kept in step with ui/record-policy.js, which is where these are enforced. The
+  // renderer cannot require that module (it also loads in main), so the labels live
+  // here and the rules live there.
+  const ACCESS_MODES = ['ask', 'allowed', 'open']
+  const DEFAULT_NEVER = [
+    '1Password', 'Bitwarden', 'Dashlane', 'LastPass', 'Proton Pass', 'Keychain Access',
+    'Messages', 'WhatsApp', 'Signal', 'Telegram',
+    'Mail', 'System Settings', 'System Preferences',
+  ]
+
+  // One sentence per mode, swapped as you choose. Three bare labels would leave you
+  // guessing what "Allowed apps only" does to a full-screen take, which is the one
+  // thing about it worth knowing.
+  const ACCESS_NOTES = {
+    ask: 'Every recording an agent asks for waits for you. Nothing starts on its own.',
+    allowed: 'Agents may record only the apps you list, and never a whole display.',
+    open: 'Agents may record any window or display, apart from the apps below.',
+  }
+
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]))
+
+  // No per-chip state icon: every chip here is the same state, so a glyph on each one
+  // is noise. The section heading carries the meaning.
+  function neverChipsHtml(list) {
+    if (!list.length) {
+      return '<p class="acc-empty">Nothing is protected. Any app on screen can end up in a take.</p>'
+    }
+    return list.map(name =>
+      '<span class="chip chip-static acc-chip">' + esc(name) +
+        '<button class="acc-chip-x" data-remove="' + esc(name) + '" ' +
+          'aria-label="Stop protecting ' + esc(name) + '">' + ico('x', 'icon-sm') + '</button>' +
+      '</span>').join('')
+  }
+
   function renderSettings() {
     const mount = $('settingsMount')
     if (!mount) return
     const p = window.prefs || {}
+    const mode = ACCESS_MODES.includes(p.recordAccess) ? p.recordAccess : 'ask'
+    const never = Array.isArray(p.neverRecord) ? p.neverRecord : DEFAULT_NEVER
 
     mount.innerHTML = `
       <div class="set-wrap">
@@ -172,6 +208,34 @@
           </div>
         </div>
 
+        <div class="card" id="setAccessCard">
+          <div class="card-head"><h3>Recording access</h3></div>
+          <p class="acc-lede">What an agent may record on this Mac, and what it can never see.</p>
+
+          <div class="seg acc-seg" id="accessSeg" role="tablist">
+            <button data-val="ask" role="tab" aria-selected="${mode === 'ask'}">Ask every time</button>
+            <button data-val="allowed" role="tab" aria-selected="${mode === 'allowed'}">Allowed apps only</button>
+            <button data-val="open" role="tab" aria-selected="${mode === 'open'}">Anything on screen</button>
+          </div>
+          <p class="acc-note" id="accessNote">${ACCESS_NOTES[mode]}</p>
+
+          <div class="acc-sub">
+            <span class="acc-sub-title">Never recorded</span>
+            <p class="acc-sub-note">These stay out of every take, even when an agent records the
+              whole screen. Fetch leaves their windows out of the frame, so nothing sensitive
+              reaches the disk in the first place.</p>
+          </div>
+          <div class="acc-chips" id="neverChips">${neverChipsHtml(never)}</div>
+          <form class="acc-add" id="neverAdd">
+            <input type="text" id="neverInput" placeholder="App name, e.g. Notes" autocomplete="off" spellcheck="false">
+            <button class="btn btn-sm" type="submit" id="neverAddBtn" disabled>Add</button>
+          </form>
+
+          <p class="acc-seen">${ico('eye', 'icon-sm')}<span>You always see a take in progress: the red
+            border, the floating controls and Biscuit in the menu bar. <kbd>Shift</kbd><kbd>&#8984;</kbd><kbd>R</kbd>
+            stops one an agent started, the same as your own.</span></p>
+        </div>
+
         <div class="card">
           <div class="card-head"><h3>Privacy</h3></div>
           ${row('rowTelemetry', 'paw-print', 'Count this install',
@@ -214,6 +278,51 @@
       $('countdownSeg').querySelectorAll('button').forEach(x => x.setAttribute('aria-selected', String(x === b)))
       window.savePrefs({ countdown: val })
     })
+
+    // --- recording access ---
+    const currentNever = () =>
+      Array.isArray(window.prefs.neverRecord) ? window.prefs.neverRecord.slice() : DEFAULT_NEVER.slice()
+
+    function paintNever(list) {
+      window.savePrefs({ neverRecord: list })
+      window.prefs.neverRecord = list
+      $('neverChips').innerHTML = neverChipsHtml(list)
+    }
+
+    $('accessSeg').addEventListener('click', e => {
+      const b = e.target.closest('button[data-val]')
+      if (!b) return
+      $('accessSeg').querySelectorAll('button').forEach(x => x.setAttribute('aria-selected', String(x === b)))
+      $('accessNote').textContent = ACCESS_NOTES[b.dataset.val]
+      window.savePrefs({ recordAccess: b.dataset.val })
+    })
+
+    $('neverChips').addEventListener('click', e => {
+      const btn = e.target.closest('[data-remove]')
+      if (!btn) return
+      const name = btn.dataset.remove
+      paintNever(currentNever().filter(n => n !== name))
+      toast(name + ' can be recorded again', 'ok')
+    })
+
+    // Disabled until there is something to add, and a duplicate is refused out loud
+    // rather than silently ignored, so pressing Add always does something visible.
+    const neverInput = $('neverInput')
+    neverInput.oninput = () => { $('neverAddBtn').disabled = !neverInput.value.trim() }
+    $('neverAdd').onsubmit = e => {
+      e.preventDefault()
+      const name = neverInput.value.trim()
+      if (!name) return
+      const list = currentNever()
+      if (list.some(n => n.toLowerCase() === name.toLowerCase())) {
+        toast(name + ' is already protected', 'bad')
+        return
+      }
+      paintNever(list.concat(name))
+      neverInput.value = ''
+      $('neverAddBtn').disabled = true
+      toast(name + ' will never be recorded', 'ok')
+    }
 
     $('chooseDirBtn').onclick = async () => {
       const dir = await ipcRenderer.invoke('pick-save-dir')
