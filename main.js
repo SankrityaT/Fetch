@@ -8,6 +8,23 @@ const os = require('os')
 // used by other dev Electron apps and its GPU/capture state can get poisoned
 app.setPath('userData', path.join(app.getPath('appData'), 'Fetch'))
 
+// Window enumeration helper. Module scope on purpose: both the whenReady IPC handlers
+// and native-start (registered at module level) need it. Declaring it inside whenReady
+// meant native-start referenced a name that did not exist in its scope, and the only
+// symptom would have been a protected app silently reappearing in a full-screen take.
+const winListBin = () => {
+  const packaged = path.join(process.resourcesPath || '.', 'WindowList')
+  return fs.existsSync(packaged) ? packaged : path.join(__dirname, 'WindowList')
+}
+const runHelper = args => new Promise(resolve => {
+  const bin = winListBin()
+  if (!fs.existsSync(bin)) return resolve('')
+  require('child_process').execFile(bin, args, { maxBuffer: 64 * 1024 * 1024, timeout: 15000 },
+    (err, stdout) => resolve(err ? '' : String(stdout).trim()))
+})
+const listWindowsJson = () =>
+  runHelper([]).then(o => { try { return JSON.parse(o || '[]') } catch { return [] } })
+
 let control, cam
 
 const updater = require('./ui/updater')
@@ -31,6 +48,11 @@ const DEFAULT_PREFS = {
   quickRecord: false,
   autoUpdate: true,        // let Fetch check and download updates in the background
   telemetry: true,         // anonymous install count: a random id, the version, the OS
+  // What an agent may record. Defaults to 'ask' so a fresh install is never wide open,
+  // and neverRecord is seeded rather than empty (see ui/record-policy.js).
+  recordAccess: 'ask',
+  neverRecord: null,       // null means "use the seeded list"
+  allowedRecordApps: [],
 }
 let prefsCache = null
 function loadPrefs() {
@@ -185,9 +207,8 @@ app.whenReady().then(() => {
     toRenderer,
     proc: require('./processor'),
     isRecording: () => recState === 'recording' || recState === 'paused',
-    // Lazily resolved: runHelper is declared further down this same scope, and this
-    // arrow is only ever invoked long after that runs.
-    listWindows: () => runHelper([]).then(o => { try { return JSON.parse(o || '[]') } catch { return [] } }),
+    listWindows: listWindowsJson,
+    getPrefs: loadPrefs,
   })
 
   // Onboarding's Connect screen. Resolving binaries needs a login shell, which costs
@@ -250,16 +271,6 @@ app.whenReady().then(() => {
   // ---------- window enumeration ----------
   // desktopCapturer returns almost nothing on current macOS, so a small
   // ScreenCaptureKit helper does the listing and the per-window previews.
-  const winListBin = () => {
-    const packaged = path.join(process.resourcesPath || '.', 'WindowList')
-    return fs.existsSync(packaged) ? packaged : path.join(__dirname, 'WindowList')
-  }
-  const runHelper = args => new Promise(resolve => {
-    const bin = winListBin()
-    if (!fs.existsSync(bin)) return resolve('')
-    require('child_process').execFile(bin, args, { maxBuffer: 64 * 1024 * 1024, timeout: 15000 },
-      (err, stdout) => resolve(err ? '' : String(stdout).trim()))
-  })
 
   ipcMain.handle('list-windows', async () => {
     const out = await runHelper([])
@@ -619,6 +630,20 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
   const args = ['--out', out, '--fps', String(opts.fps || 60)]
   if (opts.windowId) args.push('--window', String(opts.windowId))
   else if (opts.displayId) args.push('--display', String(opts.displayId))
+
+  // A display capture sees everything on screen, so the never-record list has to be
+  // applied here as well as at the bridge. Refusing window targets alone would leave a
+  // protected app visible in any full-screen take, which would make the promise on the
+  // Recording access screen false. This applies to human takes too: the point is that
+  // those pixels are never written, whoever pressed record.
+  if (!opts.windowId) {
+    try {
+      const recordPolicy = require('./ui/record-policy')
+      const wins = await listWindowsJson()
+      const drop = recordPolicy.windowsToExclude(wins, { neverRecord: loadPrefs().neverRecord })
+      if (drop.length) args.push('--exclude', drop.join(','))
+    } catch (err) { console.error('exclusion list failed:', err.message) }
+  }
   if (opts.systemAudio) args.push('--system-audio')
   if (opts.mic) { args.push('--mic'); if (opts.micDeviceId) args.push('--mic-device', opts.micDeviceId) }
   if (opts.hevc) args.push('--hevc')
