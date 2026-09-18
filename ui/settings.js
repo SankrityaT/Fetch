@@ -7,7 +7,7 @@
    that setup.js and editor.js also read from. */
 ;(function () {
   function fmtSaveDir(dir) {
-    if (!dir) return 'Desktop'
+    if (!dir) return '~/Movies/Fetch'
     const home = require('os').homedir()
     return dir.startsWith(home) ? '~' + dir.slice(home.length) : dir
   }

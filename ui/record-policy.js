@@ -121,7 +121,7 @@ function checkSettingsPatch(patch, dirExists = () => true) {
       if (![0, 3, 5].includes(v)) throw new Error('countdown must be 0, 3 or 5')
       out[k] = v
     } else if (k === 'saveDir') {
-      if (v !== null && !(typeof v === 'string' && dirExists(v))) throw new Error('saveDir must be an existing folder, or null for the Desktop')
+      if (v !== null && !(typeof v === 'string' && dirExists(v))) throw new Error('saveDir must be an existing folder, or null for ~/Movies/Fetch')
       out[k] = v
     } else {
       if (typeof v !== 'boolean') throw new Error(`${k} must be true or false`)

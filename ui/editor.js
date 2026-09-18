@@ -32,7 +32,7 @@ const EDITOR_HTML = `
       <button class="pc main" id="edPlay">${ico('play-fill', 'icon')}</button>
       <button class="pc" id="edFwd" data-tip="Forward 5s">${ico('skip-forward', 'icon-sm')}</button>
       <span class="time mono" id="edTime">0:00 / 0:00</span>
-      <div style="flex:1"></div>
+      <span class="ed-name" id="edName"></span>
       <span class="chip chip-static" id="edOutLen">0.0s</span>
     </div>
   </div>
@@ -48,6 +48,7 @@ const EDITOR_HTML = `
     <div class="tl-beats" id="tlBeats" hidden></div>
     <div class="tl-zooms" id="tlZooms" hidden></div>
     <div class="tl-marks" id="tlMarks" hidden></div>
+    <div class="tl-texts" id="tlTexts" hidden></div>
     <div class="tl-wrap" id="tlWrap">
       <div class="tl-lanes">
         <div class="tl-lane tl-lane-video" id="laneVideo">
@@ -378,21 +379,27 @@ async function openInEditor(src) {
   mount.innerHTML = EDITOR_HTML
 
   ed.src = src; ed.texts = []; ed.cues = []; ed.crop = null; ed.selText = null; ed.peaks = []
+  window.dispatchEvent(new CustomEvent('fetch:editor-open', { detail: { src } }))   // the chat's "Working on" chip
   ed.docReady = false
   wireEditor()
+  paintEdName()
 
   const v = $('edVideo')
-  v.src = 'file://' + src
+  // a take named from a window title can hold # or %, which a bare file:// URL misreads
+  v.src = 'file://' + encodeURI(src).replace(/#/g, '%23').replace(/\?/g, '%3F')
   ed.meta = await ipcRenderer.invoke('probe', src)
 
   // MediaRecorder webm has no duration header, so seek past the end to force one
   const ready = () => new Promise(res => {
     let settled = false
-    const done = () => { if (settled) return; settled = true; v.ontimeupdate = null; res() }
+    // A listener of its own, not v.ontimeupdate: wireEditor() already installed the
+    // real handler there, and clearing it here left the playhead frozen during playback.
+    const onTime = () => { if (isFinite(v.duration) && v.duration > 0) { v.currentTime = 0; done() } }
+    const done = () => { if (settled) return; settled = true; v.removeEventListener('timeupdate', onTime); res() }
     const onMeta = () => {
       if (isFinite(v.duration) && v.duration > 0) return done()
       v.currentTime = 1e7                       // webm has no duration until we seek past the end
-      v.ontimeupdate = () => { if (isFinite(v.duration) && v.duration > 0) { v.currentTime = 0; done() } }
+      v.addEventListener('timeupdate', onTime)
     }
     v.addEventListener('loadedmetadata', onMeta)
     if (v.readyState >= 1) onMeta()             // it may have loaded before we attached
@@ -402,6 +409,8 @@ async function openInEditor(src) {
 
   ed.dur = ed.meta.duration || v.duration || 0
   ed.in = 0; ed.out = ed.dur; ed.cur = 0
+  // a silent take has no sound to show, so an empty "Recording audio" lane only misleads
+  $('laneAudio').hidden = !ed.meta.hasAudio
   paintTrim(); drawWave(); layoutTimeline(); paintTime(); paintPlayhead(); paintBackdrop()
   loadBeats()
 
@@ -432,7 +441,7 @@ async function openInEditor(src) {
   })
   runJob({ op: 'filmstrip', src, opts: { count: 28, height: 64 } }, 'Filmstrip').then(r => {
     const img = $('strip')
-    if (r && r.file && img) img.src = 'file://' + r.file + '?t=' + Date.now()
+    if (r && r.file && img) img.src = 'file://' + encodeURI(r.file).replace(/#/g, '%23').replace(/\?/g, '%3F') + '?t=' + Date.now()
   })
 }
 
@@ -524,7 +533,10 @@ function wireEditor() {
 
   // text
   $('addText').onclick = () => {
-    ed.texts.push({ text: 'New text', fx: .5, fy: .5, sizeFrac: .06, color: 'white', box: false, start: null, end: null })
+    // minted now, from the saved edit's counter, so the lane shows T3 from the start
+    // and the id an agent later reads is the one the person already saw
+    const id = ed.doc ? FD.mintId(ed.doc, 'texts') : undefined
+    ed.texts.push({ id, text: 'New text', fx: .5, fy: .5, sizeFrac: .06, color: 'white', box: false, start: null, end: null })
     ed.selText = ed.texts.length - 1
     renderTexts(); renderLayerList()
   }
@@ -923,8 +935,11 @@ function wireEditor() {
   // the UI shows the change rather than quietly disagreeing with the file.
   function docToEd(doc) {
     ed.doc = doc
+    // No clips means nothing has been trimmed yet, so the range is the whole take. Taking
+    // trimFromClips' 0 to 0 at face value opened every fresh take trimmed to nothing.
     const t = FD.trimFromClips(doc.clips)
-    ed.in = t.start; ed.out = t.end; ed.cuts = t.cuts
+    const whole = !(doc.clips && doc.clips.length) || !(t.end > t.start)
+    ed.in = whole ? 0 : t.start; ed.out = whole ? ed.dur : t.end; ed.cuts = whole ? [] : t.cuts
     ed.texts = (doc.texts || []).map(x => ({ ...x }))
     ed.cues = (doc.cues || []).map(x => ({ ...x }))
     ed.beats = (doc.beats || []).map(x => ({ ...x }))
@@ -1054,6 +1069,16 @@ document.addEventListener('click', e => {
     if (m) seek(m.start)
     return
   }
+  const tx = e.target.closest('#tlTexts .tl-text')
+  if (tx && ed.src) {
+    const i = +tx.dataset.i, t = ed.texts[i]
+    if (!t) return
+    const tab = document.querySelector('#inspTabs button[data-tab="text"]')
+    if (tab) tab.click()
+    ed.selText = i; renderTexts(); renderLayerList()
+    seek(t.start != null ? t.start : ed.in)
+    return
+  }
   const z = e.target.closest('#tlZooms .tl-zoom')
   if (z && ed.src) {
     const zoom = ed.zooms.find(x => x.id === z.dataset.id)
@@ -1114,7 +1139,7 @@ function paintTrim() {
   $('dimR').style.left = b + 'px'; $('dimR').style.width = (w - b) + 'px'
   $('trimIn').textContent = fmtTime(ed.in); $('trimOut').textContent = fmtTime(ed.out)
   $('tlRange').textContent = `${fmtTime(ed.in)} to ${fmtTime(ed.out)}`
-  renderCuts()
+  renderCuts(); renderTextTrack()     // a text with no range spans the trim
 }
 // ── beats ────────────────────────────────────────────────────────────────────
 // The named spans a recording is actually scrubbed by, taken from what was said
@@ -1167,16 +1192,45 @@ async function upgradeName() {
   const next = naming.smartName({ said: ed.beats[0].label })
   if (!next) return
   try {
-    const renamed = renameFileWithSidecars(ed.src, next)
-    if (renamed === ed.src) return
-    await ensureListed(renamed)
-    ed.src = renamed
-    if (window.fetchDoc) window.fetchDoc.src = () => ed.src
-    const v = $('edVideo'); const t = v.currentTime
-    v.src = 'file://' + renamed; v.currentTime = t
+    const was = ed.src
+    const renamed = await renameTake(ed.src, next)      // editorFollowRename moves ed.src
+    if (renamed === was) return
     refreshLibrary()
-    toast('Named it "' + next + '"', 'ok')
+    // the folder's name for a take folder (it has no extension to strip: "v1.2" is a name)
+    const inTake = /\/Original$/.test(path.dirname(renamed))
+    const shown = inTake ? path.basename(path.dirname(path.dirname(renamed))) : path.parse(renamed).name
+    toast('Named it "' + escHtml(shown) + '"', 'ok')
   } catch (e) { console.error('rename after transcribe failed:', e.message) }
+}
+
+// A rename from anywhere (the Library, an agent, the transcript above) can move the
+// clip open here, take folder and all. Follow it, or the autosave writes the edit
+// back under a path that no longer exists and export looks for a camera take that
+// has moved.
+// The take's name over the stage: its folder for a take, the file's name otherwise
+function paintEdName() {
+  const n = $('edName')
+  if (!n || !ed.src) return
+  const dir = path.dirname(ed.src)
+  n.textContent = path.basename(dir) === 'Original' ? path.basename(path.dirname(dir)) : path.parse(ed.src).name
+  n.title = ed.src
+}
+
+window.editorFollowRename = moves => {
+  const map = new Map(moves)
+  const next = map.get(ed.src)
+  if (!next) return
+  ed.src = next
+  paintEdName()
+  if (window.fetchDoc) window.fetchDoc.src = () => ed.src
+  if (ed.cam && map.has(ed.cam.file)) ed.cam.file = map.get(ed.cam.file)
+  if (ed.audioTrack && map.has(ed.audioTrack.file)) ed.audioTrack.file = map.get(ed.audioTrack.file)
+  const v = $('edVideo')
+  if (v) { const t = v.currentTime; v.src = 'file://' + encodeURI(next).replace(/#/g, '%23').replace(/\?/g, '%3F'); v.currentTime = t }
+  if (ed.docReady && window.fetchDoc) {
+    ipcRenderer.invoke('write-doc', next, window.fetchDoc.get()).catch(() => {})
+    startDocAutosave(next)
+  }
 }
 
 // Marks as their own track. A redaction in particular must be visible before export:
@@ -1195,6 +1249,27 @@ function renderMarks() {
       'style="left:' + left + '%;width:' + width + '%" title="' + escHtml(m.id + ' ' + what) + '">' +
       '<span class="tl-mark-id mono">' + escHtml(m.id) + '</span>' +
       '<span class="tl-mark-kind">' + escHtml(what) + '</span>' +
+    '</button>'
+  }).join('')
+}
+
+// Text layers get a track like zooms and marks: T1 is how an agent names one, so it
+// has to be on screen, with the span it shows for. No range means the whole clip.
+function renderTextTrack() {
+  const host = $('tlTexts')
+  if (!host || !ed.dur) return
+  if (!ed.texts.length) { host.hidden = true; host.innerHTML = ''; return }
+  host.hidden = false
+  host.innerHTML = ed.texts.map((t, i) => {
+    const whole = !(t.start != null && t.end != null && t.end > t.start)
+    const s = whole ? ed.in : t.start, e = whole ? ed.out : t.end
+    const left = (s / ed.dur) * 100
+    const width = Math.max(0.6, ((e - s) / ed.dur) * 100)
+    const words = String(t.text || '').replace(/\s+/g, ' ').trim() || 'Empty'
+    return '<button class="tl-text" data-i="' + i + '" data-sel="' + String(i === ed.selText) + '" ' +
+      'style="left:' + left + '%;width:' + width + '%" title="' + escHtml((t.id ? t.id + ' ' : '') + words) + '">' +
+      (t.id ? '<span class="tl-text-id mono">' + escHtml(t.id) + '</span>' : '') +
+      '<span class="tl-text-words">' + escHtml(words) + '</span>' +
     '</button>'
   }).join('')
 }
@@ -1225,9 +1300,13 @@ async function loadBeats() {
 function layoutTimeline() {
   const w = $('tlWrap').clientWidth
   const ticks = $('tlTicks'); ticks.innerHTML = ''
-  const step = ed.dur > 240 ? 60 : ed.dur > 60 ? 30 : ed.dur > 20 ? 10 : 5
-  for (let t = 0; t <= ed.dur; t += step) {
-    const s = el('span', null, fmtTime(t)); s.style.left = (t / ed.dur * w) + 'px'; ticks.appendChild(s)
+  const step = ed.dur > 240 ? 60 : ed.dur > 60 ? 30 : ed.dur > 20 ? 10 : ed.dur > 8 ? 5 : 1
+  // 0:00 is skipped: centred on the left edge it was half cut off and sat under the lane tag
+  for (let t = step; t <= ed.dur; t += step) {
+    const x = t / ed.dur * w
+    const s = el('span', null, fmtTime(t)); s.style.left = x + 'px'
+    if (w - x < 24) s.style.transform = 'translateX(-100%)'   // keep the last label inside
+    ticks.appendChild(s)
   }
   paintTrim(); paintPlayhead()
 }
@@ -1246,7 +1325,7 @@ function drawWave() {
     g.fillStyle = 'rgba(189,181,172,.18)'; g.fillRect(0, mid - 1, c.width, 2); return
   }
   const bw = c.width / ed.peaks.length
-  g.fillStyle = 'rgba(91,157,255,.72)'   // matches the blue audio lane
+  g.fillStyle = 'rgba(189,181,172,.6)'   // matches the warm audio lane
   ed.peaks.forEach((p, i) => {
     const h = Math.max(2 * dpr, p * (c.height * .82))
     g.fillRect(i * bw, mid - h / 2, Math.max(1, bw * .78), h)
@@ -1266,7 +1345,7 @@ function drawExtraWave() {
   const x0 = startFrac * c.width
   const bw = (c.width - x0) / peaks.length
   const mid = c.height / 2
-  g.fillStyle = 'rgba(167,139,250,.75)'      // violet, distinct from the recording's own audio
+  g.fillStyle = 'rgba(201,127,30,.75)'       // deep gold, distinct from the recording's own audio
   peaks.forEach((p, i) => {
     const h = Math.max(2 * dpr, p * (c.height * .8))
     g.fillRect(x0 + i * bw, mid - h / 2, Math.max(1, bw * .8), h)
@@ -1451,6 +1530,7 @@ function renderTexts() {
     }
     canvas.appendChild(n)
   })
+  renderTextTrack()
 }
 function renderLayerList() {
   const list = $('layerList'); list.innerHTML = ''
@@ -1595,6 +1675,7 @@ function paintTextRange() {
   const t = cur()
   $('txtRange').textContent = (t.start != null && t.end != null)
     ? `Shows ${fmtTime(t.start)} → ${fmtTime(t.end)}` : 'Shows for the whole clip'
+  renderTextTrack()
 }
 
 // ── captions ────────────────────────────────────────────────────────────
@@ -1826,12 +1907,15 @@ async function exportModal() {
         </div></div>
       <div><div class="insp-sec">Quality</div>
         <div class="aspect-chips" id="qChips">
-          ${['high', 'balanced', 'small'].map((q, i) => `<button class="chip" data-q="${q}" aria-pressed="${i === 1}">${q}</button>`).join('')}
+          ${[['high', 'High'], ['balanced', 'Balanced'], ['small', 'Small']].map((q, i) => `<button class="chip" data-q="${q[0]}" aria-pressed="${i === 1}">${q[1]}</button>`).join('')}
         </div></div>
       <div><div class="insp-sec">Resolution</div>
         <div class="aspect-chips" id="resChips">
           ${[['', 'Original'], ['1080', '1080p'], ['720', '720p']].map((r, i) => `<button class="chip" data-res="${r[0]}" aria-pressed="${i === 0}">${r[1]}</button>`).join('')}
         </div></div>
+      <div><div class="insp-sec">Saves to</div>
+        <div class="exp-dest">${ico('file-video', 'icon-sm')}<span class="mono" id="expDest"></span></div>
+        <p class="micro dimmer" id="expReplace" hidden>Replaces the last export. The original recording is kept.</p></div>
       <p class="micro dimmer" id="expSummary"></p>
     </div>
     <div class="modal-foot"><div style="flex:1"></div>
@@ -1845,8 +1929,28 @@ async function exportModal() {
     scrim.querySelectorAll(sel).forEach(x => x.setAttribute('aria-pressed', String(x === b)))
     summary()
   })
-  const summary = () => scrim.querySelector('#expSummary').textContent =
-    `${(ed.out - ed.in).toFixed(1)}s · ${pick.fmt.toUpperCase()} · ${pick.q}${pick.res ? ' · ' + pick.res + 'p' : ''}`
+  const summary = () => {
+    scrim.querySelector('#expSummary').textContent =
+      `${outLen().toFixed(1)}s · ${pick.fmt.toUpperCase()} · ${pick.q[0].toUpperCase() + pick.q.slice(1)}${pick.res ? ' · ' + pick.res + 'p' : ''}`
+    paintDest()
+  }
+  // Every export of a take rewrites <Take>/<Take>.mp4, so say so before the click,
+  // not after: the take's folder and file, and whether one is already there.
+  const paintDest = async () => {
+    const fmt = pick.fmt
+    let d
+    try { d = await ipcRenderer.invoke('export-dest', ed.src, fmt) } catch { return }
+    if (fmt !== pick.fmt || !scrim.isConnected) return
+    const home = require('os').homedir()
+    const shown = d.take ? path.join(path.basename(path.dirname(d.file)), path.basename(d.file))
+      : d.file.startsWith(home + '/') ? '~' + d.file.slice(home.length) : d.file
+    const n = scrim.querySelector('#expDest')
+    n.textContent = shown; n.title = d.file
+    scrim.querySelector('#expReplace').hidden = !d.exists
+  }
+  // what actually comes out: the trimmed range minus the cuts inside it
+  const outLen = () => Math.max(0, (ed.out - ed.in) - (ed.cuts || []).reduce((n, [a, b]) =>
+    n + Math.max(0, Math.min(b, ed.out) - Math.max(a, ed.in)), 0))
   group('[data-fmt]', 'fmt'); group('[data-q]', 'q'); group('[data-res]', 'res'); summary()
   const close = () => scrim.remove()
   scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)

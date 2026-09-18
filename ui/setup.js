@@ -619,7 +619,7 @@ function afterRecording(file, mb) {
       <div class="after">
         <img class="biscuit" src="./assets/mascot/sit-film.png" alt="">
         <h3 style="font-family:var(--font-display);font-size:var(--t-24);letter-spacing:-.03em">Got it.</h3>
-        <p class="dim" style="font-size:var(--t-12)">${mb} MB, saved to your Desktop.</p>
+        <p class="dim" style="font-size:var(--t-12)">${mb} MB, saved to your Fetch folder.</p>
         <div class="after-acts">
           <button class="after-act" data-go="export">
             ${ico('export', 'icon-xl')}

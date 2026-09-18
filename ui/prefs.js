@@ -10,7 +10,7 @@
   const ipc = require('electron').ipcRenderer
 
   const DEFAULT_PREFS = {
-    saveDir: null,           // null means "use Desktop", resolved in main
+    saveDir: null,           // null means ~/Movies/Fetch, resolved in main
     camera: false,
     mic: true,
     systemAudio: true,

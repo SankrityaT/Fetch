@@ -47,7 +47,8 @@ function openPlayer(clip) {
 
   const $$ = s => scrim.querySelector(s)
   const v = $$('#plVideo')
-  v.src = 'file://' + src
+  // a take named from a window title can hold # or %, which a bare file:// URL misreads
+  v.src = 'file://' + encodeURI(src).replace(/#/g, '%23').replace(/\?/g, '%3F')
 
   // MediaRecorder webm has no duration until you seek past the end
   const settle = () => {

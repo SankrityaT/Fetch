@@ -55,6 +55,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
     var lastRecord = false
     var retries = 0
     var camStartPath = ""
+    // When the session reported it was running, from AVFoundation's own notification.
+    // session.isRunning and connection.isActive both turn true a beat before the movie
+    // output can accept startRecording, which then throws "No active/enabled
+    // connections": an Objective-C exception, so no delegate error and no retry.
+    var runningSince: Date?
+    var startAskedAt: Date?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         let size: CGFloat = 260
@@ -81,6 +87,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
         view.layer?.borderColor = NSColor.white.withAlphaComponent(0.9).cgColor
         window.contentView = view
 
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: .AVCaptureSessionDidStartRunning, object: session, queue: .main) { _ in
+            self.runningSince = Date()
+        }
+        for name in [Notification.Name.AVCaptureSessionDidStopRunning, .AVCaptureSessionRuntimeError] {
+            nc.addObserver(forName: name, object: session, queue: .main) { _ in self.runningSince = nil }
+        }
         startCamera(in: view)
         // controls from the Fetch window arrive through a tiny JSON file
         Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { _ in self.applyState() }
@@ -146,11 +159,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
                 // this tick simply comes round again.
                 guard sessionReady() else { return }
                 lastRecord = true
+                startAskedAt = Date()
                 if let out = j["out"] as? String, !out.isEmpty { startFileRecording(to: out) }
             } else {
                 lastRecord = false
+                startAskedAt = nil
                 if movieOut.isRecording { movieOut.stopRecording() }
             }
+        } else if lastRecord, !movieOut.isRecording, let asked = startAskedAt,
+                  Date().timeIntervalSince(asked) > 1.5, retries < 5 {
+            // Asked to record but nothing started (a start that threw never reaches the
+            // delegate). Let the next tick ask again instead of waiting forever.
+            retries += 1
+            lastRecord = false
+            NSLog("cam recording did not start, retrying (\(retries))")
         }
         if let anchor = j["anchor"] as? String, anchor != lastAnchor {
             lastAnchor = anchor
@@ -179,6 +201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
     }
 
     func sessionReady() -> Bool {
+        // a short settle after the start notification, for the output's connection
+        guard let since = runningSince, Date().timeIntervalSince(since) > 0.3 else { return false }
         return session.isRunning && session.outputs.contains(movieOut)
             && movieOut.connections.contains(where: { $0.isActive && $0.isEnabled })
     }
@@ -207,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
                  "\"screenW\":\(Int(sf.width)),\"screenH\":\(Int(sf.height))}"
         try? js.write(toFile: camStartPath, atomically: true, encoding: .utf8)
         retries = 0
+        startAskedAt = nil
         NSLog("cam recording started: \(fileURL.path)")
     }
 

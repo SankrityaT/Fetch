@@ -32,6 +32,7 @@ const telemetry = require('./ui/telemetry')
 const agentBridge = require('./ui/agent-bridge')
 const jobQueue = require('./ui/job-queue')
 const activity = require('./ui/activity-log')
+const chatLog = require('./ui/chat-log')
 const agentChat = require('./ui/agent-chat')
 const voice = require('./ui/voice')
 
@@ -40,7 +41,7 @@ const voice = require('./ui/voice')
 // every write goes straight back to disk so a crash never loses a setting.
 const PREFS_PATH = path.join(app.getPath('userData'), 'prefs.json')
 const DEFAULT_PREFS = {
-  saveDir: null,           // null means "use Desktop", resolved at save time
+  saveDir: null,           // null means ~/Movies/Fetch, resolved at save time
   camera: false,            // the camera is something a person turns on, never a default
   mic: true,
   systemAudio: true,
@@ -72,10 +73,22 @@ function writePrefs(patch) {
   try { fs.writeFileSync(PREFS_PATH, JSON.stringify(prefsCache, null, 2)) } catch {}
   return prefsCache
 }
+// The root that take folders go in. ~/Movies/Fetch unless the person picked a folder,
+// so nothing lands on the Desktop by default.
 function resolvedSaveDir() {
   const dir = loadPrefs().saveDir
-  if (!dir) return app.getPath('desktop')
-  try { fs.accessSync(dir, fs.constants.W_OK); return dir } catch { return app.getPath('desktop') }
+  if (dir) { try { fs.accessSync(dir, fs.constants.W_OK); return dir } catch {} }
+  const home = path.join(app.getPath('videos'), 'Fetch')
+  try { fs.mkdirSync(home, { recursive: true }) } catch {}
+  return home
+}
+// A new take's file, in a folder of its own: <root>/<name>/Original/<name>.<ext>. The
+// timestamp name is provisional; the take is renamed once it is known what it shows.
+function newTakePath(ext) {
+  const stem = `recording-${Date.now()}`
+  const dir = path.join(resolvedSaveDir(), stem, 'Original')
+  fs.mkdirSync(dir, { recursive: true })
+  return path.join(dir, `${stem}.${ext}`)
 }
 
 ipcMain.on('prefs-get-sync', e => { e.returnValue = loadPrefs() })
@@ -487,8 +500,8 @@ ipcMain.on('rec-state', (e, state) => {
   const liveNow = state === 'recording' || state === 'paused'
   if (liveNow && !globalShortcut.isRegistered(HOTKEY_PAUSE)) globalShortcut.register(HOTKEY_PAUSE, () => toRenderer('pause'))
   if (!liveNow && globalShortcut.isRegistered(HOTKEY_PAUSE)) globalShortcut.unregister(HOTKEY_PAUSE)
-  if (state === 'paused') camPause(true)
-  if (state === 'recording' && recState === 'paused') camPause(false)
+  if (state === 'paused') { camPause(true); cursorPause(true) }
+  if (state === 'recording' && recState === 'paused') { camPause(false); cursorPause(false) }
   recState = state
   updater.setRecState(state)
   if (tray) { tray.setImage(trayIcon(state === 'recording')); tray.setContextMenu(trayMenu()) }
@@ -504,7 +517,7 @@ ipcMain.on('rec-state', (e, state) => {
 })
 
 ipcMain.on('reveal', (e, p) => shell.showItemInFolder(p))
-ipcMain.on('open-folder', () => shell.openPath(app.getPath('desktop')))
+ipcMain.on('open-folder', () => shell.openPath(resolvedSaveDir()))
 
 
 
@@ -528,8 +541,17 @@ function bubbleExec() {
   }
   return path.join(base, 'Contents', 'MacOS', 'Fetch')
 }
+// Matched on the executable itself, not the command line: `pkill -f <path>` also killed
+// any shell whose command merely mentioned the path.
 function stopBubble() {
-  require('child_process').spawn('pkill', ['-f', bubbleExec()])
+  const exe = bubbleExec()
+  require('child_process').execFile('ps', ['-axo', 'pid=,comm='], (err, out) => {
+    if (err) return
+    for (const line of String(out).split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+(.+?)\s*$/)
+      if (m && m[2] === exe) try { process.kill(+m[1]) } catch {}
+    }
+  })
 }
 // ---------- camera take ----------
 // The bubble is kept out of the screen capture and recorded to its own file, so the
@@ -542,11 +564,48 @@ function patchBubbleState(patch) {
   try { fs.writeFileSync(bubbleStatePath(), JSON.stringify(j)) } catch {}
 }
 
-let camTake = null      // { out, screenStartedAt, gaps:[[from,to]], pausedAt }
+let camTake = null      // { out, screenStartedAt, gaps:[[from,to]], pausedAt, armed }
+// A cold camera takes two to four seconds to launch, open its session and write a first
+// frame, so a camera started with the screen missed the opening line: the face popped
+// in mid-video. Arm it first (during the countdown, for a person) and start the screen
+// once it is recording. It rolls a little early; the export trims to the screen's clock.
+ipcMain.handle('cam-arm', async () => {
+  const out = path.join(os.tmpdir(), `fetch-cam-${Date.now()}.mov`)
+  const started = out.replace(/\.[^.]+$/, '.start.json')
+  camTake = { out, screenStartedAt: null, gaps: [], pausedAt: 0, native: null, armed: true }
+  patchBubbleState({ record: true, out })
+  if (fs.existsSync(bubblePath())) require('child_process').spawn('open', [bubblePath()])
+  // no camera, or access refused: give up waiting and record the screen regardless
+  for (let i = 0; i < 80 && camTake && camTake.out === out; i++) {
+    if (fs.existsSync(started)) return { ok: true }
+    await new Promise(r => setTimeout(r, 100))
+  }
+  return { ok: false }
+})
+// The take never started (the countdown was cancelled, capture failed): stop the camera
+// that was armed for it and drop its file.
+ipcMain.on('cam-disarm', () => {
+  if (!camTake || !camTake.armed || camTake.screenStartedAt) return
+  const take = camTake; camTake = null
+  patchBubbleState({ record: false })
+  setTimeout(() => {
+    stopBubble()
+    for (const f of [take.out, take.out.replace(/\.[^.]+$/, '.start.json')]) try { fs.unlinkSync(f) } catch {}
+  }, 1500)
+})
 ipcMain.on('cam-record', (e, on, screenStartedAt) => {
   if (on) {
+    // A native take knows when its first frame landed; the renderer's time is only
+    // when the IPC reply reached it. If that frame has not arrived yet, the recorder's
+    // firstFrame event fills it in.
+    const at = (nativeRec && nativeRec.firstFrameAt) || screenStartedAt || Date.now()
+    if (camTake && camTake.armed && !camTake.screenStartedAt) {
+      // already rolling since cam-arm: this only says where the screen starts
+      camTake.screenStartedAt = at; camTake.native = nativeRec
+      return
+    }
     const out = path.join(os.tmpdir(), `fetch-cam-${Date.now()}.mov`)
-    camTake = { out, screenStartedAt: screenStartedAt || Date.now(), gaps: [], pausedAt: 0 }
+    camTake = { out, screenStartedAt: at, gaps: [], pausedAt: 0, native: nativeRec }
     patchBubbleState({ record: true, out })
   } else {
     patchBubbleState({ record: false })
@@ -576,9 +635,17 @@ ipcMain.on('cam-visible', (e, on) => {
 
 // ---------- cursor tracking (feeds auto-zoom at export time) ----------
 // Has to run *during* the take. There is no way to recover it afterwards.
-let cursorSamples = null, cursorTimer = null
+let cursorSamples = null, cursorTimer = null, cursorFollow = null
 
+// The Chromium path, started by the renderer once MediaRecorder is running. A native
+// take has its own sampler on the recorder's clock (startNativeCursor), so this only
+// stops that one and never replaces it. Samples left by a native take that was never
+// committed are stale, and a Chromium take replaces them.
 ipcMain.on('cursor-track', (e, on) => {
+  if (cursorSamples && cursorSamples.native && (!on || nativeRec === cursorSamples.take)) {
+    if (!on) stopCursorSampler()
+    return
+  }
   clearInterval(cursorTimer); cursorTimer = null
   if (!on) return
   const t0 = Date.now()
@@ -588,6 +655,97 @@ ipcMain.on('cursor-track', (e, on) => {
     cursorSamples.points.push([Date.now() - t0, p.x, p.y])
   }, 50)                                    // 20 Hz is plenty to drive a smooth zoom
 })
+
+// A native take samples on wall-clock time and is put onto the video clock when it
+// is written: frame zero is the recorder's firstFrame, and paused spans are removed
+// the way the recorder removes them. Starting from an IPC round trip after "started"
+// put every zoom a few hundred milliseconds late, and each pause added to it.
+function startNativeCursor(take, opts) {
+  stopCursorSampler()
+  const kind = opts.windowId ? 'window' : 'display'
+  const d = (!opts.windowId && opts.displayId &&
+    screen.getAllDisplays().find(x => String(x.id) === String(opts.displayId))) || screen.getPrimaryDisplay()
+  const s = cursorSamples = {
+    native: true, take, kind, windowId: opts.windowId || null,
+    display: d.bounds, scale: d.scaleFactor,
+    raw: [], bounds: [], gaps: [], pausedAt: 0,
+  }
+  cursorTimer = setInterval(() => {
+    const p = screen.getCursorScreenPoint()
+    s.raw.push([Date.now(), p.x, p.y])
+  }, 50)
+  // A window take is recorded in the window's own frame, which moves. Keep its
+  // bounds over time so each point maps against where the window was at that moment.
+  if (opts.windowId && fs.existsSync(winListBin())) {
+    cursorFollow = require('child_process').spawn(winListBin(), ['--follow', String(opts.windowId)])
+    let buf = ''
+    cursorFollow.stdout.on('data', chunk => {
+      buf += chunk
+      const lines = buf.split('\n'); buf = lines.pop()
+      for (const line of lines) {
+        let b; try { b = JSON.parse(line) } catch { continue }
+        if (!b || !(b.width > 0)) continue
+        // Off screen (another Space, minimised) is kept as a state too: the recorder
+        // still captures the window, but the pointer is not over it, so points in
+        // that span must be dropped rather than mapped against where it last was.
+        if (b.onScreen && !s.bounds.some(e => e[5])) {
+          const wd = screen.getDisplayMatching({ x: b.x, y: b.y, width: b.width, height: b.height })
+          if (wd) { s.display = wd.bounds; s.scale = wd.scaleFactor }
+        }
+        s.bounds.push([Date.now(), b.x, b.y, b.width, b.height, b.onScreen ? 1 : 0])
+      }
+    })
+    cursorFollow.on('error', () => {})
+  }
+}
+
+function stopCursorSampler() {
+  clearInterval(cursorTimer); cursorTimer = null
+  if (cursorFollow) { try { cursorFollow.kill() } catch {} cursorFollow = null }
+}
+
+function cursorPause(paused) {
+  const s = cursorSamples
+  if (!s || !s.native) return
+  if (paused) s.pausedAt = Date.now()
+  else if (s.pausedAt) { s.gaps.push([s.pausedAt, Date.now()]); s.pausedAt = 0 }
+}
+
+// What .cursor.json holds for a native take: every time in ms on the video clock.
+function nativeCursorData(s) {
+  const take = s.take
+  const t0 = take.firstFrameAt || (take.started && take.started.startedAt) || (s.raw[0] && s.raw[0][0])
+  if (!t0) return null
+  const gaps = s.pausedAt ? [...s.gaps, [s.pausedAt, Infinity]] : s.gaps
+  // null for a moment that is not in the video (before frame zero, or while paused),
+  // unless snap is set, when it lands on the frame where the video resumes
+  const clock = (at, snap) => {
+    if (at < t0) return snap ? 0 : null
+    let t = at - t0
+    for (const [a, b] of gaps) {
+      if (at >= b) t -= b - a
+      else if (at >= a) { if (!snap) return null; t -= at - a; break }
+    }
+    return Math.round(t)
+  }
+  const points = s.raw.map(([at, x, y]) => { const t = clock(at); return t == null ? null : [t, x, y] }).filter(Boolean)
+  // Bounds are a state, not an event: the last one before frame zero is where the
+  // window was at frame zero.
+  const windowBounds = []
+  for (const [at, x, y, w, h, on] of s.bounds) {
+    const t = clock(at, true)
+    if (windowBounds.length && windowBounds[windowBounds.length - 1][0] >= t) windowBounds.pop()
+    windowBounds.push(on ? [t, x, y, w, h] : [t, x, y, w, h, 0])      // a trailing 0: off screen
+  }
+  const tail = take.stopAt ? clock(take.stopAt, true) : null
+  return {
+    t0, kind: s.kind, display: s.display, scale: s.scale,
+    ...(s.kind === 'window' ? { windowId: s.windowId, windowBounds } : {}),
+    // The last clicks before stop are the stop itself (the tray icon, then its menu),
+    // and a zoom that late would be cut off by the end anyway.
+    points, clicks: (take.clicks || []).filter(([t]) => !(tail != null && t > tail - 1500)),
+  }
+}
 
 
 // Park the camera take beside the finished recording, with a sidecar describing how the
@@ -646,10 +804,10 @@ async function parkCamTake(file) {
 }
 
 ipcMain.handle('save', async (e, buf) => {
-  const file = path.join(resolvedSaveDir(), `recording-${Date.now()}.webm`)
+  const file = newTakePath('webm')
   fs.writeFileSync(file, Buffer.from(buf))
   clearInterval(cursorTimer); cursorTimer = null
-  if (cursorSamples && cursorSamples.points.length) {
+  if (cursorSamples && !cursorSamples.native && cursorSamples.points.length) {
     try { fs.writeFileSync(proc.sidecarOut(file, '.cursor.json'), JSON.stringify(cursorSamples)) }
     catch (e) { console.error('cursor track not saved, auto-zoom will have nothing to work with:', e.message) }
   }
@@ -758,7 +916,7 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
   if (opts.hideCursor) args.push('--no-cursor')
 
   const child = require('child_process').spawn(bin, args)
-  const take = { proc: child, out, started: null, resolveStop: null, error: null }
+  const take = { proc: child, out, started: null, resolveStop: null, error: null, firstFrameAt: null, clicks: [] }
   nativeRec = take
 
   let buf = ''
@@ -770,6 +928,18 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
       if (!line.trim()) continue
       let ev; try { ev = JSON.parse(line) } catch { continue }
       if (ev.event === 'started') take.started = ev
+      if (ev.event === 'firstFrame') {
+        take.firstFrameAt = ev.at
+        if (camTake && camTake.native === take) camTake.screenStartedAt = ev.at
+      }
+      // Already on the video clock, so they go into .cursor.json as they are. A press
+      // on the HUD's Pause or Stop is not part of the take (the HUD is kept out of the
+      // picture), and zooming on it would push into whatever sits underneath.
+      if (ev.event === 'click') {
+        const hb = hud && !hud.isDestroyed() && hud.isVisible() ? hud.getBounds() : null
+        const onHud = hb && ev.x >= hb.x && ev.x < hb.x + hb.width && ev.y >= hb.y && ev.y < hb.y + hb.height
+        if (!onHud) take.clicks.push([ev.t, ev.x, ev.y])
+      }
       if (ev.event === 'error') { take.error = ev.message; console.log('recorder:', ev.message) }
       if (ev.event === 'stopped' && take.resolveStop) take.resolveStop(ev)
     }
@@ -783,7 +953,10 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
   // wait for it to actually be capturing, so the countdown does not lie
   const startedAt = Date.now()
   while (Date.now() - startedAt < 6000) {
-    if (take.started) return { ok: true, ...take.started }
+    if (take.started) {
+      startNativeCursor(take, opts)
+      return { ok: true, ...take.started }
+    }
     if (take.error) { nativeRec = null; return { ok: false, error: take.error } }
     if (child.exitCode !== null) { nativeRec = null; return { ok: false, error: 'the recorder exited before it started' } }
     await new Promise(r => setTimeout(r, 60))
@@ -800,18 +973,25 @@ ipcMain.handle('native-stop', async () => {
   const take = nativeRec
   if (!take) return { ok: false, error: 'not recording' }
   const done = new Promise(res => { take.resolveStop = res })
+  take.stopAt = Date.now()
   try { take.proc.stdin.write('stop\n') } catch {}
   const ev = await Promise.race([done, new Promise(r => setTimeout(() => r(null), 20000))])
   nativeRec = null
-  if (!ev || !fs.existsSync(take.out)) return { ok: false, error: take.error || 'the take was not written' }
+  if (cursorSamples && cursorSamples.native) stopCursorSampler()
+  if (!ev || !fs.existsSync(take.out)) {
+    // nothing will be committed, so nothing should outlive it into the next take
+    if (cursorSamples && cursorSamples.native) cursorSamples = null
+    return { ok: false, error: take.error || 'the take was not written' }
+  }
   return { ok: true, tmp: take.out, frames: ev.frames, dropped: ev.dropped }
 })
 
 // Move a finished native take into the save folder, reusing the same naming and
 // sidecar handling the Chromium path already goes through.
 ipcMain.handle('native-commit', async (e, tmp) => {
-  const file = path.join(resolvedSaveDir(), `recording-${Date.now()}.mov`)
+  let file
   try {
+    file = newTakePath('mov')
     // system audio and the mic arrive as separate tracks; fold them together before
     // this leaves the temp folder, or everything downstream hears only the first one
     let source = tmp
@@ -822,9 +1002,10 @@ ipcMain.handle('native-commit', async (e, tmp) => {
   } catch (err) {
     return { ok: false, error: err.message }
   }
-  clearInterval(cursorTimer); cursorTimer = null
-  if (cursorSamples && cursorSamples.points.length) {
-    try { fs.writeFileSync(proc.sidecarOut(file, '.cursor.json'), JSON.stringify(cursorSamples)) }
+  stopCursorSampler()
+  const cursor = cursorSamples && cursorSamples.native ? nativeCursorData(cursorSamples) : cursorSamples
+  if (cursor && (cursor.points.length || (cursor.clicks || []).length)) {
+    try { fs.writeFileSync(proc.sidecarOut(file, '.cursor.json'), JSON.stringify(cursor)) }
     catch (err) { console.error('cursor track not saved:', err.message) }
   }
   cursorSamples = null
@@ -835,6 +1016,9 @@ ipcMain.handle('native-commit', async (e, tmp) => {
 
 // ---------- edit / post-production ----------
 const proc = require('./processor')
+proc.setTakesRoot(resolvedSaveDir)
+// The one rename for a take: folder, files, sidecars and deliverable move together
+ipcMain.handle('rename-take', (e, file, name) => proc.renameTake(file, name))
 
 // tidy any folder that was littered before support files moved out of the way
 let tidied = false
@@ -853,8 +1037,15 @@ ipcMain.handle('list-recordings', () => { tidySaveFolders(); return proc.listRec
 ipcMain.handle('probe', (e, src) => proc.probeMeta(src))
 // The in-app chat. Runs on the person's own Claude Code or Codex, so events stream
 // back from a real CLI rather than from any model Fetch talks to itself.
+// Everything the pane shows is also written to userData/chat.jsonl, so the thread is
+// still there after a restart (ui/chat-log.js).
 ipcMain.on('chat-send', (e, payload) => {
-  const reply = ev => { try { e.sender.send('chat-event', ev) } catch {} }
+  const d = (payload && payload.display) || {}
+  chatLog.append({ kind: 'user', text: d.text || '', tags: d.tags || [], attachments: d.attachments || [] })
+  const reply = ev => {
+    chatLog.append(ev)
+    try { e.sender.send('chat-event', ev) } catch {}
+  }
   try {
     agentChat.send(payload, reply)
   } catch (err) {
@@ -870,7 +1061,14 @@ ipcMain.handle('chat-attach-blob', (e, { bytes, type }) => {
   fs.writeFileSync(out, Buffer.from(bytes))
   return out
 })
-ipcMain.on('chat-new', () => agentChat.newConversation())
+// A new chat never starts under a turn still running, or its last events would land
+// in the fresh log.
+ipcMain.handle('chat-new', () => {
+  if (agentChat.busy()) return false
+  agentChat.newConversation()
+  return true
+})
+ipcMain.handle('chat-history', () => chatLog.read())
 
 // Dictation for the chat composer. Runs through the transcriber already bundled in
 // the app, so speaking a message is as local as typing one. The counterpart to the
@@ -935,6 +1133,12 @@ ipcMain.handle('cancel-job', (e, id) => {
 })
 ipcMain.handle('queue-stats', () => jobQueue.stats())
 ipcMain.handle('formats', () => proc.formatList())
+// the export modal says where the file goes, and whether it replaces one
+ipcMain.handle('export-dest', (e, src, fmt) => {
+  const f = proc.formatList().find(x => x.id === fmt)
+  const file = proc.exportDest(src, f ? fmt : 'mp4')
+  return { file, exists: fs.existsSync(file), take: !!proc.takeDir(src) }
+})
 ipcMain.handle('backdrops', () => proc.backdropList())
 ipcMain.handle('has-cursor', (e, src) =>
   fs.existsSync(proc.sidecarIn(String(src), '.cursor.json')))

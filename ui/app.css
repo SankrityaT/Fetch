@@ -451,8 +451,6 @@ img.biscuit { object-fit:contain; }
   animation:none !important; }
 
 /* keep the rightmost action's tooltip inside the window */
-.clip-acts .btn:last-child[data-tip]::after { left:auto; right:0; transform:translateX(0) translateY(4px); }
-.clip-acts .btn:last-child[data-tip]:hover::after { transform:translateX(0) translateY(0); }
 
 /* ── the hero composer ────────────────────────────────────────────────────
    The Record screen asks a question, so it answers with a field rather than a

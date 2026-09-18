@@ -85,9 +85,9 @@
     bar.innerHTML = `
       <img class="restore-dog" src="./assets/mascot/thinking.png" alt="">
       <span class="restore-text">You left this clip mid-edit
-        <span class="dimmer">${mins < 60 ? mins + ' minutes ago' : when.toLocaleString()}</span></span>
-      <button class="btn btn-sm" data-do="discard">Start fresh</button>
-      <button class="btn btn-sm btn-primary" data-do="restore">Pick up where I left off</button>`
+        <span class="dimmer">${mins < 60 ? mins + (mins === 1 ? ' minute ago' : ' minutes ago') : when.toLocaleString()}</span></span>
+      <button class="btn btn-sm btn-ghost" data-do="discard">Start fresh</button>
+      <button class="btn btn-sm" data-do="restore">Pick up where I left off</button>`
     mount.prepend(bar)
 
     const close = () => { pendingResolved = true; bar.remove() }
@@ -118,7 +118,11 @@
       try {
         const saved = pending
         if (saved && saved.dirty && saved.src === src && !pendingResolved) {
-          setTimeout(() => restoreBanner(saved), 400)   // after the editor paints
+          // The saved edit document is loaded on open now, so usually the editor already
+          // holds exactly this. Offering to restore what is on screen is noise.
+          const same = (a, b) => { const { savedAt, dirty, ...x } = a || {}; return JSON.stringify(x) === JSON.stringify(b) }
+          if (same(saved, snapshot())) pendingResolved = true
+          else setTimeout(() => restoreBanner(saved), 400)   // after the editor paints
         }
       } catch {}
       return result

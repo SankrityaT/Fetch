@@ -21,7 +21,7 @@ const MOODS = {
   rec:     ['recording',   'Rolling. Go get it.'],
   paused:  ['thinking',    'Holding that thought.'],
   working: ['thinking',    'Working on it...'],
-  done:    ['done',        'Got it. Saved to your Desktop.'],
+  done:    ['done',        'Got it. Saved to your Fetch folder.'],
   error:   ['sad',         'That did not go through.'],
   happy:   ['happy',       'Nice.'],
   excited: ['excited',     'Ready?'],
@@ -256,23 +256,21 @@ async function countdown() {
 // Only window takes can be named here, since only they carry an app and a title.
 // A full-screen take keeps its timestamp until it is transcribed, and is renamed from
 // what was said then (see the editor's transcribe handler).
-function nameTake(file) {
+async function nameTake(file) {
   if (setup.mode !== 'window' || !setup.window) return file
   const naming = require('./ui/naming')
   const stem = naming.smartName({ app: setup.window.app, title: setup.window.title })
   if (!stem) return file
   try {
-    const renamed = renameFileWithSidecars(file, stem)
-    ensureListed(renamed)
-    return renamed
+    return await renameTake(file, stem)
   } catch (e) {
     console.error('could not name the take:', e.message)
     return file          // the recording matters more than its name
   }
 }
 
-function finishTake(file, mb) {
-  file = nameTake(file)
+async function finishTake(file, mb) {
+  file = await nameTake(file)
   // Tell main a take landed. hotkey() is fire-and-forget, so without this an agent
   // that asked for a recording has no way to learn where the file went.
   try { ipcRenderer.send('take-finished', { file, mb: +mb }) } catch {}
@@ -357,7 +355,11 @@ async function startRecording() {
   try {
     mood('arming')
     $('start').disabled = true
+    // The camera needs seconds to come up, so it starts now and the countdown covers
+    // it; the screen waits for it, or the first line would have no face.
+    const camArmed = setup.cam ? ipcRenderer.invoke('cam-arm').catch(() => null) : null
     await countdown()
+    if (camArmed) await camArmed
 
     nativeTake = await startNative()
     if (nativeTake) {
@@ -425,6 +427,7 @@ async function startRecording() {
   } catch (e) {
     $('countdown').hidden = true
     $('start').disabled = false
+    ipcRenderer.send('cam-disarm')          // no take, so no camera left rolling for it
     try { ipcRenderer.send('take-failed', { error: e.message }) } catch {}
     if (/screen recording is blocked/i.test(e.message || '')) screenBlocked()
     else { mood('error'); toast(e.message, 'bad', 7000) }
@@ -498,17 +501,23 @@ function runJob(payload, label, { quiet = false } = {}) {
 // to touch control.html.
 const Library = require('./ui/library.js')
 
-// Exports are written next to the source as name-edit.mp4, name-cut.mp4 and so on.
-// Group them under the original so the library shows takes, not a pile of files.
+// A take folder groups itself: the raw take in Original/ is the original, and the
+// deliverable on top plus any working versions are its exports. Loose takes from
+// before take folders have exports written next to them as name-edit.mp4,
+// name-cut.mp4 and so on, grouped by name. Either way the library shows takes, not a
+// pile of files.
 const DERIVED = /-(edit|cut|audio|trim|captions|converted|gif)$/
 function groupTakes(list) {
   const byBase = new Map()
   for (const c of list) {
     const stem = c.name.replace(/\.[^.]+$/, '')
-    const base = DERIVED.test(stem) ? stem.replace(DERIVED, '') : stem
-    if (!byBase.has(base)) byBase.set(base, { base, original: null, derived: [] })
+    const base = c.take ? 'take:' + c.take : DERIVED.test(stem) ? stem.replace(DERIVED, '') : stem
+    if (!byBase.has(base)) byBase.set(base, { base, take: c.take || null, original: null, derived: [], copy: null })
     const g = byBase.get(base)
-    if (DERIVED.test(stem)) g.derived.push(c)
+    // the unedited MP4 autoConvertMp4 left on top is the take itself, not an export
+    if (c.copy) g.copy = c
+    else if (c.deliverable) g.derived.unshift(c)     // the finished video reads first
+    else if (DERIVED.test(stem)) g.derived.push(c)
     else if (!g.original || c.mtime > g.original.mtime) {
       if (g.original) g.derived.push(g.original)
       g.original = c
@@ -517,6 +526,7 @@ function groupTakes(list) {
   // a derived file whose original was deleted still deserves a card
   for (const g of byBase.values()) {
     if (!g.original && g.derived.length) g.original = g.derived.shift()
+    if (!g.original && g.copy) { g.original = g.copy; g.copy = null }
   }
   return [...byBase.values()].filter(g => g.original)
     .sort((a, b) => b.original.mtime - a.original.mtime)
@@ -541,7 +551,7 @@ function trash(paths) {
 // Support files live in a hidden folder beside the media, so the save folder only
 // holds recordings and exports. Mirrors sidecarPath() in processor.js.
 const SIDE_DIR = '.fetch'
-const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json']
+const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
 const sidecarPath = (media, ext) =>
   path.join(path.dirname(media), SIDE_DIR, path.basename(media).replace(/\.[^.]+$/, '') + ext)
 const sidecarIn = (media, ext) => {
@@ -562,39 +572,16 @@ function sanitizeClipName(raw) {
   if (/[/:]/.test(name)) return { error: 'Names can\'t contain / or :.' }
   return { name }
 }
-// never overwrite an existing file, suffix instead: "demo.mp4" -> "demo 2.mp4"
-function uniquePath(target) {
-  if (!fs.existsSync(target)) return target
-  const dir = path.dirname(target), ext = path.extname(target), base = path.basename(target, ext)
-  let n = 2, candidate
-  do { candidate = path.join(dir, `${base} ${n}${ext}`); n++ } while (fs.existsSync(candidate))
-  return candidate
-}
-// renames one file to newBase (keeping its extension), plus any sidecars sharing its
-// basename, and keeps folder membership pointed at the new path. Returns the final path.
-function renameFileWithSidecars(oldPath, newBase) {
-  const ext = path.extname(oldPath)
-  const dir = path.dirname(oldPath)
-  let target = path.join(dir, newBase + ext)
-  if (target !== oldPath) target = uniquePath(target)
-  if (target === oldPath) return oldPath
-  fs.renameSync(oldPath, target)
-  for (const sExt of SIDE_EXT) {
-    const oldSide = sidecarIn(oldPath, sExt)
-    if (oldSide === oldPath || !fs.existsSync(oldSide)) continue
-    const dest = sidecarPath(target, sExt)
-    try { fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.renameSync(oldSide, dest) } catch {}
-  }
-  Library.renamePath(oldPath, target)
-  return target
-}
-// list-recordings only picks up files named "recording-..." from the Desktop scan;
-// anything else has to be in the app's own import index or it silently drops out of
-// the Library the moment it is renamed. Add it there so a rename never looks like deletion.
-async function ensureListed(newPath) {
-  if (/^recording-/i.test(path.basename(newPath))) return
-  try { await ipcRenderer.invoke('import-file', newPath) }
-  catch (e) { toast('Renamed, but it fell out of the Library. Import it again.', 'bad', 6000) }
+// The one rename, for the Library, the editor and agents alike. processor.renameTake
+// moves a take folder, its files, sidecars and deliverable together (or a loose file
+// and its sidecars) and keeps the import index in step. This side repoints what the
+// renderer holds: folder membership, and the clip open in the editor. Returns the new
+// path of `file`.
+async function renameTake(file, name) {
+  const r = await ipcRenderer.invoke('rename-take', file, name)
+  for (const [from, to] of r.moves) Library.renamePath(from, to)
+  if (typeof window.editorFollowRename === 'function') window.editorFollowRename(r.moves)
+  return r.path
 }
 // derived exports (name-edit.mp4, name-cut.mp4, ...) keep their suffix when renamed
 function derivedSuffix(name) {
@@ -623,18 +610,20 @@ function confirmRenameDerived(g, newBase, onChoice) {
 }
 function performRename(g, newBase) {
   const finish = async includeDerived => {
-    const newMain = renameFileWithSidecars(g.original.path, newBase)
-    await ensureListed(newMain)
-    if (includeDerived) {
-      for (const d of g.derived) {
-        const newDerived = renameFileWithSidecars(d.path, newBase + derivedSuffix(d.name))
-        await ensureListed(newDerived)
+    try {
+      await renameTake(g.original.path, newBase)
+      if (includeDerived) {
+        for (const d of g.derived) await renameTake(d.path, newBase + derivedSuffix(d.name))
       }
+      toast('Renamed', 'ok')
+    } catch (e) {
+      toast('Could not rename it: ' + String(e.message || e).replace(/^.*Error: /, ''), 'bad', 6000)
     }
-    toast('Renamed', 'ok')
     refreshLibrary()
   }
-  if (g.derived.length) confirmRenameDerived(g, newBase, finish)
+  // a take folder renames as one, deliverable included, so there is nothing to ask
+  if (g.take) finish(false)
+  else if (g.derived.length) confirmRenameDerived(g, newBase, finish)
   else finish(false)
 }
 // swaps the clip title for an inline <input>, no modal. Enter commits, Escape cancels,
@@ -645,7 +634,7 @@ function startRename(card, g) {
   const c = g.original
   const nameEl = card.querySelector('.clip-name')
   const ext = path.extname(c.path)
-  const currentBase = path.basename(c.path, ext)
+  const currentBase = g.take ? path.basename(g.take) : path.basename(c.path, ext)
 
   const input = document.createElement('input')
   input.className = 'clip-name clip-name-edit'
@@ -720,18 +709,18 @@ async function refreshLibraryOnce() {
     const card = el('div', 'clip')
     card.innerHTML = `
       <button class="clip-shot">
-        ${c.poster ? `<img src="file://${c.poster}" alt="">` : `<span class="ph">${ico('film-strip', 'icon-xl')}</span>`}
+        ${c.poster ? `<img src="file://${encodeURI(c.poster).replace(/#/g, '%23').replace(/\?/g, '%3F')}" alt="">` : `<span class="ph">${ico('film-strip', 'icon-xl')}</span>`}
         <span class="clip-play"><span>${ico('play-fill', 'icon-lg')}</span></span>
         <span class="clip-badges">
           <span class="badge">${c.ext}</span>
           ${c.srt ? '<span class="badge gold">CC</span>' : ''}
           ${c.imported ? '<span class="badge">imported</span>' : ''}
-          ${g.derived.length ? `<span class="badge gold">${g.derived.length + 1} versions</span>` : ''}
+          ${g.derived.length ? `<span class="badge gold">${g.derived.length} export${g.derived.length === 1 ? '' : 's'}</span>` : ''}
         </span>
       </button>
       <div class="clip-body">
         <div class="clip-name-row">
-          <div class="clip-name" title="${c.name}">${c.name.replace(/^recording-/, '').replace(/\.[^.]+$/, '')}</div>
+          <div class="clip-name" title="${escHtml(g.take ? path.basename(g.take) : c.name)}">${escHtml(g.take ? path.basename(g.take).replace(/^recording-/, '') : c.name.replace(/^recording-/, '').replace(/\.[^.]+$/, ''))}</div>
           ${Library.tagHTML(c.path)}
         </div>
         <div class="clip-meta">${c.mb} MB · ${fmtAgo(c.mtime)}</div>
@@ -746,12 +735,14 @@ async function refreshLibraryOnce() {
           <button class="btn btn-sm" data-act="convert" data-tip="Convert">${ico('export', 'icon-sm')}</button>
           <button class="btn btn-sm" data-act="rename" data-tip="Rename">${ico('pencil-simple', 'icon-sm')}</button>
           ${Library.assignButtonHTML()}
-          <button class="btn btn-sm" data-act="reveal" data-tip="Show in Finder">${ico('folder-open', 'icon-sm')}</button>
+          <button class="btn btn-sm" data-act="reveal" data-tip="Show in Finder">${ico('magnifying-glass', 'icon-sm')}</button>
           <button class="btn btn-sm btn-danger" data-act="delete" data-tip="Move to Trash">${ico('trash', 'icon-sm')}</button>
         </div>
       </div>`
     card.querySelector('.clip-shot').onclick = () => openPlayer(c)     // watch it here, not in Finder
-    card.querySelector('[data-act="reveal"]').onclick = () => ipcRenderer.send('reveal', c.path)
+    // a take folder shows its finished video, or the folder itself before there is one
+    card.querySelector('[data-act="reveal"]').onclick = () => ipcRenderer.send('reveal',
+      g.take ? ((g.derived.find(d => d.deliverable) || g.copy || {}).path || g.take) : c.path)
     card.querySelector('[data-act="edit"]').onclick = () => openInEditor(c.path)
     card.querySelector('[data-act="convert"]').onclick = () => quickConvert(c)
     card.querySelector('[data-act="rename"]').onclick = () => startRename(card, g)
@@ -759,6 +750,8 @@ async function refreshLibraryOnce() {
     card.querySelector('[data-act="folder"]').onclick = e => Library.openAssignMenu(e.currentTarget, c.path, refreshLibrary)
     card.querySelector('[data-act="delete"]').onclick = () => confirmDelete(g)
     card.querySelectorAll('.derived-row').forEach(b => {
+      // the player and editor read video; a GIF deliverable is shown in Finder instead
+      if (/\.gif$/i.test(b.dataset.p)) { b.onclick = () => ipcRenderer.send('reveal', b.dataset.p); return }
       b.onclick = () => openPlayer(b.dataset.p)
       b.ondblclick = () => openInEditor(b.dataset.p)
     })
@@ -803,11 +796,13 @@ function confirmDelete(g) {
   scrim.querySelector('#doDel').onclick = () => {
     const keep = scrim.querySelector('#keepOrig').checked
     const targets = keep ? g.derived : all
-    const files = targets.flatMap(t => [t.path, ...sidecars(t.path)])
-    const n = trash(files)
+    // a whole take folder goes as one, so it comes back from the Trash in one piece
+    const whole = g.take && !keep
+    const n = whole ? trash([g.take]) : trash(targets.flatMap(t => [t.path, ...sidecars(t.path)]))
     targets.forEach(t => Library.forgetPath(t.path))   // folders never hold onto dead paths
     close()
-    toast(`Moved ${n} file${n === 1 ? '' : 's'} to Trash`, 'ok')
+    if (whole) toast(n ? `Moved "${path.basename(g.take)}" to Trash` : 'Could not move it to Trash', n ? 'ok' : 'bad')
+    else toast(`Moved ${n} file${n === 1 ? '' : 's'} to Trash`, 'ok')
     refreshLibrary()
   }
 }

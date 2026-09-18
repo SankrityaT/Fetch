@@ -281,6 +281,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             started = true
             sessionStart = pts
             writer.startSession(atSourceTime: .zero)
+            // The wall-clock moment of frame zero, back-dated from the host clock by
+            // however long this sample took to arrive. The app starts its cursor and
+            // camera clocks here, not at "started", which lands before any frame.
+            let lag = CMTimeGetSeconds(CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()), pts))
+            emit(["event": "firstFrame",
+                  "at": Int((Date().timeIntervalSince1970 - max(0, lag)) * 1000)])
         }
         if paused { lock.unlock(); return }
 
@@ -323,6 +329,31 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         emit(["event": "error", "message": "capture stopped: \(error.localizedDescription)"])
         Task { await finish() }
+    }
+
+    // ---------- clicks ----------
+    // Auto-zoom wants to know where the person clicked, on the same clock as the
+    // video. Polling the button state needs no permission, unlike an event tap, and
+    // 60 Hz is fast enough to catch a normal click.
+    private var lastButtons = 0
+    func pollClick() {
+        let buttons = NSEvent.pressedMouseButtons
+        let pressed = buttons & ~lastButtons
+        lastButtons = buttons
+        guard pressed != 0 else { return }
+        lock.lock()
+        guard started, !paused, !finished else { lock.unlock(); return }
+        let now = CMClockGetTime(CMClockGetHostTimeClock())
+        let t = CMTimeGetSeconds(CMTimeSubtract(now, CMTimeAdd(sessionStart, pausedTotal)))
+        lock.unlock()
+        guard t >= 0 else { return }
+        // Cocoa puts the origin at the bottom left of the primary screen; everything
+        // else in Fetch (Electron, WindowList) measures from the top left.
+        let p = NSEvent.mouseLocation
+        let primaryH = NSScreen.screens.first?.frame.height ?? 0
+        let button = pressed & 1 != 0 ? 0 : (pressed & 2 != 0 ? 1 : 2)
+        emit(["event": "click", "t": Int((t * 1000).rounded()),
+              "x": Int(p.x.rounded()), "y": Int((primaryH - p.y).rounded()), "button": button])
     }
 
     // ---------- control ----------
@@ -413,6 +444,9 @@ let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 term.setEventHandler { Task { await recorder.finish() } }
 term.resume()
 signal(SIGTERM, SIG_IGN)
+
+let clickTimer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { _ in recorder.pollClick() }
+RunLoop.main.add(clickTimer, forMode: .common)
 
 Task { await recorder.start() }
 RunLoop.main.run()

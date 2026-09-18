@@ -41,13 +41,24 @@
 .txt-layer { position:absolute; padding:4px 10px; border:1.5px dashed transparent; border-radius:var(--r-sm);
   font-weight:700; white-space:pre; cursor:move; transform:translate(-50%,-50%); line-height:1.2; }
 .txt-layer[data-sel="true"] { border-color:var(--fur-1); }
-.txt-layer[data-box="true"] { background:rgba(0,0,0,.45); }
+/* matches the export: drawtext's box is square, padded in proportion to the text
+   (boxborderw in processor.js), and the text is the font's bold cut */
+.txt-layer[data-box="true"] { background:rgba(0,0,0,.45); padding:.2em .45em; border-radius:0; }
 .txt-layer:hover:not([data-editing="true"]) { outline:1.5px dashed rgba(240,169,60,.75); outline-offset:3px; }
 .txt-layer[data-editing="true"] { cursor:text; outline:2px solid var(--fur-1); outline-offset:3px; }
 
 /* transport */
 .ed-transport { flex:none; display:flex; align-items:center; gap:var(--s-3); }
 .ed-transport .time { font-size:var(--t-12); color:var(--text-1); }
+/* which take this is, since every export writes <Take>/<Take>.mp4 */
+.ed-name { flex:1; min-width:0; text-align:center; font-size:var(--t-13); font-weight:600; color:var(--text-0);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+/* the export modal's destination */
+.exp-dest { display:flex; align-items:center; gap:var(--s-2); min-width:0; padding:8px 14px;
+  border-radius:var(--r-sm); background:var(--ink-2); color:var(--text-1); }
+.exp-dest .mono { font-size:var(--t-12); color:var(--text-0); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#expReplace { margin-top:var(--s-2); }
 .pc { width:38px; height:38px; border-radius:50%; display:grid; place-items:center;
   background:var(--ink-2); border:var(--edge); color:var(--text-0); cursor:pointer; box-shadow:var(--sheen); }
 .pc:hover { background:var(--ink-3); }
@@ -217,7 +228,7 @@ video.motion, img.motion { display:block; }
 .bd-add:hover { border-color:var(--fur-1); color:var(--fur-0); }
 
 /* full screen export state */
-.export-scrim { backdrop-filter:blur(22px) saturate(1.15); background:rgba(6,5,4,.66); }
+.export-scrim { background:rgba(6,5,4,.86); }
 .export-card { display:flex; flex-direction:column; align-items:center; gap:var(--s-3);
   padding:var(--s-7) var(--s-8); border-radius:var(--r-lg);
   background:var(--ink-1); border:var(--edge); box-shadow:var(--shadow-modal);
@@ -244,17 +255,18 @@ video.motion, img.motion { display:block; }
   background:var(--ink-2); border-left:3px solid transparent; }
 .tl-lane[hidden] { display:none; }
 
-/* gold for picture, blue for the recording's own sound, violet for anything added */
+/* gold for picture, warm neutrals for sound: the recording's own quieter, anything added deeper.
+   Each lane is also labelled, so colour is never the only cue. */
 .tl-lane-video { flex:1.25; border-left-color:var(--fur-1); background:rgba(240,169,60,.06); }
 .tl-lane-video img { width:100%; height:100%; object-fit:cover; object-position:left center;
   display:block; opacity:.9; }
-.tl-lane-audio { border-left-color:#5B9DFF; background:rgba(91,157,255,.07); }
-.tl-lane-extra { border-left-color:#A78BFA; background:rgba(167,139,250,.09); }
+.tl-lane-audio { border-left-color:var(--text-2); background:rgba(189,181,172,.05); }
+.tl-lane-extra { border-left-color:var(--fur-2); background:rgba(201,127,30,.08); }
 .tl-lane canvas { position:absolute; inset:0; width:100%; height:100%; }
 
 .tl-lane-video .lane-tag { color:var(--fur-0); }
-.tl-lane-audio .lane-tag { color:#A9C8FF; }
-.tl-lane-extra .lane-tag { color:#CDBBFF; }
+.tl-lane-audio .lane-tag { color:var(--text-1); }
+.tl-lane-extra .lane-tag { color:var(--fur-0); }
 
 .lane-x { position:absolute; top:4px; right:6px; z-index:3; width:18px; height:18px;
   border-radius:50%; display:grid; place-items:center;
@@ -264,7 +276,7 @@ video.motion, img.motion { display:block; }
 .lane-x:hover { color:var(--rec); }
 
 .extra-file { padding:7px 9px; border-radius:var(--r-sm); background:var(--ink-2);
-  border:1px solid rgba(167,139,250,.35); font-size:var(--t-11); color:#CDBBFF;
+  border:1px solid rgba(201,127,30,.35); font-size:var(--t-11); color:var(--fur-0);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-bottom:8px; }
 .lane-tag { position:absolute; top:4px; left:6px; z-index:2;
   display:inline-flex; align-items:center; gap:4px;
@@ -444,6 +456,24 @@ video.motion, img.motion { display:block; }
 .tl-mark[data-kind="redact"] { background:rgba(251,191,36,.14); border-color:rgba(251,191,36,.45); color:#FDE68A; }
 .tl-mark-id { font-size:9.5px; font-weight:600; }
 .tl-mark-kind { font-size:9.5px; opacity:.85; white-space:nowrap; }
+
+/* ── text layers ──────────────────────────────────────────────────────────
+   Neutral like marks: a text is presentation. The selected one gets the gold edge
+   the stage handle has, plus a heavier label, so selection is not colour alone. */
+.tl-texts { position:relative; height:22px; margin-bottom:var(--s-2); border-radius:var(--r-sm); overflow:hidden; }
+.tl-text {
+  position:absolute; top:0; bottom:0; min-width:0; overflow:hidden;
+  display:flex; align-items:center; gap:5px; padding:0 7px; border-radius:6px;
+  background:var(--ink-2); border:1px solid var(--ink-3); color:var(--text-1); cursor:pointer;
+  font:inherit; transition:background var(--dur-1) var(--ease-in);
+}
+.tl-text:hover { background:var(--ink-3); }
+.tl-text:active { background:var(--ink-4); }
+.tl-text:focus-visible { outline:2px solid var(--fur-1); outline-offset:-2px; }
+.tl-text[data-sel="true"] { border-color:var(--fur-1); color:var(--text-0); }
+.tl-text[data-sel="true"] .tl-text-words { font-weight:600; }
+.tl-text-id { font-size:9.5px; font-weight:600; }
+.tl-text-words { font-size:9.5px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 /* the blurred fill sits under everything else in the frame */
 .stage-frame > .bd-fill ~ * { position:relative; z-index:1; }
 .stage-frame > .bd-fill ~ .cap-overlay, .stage-frame > .bd-fill ~ .cam-bubble { position:absolute; z-index:2; }

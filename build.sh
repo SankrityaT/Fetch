@@ -42,7 +42,7 @@ cp -R node_modules/electron/dist/Electron.app "$APP"
 mv "$APP/Contents/MacOS/Electron" "$APP/Contents/MacOS/Fetch"
 rm -rf "$APP/Contents/Resources/default_app.asar"
 mkdir -p "$APP/Contents/Resources/app"
-cp main.js control.html cam.html hud.html border.html processor.js package.json "$APP/Contents/Resources/app/"
+cp main.js control.html cam.html hud.html border.html processor.js fontinstance.js package.json "$APP/Contents/Resources/app/"
 cp -R ui "$APP/Contents/Resources/app/ui"
 cp -R assets "$APP/Contents/Resources/app/assets"
 

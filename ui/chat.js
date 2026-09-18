@@ -226,6 +226,24 @@
   let heroTouched = false
   const turn = { made: false }
 
+  // Shown on an empty thread, and again after New chat.
+  const INTRO = `
+        <div class="chat-intro">
+          <p>Record a window, find a moment by what was said, cut, zoom and export.
+             Ask in plain words.</p>
+          <div class="chat-egs">
+            <button type="button" class="chat-eg">Record my Chrome window for 10 seconds</button>
+            <button type="button" class="chat-eg">Cut the dead air from my last take</button>
+            <button type="button" class="chat-eg">Export my latest recording</button>
+          </div>
+        </div>`
+
+  function wireIntro() {
+    list.querySelectorAll('.chat-eg').forEach(b => {
+      b.onclick = () => { input.value = b.textContent; grow(); input.focus(); sync() }
+    })
+  }
+
   function build() {
     pane = document.createElement('aside')
     pane.className = 'chat'
@@ -235,26 +253,21 @@
       <div class="chat-head">
         <img class="biscuit" src="./assets/mascot/sit-happy.png" alt="">
         <div class="chat-head-txt">
-          <span class="chat-title">Ask Biscuit</span>
+          <span class="chat-title">Chat</span>
           <span class="chat-sub" id="chatSub">on your own plan</span>
         </div>
+        <button type="button" class="btn btn-ghost btn-sm chat-new" id="chatNew"
+          data-tip="Clear this chat and start a fresh conversation">${ico('plus', 'icon-sm')}New chat</button>
         <button class="btn btn-ghost btn-icon btn-sm" id="chatClose" data-tip="Close">${ico('x', 'icon-sm')}</button>
       </div>
 
       <div class="chat-list" id="chatList">
-        <div class="chat-intro">
-          <p>I can record, look at what is on screen, transcribe and read your takes.
-             Ask for it in plain words.</p>
-          <div class="chat-egs">
-            <button class="chat-eg">What is on my screen right now?</button>
-            <button class="chat-eg">Record my Chrome window</button>
-            <button class="chat-eg">Transcribe my latest recording</button>
-          </div>
-        </div>
+        ${INTRO}
       </div>
 
       <form class="chat-composer" id="chatForm">
         <div class="chat-mention" id="chatMention" hidden></div>
+        <div class="chat-on-row" id="chatOn" hidden></div>
         <div class="chat-ctx" id="chatCtx" hidden></div>
         <div class="att-tray" id="chatAtt" hidden></div>
         <textarea id="chatInput" rows="1" placeholder="Ask anything, or type @ to point at a recording"></textarea>
@@ -263,7 +276,7 @@
           <span class="chat-hint" data-tip="Only Fetch's own tools. No shell, no files, no network.">Fetch's tools only</span>
           <button type="button" class="chat-mic" id="chatMic"
             data-tip="Dictate. Transcribed on this Mac.">${ico('microphone', 'icon-sm')}</button>
-          <button type="submit" class="chat-send" id="chatSend" disabled>${ico('arrow-right', 'icon-sm')}</button>
+          <button type="submit" class="chat-send" id="chatSend" aria-label="Send" disabled>${ico('arrow-right', 'icon-sm')}</button>
         </div>
       </form>`
     document.body.appendChild(pane)
@@ -274,10 +287,21 @@
     enginePill = pane.querySelector('#chatEngine')
 
     pane.querySelector('#chatClose').onclick = () => toggle(false)
-    pane.querySelector('#chatForm').onsubmit = e => { e.preventDefault(); submit() }
-    pane.querySelectorAll('.chat-eg').forEach(b => {
-      b.onclick = () => { input.value = b.textContent; grow(); input.focus(); sync() }
+    pane.querySelector('#chatNew').onclick = newChat
+    // While a turn runs the send button is Stop. Enter never stops a turn (see the
+    // keydown below), only a deliberate click does.
+    pane.querySelector('#chatForm').onsubmit = e => { e.preventDefault(); state.busy ? stop() : submit() }
+    wireIntro()
+    list.addEventListener('click', openCard)
+    pane.querySelector('#chatOn').addEventListener('click', e => {
+      if (!e.target.closest('[data-unon]')) return
+      ctxOff = true
+      paintOn()
+      input.focus()
     })
+    window.addEventListener('fetch:editor-open', () => { ctxOff = false; paintOn() })
+    // a rename can move the open recording under the chip, so look again before typing
+    input.addEventListener('focus', () => paintOn())
     input.addEventListener('input', () => { grow(); sync(); updateMention() })
     // Enter sends, Shift+Enter is a newline: this is a chat box, not a document.
     input.addEventListener('keydown', e => {
@@ -440,8 +464,27 @@
   }
   function stopDictation() { if (rec && rec.state !== 'inactive') rec.stop() }
 
-  const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px' }
-  const sync = () => { sendBtn.disabled = state.busy || (!input.value.trim() && !attach.length) }
+  // scrollHeight leaves out the border, so without it a one-line box sat 2px short
+  // and showed a scrollbar. It scrolls only once it reaches its cap.
+  const grow = () => {
+    input.style.height = 'auto'
+    const want = input.scrollHeight + input.offsetHeight - input.clientHeight
+    input.style.height = Math.min(want, 160) + 'px'
+    input.style.overflowY = want > 160 ? 'auto' : 'hidden'
+  }
+  const sync = () => {
+    sendBtn.disabled = !state.busy && !input.value.trim() && !attach.length
+    const stopping = String(state.busy)
+    if (sendBtn.dataset.stop === stopping) return
+    sendBtn.dataset.stop = stopping
+    sendBtn.innerHTML = ico(state.busy ? 'stop-fill' : 'arrow-right', 'icon-sm')
+    sendBtn.setAttribute('aria-label', state.busy ? 'Stop' : 'Send')
+    if (state.busy) sendBtn.setAttribute('data-tip', 'Stop')
+    else sendBtn.removeAttribute('data-tip')
+    const nb = pane.querySelector('#chatNew')
+    nb.disabled = state.busy
+    nb.setAttribute('data-tip', state.busy ? 'Stop this turn first' : 'Clear this chat and start a fresh conversation')
+  }
 
   // One label for both pills: vendor mark, model, then effort in a quieter weight.
   // Before the catalogue arrives it falls back to the CLI name, so the pill is never
@@ -496,62 +539,118 @@
     const n = document.createElement('div')
     n.className = cls
     n.innerHTML = html
-    list.appendChild(n)
+    // the working line always stays last, under whatever just arrived
+    list.insertBefore(n, statusEl && statusEl.parentNode === list ? statusEl : null)
     scroll(was)
     return n
   }
 
-  function submit() {
-    const typed = input.value.trim()
-    if ((!typed && !attach.length) || state.busy) return
-    const text = typed || (attach.length === 1 ? 'Take a look at this.' : 'Take a look at these.')
-    const intro = list.querySelector('.chat-intro')
-    if (intro) intro.remove()
+  const dropIntro = () => { const i = list.querySelector('.chat-intro'); if (i) i.remove() }
 
+  // ── the person's turn ──────────────────────────────────────────────────
+  // One renderer for a message just sent and for one replayed from the log, so the
+  // thread after a restart looks exactly as it did before it.
+  function renderUser(msg) {
+    dropIntro()
+    lastCard = null
+    const typed = msg.text || ''
+    const sentAtt = msg.attachments || []
+    const sentTags = msg.tags || []
     // what was attached rides on the message bubble, small, so the thread shows it
-    const sentAtt = attach.slice()
-    attach = []; paintAttach()
     const thumbs = sentAtt.map(a => a.kind === 'file'
       ? `<span class="chat-me-file">${ico('file-text', 'icon-xs')}${esc(a.name)}</span>`
       : a.kind === 'video'
         ? `<video src="${esc(fileUrl(a.path))}#t=0.4" muted preload="metadata" title="${esc(a.name)}"></video>`
         : `<img src="${esc(fileUrl(a.path))}" alt="" title="${esc(a.name)}">`).join('')
-    add((sentAtt.length ? `<div class="chat-me-att">${thumbs}</div>` : '') + (typed ? esc(typed) : ''),
+    // what was tagged stays visible on the message it went with
+    const tagLine = sentTags.length
+      ? '<div class="chat-me-tags">' + sentTags.map(t => '<span>@' + esc(t.name) + '</span>').join('') + '</div>' : ''
+    add((sentAtt.length ? `<div class="chat-me-att">${thumbs}</div>` : '') + (typed ? esc(typed) : '') + tagLine,
       'chat-msg chat-me' + (typed ? '' : ' chat-me-only-att'))
-    input.value = ''; grow()
-    state.busy = true; sync()
-    turn.made = false
-    setFace('think')
-    sendBtn.classList.add('working')
+  }
 
-    const ctx = window.ed && window.ed.src ? window.ed.src : null
-    let prompt = text
-    // Tagged recordings travel as exact paths, so the agent acts on the file that was
-    // pointed at rather than one it guessed from a description.
-    if (tags.length) {
-      prompt += '\n\nRecordings the user tagged:\n' +
-        tags.map(t => `- ${t.name}: ${t.path}`).join('\n')
-    }
-    if (ctx && !tags.some(t => t.path === ctx)) {
-      prompt += `\n\n(The recording currently open in Fetch is ${ctx})`
-    }
+  function submit() {
+    const typed = input.value.trim()
+    if ((!typed && !attach.length) || state.busy) return
+    // a pref changed while the pane stayed open still decides this turn
+    if (state.models.length) { adoptPick(); if (state.pick) state.engine = state.pick.engine; paintEngine(); paintHeroEngine() }
+    const text = typed || (attach.length === 1 ? 'Take a look at this.' : 'Take a look at these.')
+
+    const sentAtt = attach.slice()
+    attach = []; paintAttach()
     // the chips were for this message; the conversation remembers them from here
     const sentTags = tags.slice()
     tags = []; paintTags()
+    const display = { text: typed, tags: sentTags, attachments: sentAtt }
+    renderUser(display)
+    input.value = ''; grow()
+    startTurn()
+
+    const ctx = contextSrc()
+    let prompt = text
+    // Tagged recordings travel as exact paths, so the agent acts on the file that was
+    // pointed at rather than one it guessed from a description.
     if (sentTags.length) {
-      const last = list.lastElementChild
-      if (last) last.insertAdjacentHTML('beforeend',
-        '<div class="chat-me-tags">' + sentTags.map(t => '<span>@' + esc(t.name) + '</span>').join('') + '</div>')
+      prompt += '\n\nRecordings the user tagged:\n' +
+        sentTags.map(t => `- ${t.name}: ${t.path}`).join('\n')
+    }
+    // The open take is what "this" means, not what "my latest" means: without saying
+    // so, an agent asked for the newest take quietly used the open one instead.
+    if (ctx && !sentTags.some(t => t.path === ctx)) {
+      prompt += `\n\n(Open in the Fetch editor: ${ctx}. Use it when the person says "this" ` +
+        `or names no recording. For "latest", "last" or "newest", check list_recordings instead. ` +
+        `Name the recording you acted on in your reply.)`
     }
 
     const pick = state.pick && state.pick.engine === state.engine ? state.pick : {}
     ipcRenderer.send('chat-send', { engine: state.engine, model: pick.model, effort: pick.effort, prompt,
-      attachments: sentAtt.map(a => a.path) })
+      attachments: sentAtt.map(a => a.path), display })
+  }
+
+  // ── a turn in progress ─────────────────────────────────────────────────
+  // A quiet line under the last message says who is doing the work, so a long pause
+  // between tool calls reads as thinking rather than as a hang.
+  let statusEl = null
+  function startTurn() {
+    state.busy = true; sync()
+    turn.made = false
+    setFace('think')
+    const e = state.engines.find(x => x.id === state.engine)
+    hideStatus()
+    statusEl = document.createElement('div')
+    statusEl.className = 'chat-status'
+    statusEl.setAttribute('role', 'status')
+    statusEl.innerHTML = `<span class="chat-status-dot" aria-hidden="true"></span>` +
+      `<span>Working with ${esc(e ? e.label : 'your agent')}…</span>`
+    list.appendChild(statusEl)
+    list.scrollTop = list.scrollHeight
+  }
+  function hideStatus() { if (statusEl) statusEl.remove(); statusEl = null }
+
+  function stop() {
+    if (!state.busy) return
+    ipcRenderer.send('chat-cancel')
+    sendBtn.disabled = true                     // until the turn reports it has ended
+    if (statusEl) statusEl.lastElementChild.textContent = 'Stopping…'
+  }
+
+  async function newChat() {
+    if (state.busy) return
+    const ok = await ipcRenderer.invoke('chat-new').catch(() => false)
+    if (!ok) return
+    list.innerHTML = INTRO
+    wireIntro()
+    state.tools.clear()
+    lastCard = null
+    setFace('rest')
+    input.focus()
   }
 
   // One row per tool call, filled in when its result arrives. The row appears the
   // moment the call starts, so a long transcribe shows what is happening rather than
   // leaving the pane silent.
+  const toolOf = ev => ev.tool || String(ev.name || '').replace(/^mcp__fetch__/, '').replace(/ /g, '_')
+
   function toolRow(ev) {
     const n = add(
       `<span class="chat-tool-ico">${ico('circle-fill', 'icon-sm')}</span>` +
@@ -559,7 +658,8 @@
       `<span class="chat-tool-sum"></span>` +
       `<span class="chat-tool-ms mono"></span>`, 'chat-tool')
     n.dataset.state = 'running'
-    n.dataset.tool = String(ev.name || '').replace(/^mcp__fetch__/, '')
+    n.dataset.tool = toolOf(ev)
+    n._input = ev.input || {}          // the card needs the path the tool was pointed at
     state.tools.set(ev.id, n)
   }
 
@@ -574,52 +674,236 @@
       ? ev.ms + ' ms' : (ev.ms / 1000).toFixed(1) + ' s'
   }
 
-  ipcRenderer.on('chat-event', (e, ev) => {
-    if (!pane) return
+  // Any tool still marked running never reported back; say so rather than leaving a
+  // row spinning forever. A stopped turn's rows read as stopped, not as failures.
+  function settleTools(how) {
+    for (const [, n] of state.tools) {
+      n.dataset.state = how
+      n.querySelector('.chat-tool-ico').innerHTML = ico(how === 'stopped' ? 'stop-fill' : 'warning-circle', 'icon-sm')
+    }
+    state.tools.clear()
+  }
+
+  // ── result cards ───────────────────────────────────────────────────────
+  // A tool that made or changed a file ends in a card with the file itself: a
+  // thumbnail, one plain line and a click that opens it. The row above is the log of
+  // what ran; the card is the thing you came for.
+  const clock = s => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`
+  const stemOf = p => baseName(p).replace(/\.[^.]+$/, '')
+  const AUDIO_RE = /\.(m4a|mp3|wav|aac|flac|ogg)$/i
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
+
+  function cardInfo(tool, d, inp) {
+    d = d || {}; inp = inp || {}
+    const meta = []
+    if (tool === 'export' && d.path) {
+      if (d.mb) meta.push(`${d.mb} MB`)
+      if (d.seconds) meta.push(clock(d.seconds))
+      return { path: d.path, open: 'reveal', line: `Exported ${baseName(d.path)}`, meta }
+    }
+    if (tool === 'record_stop' && d.path) {
+      if (d.mb) meta.push(`${d.mb} MB`)
+      return { path: d.path, open: 'editor', line: `Recorded ${stemOf(d.path)}`, meta }
+    }
+    if (tool === 'remove_dead_air' && d.path) {
+      if (d.seconds) meta.push(clock(d.seconds))
+      return { path: d.path, open: 'editor', meta,
+        line: typeof d.removed_percent === 'number'
+          ? `Removed dead air, ${Math.round(d.removed_percent)}% shorter` : 'Removed the dead air' }
+    }
+    if (tool === 'enhance_audio' && d.path) {
+      return { path: d.path, open: 'editor', line: 'Cleaned up the audio', meta: [stemOf(d.path)] }
+    }
+    if (tool === 'rename_recording' && d.path) {
+      return { path: d.path, open: 'editor', line: `Renamed to ${d.name || stemOf(d.path)}`, meta }
+    }
+    if (tool === 'apply_edit' && inp.path) {
+      const n = k => Array.isArray(d[k]) ? d[k].length : 0
+      const parts = []
+      if (n('clips') > 1) parts.push(plural(n('clips'), 'clip'))
+      if (n('zooms')) parts.push(plural(n('zooms'), 'zoom'))
+      if (n('marks')) parts.push(plural(n('marks'), 'mark'))
+      if (n('texts')) parts.push(plural(n('texts'), 'text'))
+      return { path: inp.path, open: 'editor', meta: [stemOf(inp.path)],
+        line: parts.length ? `Updated the edit: ${parts.join(', ')}` : 'Updated the edit' }
+    }
+    if (tool === 'get_frame' && inp.path) {
+      return { path: inp.path, open: 'editor', image: d.image, compact: true,
+        line: `Looked at ${clock(+d.at || +inp.at || 0)}`, meta: [stemOf(inp.path)] }
+    }
+    return null
+  }
+
+  let lastCard = null                  // { key, node }, so repeated edits update one card
+  function card(tool, data, inp) {
+    const c = cardInfo(tool, data, inp)
+    if (!c) return false
+    const key = tool + '|' + c.path
+    // An agent often applies an edit in several passes. One card that says where it
+    // ended up is the fact; five in a row are noise.
+    if (tool === 'apply_edit' && lastCard && lastCard.key === key) lastCard.node.remove()
+    const action = c.open === 'reveal' ? 'Show in Finder' : 'Open in editor'
+    const n = add(
+      `<button type="button" class="chat-card${c.compact ? ' chat-card-sm' : ''}" data-path="${esc(c.path)}" ` +
+        `data-open="${c.open}" aria-label="${esc(c.line)}. ${action}">` +
+        `<span class="chat-card-thumb" aria-hidden="true"></span>` +
+        `<span class="chat-card-txt">` +
+          `<span class="chat-card-line">${esc(c.line)}</span>` +
+          `<span class="chat-card-meta">${[...c.meta.map(esc), `<span class="chat-card-act">${action}</span>`].join(' · ')}</span>` +
+        `</span>` +
+        `<span class="chat-card-ok" aria-hidden="true">${ico('check-circle-fill', 'icon-sm')}</span>` +
+      `</button>`, 'chat-card-wrap')
+    lastCard = { key, node: n }
+    fillThumb(n.querySelector('.chat-card-thumb'), c)
+    return true
+  }
+
+  // The Library's poster when the file has one, else the video's own early frame,
+  // else a plain glyph. Never a broken image.
+  // One Library listing shared by every card drawn at once, so a replayed thread with
+  // twenty cards asks once, not twenty times.
+  let recCache = null, recAt = 0
+  async function posterFor(p) {
+    if (!recCache || Date.now() - recAt > 5000) { recCache = recordingsForMention(); recAt = Date.now() }
+    const r = (await recCache).find(x => x.path === p)
+    return r && r.poster
+  }
+
+  async function fillThumb(box, c) {
+    const glyph = () => { box.innerHTML = ico(AUDIO_RE.test(c.path) ? 'waveform' : 'film-strip', 'icon-lg'); box.dataset.empty = 'true' }
+    const img = c.image || (AUDIO_RE.test(c.path) || /\.gif$/i.test(c.path) ? null : await posterFor(c.path).catch(() => null))
+    const still = img || (/\.gif$/i.test(c.path) ? c.path : null)
+    if (still) {
+      box.innerHTML = `<img alt="" src="${esc(fileUrl(still))}">`
+      box.firstChild.onerror = glyph
+    } else if (!AUDIO_RE.test(c.path)) {
+      box.innerHTML = `<video muted preload="metadata" playsinline src="${esc(fileUrl(c.path))}#t=0.4"></video>`
+      box.firstChild.onerror = glyph
+    } else glyph()
+  }
+
+  function openCard(e) {
+    const c = e.target.closest('.chat-card')
+    if (!c) return
+    const p = c.dataset.path
+    if (!require('fs').existsSync(p)) {
+      if (window.toast) toast('That file is not there any more. It may have been moved or renamed.', 'bad')
+      return
+    }
+    if (c.dataset.open === 'editor' && typeof window.openInEditor === 'function') window.openInEditor(p)
+    else ipcRenderer.send('reveal', p)
+  }
+
+  // ── "Working on" ───────────────────────────────────────────────────────
+  // The recording open in the editor goes along with every message, so "zoom in on the
+  // login" has something to point at. Shown, so it is never a hidden assumption, and
+  // removable, for a question that has nothing to do with it.
+  // Off for the recording open now, until another is opened. A flag rather than the
+  // path, so a rename of the open take does not quietly put it back in the prompt.
+  let ctxOff = false
+  const currentSrc = () => {
+    try { if (window.fetchDoc && typeof window.fetchDoc.src === 'function' && window.fetchDoc.src()) return window.fetchDoc.src() } catch {}
+    return (window.ed && window.ed.src) || null
+  }
+  const contextSrc = () => ctxOff ? null : currentSrc()
+
+  function paintOn() {
+    const host = pane.querySelector('#chatOn')
+    const src = contextSrc()
+    host.hidden = !src
+    host.innerHTML = src
+      ? `<span class="chat-on">${ico('film-strip', 'icon-xs')}<span class="chat-on-lab">Working on:</span>` +
+        `<span class="chat-on-name" title="${esc(src)}">${esc(stemOf(src))}</span>` +
+        `<button type="button" data-unon aria-label="Leave this recording out" data-tip="Leave it out">${ico('x', 'icon-xs')}</button></span>`
+      : ''
+  }
+
+  // ── events ─────────────────────────────────────────────────────────────
+  // Live events and the saved log go through the same renderer. A replay draws the
+  // thread and nothing else: no faces, no activity refresh, no busy state.
+  function render(ev, { replay = false } = {}) {
     // Anything arriving means a conversation is under way, so the introduction goes,
-    // whoever started the turn. Removing it only on submit left it sitting above a
-    // reply that arrived from a turn begun elsewhere.
-    const intro = list.querySelector('.chat-intro')
-    if (intro) intro.remove()
+    // whoever started the turn.
+    dropIntro()
+    if (ev.kind === 'user') { renderUser(ev); return }
     if (ev.kind === 'text') add(md(ev.text), 'chat-msg chat-them')
-    else if (ev.kind === 'tool') { toolRow(ev); setFace(faceForTool(ev.name)) }
+    else if (ev.kind === 'tool') {
+      toolRow(ev)
+      if (!replay) setFace(faceForTool(toolOf(ev)))
+    }
     else if (ev.kind === 'result') {
       const row = state.tools.get(ev.id)
-      const name = row && row.dataset.tool
+      const name = ev.tool || (row && row.dataset.tool) || ''
       toolDone(ev)
+      // the card names the file, so the row's one-line summary would say it twice
+      if (ev.ok && card(name, ev.data, row && row._input) && row) row.querySelector('.chat-tool-sum').textContent = ''
+      if (replay) return
       if (!ev.ok) setFace('fail')
       else {
-        if (/^(export|remove_dead_air|enhance_audio|record_stop)$/.test(name || '')) turn.made = true
+        if (/^(export|remove_dead_air|enhance_audio|record_stop)$/.test(name)) turn.made = true
         setFace('think')
       }
     }
     else if (ev.kind === 'done') {
-      if (!ev.ok) setFace('fail')
-      else setFace(turn.made ? 'made' : 'answer', turn.made ? 3200 : 1800)
+      settleTools(ev.cancelled ? 'stopped' : 'bad')
+      if (ev.cancelled) add(`<span>Stopped</span>`, 'chat-note')
+      else if (!ev.ok && ev.error) add(esc(ev.error), 'chat-msg chat-err')
+      if (replay) return
+      hideStatus()
       state.busy = false; sync()
-      sendBtn.classList.remove('working')
-      // Any tool still marked running never reported back; say so rather than
-      // leaving a row spinning forever.
-      for (const [, n] of state.tools) { n.dataset.state = 'bad'; n.querySelector('.chat-tool-ico').innerHTML = ico('warning-circle', 'icon-sm') }
-      state.tools.clear()
-      if (!ev.ok && ev.error) add(esc(ev.error), 'chat-msg chat-err')
+      paintOn()                        // the turn may have opened or renamed a take
+      if (ev.cancelled) setFace('rest')
+      else if (!ev.ok) setFace('fail')
+      else setFace(turn.made ? 'made' : 'answer', turn.made ? 3200 : 1800)
       if (window.refreshActivity) window.refreshActivity()
     }
-  })
+  }
+
+  ipcRenderer.on('chat-event', (e, ev) => { if (pane) render(ev) })
+
+  // The saved thread, drawn once at start. Anything that arrived live while the log
+  // was loading is moved back below it, so the order is still the order it happened.
+  async function replay() {
+    let log = []
+    try { log = await ipcRenderer.invoke('chat-history') || [] } catch {}
+    if (!log.length) return
+    const live = Array.from(list.children).filter(n => !n.classList.contains('chat-intro'))
+    const liveTools = new Map(state.tools)
+    state.tools.clear()
+    for (const ev of log) { try { render(ev, { replay: true }) } catch {} }
+    // a turn cut off by quitting never said it was done
+    settleTools('bad')
+    for (const [k, v] of liveTools) state.tools.set(k, v)
+    for (const n of live) list.appendChild(n)
+    if (statusEl) list.appendChild(statusEl)
+    list.scrollTop = list.scrollHeight
+  }
 
   function toggle(open) {
     state.open = open == null ? !state.open : open
     pane.hidden = !state.open
     document.getElementById('stage').classList.toggle('with-chat', state.open)
-    if (state.open) { input.focus(); refreshEngines() }
+    // the hero composer hides while the pane is open, so a half-typed line moves across
+    const hero = document.getElementById('heroInput')
+    if (state.open && hero && hero.value.trim() && !input.value.trim()) {
+      input.value = hero.value; hero.value = ''
+      hero.dispatchEvent(new Event('input')); grow(); sync()
+    }
+    if (state.open) { input.focus(); refreshEngines(); paintOn() }
+  }
+
+  // The saved pref is the source of truth, not the last pick this pane made, so a
+  // change made anywhere else (savePrefs, another composer) is what the next turn
+  // runs on. null means the CLI's own default.
+  function adoptPick() {
+    const saved = window.prefs ? window.prefs.chatModel : state.pick
+    state.pick = window.modelPicker ? modelPicker.resolve(state.models, saved) : null
   }
 
   async function refreshEngines() {
     try { state.engines = await ipcRenderer.invoke('chat-engines') || [] } catch { state.engines = [] }
     try { state.models = await ipcRenderer.invoke('chat-models', state.engines.map(e => e.id)) || [] } catch { state.models = [] }
-    state.pick = window.modelPicker
-      ? modelPicker.resolve(state.models, state.pick || (window.prefs && window.prefs.chatModel))
-      : null
+    adoptPick()
     if (state.pick) state.engine = state.pick.engine
     paintEngine()
     if (window.__paintHeroEngine) window.__paintHeroEngine()
@@ -680,6 +964,8 @@
     build()
     wireHero()
     refreshEngines()
+    replay()
+    sync()
     document.addEventListener('keydown', e => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); toggle() }
       if (e.key === 'Escape' && state.open && document.activeElement === input) toggle(false)

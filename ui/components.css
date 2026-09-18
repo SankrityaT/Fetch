@@ -149,7 +149,8 @@ textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; re
 /* ── modal ───────────────────────────────────────────────────────────── */
 .scrim {
   position:fixed; inset:0; z-index:50; display:grid; place-items:center;
-  background:rgba(6,5,4,.72); backdrop-filter:blur(14px) saturate(1.2);
+  /* tone, not blur: DESIGN.md keeps blur to the chat pane and the titlebar */
+  background:rgba(6,5,4,.8);
   animation:fade var(--dur-2) var(--ease-in);
 }
 .modal {
@@ -204,16 +205,19 @@ textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; re
 .empty p { color:var(--text-1); font-size:var(--t-13); max-width:34ch; }
 
 /* ── tooltip ─────────────────────────────────────────────────────────── */
-[data-tip] { position:relative; }
-[data-tip]::after {
-  content:attr(data-tip); position:absolute; bottom:calc(100% + 8px); left:50%;
-  transform:translateX(-50%) translateY(4px);
-  padding:5px 9px; border-radius:var(--r-sm); white-space:nowrap;
-  background:var(--ink-3); color:var(--text-0); font:500 var(--t-11) var(--font-ui);
-  box-shadow:0 6px 18px rgba(0,0,0,.5); opacity:0; pointer-events:none;
-  transition:opacity var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in); z-index:60;
+/* One floating layer (ui/tooltip.js), kept inside the window. A per-element ::after
+   could not see the window edge and ran off it near the chat pane and the clip actions. */
+.tip-layer {
+  position:fixed; left:0; top:0; z-index:200; max-width:min(320px, calc(100vw - 16px));
+  padding:5px 9px; border-radius:var(--r-sm);
+  background:var(--ink-3); color:var(--text-0); font:500 var(--t-11)/1.35 var(--font-ui);
+  box-shadow:var(--shadow-3); pointer-events:none;
+  opacity:0; transform:translateY(3px);
+  transition:opacity var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in);
 }
-[data-tip]:hover::after { opacity:1; transform:translateX(-50%) translateY(0); }
+.tip-layer[data-side="below"] { transform:translateY(-3px); }
+.tip-layer[data-on="true"] { opacity:1; transform:none; }
+@media (prefers-reduced-motion: reduce) { .tip-layer { transition:none; } }
 
 /* ── toast ───────────────────────────────────────────────────────────── */
 .toasts { position:fixed; bottom:var(--s-5); left:50%; transform:translateX(-50%); z-index:80;

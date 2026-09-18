@@ -64,7 +64,7 @@ is('unknown keys are refused', /not a setting/.test(throws(() => p.checkSettings
 is('countdown only takes 0, 3 or 5', /countdown/.test(throws(() => p.checkSettingsPatch({ countdown: 4 }))), true)
 is('booleans are not coerced from strings', /true or false/.test(throws(() => p.checkSettingsPatch({ mic: 'no' }))), true)
 is('a missing folder is refused', /saveDir/.test(throws(() => p.checkSettingsPatch({ saveDir: '/nope' }, () => false))), true)
-is('null folder means the Desktop', p.checkSettingsPatch({ saveDir: null }), { saveDir: null })
+is('null folder means ~/Movies/Fetch', p.checkSettingsPatch({ saveDir: null }), { saveDir: null })
 is('a good patch passes through', p.checkSettingsPatch({ camera: false, countdown: 0 }), { camera: false, countdown: 0 })
 
 console.log(`\n  ${pass} passed, ${fail} failed`)
