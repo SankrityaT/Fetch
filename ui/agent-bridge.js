@@ -61,6 +61,7 @@ const TITLES = {
   'edit.apply': 'Changed an edit',
   'edit.beats': 'Read the beats',
   'edit.export': 'Exported a video',
+  'recordings.rename': 'Renamed a recording',
 }
 
 const ops = {
@@ -190,6 +191,25 @@ const ops = {
     const mb = r && r.file && require('fs').existsSync(r.file)
       ? +(require('fs').statSync(r.file).size / 1e6).toFixed(1) : null
     return { path: r && r.file, mb, seconds: +FD.outDuration(doc).toFixed(2) }
+  },
+
+  // Rename through the same helper the Library uses, so sidecars (transcript, beats,
+  // camera take, edit document) move with the file and the take stays in the Library.
+  // A name is cleaned of anything that could turn it into a path.
+  async 'recordings.rename'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const naming = require('./naming')
+    const stem = naming.fit(naming.clean(args.name || ''))
+    if (!stem) throw new Error('name is empty once cleaned')
+    const win = deps.getWindow()
+    if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
+    const next = await win.webContents.executeJavaScript(`(async () => {
+      const out = renameFileWithSidecars(${JSON.stringify(args.path)}, ${JSON.stringify(stem)})
+      await ensureListed(out)
+      refreshLibrary()
+      return out
+    })()`)
+    return { path: next, name: stem }
   },
 
   async 'edit.beats'(args = {}) {

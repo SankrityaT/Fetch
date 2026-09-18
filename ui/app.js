@@ -249,7 +249,30 @@ async function countdown() {
 }
 
 // Everything that happens once a take exists on disk, whichever recorder made it.
+// Name a take after what it recorded, before anyone is told where it is. Doing it
+// after 'take-finished' would hand an agent waiting on record_start a path that no
+// longer exists a moment later.
+//
+// Only window takes can be named here, since only they carry an app and a title.
+// A full-screen take keeps its timestamp until it is transcribed, and is renamed from
+// what was said then (see the editor's transcribe handler).
+function nameTake(file) {
+  if (setup.mode !== 'window' || !setup.window) return file
+  const naming = require('./ui/naming')
+  const stem = naming.smartName({ app: setup.window.app, title: setup.window.title })
+  if (!stem) return file
+  try {
+    const renamed = renameFileWithSidecars(file, stem)
+    ensureListed(renamed)
+    return renamed
+  } catch (e) {
+    console.error('could not name the take:', e.message)
+    return file          // the recording matters more than its name
+  }
+}
+
 function finishTake(file, mb) {
+  file = nameTake(file)
   // Tell main a take landed. hotkey() is fire-and-forget, so without this an agent
   // that asked for a recording has no way to learn where the file went.
   try { ipcRenderer.send('take-finished', { file, mb: +mb }) } catch {}
