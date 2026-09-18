@@ -23,7 +23,7 @@
   flex:none; display:flex; align-items:center; gap:var(--s-3);
   padding:var(--s-3) var(--s-3) var(--s-3) var(--s-4); border-bottom:var(--edge);
 }
-.chat-head .biscuit { width:28px; height:28px; flex:none; }
+.chat-head .biscuit { width:34px; height:34px; flex:none; object-fit:contain; }
 .chat-head-txt { flex:1; min-width:0; display:flex; flex-direction:column; }
 .chat-title { font-weight:600; font-size:var(--t-13); }
 .chat-sub { font-size:var(--t-11); color:var(--text-2); }
