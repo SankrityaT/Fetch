@@ -313,6 +313,10 @@ const EDITOR_HTML = `
 </div>`
 
 // ── open ────────────────────────────────────────────────────────────────
+// The chat pane reads this to know which recording you are looking at, so a question
+// like "transcribe this" has something to point at.
+window.ed = ed
+
 async function openInEditor(src) {
   document.querySelector('#nav [data-view="editor"]').disabled = false
   show('editor')

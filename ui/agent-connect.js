@@ -223,4 +223,7 @@ async function connect(id) {
   return confirmed ? { ok: true, note: r.note } : { ok: false, error: 'wrote the config but could not read it back' }
 }
 
-module.exports = { detect, connect, shimPath, nodeBin, SERVER_NAME }
+// The CLI binary for an engine, or null. The in-app chat spawns these directly.
+const binFor = engine => which(engine === 'codex' ? 'codex' : 'claude')
+
+module.exports = { detect, connect, shimPath, nodeBin, binFor, primeWhich, SERVER_NAME }
