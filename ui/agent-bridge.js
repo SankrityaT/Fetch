@@ -27,6 +27,7 @@ const fs = require('fs')
 const net = require('net')
 const path = require('path')
 const policy = require('./record-policy')
+const activity = require('./activity-log')
 
 let app, ipcMain
 try { ({ app, ipcMain } = require('electron')) } catch {}
@@ -45,7 +46,27 @@ function socketPath() {
 }
 
 // ---------- ops ----------
+// Human-readable titles. The log is read by a person, so "Recorded a window" beats
+// "record.start ok". Ops with no entry here are still logged, under their own name.
+const TITLES = {
+  'record.start': 'Started recording',
+  'record.stop': 'Stopped recording',
+  'record.pause': 'Paused recording',
+  'windows.list': 'Looked at open windows',
+  'displays.list': 'Looked at displays',
+  'recordings.list': 'Listed recordings',
+  probe: 'Read a file\'s details',
+  transcribe: 'Transcribed a recording',
+}
+
 const ops = {
+  // Sent once by the shim so the log can say which agent is driving rather than
+  // just "an agent". Unknown to older shims, which simply never call it.
+  async hello(args = {}, ctx) {
+    if (ctx) ctx.client = String(args.client || '').slice(0, 40) || null
+    return { ok: true }
+  },
+
   async ping() {
     return { version: VERSION, app: app ? app.getVersion() : '0', recording: deps.isRecording() }
   },
@@ -205,19 +226,49 @@ async function applySetup(win, args) {
 }
 
 // ---------- wire ----------
-function handleLine(sock, line) {
+function handleLine(sock, line, ctx) {
   let msg
   try { msg = JSON.parse(line) } catch { return }
   const id = msg && msg.id
   const reply = obj => { try { sock.write(JSON.stringify({ id, ...obj }) + '\n') } catch {} }
 
-  const fn = ops[msg && msg.op]
-  if (!fn) return reply({ ok: false, error: `unknown op: ${msg && msg.op}` })
+  const op = msg && msg.op
+  const fn = ops[op]
+  if (!fn) return reply({ ok: false, error: `unknown op: ${op}` })
 
+  const t0 = Date.now()
   Promise.resolve()
-    .then(() => fn(msg.args || {}))
-    .then(result => reply({ ok: true, result }))
-    .catch(err => reply({ ok: false, error: err && err.message ? err.message : String(err) }))
+    .then(() => fn(msg.args || {}, ctx))
+    .then(result => { logOp(op, ctx, t0, msg.args, result, null); reply({ ok: true, result }) })
+    .catch(err => {
+      const m = err && err.message ? err.message : String(err)
+      logOp(op, ctx, t0, msg.args, null, m)
+      reply({ ok: false, error: m })
+    })
+}
+
+// Reads are noise in a log meant to answer "what did it do to my machine", so the
+// pure lookups are skipped and anything with an effect is kept.
+const QUIET = new Set(['ping', 'hello', 'record.status'])
+
+function logOp(op, ctx, t0, args, result, error) {
+  if (QUIET.has(op)) return
+  let detail = null
+  if (op === 'record.start' && result) detail = result.path
+  else if (op === 'transcribe' && result) detail = `${result.words} words, ${result.cues} cues`
+  else if (op === 'windows.list' && result) detail = `${result.length} windows`
+  else if (op === 'recordings.list' && result) detail = `${result.length} recordings`
+  else if (op === 'probe' && args && args.path) detail = args.path
+
+  activity.record({
+    op,
+    title: TITLES[op] || op,
+    detail,
+    by: (ctx && ctx.client) || 'Agent',
+    ms: Date.now() - t0,
+    ok: !error,
+    error,
+  })
 }
 
 function start(d) {
@@ -246,6 +297,7 @@ function start(d) {
 
   server = net.createServer(sock => {
     sock.setEncoding('utf8')
+    const ctx = { client: null }         // filled in by the shim's hello
     let buf = ''
     sock.on('data', chunk => {
       buf += chunk
@@ -253,7 +305,7 @@ function start(d) {
       let i
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1)
-        if (line.trim()) handleLine(sock, line)
+        if (line.trim()) handleLine(sock, line, ctx)
       }
     })
     sock.on('error', () => {})

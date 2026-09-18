@@ -31,6 +31,7 @@ const updater = require('./ui/updater')
 const telemetry = require('./ui/telemetry')
 const agentBridge = require('./ui/agent-bridge')
 const jobQueue = require('./ui/job-queue')
+const activity = require('./ui/activity-log')
 
 // ---------- preferences ----------
 // Persisted to <userData>/prefs.json. Loaded lazily and cached in memory;
@@ -757,6 +758,11 @@ function tidySaveFolders() {
 
 ipcMain.handle('list-recordings', () => { tidySaveFolders(); return proc.listRecordings() })
 ipcMain.handle('probe', (e, src) => proc.probeMeta(src))
+// The activity log. Read by the Activity view; written from the bridge and from
+// every job that finishes here.
+ipcMain.handle('activity-read', (e, limit) => activity.read(limit || 300))
+ipcMain.handle('activity-clear', () => { activity.clear(); return true })
+
 // The edit document, and the beats a recording is scrubbed by.
 ipcMain.handle('read-doc', (e, src, dur) => proc.readDoc(src, dur))
 ipcMain.handle('write-doc', (e, src, doc) => proc.writeDoc(src, doc))
@@ -792,10 +798,40 @@ ipcMain.handle('pick-file', async () => {
 let jobSeq = 0
 let jobsActive = 0   // reported to the updater, so it never installs mid-export
 
+// Work that finished here, whoever asked for it. A job carrying an external jobId
+// arrived over the socket, so it belongs to an agent; anything else was a person
+// pressing a button, and those entries deliberately carry no `by`. A log that showed
+// only agent activity could not tell you whether the cut in front of you was yours.
+const JOB_TITLES = {
+  export: 'Exported a video', mp4: 'Converted to MP4', convert: 'Converted a recording',
+  silence: 'Removed dead air', enhance: 'Cleaned up the audio', trim: 'Trimmed a recording',
+  captions: 'Burned in captions', gif: 'Made a GIF', transcribe: 'Transcribed a recording',
+}
+// Thumbnails, waveforms and filmstrips are how the UI draws itself rather than things
+// anyone did, and logging them would bury everything that matters.
+const JOB_QUIET = new Set(['thumb', 'waveform', 'filmstrip'])
+
+function logJob(payload, t0, result, error) {
+  if (JOB_QUIET.has(payload.op)) return
+  let detail = (result && result.file) || payload.src || null
+  if (payload.op === 'silence' && result) detail = `kept ${result.cuts} segments, saved ${result.savedPct}%`
+  if (payload.op === 'transcribe' && result) detail = `${result.words} words, ${(result.cues || []).length} cues`
+  activity.record({
+    op: payload.op,
+    title: JOB_TITLES[payload.op] || payload.op,
+    detail,
+    by: payload.jobId != null ? 'Agent' : null,
+    ms: Date.now() - t0,
+    ok: !error,
+    error,
+  })
+}
+
 ipcMain.handle('edit-job', async (e, payload) => {
   // Namespace caller-supplied ids. processor.cancel() keys off this, so a renderer
   // job and an agent job sharing a number would cancel each other.
   const id = payload.jobId != null ? `ext:${payload.jobId}` : ++jobSeq
+  const t0 = Date.now()
   const cid = payload.cid
   const wc = e.sender
   const send = (status, extra) => { if (!wc.isDestroyed()) wc.send('edit-job', { id, cid, status, ...extra }) }
@@ -828,11 +864,13 @@ ipcMain.handle('edit-job', async (e, payload) => {
         default: throw new Error('unknown op ' + payload.op)
       }
       send('done', { result })
+      logJob(payload, t0, result, null)
       return { ok: true, ...result }
       } })
     } catch (err) {
       if (err && err.cancelled) { send('cancelled', {}); return { ok: false, cancelled: true } }
       send('error', { message: String(err.message || err) })
+      logJob(payload, t0, null, String(err.message || err))
       return { ok: false, error: String(err.message || err) }
     }
   } finally {

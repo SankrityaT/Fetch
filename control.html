@@ -26,6 +26,9 @@
       <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-film-strip"/></svg> Library</button>
     <button role="tab" data-view="editor" aria-selected="false" disabled>
       <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-scissors"/></svg> Edit</button>
+    <button role="tab" data-view="activity" aria-selected="false">
+      <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-clock"/></svg> Activity
+    </button>
   </nav>
 
   <div class="tb-right">
@@ -94,6 +97,11 @@
   </section>
 
   <!-- ═══════════════ SETTINGS ═══════════════ -->
+  <!-- ══════════════════════════════════ ACTIVITY ══════════════════════════════════ -->
+  <section class="view" data-view="activity" hidden>
+    <div id="activityMount"></div>
+  </section>
+
   <section class="view" data-view="settings" hidden>
     <div id="settingsMount"></div>
   </section>
@@ -115,5 +123,6 @@
 <script src="./ui/toast-guard.js"></script>
 <script src="./ui/idle.js"></script>
 <script src="./ui/settings.js"></script>
+<script src="./ui/activity.js"></script>
 </body>
 </html>

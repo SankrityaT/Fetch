@@ -20,6 +20,33 @@ const SOCKET = path.join(os.homedir(), 'Library', 'Application Support', 'Fetch'
 
 const log = (...a) => process.stderr.write('[fetch-mcp] ' + a.join(' ') + '\n')
 
+// Which agent is driving. The socket cannot tell on its own, and an activity log
+// that says "an agent" for every row is not worth opening.
+//
+// The MCP handshake already carries this: the client states its own name in
+// initialize. Guessing from the process tree was tried first and does not work,
+// because Claude Code and Codex are themselves Node programs, so the parent process
+// is just "node" for all of them.
+const PRETTY = {
+  'claude-code': 'Claude Code', claude: 'Claude Code', codex: 'Codex',
+  cursor: 'Cursor', windsurf: 'Windsurf', 'zed-industries': 'Zed', zed: 'Zed',
+}
+let CLIENT = 'Agent'
+
+export function setClient(name) {
+  const key = String(name || '').toLowerCase().trim()
+  if (!key) return
+  CLIENT = PRETTY[key] || key.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  announce()
+}
+
+// Best effort, and deliberately unacknowledged: an older app answers "unknown op"
+// and everything still works, just attributed less precisely.
+function announce() {
+  if (!sock) return
+  try { sock.write(JSON.stringify({ id: 'hello', op: 'hello', args: { client: CLIENT } }) + '\n') } catch {}
+}
+
 let sock = null
 let buf = ''
 let nextId = 1
@@ -36,6 +63,8 @@ function disconnect() {
 function attach(s) {
   sock = s
   buf = ''
+  announce()          // must live here: ensureConnected returns early when the app
+                      // is already running, and that path skipped the announcement
   s.setEncoding('utf8')
   s.on('data', chunk => {
     buf += chunk

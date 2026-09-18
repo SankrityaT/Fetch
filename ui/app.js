@@ -53,6 +53,7 @@ function show(view) {
   document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === view)))
   document.querySelectorAll('.view').forEach(v => { v.hidden = v.dataset.view !== view })
   if (view === 'library') refreshLibrary()
+  if (view === 'activity' && window.refreshActivity) window.refreshActivity()
   if (view === 'record') paintHeroCta()      // the pref may have changed in Settings
 }
 $('nav').addEventListener('click', e => {

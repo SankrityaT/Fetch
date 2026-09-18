@@ -11,12 +11,22 @@
 import { McpServer } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import * as z from 'zod/v4'
-import { call } from './bridge.js'
+import { call, setClient } from './bridge.js'
 
 const text = obj => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] })
 
 function build() {
   const server = new McpServer({ name: 'fetch', version: '0.1.0' })
+
+  // Every call goes through here so Fetch can attribute it. The client names itself
+  // during initialize and that is the only reliable source: Claude Code, Codex and
+  // the rest are all Node programs, so the process tree just says "node" for every
+  // one of them. Read at call time rather than from an initialize hook, because the
+  // hook does not fire under serveStdio, and doing it here is idempotent anyway.
+  const drive = (op, args, opts) => {
+    try { setClient(server.server.getClientVersion()?.name) } catch {}
+    return call(op, args, opts)
+  }
 
   server.registerTool(
     'record_start',
@@ -38,7 +48,7 @@ function build() {
     async args => {
       // The app counts down before capturing and the take resolves only when the
       // file exists, so this can legitimately sit for a while.
-      const r = await call('record.start', args, { timeoutMs: 15 * 60 * 1000 })
+      const r = await drive('record.start', args, { timeoutMs: 15 * 60 * 1000 })
       return text(r)
     })
 
@@ -50,7 +60,7 @@ function build() {
         'the record_start call that started it.',
       inputSchema: z.object({}),
     },
-    async () => text(await call('record.stop')))
+    async () => text(await drive('record.stop')))
 
   server.registerTool(
     'record_status',
@@ -58,7 +68,7 @@ function build() {
       description: 'Whether Fetch is currently recording.',
       inputSchema: z.object({}),
     },
-    async () => text(await call('record.status')))
+    async () => text(await drive('record.status')))
 
   // Discovery, so a target can actually be chosen. The usual shape is: something
   // else (Playwright, simctl, a shell command) opens the window, then list_windows
@@ -76,7 +86,7 @@ function build() {
       }),
     },
     async (args = {}) => {
-      const all = await call('windows.list')
+      const all = await drive('windows.list')
       const q = (args.app || '').toLowerCase()
       const hits = q
         ? all.filter(w => (w.app || '').toLowerCase().includes(q) || (w.title || '').toLowerCase().includes(q))
@@ -90,7 +100,7 @@ function build() {
       description: 'List the displays attached, with the id record_start takes.',
       inputSchema: z.object({}),
     },
-    async () => text(await call('displays.list')))
+    async () => text(await drive('displays.list')))
 
   server.registerTool(
     'list_recordings',
@@ -98,7 +108,7 @@ function build() {
       description: 'List recordings Fetch knows about, newest first, with their file paths.',
       inputSchema: z.object({}),
     },
-    async () => text(await call('recordings.list')))
+    async () => text(await drive('recordings.list')))
 
   server.registerTool(
     'probe',
@@ -106,7 +116,7 @@ function build() {
       description: 'Read the duration, resolution, frame rate and audio tracks of a video file.',
       inputSchema: z.object({ path: z.string().describe('Absolute path to a video file.') }),
     },
-    async args => text(await call('probe', args)))
+    async args => text(await drive('probe', args)))
 
   server.registerTool(
     'transcribe',
@@ -121,7 +131,7 @@ function build() {
           .describe('Return the full transcript text as well as the file path.'),
       }),
     },
-    async args => text(await call('transcribe', args, { timeoutMs: 10 * 60 * 1000 })))
+    async args => text(await drive('transcribe', args, { timeoutMs: 10 * 60 * 1000 })))
 
   return server
 }
