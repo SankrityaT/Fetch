@@ -8,6 +8,7 @@ const ed = {
   crop: null, cropAR: 'free',
   cuts: [], cutMode: false,
   beats: [],          // named spans from the transcript, see processor.buildBeats
+  zooms: [],          // explicit zooms by id (Z1, Z2): {id, start, end, scale, x, y}
   audioTrack: null,   // {file, name, volume, offset, replace, peaks}
   cam: null,          // camera take: {file, x, y, size, ...} when one was recorded
   tab: 'trim',
@@ -44,6 +45,7 @@ const EDITOR_HTML = `
       <button class="btn btn-sm btn-ghost" id="tlFit" data-tip="Reset zoom">${ico('arrows-out-simple', 'icon-sm')}</button>
     </div>
     <div class="tl-beats" id="tlBeats" hidden></div>
+    <div class="tl-zooms" id="tlZooms" hidden></div>
     <div class="tl-wrap" id="tlWrap">
       <div class="tl-lanes">
         <div class="tl-lane tl-lane-video" id="laneVideo">
@@ -831,6 +833,88 @@ function wireEditor() {
 
   wireVoice(); voRefresh()
 
+    // ── the edit document, as the agent sees it ────────────────────────────
+  // ui/fetchdoc.js is the canonical shape; `ed` is the working copy the UI drives.
+  // These two functions are the only place they are converted, so there is exactly
+  // one definition of "what the current edit is" for an agent to read or change.
+  const FD = require('./ui/fetchdoc')
+
+  function docFromEd() {
+    const base = ed.doc || FD.emptyDoc(ed.src, ed.dur)
+    const doc = FD.normalize(base, ed.src, ed.dur)
+
+    // Clips are derived from trim and cuts, but ids must survive: a clip that has
+    // not moved keeps the name an agent already used for it.
+    const fresh = FD.clipsFromTrim(ed.in, ed.out, ed.cuts, ed.dur)
+    const old = doc.clips || []
+    doc.clips = fresh.map((c, i) => ({
+      id: (old[i] && Math.abs(old[i].start - c.start) < 0.02) ? old[i].id : FD.mintId(doc, 'clips'),
+      start: c.start, end: c.end,
+    }))
+
+    doc.texts = (ed.texts || []).map((t, i) => ({ ...t, id: t.id || (old.texts && old.texts[i]?.id) || FD.mintId(doc, 'texts') }))
+    doc.cues = (ed.cues || []).map(c => ({ ...c }))
+    doc.beats = (ed.beats || []).map((b, i) => ({ ...b, id: b.id || 'B' + (i + 1) }))
+    doc.zooms = (ed.zooms || []).map(z => ({ ...z, id: z.id || FD.mintId(doc, 'zooms') }))
+    doc.crop = ed.crop; doc.cropAR = ed.cropAR
+    doc.capStyle = ed.capStyle
+    doc.camera = ed.cam || null
+    doc.audioTrack = ed.audioTrack || null
+    doc.backdrop = ed.backdrop || null
+    doc.outAspect = ed.outAspect || null
+    doc.autoZoom = !!ed.autoZoom
+
+    // the nine values that used to live only as slider positions
+    const num = (id, d) => { const n = $(id); return n ? +n.value : d }
+    doc.look = {
+      zoomAmt: num('zoomAmt', 170) / 100,
+      bdInset: num('bdInset', 6) / 100,
+      bdRadius: num('bdRadius', 14),
+      burnCaps: !!($('burnCaps') && $('burnCaps').checked),
+      denoise: !!($('denoise') && $('denoise').checked),
+      loudnorm: !!($('loudnorm') && $('loudnorm').checked),
+      gain: num('gain', 0),
+      fadeIn: num('fadeIn', 0) / 10,
+      fadeOut: num('fadeOut', 0) / 10,
+    }
+    return FD.ensureIds(doc)
+  }
+
+  // Apply a document back onto the editor. Used when an agent changes something, so
+  // the UI shows the change rather than quietly disagreeing with the file.
+  function docToEd(doc) {
+    ed.doc = doc
+    const t = FD.trimFromClips(doc.clips)
+    ed.in = t.start; ed.out = t.end; ed.cuts = t.cuts
+    ed.texts = (doc.texts || []).map(x => ({ ...x }))
+    ed.cues = (doc.cues || []).map(x => ({ ...x }))
+    ed.beats = (doc.beats || []).map(x => ({ ...x }))
+    ed.zooms = (doc.zooms || []).map(x => ({ ...x }))
+    ed.crop = doc.crop; ed.cropAR = doc.cropAR || 'free'
+    ed.capStyle = { ...ed.capStyle, ...(doc.capStyle || {}) }
+    ed.autoZoom = !!doc.autoZoom
+
+    const L = doc.look || {}
+    const set = (id, v) => { const n = $(id); if (n && v != null) n.value = v }
+    set('zoomAmt', Math.round(L.zoomAmt * 100)); set('bdInset', Math.round(L.bdInset * 100))
+    set('bdRadius', L.bdRadius); set('gain', L.gain)
+    set('fadeIn', Math.round(L.fadeIn * 10)); set('fadeOut', Math.round(L.fadeOut * 10))
+    const chk = (id, v) => { const n = $(id); if (n) n.checked = !!v }
+    chk('burnCaps', L.burnCaps); chk('denoise', L.denoise); chk('loudnorm', L.loudnorm)
+
+    paintTrim(); renderCuts(); renderTexts(); renderCues(); renderBeats(); renderZooms()
+    paintCaption(); highlightBeat(); layoutTimeline()
+  }
+
+  // The surface an agent drives, reached through the bridge. Deliberately small: a
+  // document in, a document out, and the editor repainted so the person watching
+  // sees what changed.
+  window.fetchDoc = {
+    get: () => docFromEd(),
+    apply: doc => { docToEd(FD.normalize(doc, ed.src, ed.dur)); return window.fetchDoc.get() },
+    src: () => ed.src || null,
+  }
+
     $('doExport').onclick = exportModal
 
   document.querySelectorAll('.ed .slider').forEach(s => {
@@ -891,6 +975,12 @@ const seek = t => {
 // Clicking a named span is the fastest way back to a moment you remember by what was
 // said in it, which is the reason the labels exist at all.
 document.addEventListener('click', e => {
+  const z = e.target.closest('#tlZooms .tl-zoom')
+  if (z && ed.src) {
+    const zoom = ed.zooms.find(x => x.id === z.dataset.id)
+    if (zoom) seek(zoom.start)
+    return
+  }
   const hit = e.target.closest('#tlBeats .tl-beat')
   if (!hit || !ed.src) return
   const beat = ed.beats[+hit.dataset.i]
@@ -970,6 +1060,24 @@ function renderBeats() {
   }).join('')
 }
 
+// Explicit zooms as a track of their own, so a zoom an agent added is visible and
+// nameable rather than an effect you only discover after exporting.
+function renderZooms() {
+  const host = $('tlZooms')
+  if (!host) return
+  if (!ed.zooms.length) { host.hidden = true; host.innerHTML = ''; return }
+  host.hidden = false
+  host.innerHTML = ed.zooms.map(z => {
+    const left = (z.start / ed.dur) * 100
+    const width = Math.max(0.6, ((z.end - z.start) / ed.dur) * 100)
+    return '<button class="tl-zoom" data-id="' + escHtml(z.id) + '" style="left:' + left + '%;width:' + width + '%" ' +
+      'title="' + escHtml(z.id) + ' zooms ' + (z.scale || 1.8).toFixed(2) + 'x">' +
+      '<span class="tl-zoom-id mono">' + escHtml(z.id) + '</span>' +
+      '<span class="tl-zoom-x mono">' + (z.scale || 1.8).toFixed(1) + '&times;</span>' +
+    '</button>'
+  }).join('')
+}
+
 // Which beat the playhead is inside. Called from seek and from the playback loop,
 // so the strip tracks without its own timer.
 function highlightBeat() {
@@ -1003,7 +1111,7 @@ function layoutTimeline() {
   paintTrim(); paintPlayhead()
 }
 window.addEventListener('resize', () => {
-  if (ed.src && $('tlWrap')) { drawWave(); drawExtraWave(); layoutTimeline(); renderBeats(); paintBackdrop(); paintCaption(); paintCam() }
+  if (ed.src && $('tlWrap')) { drawWave(); drawExtraWave(); layoutTimeline(); renderBeats(); renderZooms(); paintBackdrop(); paintCaption(); paintCam() }
 })
 
 function drawWave() {
@@ -1641,6 +1749,7 @@ async function doExport(pick) {
       offset: ed.audioTrack.offset, replace: ed.audioTrack.replace,
     } : null,
     autoZoom: !!ed.autoZoom,
+    zooms: (ed.zooms || []).map(z => ({ start: z.start, end: z.end, scale: z.scale, x: z.x, y: z.y })),
     autoZoomOpts: { zoom: $('zoomAmt') ? +$('zoomAmt').value / 100 : 1.7 },
     backdrop: ed.backdrop || null,
     backdropAspect: ed.outAspect || null,

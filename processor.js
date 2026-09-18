@@ -1059,7 +1059,10 @@ function zoomExpr(moments, disp, zMax, trimStart) {
     const downP = smooth(ramp(T, d.toFixed(3), c.toFixed(3)))   // reversed: 0 at d, 1 at c
     const amount = `if(lt(${T},${b.toFixed(3)}),${upP},if(lt(${T},${c.toFixed(3)}),1,${downP}))`
     const inWindow = `between(${T},${a.toFixed(3)},${d.toFixed(3)})`
-    z = `if(${inWindow},1+${(zMax - 1).toFixed(3)}*(${amount}),${z})`
+    // Per-moment scale lets an explicit zoom say how far it goes. Auto-zoom moments
+    // carry none and fall back to the single global amount exactly as before.
+    const zm = m.scale != null ? m.scale : zMax
+    z = `if(${inWindow},1+${(zm - 1).toFixed(3)}*(${amount}),${z})`
     const cx = Math.min(1, Math.max(0, (m.x - disp.x) / disp.width)).toFixed(4)
     const cy = Math.min(1, Math.max(0, (m.y - disp.y) / disp.height)).toFixed(4)
     fx = `if(${inWindow},${cx},${fx})`
@@ -1069,6 +1072,32 @@ function zoomExpr(moments, disp, zMax, trimStart) {
 }
 
 // returns a zoompan filter string, or null when there is nothing to zoom to
+// Zooms asked for by name (Z1, Z2) rather than guessed from where the pointer
+// settled. Same easing and the same expression builder as auto-zoom, so the two look
+// identical on screen. Coordinates are 0..1 fractions of the frame, which is what an
+// agent can reason about, rather than screen pixels it cannot see.
+function explicitZoomFilter(zooms, meta, trimStart = 0) {
+  const list = (zooms || []).filter(z => z && z.end > z.start)
+  if (!list.length) return null
+  const ease = 0.45
+  const moments = list.map(z => {
+    const e = Math.min(ease, (z.end - z.start) / 2)
+    return {
+      inStart: z.start, inEnd: z.start + e,
+      outStart: z.end - e, outEnd: z.end,
+      x: z.x != null ? z.x : 0.5, y: z.y != null ? z.y : 0.5,
+      scale: Math.max(1.05, Math.min(4, z.scale || 1.8)),
+    }
+  }).sort((a, b) => a.inStart - b.inStart)
+  const unit = { x: 0, y: 0, width: 1, height: 1 }
+  const { z, fx, fy } = zoomExpr(moments, unit, 1.8, trimStart)
+  const w = meta.width || 1920, h = meta.height || 1080
+  const fps = Math.round(meta.fps || 30)
+  const x = `(iw-iw/zoom)*(${fx})`
+  const y = `(ih-ih/zoom)*(${fy})`
+  return { filter: `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${fps}`, moments: moments.length }
+}
+
 function autoZoomFilter(srcArg, meta, opts = {}, trimStart = 0) {
   const data = readCursor(srcArg)
   if (!data || !data.display) return null
@@ -1302,12 +1331,14 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     // round crop to even pixels: libx264 rejects odd dimensions
     if (c) vf.push(`crop=w='2*floor(iw*${c.w}/2)':h='2*floor(ih*${c.h}/2)':x='iw*${c.x}':y='ih*${c.y}'`)
 
-    // auto zoom follows the pointer; it reads the clock of the trimmed output
+    // Explicit zooms (Z1, Z2) apply whenever they exist, and win over auto-zoom: a
+    // zoom someone asked for by name is a deliberate edit that supersedes the guess.
+    // Auto-zoom only runs when switched on and nothing explicit was asked for. Both
+    // read the clock of the trimmed output.
     let zoomInfo = null
-    if (opts.autoZoom) {
-      zoomInfo = autoZoomFilter(srcArg, meta, opts.autoZoomOpts || {}, start)
-      if (zoomInfo) vf.push(zoomInfo.filter)
-    }
+    if (opts.zooms && opts.zooms.length) zoomInfo = explicitZoomFilter(opts.zooms, meta, start)
+    else if (opts.autoZoom) zoomInfo = autoZoomFilter(srcArg, meta, opts.autoZoomOpts || {}, start)
+    if (zoomInfo) vf.push(zoomInfo.filter)
 
     if (opts.scale === 1080 || opts.scale === 720) vf.push(`scale=-2:${opts.scale}:flags=lanczos`)
 

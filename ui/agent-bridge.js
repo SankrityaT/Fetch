@@ -57,6 +57,9 @@ const TITLES = {
   'recordings.list': 'Listed recordings',
   probe: 'Read a file\'s details',
   transcribe: 'Transcribed a recording',
+  'edit.get': 'Read an edit',
+  'edit.apply': 'Changed an edit',
+  'edit.beats': 'Read the beats',
 }
 
 const ops = {
@@ -145,6 +148,32 @@ const ops = {
     }))
   },
 
+  // ── editing ────────────────────────────────────────────────────────────
+  // The same document the editor drives, so an agent working over MCP and a person
+  // working in the window are changing one thing, not two. Every change is written to
+  // the recording's .fetchdoc.json, so it survives the app closing and is what the
+  // next export reads.
+  async 'edit.get'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const doc = await inEditor(args.path, 'window.fetchDoc.get()')
+    deps.proc.writeDoc(args.path, doc)
+    return summarise(doc)
+  },
+
+  async 'edit.apply'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    if (!args.doc || typeof args.doc !== 'object') throw new Error('doc is required')
+    const doc = await inEditor(args.path, `window.fetchDoc.apply(${JSON.stringify(args.doc)})`)
+    deps.proc.writeDoc(args.path, doc)
+    return summarise(doc)
+  },
+
+  async 'edit.beats'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    return deps.proc.beatsFor(args.path, meta && meta.duration)
+  },
+
   async 'recordings.list'() {
     // Through the app, never through processor directly: listRecordings falls back to
     // a different, empty library index outside Electron and ignores the saveDir pref.
@@ -190,6 +219,42 @@ async function enforceAccess(args) {
     { by: 'agent', kind: args.window != null ? 'window' : 'display', app }, p)
 
   if (!verdict.allow) throw new Error(`Fetch refused to record: ${verdict.reason}`)
+}
+
+// Open `path` in the editor if it is not already the clip on screen, then run `expr`
+// against it. Opening is visible on purpose: an agent editing a recording should be
+// seen doing it, the same way an agent recording is seen through the border.
+async function inEditor(path, expr) {
+  const win = deps.getWindow()
+  if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
+  const open = await win.webContents.executeJavaScript('window.fetchDoc ? window.fetchDoc.src() : null')
+  if (open !== path) {
+    await win.webContents.executeJavaScript(`openInEditor(${JSON.stringify(path)})`)
+    // openInEditor is async and wires the document only once the clip has loaded
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 150))
+      const now = await win.webContents.executeJavaScript('window.fetchDoc ? window.fetchDoc.src() : null')
+      if (now === path) break
+    }
+  }
+  return win.webContents.executeJavaScript(expr)
+}
+
+// What an agent needs back: every object by id with its timing, and nothing else.
+// The full document carries caption styling and slider values an agent rarely needs
+// and would spend context reading.
+function summarise(doc) {
+  const r = n => Math.round(n * 100) / 100
+  return {
+    duration: r(doc.dur || 0),
+    output: r((doc.clips || []).reduce((n, c) => n + (c.end - c.start), 0)),
+    clips: (doc.clips || []).map(c => ({ id: c.id, start: r(c.start), end: r(c.end) })),
+    zooms: (doc.zooms || []).map(z => ({ id: z.id, start: r(z.start), end: r(z.end), scale: z.scale, x: z.x, y: z.y })),
+    texts: (doc.texts || []).map(t => ({ id: t.id, text: t.text, start: t.start, end: t.end })),
+    captions: (doc.cues || []).length,
+    beats: (doc.beats || []).map(b => ({ id: b.id, start: r(b.start), end: r(b.end), label: b.label })),
+    look: doc.look,
+  }
 }
 
 // Point the renderer's setup at what was asked for, reusing the same state the UI

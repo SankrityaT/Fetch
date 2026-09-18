@@ -102,6 +102,48 @@ function build() {
     },
     async () => text(await drive('displays.list')))
 
+  // ── editing ──────────────────────────────────────────────────────────
+  // Everything the editor window can do, drivable without opening it. The edit is
+  // one document, so an agent here and a person in the window change the same thing.
+  server.registerTool(
+    'get_edit',
+    {
+      description:
+        'Read the current edit of a recording: its clips, zooms, text layers and beats, ' +
+        'each with a short stable id (C1, Z1, T1, B1) and times in seconds. Use the ids ' +
+        'from this when calling apply_edit.',
+      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
+    },
+    async args => text(await drive('edit.get', args, { timeoutMs: 60000 })))
+
+  server.registerTool(
+    'apply_edit',
+    {
+      description:
+        'Change the edit of a recording. Pass the whole edit back with your changes: ' +
+        'clips [{id,start,end}] are the kept pieces in order, so trimming or cutting is ' +
+        'changing these; zooms [{id,start,end,scale,x,y}] zoom the frame, where x and y ' +
+        'are 0 to 1 fractions of the frame (0.5,0.5 is the centre) and scale is how far, ' +
+        'e.g. 1.8; texts [{id,text,start,end,fx,fy}] are overlays. Omit id on anything new ' +
+        'and one is assigned. Returns the edit as it now stands.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        doc: z.record(z.string(), z.any()).describe('The edit, as returned by get_edit, with changes.'),
+      }),
+    },
+    async args => text(await drive('edit.apply', args, { timeoutMs: 60000 })))
+
+  server.registerTool(
+    'list_beats',
+    {
+      description:
+        'Named spans across a recording, taken from what was said in it: each has an id, ' +
+        'start, end and a label that is the words spoken at that point. Useful for finding ' +
+        'the moment to zoom into or cut, by what was said rather than by timecode.',
+      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
+    },
+    async args => text(await drive('edit.beats', args)))
+
   server.registerTool(
     'list_recordings',
     {
