@@ -30,6 +30,7 @@ const ALLOWED = [
   'record_start', 'record_stop', 'record_status',
   'list_windows', 'list_displays', 'list_recordings',
   'probe', 'transcribe',
+  'get_edit', 'apply_edit', 'list_beats',
 ].map(t => `mcp__fetch__${t}`)
 
 let current = null          // the one running turn, if any

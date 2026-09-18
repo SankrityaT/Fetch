@@ -206,6 +206,7 @@ function toExportOpts(doc, extra = {}) {
     audioTrack: doc.audioTrack,
     autoZoom: !!doc.autoZoom,
     autoZoomOpts: { zoom: L.zoomAmt },
+    zooms: (doc.zooms || []).map(z => ({ start: z.start, end: z.end, scale: z.scale, x: z.x, y: z.y })),
     backdrop: doc.backdrop || null,
     backdropAspect: doc.outAspect || null,
     inset: L.bdInset,
