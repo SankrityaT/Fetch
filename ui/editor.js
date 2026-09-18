@@ -80,6 +80,7 @@ const EDITOR_HTML = `
       <button data-tab="look"     aria-selected="false" data-tip="Look">${ico('sparkle', 'icon-sm')}</button>
       <button data-tab="camera"   aria-selected="false" data-tip="Camera" id="camTabBtn" hidden>${ico('video-camera', 'icon-sm')}</button>
       <button data-tab="audio"    aria-selected="false" data-tip="Audio">${ico('waveform', 'icon-sm')}</button>
+      <button data-tab="voice"    aria-selected="false" data-tip="Voiceover">${ico('speaker-simple-high', 'icon-sm')}</button>
     </div>
 
     <div class="insp-body">
@@ -264,7 +265,11 @@ const EDITOR_HTML = `
           <div class="insp-sec">Voiceover</div>
           <p class="vo-lede">Speak your script in a studio voice over the same footage,
             using your own ElevenLabs account.</p>
-          <button class="btn btn-sm" id="voConnectBtn" style="width:100%">Connect ElevenLabs</button>
+          <form class="vo-connect" id="voConnectForm">
+            <input type="password" id="voKey" placeholder="ElevenLabs API key"
+              autocomplete="off" spellcheck="false">
+            <button class="btn btn-sm btn-primary" type="submit" id="voConnectBtn" disabled>Connect</button>
+          </form>
           <p class="vo-note">${ico('info', 'icon-sm')}<span>This is the only part of Fetch that
             uses the internet. Your script is sent to ElevenLabs to be spoken. Your recording,
             your audio and your filenames are not.</span></p>
@@ -691,7 +696,142 @@ function wireEditor() {
     }
   }
 
-  $('doExport').onclick = exportModal
+  // ── voiceover ──────────────────────────────────────────────────────────
+  // Re-narrate a take without re-recording it. Fetch already holds the transcript,
+  // so the flow is: take what you said, fix the stumbles, speak it back cleanly over
+  // the same footage. The result becomes the added audio track, which the exporter
+  // already knows how to mix or replace with.
+  let voVoices = []
+  let voPicked = null
+
+  function voSettings() {
+    return {
+      stability: +$('voStability').value / 100,
+      similarity: +$('voSimilarity').value / 100,
+      speed: +$('voSpeed').value / 100,
+    }
+  }
+
+  function renderVoices() {
+    const host = $('voVoices')
+    if (!host) return
+    if (!voVoices.length) { host.innerHTML = '<p class="vo-note"><span>No voices on this account yet.</span></p>'; return }
+    host.innerHTML = voVoices.map(v =>
+      '<button class="vo-voice" data-id="' + v.id + '" data-on="' + (v.id === voPicked) + '">' +
+        '<span class="vo-voice-play" data-preview="' + (v.preview || '') + '">' + ico('play-fill', 'icon-sm') + '</span>' +
+        '<span class="vo-voice-txt">' +
+          '<span class="vo-voice-name">' + escHtml(v.name) + '</span>' +
+          '<span class="vo-voice-tags">' +
+            [v.accent, v.age, v.use].filter(Boolean).map(escHtml).join(' &middot; ') +
+          '</span>' +
+        '</span>' +
+      '</button>').join('')
+  }
+
+  async function voRefresh() {
+    const st = await ipcRenderer.invoke('voice-status').catch(() => ({ connected: false }))
+    $('voOff').hidden = !!st.connected
+    $('voOn').hidden = !st.connected
+    if (!st.connected) return
+    if (st.used != null && st.limit != null) {
+      $('voUsage').textContent = `${st.used.toLocaleString()} of ${st.limit.toLocaleString()} characters used this month`
+    }
+    if (!voVoices.length) {
+      voVoices = await ipcRenderer.invoke('voice-voices').catch(() => [])
+      if (voVoices.length && !voPicked) voPicked = voVoices[0].id
+      renderVoices()
+    }
+  }
+
+  function wireVoice() {
+    if (!$('voOn')) return
+
+    // Electron refuses window.prompt outright, so the key is typed inline. It is a
+    // password field and it is cleared the moment it is handed over: nothing keeps a
+    // copy in the DOM once it is in the Keychain.
+    const keyField = $('voKey')
+    keyField.oninput = () => { $('voConnectBtn').disabled = !keyField.value.trim() }
+    $('voConnectForm').onsubmit = async e => {
+      e.preventDefault()
+      const key = keyField.value.trim()
+      if (!key) return
+      const btn = $('voConnectBtn'); btn.disabled = true; btn.textContent = 'Checking'
+      try {
+        await ipcRenderer.invoke('voice-connect', key)
+        keyField.value = ''
+        toast('ElevenLabs connected', 'ok')
+        voVoices = []; await voRefresh()
+      } catch (err) {
+        // Electron wraps a rejected handler as "Error invoking remote method 'x':
+        // Error: <real message>". Only the last part is worth showing.
+        const raw = String(err.message || err)
+        toast(raw.split(/Error:\s*/).pop().trim() || raw, 'bad', 7000)
+      }
+      btn.textContent = 'Connect'
+      btn.disabled = !keyField.value.trim()
+    }
+
+    // one <audio> reused, so previewing a second voice stops the first
+    let preview = null
+    $('voVoices').addEventListener('click', e => {
+      const play = e.target.closest('[data-preview]')
+      const row = e.target.closest('.vo-voice')
+      if (play && play.dataset.preview) {
+        e.stopPropagation()
+        if (preview) preview.pause()
+        preview = new Audio(play.dataset.preview)
+        preview.play().catch(() => toast('Could not play that preview', 'bad'))
+        return
+      }
+      if (row) { voPicked = row.dataset.id; renderVoices() }
+    })
+
+    const count = () => { $('voCount').textContent = String($('voScript').value.length) }
+    $('voScript').addEventListener('input', count)
+
+    $('voFromCues').onclick = () => {
+      if (!ed.cues.length) { toast('Transcribe this take first', 'bad'); return }
+      $('voScript').value = ed.cues.map(c => String(c.text || '').trim()).filter(Boolean).join(' ')
+      count()
+    }
+
+    // read at generate time rather than stored, so these only need to paint
+    const noop = () => {}
+    bindRange('voStability', noop, v => v + '%')
+    bindRange('voSimilarity', noop, v => v + '%')
+    bindRange('voSpeed', noop, v => (v / 100).toFixed(2) + 'x')
+
+    $('voGenerate').onclick = async () => {
+      const text = $('voScript').value.trim()
+      if (!text) { toast('Write something to say first', 'bad'); return }
+      if (!voPicked) { toast('Pick a voice first', 'bad'); return }
+      $('voProg').hidden = false
+      $('voGenerate').disabled = true
+      const r = await ipcRenderer.invoke('voice-speak', {
+        src: ed.src, text, voiceId: voPicked, settings: voSettings(),
+      })
+      $('voProg').hidden = true
+      $('voGenerate').disabled = false
+      if (!r || !r.ok) { toast((r && r.error) || 'Could not generate that', 'bad', 7000); return }
+
+      // Lands as the added audio track, replacing the original by default: the point
+      // of a voiceover is to stand in for the narration that was there.
+      const name = (voVoices.find(v => v.id === voPicked) || {}).name || 'Voiceover'
+      ed.audioTrack = { file: r.file, name: name + ' voiceover', volume: 1, offset: 0, replace: true }
+      $('extraPanel').hidden = false
+      $('extraName').textContent = ed.audioTrack.name
+      $('extraReplace').checked = true
+      $('laneExtra').hidden = false
+      const w = await runJob({ op: 'waveform', src: r.file }, 'Waveform', { quiet: true })
+      ed.audioTrack.peaks = (w && w.peaks) || []
+      drawExtraWave()
+      toast('Voiceover added, mixing over the take', 'ok')
+    }
+  }
+
+  wireVoice(); voRefresh()
+
+    $('doExport').onclick = exportModal
 
   document.querySelectorAll('.ed .slider').forEach(s => {
     const paint = () => s.style.setProperty('--fill', ((s.value - s.min) / (s.max - s.min) * 100) + '%')
