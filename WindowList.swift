@@ -133,6 +133,27 @@ _ = NSApplication.shared            // CoreGraphics asserts without an app conte
 NSApplication.shared.setActivationPolicy(.prohibited)
 
 let args = CommandLine.arguments
+
+// `--follow <id>`: print the window's frame as JSON whenever it changes, until killed,
+// and `null` once it is gone. For the recording halo, which has to sit on exactly the
+// window being recorded and move with it. CoreGraphics bounds are cheap and need no
+// Screen Recording permission, unlike listing windows through ScreenCaptureKit.
+if args.count >= 3, args[1] == "--follow", let id = UInt32(args[2]) {
+    setvbuf(stdout, nil, _IOLBF, 0)
+    var last = ""
+    while true {
+        var line = "null"
+        if let info = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(id)) as? [[String: Any]],
+           let w = info.first, let b = w[kCGWindowBounds as String] as? [String: CGFloat] {
+            let onScreen = (w[kCGWindowIsOnscreen as String] as? Bool) ?? false
+            line = "{\"x\":\(Int(b["X"] ?? 0)),\"y\":\(Int(b["Y"] ?? 0)),\"width\":\(Int(b["Width"] ?? 0)),\"height\":\(Int(b["Height"] ?? 0)),\"onScreen\":\(onScreen)}"
+        }
+        if line != last { print(line); last = line }
+        if line == "null" { exit(0) }
+        usleep(80_000)
+    }
+}
+
 let sem = DispatchSemaphore(value: 0)
 
 if #available(macOS 14.0, *) {
