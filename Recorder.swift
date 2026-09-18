@@ -81,6 +81,7 @@ func fail(_ message: String) -> Never {
 final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     let opts: Options
     var stream: SCStream?
+    var config: SCStreamConfiguration?
     var writer: AVAssetWriter!
     var videoIn: AVAssetWriterInput!
     var sysAudioIn: AVAssetWriterInput?
@@ -90,6 +91,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var started = false
     private var paused = false
     private var finished = false
+    // Paused by a lost capture rather than by the person, so it ends when capture returns
+    private var interrupted = false
+    private var autoPaused = false
     private var frames = 0
     private var dropped = 0
 
@@ -98,6 +102,16 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var sessionStart: CMTime = .invalid
     private var pausedAt: CMTime = .invalid
     private var pausedTotal: CMTime = .zero
+
+    // ScreenCaptureKit sends nothing at all while a window is covered or nothing on
+    // screen changes, so without these the file would end at the last change instead
+    // of at Stop. The last picture is re-appended through a still stretch and held to
+    // the stop time. Touched only on sampleQueue, which serialises every video append.
+    private var lastPixel: CVPixelBuffer?
+    private var lastVideoPTS: CMTime = .invalid     // last appended, real or held
+    private var lastFreshPTS: CMTime = .invalid     // last picture that actually arrived
+    private var stillMax = 0.0                      // longest stretch with nothing new, seconds
+    private var holdTimer: DispatchSourceTimer?
 
     init(opts: Options) { self.opts = opts }
 
@@ -181,20 +195,14 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
 
         setUpWriter(width: width, height: height)
+        config = cfg
 
-        let s = SCStream(filter: filter, configuration: cfg, delegate: self)
-        let q = DispatchQueue(label: "fetch.recorder.samples", qos: .userInitiated)
         do {
-            try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: q)
-            if opts.systemAudio { try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: q) }
-            if opts.mic, #available(macOS 15.0, *) {
-                try s.addStreamOutput(self, type: .microphone, sampleHandlerQueue: q)
-            }
-            try await s.startCapture()
+            stream = try await openStream(filter)
         } catch {
             fail("could not start capture: \(error.localizedDescription)")
         }
-        stream = s
+        startHolding()
 
         emit(["event": "started",
               "startedAt": Int(Date().timeIntervalSince1970 * 1000),
@@ -300,8 +308,15 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         switch type {
         case .screen:
             guard videoIn.isReadyForMoreMediaData else { lock.lock(); dropped += 1; lock.unlock(); return }
-            if let out = retimed(sb, to: shifted) {
-                videoIn.append(out)
+            // A held copy can be stamped a few ms after this frame was captured, and the
+            // writer fails on a timestamp that goes backwards. Nudge it just past instead
+            // of dropping it: it may be the only change for a while.
+            var at = shifted
+            if lastVideoPTS.isValid, at <= lastVideoPTS { at = CMTimeAdd(lastVideoPTS, CMTime(value: 1, timescale: 1000)) }
+            if let out = retimed(sb, to: at), videoIn.append(out) {
+                if lastFreshPTS.isValid { stillMax = max(stillMax, CMTimeGetSeconds(CMTimeSubtract(at, lastFreshPTS))) }
+                lastPixel = CMSampleBufferGetImageBuffer(sb)
+                lastVideoPTS = at; lastFreshPTS = at
                 lock.lock(); frames += 1; lock.unlock()
             }
         case .audio:
@@ -326,9 +341,125 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         return out
     }
 
+    // ---------- holding the picture ----------
+    // Re-appends the last picture twice a second through a still stretch, so the file
+    // is continuous (players and ffmpeg both handle a dense track better than one frame
+    // lasting ten seconds) and a take whose window was covered still runs to Stop.
+    private func startHolding() {
+        let t = DispatchSource.makeTimerSource(queue: sampleQueue)
+        t.schedule(deadline: .now() + 0.25, repeating: 0.25)
+        t.setEventHandler { [weak self] in self?.holdIfStill() }
+        t.resume()
+        holdTimer = t
+    }
+
+    private func holdIfStill() {
+        lock.lock()
+        guard started, !paused, !finished else { lock.unlock(); return }
+        let now = CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()), CMTimeAdd(sessionStart, pausedTotal))
+        lock.unlock()
+        guard lastVideoPTS.isValid, CMTimeGetSeconds(CMTimeSubtract(now, lastVideoPTS)) >= 0.5 else { return }
+        appendHeld(at: now)
+    }
+
+    @discardableResult
+    private func appendHeld(at pts: CMTime) -> Bool {
+        guard let px = lastPixel, videoIn.isReadyForMoreMediaData,
+              !lastVideoPTS.isValid || pts > lastVideoPTS else { return false }
+        var fmt: CMVideoFormatDescription?
+        guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: px,
+                                                           formatDescriptionOut: &fmt) == noErr, let fmt else { return false }
+        var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: pts, decodeTimeStamp: .invalid)
+        var sb: CMSampleBuffer?
+        guard CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: px,
+                                                       formatDescription: fmt, sampleTiming: &timing,
+                                                       sampleBufferOut: &sb) == noErr, let sb,
+              videoIn.append(sb) else { return false }
+        lastVideoPTS = pts
+        return true
+    }
+
+    // Called on sampleQueue once capture has stopped: the last picture runs to the stop
+    // time rather than to the last moment something changed.
+    private func holdToEnd(_ end: CMTime) {
+        holdTimer?.cancel(); holdTimer = nil
+        guard end.isValid, lastVideoPTS.isValid, end > lastVideoPTS else { return }
+        let frame = CMTime(value: 1, timescale: opts.fps)
+        let last = CMTimeSubtract(end, frame)
+        if last > lastVideoPTS { appendHeld(at: last) }
+        if lastFreshPTS.isValid { stillMax = max(stillMax, CMTimeGetSeconds(CMTimeSubtract(end, lastFreshPTS))) }
+        writer.endSession(atSourceTime: end)
+    }
+
+    private let sampleQueue = DispatchQueue(label: "fetch.recorder.samples", qos: .userInitiated)
+    private func openStream(_ filter: SCContentFilter) async throws -> SCStream {
+        guard let cfg = config else { throw CocoaError(.featureUnsupported) }
+        let s = SCStream(filter: filter, configuration: cfg, delegate: self)
+        try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
+        if opts.systemAudio { try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue) }
+        if opts.mic, #available(macOS 15.0, *) {
+            try s.addStreamOutput(self, type: .microphone, sampleHandlerQueue: sampleQueue)
+        }
+        try await s.startCapture()
+        return s
+    }
+
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        emit(["event": "error", "message": "capture stopped: \(error.localizedDescription)"])
-        Task { await finish() }
+        let message = error.localizedDescription
+        Task { await recover(from: message) }
+    }
+
+    // A window can drop out of capture for a moment (a Space change, a display
+    // reconfiguring) and come straight back with the same id. That is held as a pause
+    // and the same window picked up again. Only a window that stays gone ends the take,
+    // and what was captured up to then is still finished into a playable file.
+    private func recover(from message: String) async {
+        guard let wid = opts.windowID, beginInterruption() else {
+            emit(["event": "error", "message": "capture stopped: \(message)"])
+            await finish()
+            return
+        }
+        emit(["event": "interrupted", "message": message])
+        for _ in 0..<6 {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if isFinished() { return }
+            guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false),
+                  let win = content.windows.first(where: { $0.windowID == wid }),
+                  let s = try? await openStream(SCContentFilter(desktopIndependentWindow: win)) else { continue }
+            stream = s
+            if isFinished() { try? await s.stopCapture(); return }
+            endInterruption()
+            emit(["event": "recovered"])
+            return
+        }
+        emit(["event": "error", "message": "capture stopped: \(message)"])
+        await finish()
+    }
+
+    private func isFinished() -> Bool { lock.lock(); defer { lock.unlock() }; return finished }
+
+    private func beginInterruption() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard started, !finished, !interrupted else { return false }
+        interrupted = true
+        if !paused {
+            paused = true; autoPaused = true
+            pausedAt = CMClockGetTime(CMClockGetHostTimeClock())
+        }
+        return true
+    }
+
+    private func endInterruption() {
+        lock.lock()
+        defer { lock.unlock() }
+        interrupted = false
+        guard autoPaused else { return }
+        autoPaused = false
+        let now = CMClockGetTime(CMClockGetHostTimeClock())
+        if pausedAt.isValid { pausedTotal = CMTimeAdd(pausedTotal, CMTimeSubtract(now, pausedAt)) }
+        pausedAt = .invalid
+        paused = false
     }
 
     // ---------- clicks ----------
@@ -360,6 +491,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     func pause() {
         lock.lock()
         defer { lock.unlock() }
+        // already held by a lost capture: the person's pause simply outlasts it
+        if paused, autoPaused { autoPaused = false; emit(["event": "paused"]); return }
         guard started, !paused, !finished else { return }
         paused = true
         pausedAt = CMClockGetTime(CMClockGetHostTimeClock())
@@ -370,6 +503,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         lock.lock()
         defer { lock.unlock() }
         guard paused, !finished else { return }
+        autoPaused = false
         let now = CMClockGetTime(CMClockGetHostTimeClock())
         if pausedAt.isValid { pausedTotal = CMTimeAdd(pausedTotal, CMTimeSubtract(now, pausedAt)) }
         pausedAt = .invalid
@@ -379,19 +513,25 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // The state flip is deliberately synchronous: NSLock must not be held across an
     // await, and this is the one place two callers can race to end the take.
-    private func claimFinish() -> (Bool, Int, Int) {
+    // The end is taken here, the moment Stop landed, on the file's clock: a take that
+    // is paused ends where the pause began.
+    private func claimFinish() -> (Bool, Int, Int, CMTime) {
         lock.lock()
         defer { lock.unlock() }
-        if finished { return (false, 0, 0) }
+        if finished { return (false, 0, 0, .invalid) }
         finished = true
-        return (true, frames, dropped)
+        guard started else { return (true, frames, dropped, .invalid) }
+        let at = paused && pausedAt.isValid ? pausedAt : CMClockGetTime(CMClockGetHostTimeClock())
+        return (true, frames, dropped, CMTimeSubtract(at, CMTimeAdd(sessionStart, pausedTotal)))
     }
 
     func finish() async {
-        let (proceed, f, d) = claimFinish()
+        let (proceed, f, d, end) = claimFinish()
         guard proceed else { return }
 
         try? await stream?.stopCapture()
+        // after any sample still being handled, so the held frame is the last one
+        sampleQueue.sync { holdToEnd(end) }
         videoIn?.markAsFinished()
         sysAudioIn?.markAsFinished()
         micIn?.markAsFinished()
@@ -404,6 +544,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             exit(1)
         }
         emit(["event": "stopped", "file": opts.out, "frames": f, "dropped": d,
+              "stillMs": Int((stillMax * 1000).rounded()),
               "stoppedAt": Int(Date().timeIntervalSince1970 * 1000)])
         stdoutQueue.sync {}
         exit(0)

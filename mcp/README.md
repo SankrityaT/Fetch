@@ -60,13 +60,22 @@ no window on screen, so there is nothing for any screen recorder to capture. Sta
 headless it will silently produce a recording of your desktop with no browser in it.
 Launch Playwright MCP with `--headed`, or set `"headless": false` in its config.
 
-**Zooms on a driven take are yours to place.** Auto-zoom follows the real pointer:
-where it clicked, and where it came to rest. Playwright's `page.mouse` and `click()`
-send input straight into the page over CDP, so the pointer on screen never moves and
-Fetch records no clicks. `get_edit` says so: `pointer.autoZoomSpots` is 0 and
-`pointer.note` explains why. Put zooms in with `apply_edit` instead, at the times you
-clicked and the places you clicked on (`get_frame` shows where those are). Takes where
-a person, or a driver that moves the real pointer, did the clicking zoom on their own.
+**Your cursor is Fetch's own, and never the person's mouse.** An agent's take is
+recorded without the Mac's pointer, which belongs to the person at the desk. Report
+where you are pointing with the `pointer` tool right before each action (with
+`click: true` for a click). Fetch shows that cursor live over the recorded window, a
+gold arrow with Biscuit's badge, so the person watching sees what you are about to do,
+and the export draws the same cursor gliding between your points with a ripple on each
+click. It is a picture: nothing moves or clicks the person's mouse, and it is kept out
+of the recording itself. Do not drive the real pointer (no `cliclick`, no
+`CGEvent`-style mouse moves): drive the page or app with your usual tool (Playwright's
+`page.click()`, a native app driver), and report the place with `pointer`.
+
+**Zooms follow your pointer calls.** Auto-zoom on an agent take zooms on the clicks you
+reported with `pointer`, not on the Mac's pointer, which Playwright's `page.mouse` and
+`click()` never move. With no pointer calls `get_edit` says so (`pointer.autoZoomSpots`
+is 0, and `pointer.note` explains why): put zooms in with `apply_edit` instead, at the
+times and places you clicked (`get_frame` shows where those are).
 
 The iOS Simulator is an ordinary window, so it needs nothing special:
 
@@ -79,7 +88,7 @@ record_start({ window: "<id>" })
 
 | tool | what it does |
 |---|---|
-| `record_start` | Starts recording a display or a single window. Returns when the file exists. |
+| `record_start` | Starts recording a display or a single window. Returns when the file exists. A window mostly covered by others is not recorded: it returns `status: "occluded"`, what covers it, and the display and crop to record instead (`allow_covered: true` records it anyway). |
 | `record_stop` | Stops the current recording. Returns the raw take's path, inside its own take folder. |
 | `record_status` | Whether Fetch is recording. |
 | `list_windows` | Windows open on screen, with the id `record_start` takes. Filter with `app`. |

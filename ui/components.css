@@ -233,6 +233,12 @@ textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; re
 .toast.ok .icon { color:var(--good); }
 .toast.bad .icon { color:var(--rec); }
 @keyframes toastin { from{opacity:0; transform:translateY(14px)} }
+/* In the editor the bottom of the window is the timeline and its trim handles, so
+   toasts drop in over the top of the preview instead, newest nearest the edge. */
+#stage:has(> .view[data-view="editor"]:not([hidden])) ~ .toasts {
+  top:calc(var(--titlebar) + var(--s-4)); bottom:auto; flex-direction:column-reverse; }
+#stage:has(> .view[data-view="editor"]:not([hidden])) ~ .toasts .toast { animation-name:toastdown; }
+@keyframes toastdown { from{opacity:0; transform:translateY(-14px)} }
 
 /* repeated toasts collapse into one with a count instead of stacking */
 .toast-count { min-width:18px; height:18px; padding:0 5px; border-radius:var(--r-pill);

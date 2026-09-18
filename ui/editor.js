@@ -4,7 +4,7 @@ const ed = {
   src: null, meta: null, dur: 0,
   in: 0, out: 0, cur: 0,
   peaks: [], cues: [], texts: [], selText: null,
-  capStyle: { font: 'Helvetica', scale: 1, colour: '#FFFFFF', position: 'bottom', boxed: true },
+  capStyle: { font: 'SF Pro', scale: 1, colour: '#FFFFFF', position: 'bottom', boxed: true, highlight: 'word' },
   crop: null, cropAR: 'free',
   cuts: [], cutMode: false,
   beats: [],          // named spans from the transcript, see processor.buildBeats
@@ -34,6 +34,12 @@ const EDITOR_HTML = `
       <span class="time mono" id="edTime">0:00 / 0:00</span>
       <span class="ed-name" id="edName"></span>
       <span class="chip chip-static" id="edOutLen">0.0s</span>
+      <button class="pc" id="edUndo" data-tip="Undo (⌘Z)" aria-label="Undo" disabled>${ico('arrow-counter-clockwise', 'icon-sm')}</button>
+      <button class="pc" id="edRedo" data-tip="Redo (⇧⌘Z)" aria-label="Redo" disabled>${ico('arrow-clockwise', 'icon-sm')}</button>
+      <button class="btn btn-sm btn-ghost ed-undo-agent" id="edUndoAgent" hidden
+        data-tip="Put the edit back how it was before Biscuit changed it">${ico('arrow-counter-clockwise', 'icon-sm')}<span class="ed-lbl">Undo Biscuit's change</span></button>
+      <button class="btn btn-sm ed-ask" id="edAsk" aria-pressed="false" data-tip="Ask for an edit in plain words">
+        <img class="ed-ask-dog" src="./assets/mascot/idle.png" alt=""><span class="ed-lbl">Ask Biscuit</span><kbd class="ed-kbd mono">⌘J</kbd></button>
     </div>
   </div>
 
@@ -203,10 +209,12 @@ const EDITOR_HTML = `
               <button data-pos="middle" aria-selected="false">Middle</button>
               <button data-pos="top" aria-selected="false">Top</button>
             </div></div>
-          <label class="opt" style="padding:7px 0"><span class="opt-txt">
-            <span class="opt-title">Pill background</span>
-            <span class="opt-sub">off gives an outline instead</span></span>
-            <span class="switch"><input type="checkbox" id="capBoxed" checked><span class="track"></span></span></label>
+          <div class="row"><span class="row-lbl">Spoken</span>
+            <div class="seg seg-sm" id="capHl">
+              <button data-hl="word" aria-selected="true">Gold</button>
+              <button data-hl="pill" aria-selected="false">Pill</button>
+              <button data-hl="none" aria-selected="false">Off</button>
+            </div></div>
         </div>
 
         <div class="cue-list" id="cueList"></div>
@@ -371,6 +379,92 @@ const EDITOR_HTML = `
 // like "transcribe this" has something to point at.
 window.ed = ed
 
+// ── agent edits: seen, and reversible ───────────────────────────────────
+// An agent's change lights up where it landed for a moment, so the person watching
+// sees what moved without diffing the timeline in their head, and every change can
+// be put back. Snapshots are whole documents, which are small, and live in memory.
+const EditAssist = require('./ui/edit-assist')
+const agentUndo = EditAssist.createUndo()
+
+let agentFlashTimer = null
+function flashAgentChange(c) {
+  if (!c || !EditAssist.anyChange(c)) return
+  const hit = []
+  const q = sel => document.querySelectorAll(sel).forEach(n => hit.push(n))
+  const at = id => `[data-id="${CSS.escape(String(id))}"]`
+  c.zooms.forEach(id => q('.tl-zoom' + at(id)))
+  c.marks.forEach(id => q('.tl-mark' + at(id)))
+  c.texts.forEach(id => { const i = ed.texts.findIndex(t => t.id === id); if (i >= 0) q(`.tl-text[data-i="${i}"]`) })
+  c.cues.slice(0, 80).forEach(i => q(`#cueList .cue[data-i="${i}"]`))
+  if (c.cues.length) q('#inspTabs [data-tab="captions"]')
+  if (c.clips) q('#tlRegion')
+  if (c.frame) q('#stageFrame')
+  // restart the animation on a row that was already lit by the previous pass
+  for (const n of hit) { n.classList.remove('agent-flash'); void n.offsetWidth; n.classList.add('agent-flash') }
+  clearTimeout(agentFlashTimer)
+  agentFlashTimer = setTimeout(() => document.querySelectorAll('.agent-flash').forEach(n => n.classList.remove('agent-flash')), 1200)
+}
+
+function paintAgentUndo() {
+  const b = $('edUndoAgent'); if (!b) return
+  const n = ed.src ? agentUndo.size(ed.src) : 0
+  b.hidden = !n
+  b.setAttribute('data-tip', n > 1
+    ? `Put the edit back how it was before Biscuit's last change. ${n} changes can be undone.`
+    : 'Put the edit back how it was before Biscuit changed it')
+}
+
+function paintAskState() {
+  const b = $('edAsk'), pane = document.getElementById('chatPane')
+  if (b) b.setAttribute('aria-pressed', String(!!(pane && !pane.hidden)))
+}
+window.addEventListener('fetch:chat-toggle', paintAskState)
+
+function wireAssist() {
+  if ($('edAsk')) $('edAsk').onclick = () => { if (window.toggleChat) window.toggleChat() }
+  if ($('edUndoAgent')) $('edUndoAgent').onclick = () => undoAgentEdit()
+  if ($('edUndo')) $('edUndo').onclick = () => historyStep(-1)
+  if ($('edRedo')) $('edRedo').onclick = () => historyStep(1)
+  paintAskState(); paintAgentUndo()
+}
+
+// Restores the document from before the agent's last burst of changes and saves it.
+// A take that is not open is opened first, since the edit lives in the editor.
+async function undoAgentEdit(src, level) {
+  src = src || ed.src
+  const top = () => agentUndo.peek(src)
+  // a card names the change it made; if a later one is on top, that card is stale
+  if (!src || !top() || (level && top().n !== level)) return false
+  if (ed.src !== src || !ed.docReady) await openInEditor(src)
+  if (ed.src !== src || !window.fetchDoc || !top() || (level && top().n !== level)) return false
+  const entry = agentUndo.pop(src)
+  agentUndo.mark()                     // whatever comes next is a change of its own
+  const was = window.fetchDoc.get()
+  // The agent's change goes back; anything the person changed since stays, and the id
+  // counter does not rewind, or "Z3" in the activity log would name two zooms.
+  const { doc: back, kept } = EditAssist.revert(entry.before, entry.after, was)
+  window.fetchDoc.load(back)
+  const now = window.fetchDoc.get()
+  // captions burn from the .srt, so the wording has to go back there as well
+  if (JSON.stringify(was.cues) !== JSON.stringify(now.cues)) {
+    await ipcRenderer.invoke('write-cues', src, ed.cues).catch(() => {})
+    renderCues(); paintCaption()
+  }
+  await ipcRenderer.invoke('write-doc', src, now).catch(() => {})
+  flashAgentChange(EditAssist.changedIds(was, now))
+  paintAgentUndo()
+  window.dispatchEvent(new CustomEvent('fetch:agent-edit', { detail: { src, undo: true } }))
+  toast(escHtml(EditAssist.undoSummary(was, now)) + (kept.length ? ', and kept your own edits since' : ''), 'ok', 5200)
+  return true
+}
+window.fetchUndo = {
+  undo: undoAgentEdit,
+  size: src => agentUndo.size(src || ed.src),
+  // which level is on top, so a chat card only offers to undo its own change
+  level: src => { const e = agentUndo.peek(src || ed.src); return e ? e.n : 0 },
+  mark: () => agentUndo.mark(),        // a new chat turn starts a new undo level
+}
+
 async function openInEditor(src) {
   document.querySelector('#nav [data-view="editor"]').disabled = false
   show('editor')
@@ -382,6 +476,7 @@ async function openInEditor(src) {
   window.dispatchEvent(new CustomEvent('fetch:editor-open', { detail: { src } }))   // the chat's "Working on" chip
   ed.docReady = false
   wireEditor()
+  wireAssist()
   paintEdName()
 
   const v = $('edVideo')
@@ -435,6 +530,8 @@ async function openInEditor(src) {
   }
   ed.docReady = true
   startDocAutosave(src)
+  // the chat's edit suggestions are picked from the saved edit, which only exists now
+  window.dispatchEvent(new CustomEvent('fetch:editor-ready', { detail: { src } }))
 
   runJob({ op: 'waveform', src, opts: { buckets: 1200 } }, 'Waveform').then(r => {
     if (r && r.peaks) { ed.peaks = r.peaks; drawWave() }
@@ -449,19 +546,77 @@ async function openInEditor(src) {
 // document, so the edit survives a restart and both see the same thing. A cheap
 // compare on an interval rather than a hook in every control: nothing can be missed.
 let docSaveTimer = null
+// Undo and redo for the whole edit. Each settled state of the document is a step, so
+// every control (drags, sliders, captions, text, an agent's change) is covered without
+// a hook in each one. A drag becomes one step: nothing is recorded while a button is
+// held. Per clip, cleared when another clip opens.
+const edHistory = { src: null, stack: [], i: -1, cap: 150 }
+let pointerHeld = false
+document.addEventListener('mousedown', () => { pointerHeld = true }, true)
+document.addEventListener('mouseup', () => { pointerHeld = false }, true)
+
+function historyPush(json) {
+  const h = edHistory
+  if (h.stack[h.i] === json) return
+  h.stack = h.stack.slice(0, h.i + 1)
+  h.stack.push(json)
+  if (h.stack.length > h.cap) h.stack.shift()
+  h.i = h.stack.length - 1
+  paintUndo()
+}
+
+function historyStep(dir) {
+  const h = edHistory
+  if (!window.fetchDoc || h.src !== ed.src) return
+  // settle anything still in flight first, so undo never skips the latest change
+  try { historyPush(JSON.stringify(window.fetchDoc.get())) } catch {}
+  const j = h.i + dir
+  if (j < 0 || j >= h.stack.length) return
+  h.i = j
+  const doc = JSON.parse(h.stack[j])
+  window.fetchDoc.load(doc)
+  ipcRenderer.invoke('write-doc', ed.src, doc).catch(() => {})
+  ipcRenderer.invoke('write-cues', ed.src, ed.cues).catch(() => {})
+  docSaveLast = h.stack[j]
+  paintUndo()
+  toast(dir < 0 ? 'Undone' : 'Redone')
+}
+
+function paintUndo() {
+  const h = edHistory, u = $('edUndo'), r = $('edRedo')
+  if (u) u.disabled = !(h.src === ed.src && h.i > 0)
+  if (r) r.disabled = !(h.src === ed.src && h.i < h.stack.length - 1)
+}
+
+let docSaveLast = null
 function startDocAutosave(src) {
   clearInterval(docSaveTimer)
-  let last = null
-  try { last = JSON.stringify(window.fetchDoc.get()) } catch {}
+  docSaveLast = null
+  try { docSaveLast = JSON.stringify(window.fetchDoc.get()) } catch {}
+  edHistory.src = src; edHistory.stack = docSaveLast ? [docSaveLast] : []; edHistory.i = edHistory.stack.length - 1
+  paintUndo()
   docSaveTimer = setInterval(() => {
     if (ed.src !== src || !window.fetchDoc) { clearInterval(docSaveTimer); return }
     let cur
     try { cur = JSON.stringify(window.fetchDoc.get()) } catch { return }
-    if (cur === last) return
-    last = cur
+    if (cur === docSaveLast) return
+    if (pointerHeld) return                    // mid-drag: one step when it lands
+    docSaveLast = cur
+    historyPush(cur)
     ipcRenderer.invoke('write-doc', src, JSON.parse(cur)).catch(() => {})
-  }, 1500)
+  }, 400)
 }
+
+document.addEventListener('keydown', e => {
+  if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'z') return
+  const view = document.querySelector('.view[data-view="editor"]')
+  if (!view || view.hidden || !ed.src) return
+  const t = e.target
+  // text being typed keeps its own undo
+  if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
+  e.preventDefault()
+  historyStep(e.shiftKey ? 1 : -1)
+})
 
 // ── wiring ──────────────────────────────────────────────────────────────
 function wireEditor() {
@@ -473,6 +628,7 @@ function wireEditor() {
     document.querySelectorAll('#inspTabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)))
     document.querySelectorAll('.insp-panel').forEach(p => { p.hidden = p.dataset.panel !== ed.tab })
     $('cropBox').hidden = !(ed.tab === 'crop' && ed.crop)
+    paintOverlays()   // the zoom preview steps aside on the Crop tab
   }
 
   // transport
@@ -596,7 +752,12 @@ function wireEditor() {
     paintCaption()
     $('capPos').querySelectorAll('button').forEach(x => x.setAttribute('aria-selected', String(x === b)))
   }
-  $('capBoxed').onchange = e => { ed.capStyle.boxed = e.target.checked; paintCaption() }
+  // how the word being spoken stands out; captions never sit on a slab
+  $('capHl').onclick = e => {
+    const b = e.target.closest('[data-hl]'); if (!b) return
+    ed.capStyle.highlight = b.dataset.hl
+    paintCapHl(); paintCaption()
+  }
 
   // captions
   $('doTranscribe').onclick = async () => {
@@ -694,6 +855,8 @@ function wireEditor() {
     paintBackdrop()
   }
   bindRange('bdInset', paintBackdrop, v => v + '%')
+  // burned captions take a band below a framed video, so the frame follows the switch
+  if ($('burnCaps')) $('burnCaps').addEventListener('change', () => { try { paintBackdrop() } catch {} })
   bindRange('bdRadius', paintBackdrop, v => String(v))
   bindRange('zoomAmt', () => {}, v => (v / 100).toFixed(1) + '×')
   $('autoZoom').onchange = e => { ed.autoZoom = e.target.checked }
@@ -963,6 +1126,7 @@ function wireEditor() {
     }
     ed.crop = doc.crop; ed.cropAR = doc.cropAR || 'free'
     ed.capStyle = { ...ed.capStyle, ...(doc.capStyle || {}) }
+    paintCapHl()
     ed.autoZoom = !!doc.autoZoom
 
     const L = doc.look || {}
@@ -987,7 +1151,8 @@ function wireEditor() {
     // document here is what let "add a zoom" wipe the crop, the caption font and the
     // backdrop, none of which the agent had been shown.
     apply: async patch => {
-      docToEd(FD.normalize(FD.mergeDoc(docFromEd(), patch), ed.src, ed.dur))
+      const src = ed.src, before = docFromEd()
+      docToEd(FD.normalize(FD.mergeDoc(before, patch), ed.src, ed.dur))
       // Captions are burned from the .srt, so corrected wording has to reach it too,
       // or the editor shows the fix while the export burns the original mistake.
       if (patch && Array.isArray(patch.cues)) {
@@ -995,7 +1160,16 @@ function wireEditor() {
         if (typeof renderCues === 'function') renderCues()
         if (typeof paintCaption === 'function') paintCaption()
       }
-      return window.fetchDoc.get()
+      // Only agents come through here, so this is the one place to keep the way back
+      // and to show what moved.
+      const after = window.fetchDoc.get()
+      if (ed.src === src) {
+        agentUndo.note(src, before, after)
+        flashAgentChange(EditAssist.changedIds(before, after))
+        paintAgentUndo()
+        window.dispatchEvent(new CustomEvent('fetch:agent-edit', { detail: { src } }))
+      }
+      return after
     },
     // Only once the clip's saved edit is loaded. Reporting the clip as open any earlier
     // let an agent read the blank state and write it over the saved edit.
@@ -1167,6 +1341,7 @@ function renderBeats() {
 // Explicit zooms as a track of their own, so a zoom an agent added is visible and
 // nameable rather than an effect you only discover after exporting.
 function renderZooms() {
+  paintOverlays()   // the stage previews the zooms too
   const host = $('tlZooms')
   if (!host) return
   if (!ed.zooms.length) { host.hidden = true; host.innerHTML = ''; return }
@@ -1218,6 +1393,7 @@ function paintEdName() {
 
 window.editorFollowRename = moves => {
   const map = new Map(moves)
+  for (const [from, to] of map) agentUndo.rename(from, to)     // an undo follows its take
   const next = map.get(ed.src)
   if (!next) return
   ed.src = next
@@ -1231,6 +1407,26 @@ window.editorFollowRename = moves => {
     ipcRenderer.invoke('write-doc', next, window.fetchDoc.get()).catch(() => {})
     startDocAutosave(next)
   }
+}
+
+// A take trashed while it is open (from the Library, or delete_recording over MCP)
+// must not stay loaded: Export and every edit would aim at a file in the Trash, and
+// the doc autosave would recreate its folder. Runs on every Library refresh, which
+// both kinds of delete end with.
+window.editorCloseIfGone = () => {
+  if (!ed.src || fs.existsSync(ed.src)) return false
+  clearInterval(docSaveTimer)
+  const v = $('edVideo')
+  if (v) { v.pause(); v.removeAttribute('src'); v.load() }
+  ed.src = null; ed.docReady = false; ed.meta = null; ed.cam = null; ed.audioTrack = null
+  const mount = $('editorMount')
+  mount.className = 'empty'
+  mount.innerHTML = `<img class="biscuit biscuit-lg" src="./assets/mascot/sad.png" alt="">
+    <p>That take was moved to the Trash. Put it back from the Trash to edit it again.</p>
+    <button class="btn btn-sm" id="edGoneLib">Open the Library</button>`
+  $('edGoneLib').onclick = () => document.querySelector('#nav [data-view="library"]').click()
+  window.dispatchEvent(new CustomEvent('fetch:editor-closed'))
+  return true
 }
 
 // Marks as their own track. A redaction in particular must be visible before export:
@@ -1310,9 +1506,14 @@ function layoutTimeline() {
   }
   paintTrim(); paintPlayhead()
 }
-window.addEventListener('resize', () => {
-  if (ed.src && $('tlWrap')) { drawWave(); drawExtraWave(); layoutTimeline(); renderBeats(); renderZooms(); renderMarks(); paintBackdrop(); paintCaption(); paintCam() }
-})
+function relayoutEditor() {
+  // a hidden editor measures zero wide: laying out then collapsed the trim to a sliver
+  if (ed.src && $('tlWrap') && $('tlWrap').clientWidth) { drawWave(); drawExtraWave(); layoutTimeline(); renderBeats(); renderZooms(); renderMarks(); paintBackdrop(); paintCaption(); paintCam() }
+}
+window.addEventListener('resize', relayoutEditor)
+// The chat opening or closing on another view resizes the editor while it is hidden,
+// so it lays out again when it is shown at its new size.
+new ResizeObserver(relayoutEditor).observe(document.querySelector('.view[data-view="editor"]'))
 
 function drawWave() {
   const c = $('wave'); if (!c) return
@@ -1501,15 +1702,36 @@ function renderTexts() {
   document.querySelectorAll('.txt-layer').forEach(n => n.remove())
   const canvas = $('edCanvas'), vr = overlayRect()
   ed.texts.forEach((t, i) => {
-    const n = el('div', 'txt-layer', (t.text || '').replace(/</g, '&lt;') || '…')
-    n.dataset.sel = String(i === ed.selText); n.dataset.box = String(!!t.box)
+    // Styled as the export draws it (ui/overlays.js). Export sizes are ASS sizes, a
+    // whole line tall, so a CSS em is that over 1.18.
+    const style = ovLib().textStyle(ovRel(t), ovSpan())
+    const n = el('div', 'txt-layer', escHtml(t.text || '') || '…')
+    n.dataset.sel = String(i === ed.selText); n.dataset.box = String(!!t.box && style === 'label')
+    n.dataset.style = style; n.dataset.i = String(i)
     n.setAttribute('data-tip', 'Double-click to edit')
     n.style.left = (vr.left + t.fx * vr.w) + 'px'
     n.style.top = (vr.top + t.fy * vr.h) + 'px'
-    n.style.fontSize = Math.max(9, t.sizeFrac * vr.h) + 'px'
+    n.style.fontSize = Math.max(9, t.sizeFrac * vr.h / 1.18) + 'px'
     n.style.color = t.color === 'white' ? '#fff' : (t.color || '#fff')
-    n.style.fontFamily = t.font || 'Helvetica'
+    n.style.fontFamily = !t.font || t.font === 'SF Pro' ? '-apple-system,"SF Pro Display",system-ui' : t.font
     n.style.textAlign = t.align || 'center'
+    if (style !== 'label') {
+      // a closing address shows under the product's name, as the export draws it
+      const card = style === 'title' && t.id != null &&
+        ovLib().titleCards((ed.texts || []).map(ovRel), ovSpan()).find(k => k.t.id === t.id)
+      const { title, subtitle } = ovLib().titleParts(card ? card.t : t)
+      const px = style === 'title' ? Math.min(0.12, Math.max(0.06, +t.sizeFrac || 0.1)) * vr.h
+        : Math.min(0.07, Math.max(0.03, +t.sizeFrac || 0.044)) * vr.h
+      const sub = style === 'title' ? Math.max(0.0315 * vr.h, px * 0.3) / px : 0.62
+      n.innerHTML = `<span class="tt">${escHtml(title)}</span>` +
+        (subtitle ? `<span class="ts" style="font-size:${sub.toFixed(3)}em">${escHtml(subtitle)}</span>` : '')
+      n.style.fontSize = Math.max(9, px / 1.18) + 'px'
+      n.style.fontFamily = ''
+      if (style === 'lower-third') {
+        n.style.left = (vr.left + (t.fx != null && t.fx !== 0.5 ? t.fx : 0.07) * vr.w) + 'px'
+        n.style.top = (vr.top + (t.fy != null && t.fy !== 0.5 ? t.fy : 0.8) * vr.h) + 'px'
+      }
+    }
     n.onmousedown = e => {
       if (n.dataset.editing === 'true') return // let the caret land instead of starting a drag
       e.preventDefault(); ed.selText = i; renderTexts(); renderLayerList()
@@ -1656,8 +1878,16 @@ function paintBackdrop() {
   frame.style.padding = '0'
   frame.style.width = Math.round(boxW) + 'px'
   frame.style.height = Math.round(boxH) + 'px'
+  // Burned captions get a band of their own below the video, on the backdrop, as the
+  // export draws them (processor.js backdropGeometry, Overlays.captionLayout)
+  const cst = ed.capStyle || {}
+  const capsOn = !!($('burnCaps') && $('burnCaps').checked && ed.cues.length &&
+    (!cst.position || cst.position === 'bottom') && cst.fx == null)
+  const bottom = capsOn ? Math.max(px, ovLib().CAP_BAND * boxH) : px
   v.style.width = Math.round(boxW - px * 2) + 'px'
-  v.style.height = Math.round(boxH - px * 2) + 'px'
+  v.style.height = Math.round(boxH - px - bottom) + 'px'
+  // the frame centres the video's margin box, so this hangs it from the top margin
+  v.style.marginBottom = bottom > px ? Math.round(bottom - px) + 'px' : ''
   v.style.objectFit = 'contain'
   setTimeout(() => { try { renderTexts(); paintCaption() } catch {} }, 0)
   const r = $('bdRadius') ? +$('bdRadius').value : 26
@@ -1700,7 +1930,7 @@ function renderCues() {
   }
   paintTranscribeBtn()
   ed.cues.forEach((c, i) => {
-    const n = el('div', 'cue', `<span class="t">${fmtTime(c.start)}</span><span class="x" contenteditable>${c.text}</span>`)
+    const n = el('div', 'cue', `<span class="t">${fmtTime(c.start)}</span><span class="x" contenteditable>${escHtml(c.text || '')}</span>`)
     n.dataset.i = i
     n.onclick = e => { if (e.target.classList.contains('x')) return; seek(c.start) }
     n.querySelector('.x').onblur = e => { c.text = e.target.textContent.trim(); ipcRenderer.invoke('write-cues', ed.src, ed.cues) }
@@ -1710,11 +1940,13 @@ function renderCues() {
 // Preview of what burn-in will produce. Mirrors the caption style controls so
 // what you see on the stage is what lands in the file.
 function paintCaption() {
+  paintOverlays()
   const box = $('capOverlay'); if (!box) return
   const span = box.firstElementChild
   if (span.dataset.editing === 'true') return // being edited in place, leave it alone
-  const cue = ed.cues.find(c => ed.cur >= c.start && ed.cur <= c.end)
-  if (!cue) { box.dataset.on = 'false'; return }
+  // the phrase on screen, as the export breaks the transcript into phrases
+  const ph = capPhrases().find(p => ed.cur >= p.show && ed.cur < p.hide)
+  if (!ph) { box.dataset.on = 'false'; return }
   const st = ed.capStyle || {}
   const v = $('edVideo'), frame = $('stageFrame')
   const host = box.offsetParent || frame
@@ -1728,13 +1960,26 @@ function paintCaption() {
   box.style.top = (vb.top - hb.top) + 'px'
   box.style.width = vb.width + 'px'
   box.style.height = vb.height + 'px'
-  const vr = { h: vb.height }
+  // the same size and anchor the export computes, kept clear of the framed video's edge
+  const pic = anchor === v ? null : ovPicture(v)
+  const L = ovLib().captionLayout(vb.width, vb.height, st,
+    pic ? { x: pic.left - vb.left, y: pic.top - vb.top, w: pic.w, h: pic.h } : null)
   // style first: the clamp below needs the caption's real measured size
-  span.textContent = cue.text
-  span.style.fontFamily = st.font || 'Helvetica'
-  span.style.fontSize = Math.max(9, (vr.h / 24) * (st.scale || 1)) + 'px'
+  const hl = st.highlight === 'none' ? null : st.highlight === 'pill' ? 'pill' : 'word'
+  const on = ph.words.findIndex(w => ed.cur >= w.start && ed.cur < w.end)
+  let k = 0
+  span.innerHTML = ph.lines.map(n => {
+    const line = ph.words.slice(k, k + n).map((w, j) => `<span class="w"${hl && k + j === on
+      ? (hl === 'pill' ? ' data-pill="true"' : ' data-on="true"') : ''}>${escHtml(w.text)}</span>`).join(' ')
+    k += n
+    return line
+  }).join('<br>')
+  span.style.fontFamily = !st.font || st.font === 'SF Pro' ? '-apple-system,"SF Pro Display",system-ui' : st.font
+  span.style.fontSize = Math.max(9, L.px / 1.18) + 'px'
   span.style.color = st.colour || '#FFFFFF'
-  span.dataset.boxed = String(st.boxed !== false)
+  span.dataset.boxed = 'false'
+  box.style.paddingBottom = L.an === 2 ? Math.max(0, vb.height - L.y) + 'px' : ''
+  box.style.paddingTop = L.an === 8 ? L.y + 'px' : ''
   // a dragged caption overrides the preset placement
   if (st.fx != null && st.fy != null) {
     box.dataset.pos = 'free'
@@ -1753,6 +1998,153 @@ function paintCaption() {
   } else {
     span.style.left = ''; span.style.top = ''
   }
+}
+
+// ── overlays on the stage ───────────────────────────────────────────────
+// What ui/overlays.js burns into the export, previewed live: captions phrased and
+// highlighted the same way, step badges, spotlights, blurs and title cards. CSS
+// stands in for libass, so it is close rather than exact: the blur's edge is not
+// feathered here. Explicit zooms are previewed (paintZoom); auto zoom is not.
+// A function, not a const: renderTexts can run before this line has been reached
+function ovLib() { return require('./ui/overlays') }
+var ovCaps = { key: null, phrases: [] }
+
+function capPhrases() {
+  const key = ed.src + '#' + ed.cues.length + ':' + ed.cues.map(c => c.start + c.text).join('|')
+  if (ovCaps && key === ovCaps.key) return ovCaps.phrases
+  let words = null
+  try { words = JSON.parse(fs.readFileSync(sidecarIn(ed.src, '.words.json'), 'utf8')) } catch {}
+  // on the voice, as the export times them (Overlays.spokenWords)
+  ovCaps = { key, phrases: ovLib().phraseTimes(ovLib().captionPhrases(ovLib().spokenWords(ed.cues, words))) }
+  return ovCaps.phrases
+}
+
+// Texts are placed on the source clock; styles are judged on the output's, from the in point
+function ovSpan() { return Math.max(0, (ed.out || ed.dur || 0) - (ed.in || 0)) }
+function ovRel(t) { return { ...t, start: t.start != null ? t.start - (ed.in || 0) : null, end: t.end != null ? t.end - (ed.in || 0) : null } }
+
+function paintCapHl() {
+  const hl = (ed.capStyle && ed.capStyle.highlight) || 'word'
+  const seg = $('capHl')
+  if (seg) seg.querySelectorAll('button').forEach(x => x.setAttribute('aria-selected', String(x.dataset.hl === hl)))
+}
+
+// The picture inside the video element, which letterboxes when framed, in page pixels
+function ovPicture(v) {
+  const r = v.getBoundingClientRect(), f = $('stageFrame').getBoundingClientRect()
+  const ar = (ed.videoW && ed.videoH) ? ed.videoW / ed.videoH : (v.videoWidth / v.videoHeight) || r.width / r.height
+  let w = r.width, h = w / ar
+  if (h > r.height) { h = r.height; w = h * ar }
+  return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, w, h, fl: f.left, ft: f.top }
+}
+
+// Explicit zooms (Z1, Z2) previewed on the stage with the export's own curve
+// (Overlays.zoomView). object-view-box crops inside the video element, so the rounded
+// corners, the shadow and the backdrop stay put while the picture pushes in. Zoom
+// coordinates live in the cropped frame, but the stage shows the whole recording, so
+// the window is mapped through the crop and kept at the picture's shape. Off on the
+// Crop tab, where the handles need the whole picture. timeupdate only fires about
+// four times a second, so while playing a zoom is repainted on every video frame.
+var zoomLoop = false
+function paintZoom(t, pic) {
+  const v = $('edVideo'), layer = document.querySelector('#stageFrame .ov-zoom')
+  if (!v) return
+  const z = ed.tab === 'crop' ? { s: 1 } : ovLib().zoomView(ed.zooms, t)
+  let box = null
+  if (z.s > 1.001) {
+    const c = ed.crop || { x: 0, y: 0, w: 1, h: 1 }
+    const k = Math.min(1, Math.max(z.w * c.w, z.h * c.h))
+    const mx = c.x + (z.x + z.w / 2) * c.w, my = c.y + (z.y + z.h / 2) * c.h
+    box = { x: Math.max(0, Math.min(1 - k, mx - k / 2)), y: Math.max(0, Math.min(1 - k, my - k / 2)), k }
+  }
+  const pct = n => (n * 100).toFixed(3) + '%'
+  v.style.objectViewBox = box ? `inset(${pct(box.y)} ${pct(1 - box.x - box.k)} ${pct(1 - box.y - box.k)} ${pct(box.x)})` : ''
+  if (layer) {
+    layer.style.transform = box && pic ? `scale(${1 / box.k}) translate(${-box.x * pic.w}px, ${-box.y * pic.h}px)` : ''
+  }
+  if ((ed.zooms || []).length && !v.paused && !zoomLoop && v.requestVideoFrameCallback) {
+    zoomLoop = true
+    v.requestVideoFrameCallback((_, meta) => {
+      zoomLoop = false
+      ed.cur = meta.mediaTime
+      paintOverlays()
+    })
+  }
+}
+
+function paintOverlays() {
+  const frame = $('stageFrame'), v = $('edVideo')
+  if (!frame || !v || !v.getBoundingClientRect().width) return
+  let host = frame.querySelector('.ov-stage')
+  if (!host) {
+    host = el('div', 'ov-stage', '<div class="ov-clip"></div><div class="ov-card"></div>')
+    v.after(host)
+  }
+  const t = ed.cur || 0
+  const pic = ovPicture(v)
+  const clip = host.querySelector('.ov-clip')
+  clip.style.left = (pic.left - pic.fl) + 'px'; clip.style.top = (pic.top - pic.ft) + 'px'
+  clip.style.width = pic.w + 'px'; clip.style.height = pic.h + 'px'
+  clip.style.borderRadius = getComputedStyle(v).borderRadius
+  // marks live in the cropped frame, so map them through the crop onto the picture
+  const c = ed.crop || { x: 0, y: 0, w: 1, h: 1 }
+  const cw = c.w * pic.w, ch = c.h * pic.h, cx = c.x * pic.w, cy = c.y * pic.h
+  // marks are drawn before the zoom in the export, so they ride it here as well
+  let layer = clip.querySelector('.ov-zoom')
+  if (!layer) { layer = el('div', 'ov-zoom'); clip.appendChild(layer) }
+  paintZoom(t, pic)
+  const seen = new Set()
+  let stepK = 0
+  for (const m of ed.marks || []) {
+    if (m && m.kind === 'step') stepK++
+    if (!m || !m.id || !['step', 'spotlight', 'blur'].includes(m.kind)) continue
+    seen.add(m.id)
+    const cls = m.kind === 'step' ? 'ov-step' : m.kind === 'spotlight' ? 'ov-spot' : 'ov-blur'
+    let n = layer.querySelector(`[data-id="${m.id}"]`)
+    if (!n || !n.classList.contains(cls)) { if (n) n.remove(); n = el('div', cls); n.dataset.id = m.id; layer.appendChild(n) }
+    // a spotlight rides a nearby zoom in the export, so it does here too
+    const on = m.kind === 'spotlight' ? ovLib().spotlightSpan(m, ed.zooms) : { a: m.start, b: m.end }
+    n.dataset.on = String(t >= on.a && t < on.b)
+    if (m.kind === 'step') {
+      const D = Math.max(12, 0.046 * ch)
+      n.textContent = ovLib().stepLabel(m, stepK)
+      Object.assign(n.style, { width: D + 'px', height: D + 'px', left: (cx + m.x * cw) + 'px', top: (cy + m.y * ch) + 'px',
+        borderWidth: Math.max(1.5, D * 0.05) + 'px', fontSize: (D * (n.textContent.length > 1 ? 0.46 : 0.56) / 1.18) + 'px',
+        boxShadow: `0 ${D * 0.07}px ${D * 0.16}px rgba(0,0,0,.36)` })
+    } else {
+      const grow = m.kind === 'spotlight' ? 0.008 * ch : 0
+      let x0 = cx + m.x * cw - grow, y0 = cy + m.y * ch - grow
+      let x1 = cx + (m.x + (m.w || 0.2)) * cw + grow, y1 = cy + (m.y + (m.h || 0.1)) * ch + grow
+      // as the export does: a spotlight within a hair of the edge opens through it
+      if (m.kind === 'spotlight') {
+        const near = 0.03 * ch, P = 0.1 * ch
+        if (x0 - cx < near) x0 = cx - P
+        if (y0 - cy < near) y0 = cy - P
+        if (cx + cw - x1 < near) x1 = cx + cw + P
+        if (cy + ch - y1 < near) y1 = cy + ch + P
+      }
+      const w = x1 - x0, h = y1 - y0
+      Object.assign(n.style, { left: x0 + 'px', top: y0 + 'px', width: w + 'px', height: h + 'px',
+        borderRadius: Math.min((m.kind === 'spotlight' ? 0.018 : 0.014) * ch, w / 2, h / 2) + 'px',
+        filter: m.kind === 'spotlight' ? `blur(${Math.max(1, 0.011 * ch * 0.5)}px)` : '' })
+    }
+  }
+  clip.querySelectorAll('[data-id]').forEach(n => { if (!seen.has(n.dataset.id)) n.remove() })
+
+  // a title card: the frame blurred and dimmed behind the title, clearing as it ends
+  const span = ovSpan(), rel = t - (ed.in || 0)
+  let card = 0
+  for (const k of ovLib().titleCards((ed.texts || []).map(ovRel), span)) {
+    if (rel < k.a || rel >= k.b) continue
+    const out = k.opens ? Math.min(1, (k.b - rel) / k.fade) : k.b < span - 0.05 ? Math.min(1, (k.b - rel) / 0.4) : 1
+    card = Math.max(card, Math.min(out, k.opens ? 1 : Math.min(1, (rel - k.a) / k.fade)))
+  }
+  host.querySelector('.ov-card').style.opacity = card.toFixed(3)
+  // text layers show when they are on screen and fade back when not
+  document.querySelectorAll('.txt-layer[data-i]').forEach(n => {
+    const x = ed.texts[+n.dataset.i]
+    n.dataset.live = String(!x || x.start == null || x.end == null || (t >= x.start && t < x.end))
+  })
 }
 
 // ── camera bubble ───────────────────────────────────────────────────────
@@ -1866,9 +2258,19 @@ function dragCaption() {
     const v = (ed.backdrop && $('stageFrame')) ? $('stageFrame') : $('edVideo')
     if (!v) return
     const vb = v.getBoundingClientRect()
+    // Move by the distance dragged, and only after a real drag. It used to put the
+    // caption's centre wherever the pointer was, so any click with a wobble (every
+    // half of a double-click) snapped the caption to the cursor.
+    const x0 = e.clientX, y0 = e.clientY
+    const sb = span.getBoundingClientRect()
+    const fx0 = ed.capStyle.fx != null ? ed.capStyle.fx : (sb.left + sb.width / 2 - vb.left) / vb.width
+    const fy0 = ed.capStyle.fy != null ? ed.capStyle.fy : (sb.top + sb.height / 2 - vb.top) / vb.height
+    let dragging = false
     const move = ev => {
-      ed.capStyle.fx = Math.max(0.02, Math.min(0.98, (ev.clientX - vb.left) / vb.width))
-      ed.capStyle.fy = Math.max(0.04, Math.min(0.96, (ev.clientY - vb.top) / vb.height))
+      if (!dragging && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return
+      dragging = true
+      ed.capStyle.fx = Math.max(0.02, Math.min(0.98, fx0 + (ev.clientX - x0) / vb.width))
+      ed.capStyle.fy = Math.max(0.04, Math.min(0.96, fy0 + (ev.clientY - y0) / vb.height))
       paintCaption()
     }
     const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
@@ -1878,6 +2280,9 @@ function dragCaption() {
     e.preventDefault(); e.stopPropagation()
     const cue = ed.cues.find(c => ed.cur >= c.start && ed.cur <= c.end)
     if (!cue) return
+    // The preview draws each word as its own element for the highlight. Editing that
+    // markup lost the spaces ("choosesafavoriteyou"), so edit the cue as plain text.
+    span.textContent = cue.text
     inlineEdit(span, cue.text, text => {
       cue.text = text
       ipcRenderer.invoke('write-cues', ed.src, ed.cues)
@@ -2019,6 +2424,9 @@ async function doExport(pick) {
     } : null,
     autoZoom: !!ed.autoZoom,
     zooms: (ed.zooms || []).map(z => ({ start: z.start, end: z.end, scale: z.scale, x: z.x, y: z.y })),
+    // an agent's adjusted cursor track; null falls back to the one recorded with the take
+    pointer: ed.doc && Array.isArray(ed.doc.pointer) ? ed.doc.pointer : null,
+    hideMacCursor: ed.doc && typeof ed.doc.hideMacCursor === 'boolean' ? ed.doc.hideMacCursor : null,
     autoZoomOpts: { zoom: $('zoomAmt') ? +$('zoomAmt').value / 100 : 1.7 },
     backdrop: ed.backdrop || null,
     backdropAspect: ed.outAspect || null,
@@ -2055,9 +2463,9 @@ async function doExport(pick) {
       // Settings can retire the source once an export succeeds. Trash, never unlink,
       // so an accidental setting is always recoverable.
       if (window.prefs && window.prefs.keepOriginal === false && ed.src !== j.result.file) {
-        const n = trash([ed.src, ...sidecars(ed.src)])
-        if (n) toast(`Exported, original moved to Trash`, 'ok')
-        else toast(`Exported · ${j.result.mb} MB`, 'ok')
+        const mb = j.result.mb
+        trash([ed.src, ...sidecars(ed.src)]).then(n =>
+          toast(n ? `Exported, original moved to Trash` : `Exported · ${mb} MB`, 'ok'))
       } else {
         toast(`Exported · ${j.result.mb} MB`, 'ok')
       }

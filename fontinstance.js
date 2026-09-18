@@ -391,4 +391,75 @@ function collectionFace(fontFile, style) {
   })
 }
 
-module.exports = { staticInstance, instantiate, collectionFace }
+// libass (the ass filter) finds a font by family name, and this ffmpeg has no
+// fontconfig setup to resolve "SF Pro Display Bold" to one cut of a variable font.
+// So each cut the exporter uses gets written out once under a name of its own
+// ("Fetch Caption"), marked regular weight so libass never fakes a bold on top of
+// a face that is already bold.
+function renamed(fontFile, family) {
+  return cached(fontFile, 'as-' + family.replace(/\W+/g, ''), buf => {
+    const T = tables(buf)
+    if (!T.name || !T['OS/2']) return null
+    const strings = [[1, family], [2, 'Regular'], [4, family], [6, family.replace(/\W+/g, '')]]
+    const utf = s => Buffer.from(s, 'utf16le').swap16()
+    const bodies = strings.map(([, s]) => utf(s))
+    const name = Buffer.alloc(6 + strings.length * 12)
+    name.writeUInt16BE(0, 0); name.writeUInt16BE(strings.length, 2); name.writeUInt16BE(name.length, 4)
+    let off = 0
+    strings.forEach(([id], i) => {
+      const r = 6 + i * 12
+      name.writeUInt16BE(3, r); name.writeUInt16BE(1, r + 2); name.writeUInt16BE(0x409, r + 4)
+      name.writeUInt16BE(id, r + 6); name.writeUInt16BE(bodies[i].length, r + 8); name.writeUInt16BE(off, r + 10)
+      off += bodies[i].length
+    })
+    const os2 = Buffer.from(T['OS/2']); os2.writeUInt16BE(400, 4)
+    const head = Buffer.from(T.head); head.writeUInt32BE(0, 8); head.writeUInt16BE(0, 44)   // macStyle: not bold
+    return sfnt({ ...T, name: Buffer.concat([name, ...bodies]), 'OS/2': os2, head }, buf.readUInt32BE(0))
+  })
+}
+
+// Width of a string in a font, from its cmap and advances: enough to size a pill
+// behind a word or fit a title to the frame. No kerning, which is a pixel or two.
+function measurer(fontFile) {
+  const buf = fs.readFileSync(fontFile)
+  const T = tables(buf, buf.toString('latin1', 0, 4) === 'ttcf' ? buf.readUInt32BE(12) : 0)
+  const upm = T.head.readUInt16BE(18), nH = T.hhea.readUInt16BE(34)
+  const adv = g => T.hmtx.readUInt16BE(Math.min(g, nH - 1) * 4)
+  const cmap = T.cmap, map = new Map()
+  for (let i = 0, n = cmap.readUInt16BE(2); i < n; i++) {
+    const plat = cmap.readUInt16BE(4 + i * 8), enc = cmap.readUInt16BE(6 + i * 8)
+    const at = cmap.readUInt32BE(8 + i * 8), fmt = cmap.readUInt16BE(at)
+    if (plat !== 3 && plat !== 0) continue
+    if (fmt === 12) {
+      for (let g = 0, groups = cmap.readUInt32BE(at + 12); g < groups; g++) {
+        const r = at + 16 + g * 12, a = cmap.readUInt32BE(r), b = cmap.readUInt32BE(r + 4), s = cmap.readUInt32BE(r + 8)
+        for (let c = a; c <= b && c < 0x30000; c++) map.set(c, s + c - a)
+      }
+      break
+    }
+    if (fmt === 4 && (enc === 1 || enc === 3 || plat === 0)) {
+      const seg = cmap.readUInt16BE(at + 6) / 2
+      const ends = at + 14, starts = ends + seg * 2 + 2, deltas = starts + seg * 2, ranges = deltas + seg * 2
+      for (let s = 0; s < seg; s++) {
+        const e = cmap.readUInt16BE(ends + s * 2), st = cmap.readUInt16BE(starts + s * 2)
+        const d = cmap.readInt16BE(deltas + s * 2), ro = cmap.readUInt16BE(ranges + s * 2)
+        for (let c = st; c <= e && c !== 0xFFFF; c++) {
+          const g = ro ? cmap.readUInt16BE(ranges + s * 2 + ro + (c - st) * 2) : c
+          map.set(c, ro && g ? (g + d) & 0xFFFF : (c + d) & 0xFFFF)
+        }
+      }
+    }
+  }
+  const width = (text, px, tracking = 0) => {
+    let units = 0, n = 0
+    for (const ch of String(text)) { units += adv(map.get(ch.codePointAt(0)) || 0); n++ }
+    return units / upm * px + tracking * Math.max(0, n - 1)
+  }
+  // libass sizes a font by its whole line (win ascent plus descent), not by the em
+  const os2 = T['OS/2']
+  width.line = os2 && os2.length > 78 ? (os2.readUInt16BE(74) + os2.readUInt16BE(76)) / upm
+    : (T.hhea.readInt16BE(4) - T.hhea.readInt16BE(6)) / upm
+  return width
+}
+
+module.exports = { staticInstance, instantiate, collectionFace, renamed, measurer }

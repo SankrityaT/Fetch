@@ -289,6 +289,7 @@ function openSetup() {
         if (!document.body.contains(scrim)) return
         const holder = scrim.querySelector(`[data-shot="${w.id}"]`)
         if (data && holder) {
+          w.shot = data                        // the setup card shows the same picture
           holder.innerHTML = `<img class="win-img" src="${data}" alt="">`
           shotLoaded.add(w.id)
         }
@@ -536,11 +537,21 @@ function paintHeroReady() {
   // threw on every setup change, which also failed every agent record_start
   const cta = document.querySelector('.hero-cta'); if (cta) cta.hidden = true
   $('sourceName').textContent = setup.mode === 'window'
-    ? (setup.window ? `${setup.window.app}${setup.window.title ? ' · ' + setup.window.title : ''}` : 'A window')
+    ? (setup.window ? `${setup.window.app}${setup.window.title ? ' · ' + setup.window.title : ''}` : 'Pick a window')
     : (setup.source ? setup.source.name : 'Entire screen')
   const img = $('sourceThumb')
-  if (setup.mode === 'screen' && setup.source && usableThumb(setup.source.thumb)) img.src = setup.source.thumb
+  const shot = setup.mode === 'screen' ? setup.source && setup.source.thumb : setup.window && setup.window.shot
+  if (usableThumb(shot)) img.src = shot
   else img.removeAttribute('src')
+  // With no picture the tile underneath shows: the app's own icon for a window
+  const tile = document.querySelector('#readyCard .ready-empty')
+  if (tile) {
+    const icon = setup.mode === 'window' && setup.window && setup.window.icon
+    tile.innerHTML = icon ? `<img class="ready-ico" src="${icon}" alt="">`
+      : ico(setup.mode === 'window' ? 'app-window' : 'monitor', 'icon-xl')
+    const i = tile.querySelector('img')
+    if (i) i.onerror = () => { tile.innerHTML = ico('app-window', 'icon-xl') }
+  }
   $('readyChips').innerHTML = [
     setup.cam ? ['video-camera', 'Camera'] : null,
     setup.mic ? ['microphone', 'Mic'] : null,

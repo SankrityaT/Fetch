@@ -444,6 +444,14 @@ async function transcribe(srcArg, opts, onProgress, jobId) {
 
     const dur = j.durationSeconds || 0
     const speech = await speechRegions(wav, dur, jobId)
+    // The recogniser puts a word heard after a pause a third of a second early, so the
+    // captions and their highlight ran ahead of the voice: onto the audio first
+    const on = Overlays.snapToSpeech(words.map(w => +w.startTime || 0), speech).times
+    words.forEach((w, i) => {
+      const d = on[i] - (+w.startTime || 0)
+      w.startTime = on[i]
+      if (isFinite(+w.endTime)) w.endTime = Math.max(on[i], +w.endTime + d)
+    })
     const cues = buildCues(words, speech)
     fs.writeFileSync(srtPath, cuesToSrt(cues))
 
@@ -763,41 +771,6 @@ function subStyle(outH, o = {}) {
   return bits.join(',')
 }
 
-const assTime = s => {
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.max(0, s % 60)
-  return `${h}:${String(m).padStart(2, '0')}:${sec.toFixed(2).padStart(5, '0')}`
-}
-
-// A caption dragged off its preset cannot be expressed with force_style, which only
-// carries an Alignment and margins, so a dragged caption previewed in one place and
-// burned in somewhere else. libass takes an absolute \pos in PlayRes space, so match
-// PlayRes to the output pixels and the burn lands exactly where the editor showed it.
-function cuesToAss(cues, W, H, o = {}) {
-  const size = Math.max(10, Math.min(44, Math.round(20 * (o.scale ?? 1))))
-  const px = Math.max(8, Math.round(size * H / 288))   // same visual size as the SRT path
-  const boxed = o.boxed !== false
-  const edge = assColour(o.outline || '#000000', boxed ? 0x90 : 0x40)
-  const fill = assColour(o.colour || '#FFFFFF')
-  const x = Math.round(Math.min(1, Math.max(0, +o.fx)) * W)
-  const y = Math.round(Math.min(1, Math.max(0, +o.fy)) * H)
-  const head = [
-    '[Script Info]', 'ScriptType: v4.00+', `PlayResX: ${W}`, `PlayResY: ${H}`,
-    'WrapStyle: 2', 'ScaledBorderAndShadow: yes', '',
-    '[V4+ Styles]',
-    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, ' +
-      'BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, ' +
-      'BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    // Alignment 5 anchors on the middle centre, matching the preview's translate(-50%,-50%)
-    `Style: Default,${o.font || SUB_FONT},${px},${fill},${fill},${edge},${edge},` +
-      `${o.bold === false ? 0 : 1},0,0,0,100,100,0,0,${boxed ? 4 : 1},${boxed ? 3 : 2},0,5,40,40,28,1`,
-    '', '[Events]',
-    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
-  ]
-  const body = cues.map(c => `Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Default,,0,0,0,,` +
-    `{\\pos(${x},${y})}` + String(c.text || '').replace(/[{}]/g, '').replace(/\r?\n/g, '\\N'))
-  return head.concat(body).join('\n') + '\n'
-}
-
 // The coordinate space a dragged caption was placed in: the composited frame when
 // there is a backdrop (framed is its backdropGeometry, the same numbers the
 // composite uses), the video itself otherwise.
@@ -854,7 +827,7 @@ async function toGif(srcArg, opts, onProgress, jobId) {
 // save folder only ever holds what the person actually made: recordings and
 // exports. Finder hides dot-directories, so the Desktop stays clean.
 const SIDE_DIR = '.fetch'
-const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
+const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
 
 const sideStem = p => path.basename(p).replace(/\.[^.]+$/, '')
 function sidecarPath(mediaPath, ext) {
@@ -1229,9 +1202,22 @@ function describe(full) {
 // take folders, plus whatever the user imported. A take folder's files carry `take`
 // (its folder), and the files on top of it carry `deliverable` (plus `copy` for the
 // unedited MP4 autoConvertMp4 left there, which is not an export).
-function listRecordings(root = takesRoot()) {
-  const out = new Map()
-  const add = (full, extra) => { if (!out.has(full)) try { out.set(full, { ...describe(full), ...extra }) } catch {} }
+//
+// One entry per file on disk, not per spelling of its path: the index can hold the
+// same file through a symlink or in another case, and that used to draw a take-folder
+// card and an "imported" card for one recording.
+function listRecordings(root = takesRoot(), index = readIndex()) {
+  const out = new Map(), seen = new Set()
+  const add = (full, extra) => {
+    if (out.has(full)) return
+    try {
+      const st = fs.statSync(full)
+      const id = `${st.dev}:${st.ino}`
+      if (seen.has(id)) return
+      seen.add(id)
+      out.set(full, { ...describe(full), ...extra })
+    } catch {}
+  }
   for (const dir of new Set([app_desktop(), root])) {
     for (const f of listDir(dir)) {
       if (!/^recording-/i.test(f) || !MEDIA_EXT.test(f)) continue
@@ -1248,9 +1234,19 @@ function listRecordings(root = takesRoot()) {
       add(full, { take: t, deliverable: true, ...(isCopy(full) ? { copy: true } : {}) })
     }
   }
-  for (const full of readIndex()) {
-    if (out.has(full) || !fs.existsSync(full)) continue
-    try { out.set(full, { ...describe(full), imported: true }) } catch {}
+  for (const full of index) {
+    if (!fs.existsSync(full)) continue
+    // A loose take Fetch recorded and someone renamed joins the index too, and it is
+    // not an import: its recording left a cursor track (an agent take, its own pointer
+    // track) or a camera take beside it.
+    const own = ['.cursor.json', '.pointer.json', '.cam.json'].some(ext => fs.existsSync(sidecarIn(full, ext)))
+    add(full, own ? {} : { imported: true })
+    // its -edit and -converted exports sit beside it, named after it
+    const stem = path.parse(full).name, dir = path.dirname(full)
+    for (const f of mediaIn(dir)) {
+      const s2 = path.parse(f).name
+      if (s2 !== stem && s2.startsWith(stem + '-') && TAGGED.test(s2) && s2.replace(TAGGED, '') === stem) add(path.join(dir, f))
+    }
   }
   return [...out.values()].sort((a, b) => b.mtime - a.mtime)
 }
@@ -1278,10 +1274,182 @@ function forgetFile(src) {
 // A native take also says what was recorded (kind, the display's bounds, and for a
 // window its bounds over time), which is what maps a screen point into the picture.
 // Older files have only the primary display, so they only map for display takes.
+// An agent take's own cursor: every call to the pointer tool, on the video clock
+// (ui/pointer.js). The edit document's pointer list wins when it has one; [] there
+// means no cursor at all.
+function readPointer(srcArg) {
+  try { return JSON.parse(fs.readFileSync(sidecarIn(srcArg, '.pointer.json'), 'utf8')) } catch { return null }
+}
+function pointerTrack(srcArg, opts = {}) {
+  const side = readPointer(srcArg)
+  const points = Array.isArray(opts.pointer) ? opts.pointer : side && side.points
+  if (!Array.isArray(points) || !points.length) return null
+  return { points, scale: side && side.scale }
+}
+
 function readCursor(srcArg) {
   const p = sidecarIn(srcArg, '.cursor.json')
   if (!fs.existsSync(p)) return null
   try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return null }
+}
+
+// ── the Mac's pointer, lifted out ───────────────────────────────────────────
+// Where the recorded pointer is in the pixels (a person's take, or an agent take
+// from before they dropped it), and the edit wants it gone: hideMacCursor true, or
+// an agent's cursor is being drawn over a take that also has the Mac's, which would
+// otherwise show two. hideMacCursor false keeps it whatever.
+function macCursorSpans(srcArg, opts = {}) {
+  if (opts.hideMacCursor === false) return []
+  if (opts.hideMacCursor !== true && !pointerTrack(srcArg, opts)) return []
+  return pointerLib.bakedCursorSpans(readCursor(srcArg))
+}
+
+// A region of one frame as rgb24, or null if unreadable
+function grabRegion(src, at, r) {
+  return new Promise(res => {
+    const p = spawn(FFMPEG, ['-v', 'error', '-ss', at.toFixed(3), '-i', src, '-frames:v', '1', '-an',
+      '-vf', `crop=${r.w}:${r.h}:${r.x}:${r.y}`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+    const bufs = []
+    p.stdout.on('data', b => bufs.push(b))
+    p.on('error', () => res(null))
+    p.on('close', () => { const b = Buffer.concat(bufs); res(b.length === r.w * r.h * 3 ? b : null) })
+  })
+}
+
+// The frames of a rest, grouped by what the screen around the pointer showed: a hover
+// that lights the row up halfway through is a second group needing its own patch.
+// Each group keeps its first frame and where in the box any later one differed from it.
+function restGroups(src, a, b, r, reg, jobId) {
+  return new Promise(res => {
+    const size = r.w * r.h * 3
+    const p = spawn(FFMPEG, ['-hide_banner', '-copyts', '-ss', a.toFixed(3), '-i', src, '-an',
+      '-vf', `trim=end=${b.toFixed(3)},crop=${r.w}:${r.h}:${r.x}:${r.y},showinfo`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+    register(jobId, p)
+    const times = [], groups = []
+    let pending = Buffer.alloc(0), n = 0, err = ''
+    p.stderr.on('data', d => { err += d; if (err.length > 1e6) err = err.slice(-1e5) })
+    p.stdout.on('data', d => {
+      pending = Buffer.concat([pending, d])
+      while (pending.length >= size) {
+        const f = Buffer.from(pending.subarray(0, size)); pending = pending.subarray(size)
+        const g = groups[groups.length - 1]
+        if (!g || pointerLib.ringDiff(f, g.rep, reg) > 2.5) groups.push({ from: n, rep: f, moved: new Uint8Array(reg.bw * reg.bh) })
+        else pointerLib.boxMoved(g.moved, f, g.rep, reg)
+        n++
+        if (groups.length > 8) { try { p.kill('SIGKILL') } catch {} }
+      }
+    })
+    p.on('error', () => { unregister(jobId, p); res(null) })
+    p.on('close', () => {
+      unregister(jobId, p)
+      for (const m of err.matchAll(/pts_time:([\d.]+)/g)) times.push(+m[1])
+      if (!groups.length || groups.length > 8) return res(null)
+      res(groups.map((g, i) => ({ ...g, t: i ? (times[g.from] != null ? times[g.from] : null) : a })))
+    })
+  })
+}
+
+// Clean patches for each place the pointer rested: the same spot at a nearby moment
+// when it was elsewhere, matched to the pixels around the spot and used only if they
+// agree, so a screen that changed meanwhile is never pasted back in. Returns, per span
+// index, a list of { a, b, png, x, y } in the source's pixels and clock; a rest (or a
+// stretch of one) with no clean moment is filled instead.
+async function cursorPlates(src, spans, meta, jobId) {
+  const W = meta.width, H = meta.height, dur = meta.duration || 0
+  const plates = {}
+  if (!W || !H || !dur) return plates
+  const even = n => 2 * Math.round(n / 2)
+  const ring = even(Math.max(8, H * 0.01))
+  const rests = spans.map((s, i) => ({ s, i })).filter(({ s }) => s.rest)
+    .sort((p, q) => (Math.min(q.s.b, dur) - q.s.a) - (Math.min(p.s.b, dur) - p.s.a)).slice(0, 16)
+    // a window sliding in under the pointer: the picture is still, so one clean frame
+    // patches the whole line it was drawn along
+    .concat(spans.map((s, i) => ({ s, i })).filter(({ s }) => s.slide).slice(0, 8))
+  for (const { s, i } of rests) {
+    const bx = { x: Math.max(0, even(s.x * W)), y: Math.max(0, even(s.y * H)) }
+    bx.w = Math.min(W - bx.x, even(s.w * W) + 2); bx.h = Math.min(H - bx.y, even(s.h * H) + 2)
+    if (bx.w < 4 || bx.h < 4) continue
+    const r = { x: Math.max(0, bx.x - ring), y: Math.max(0, bx.y - ring) }
+    r.w = Math.min(W, bx.x + bx.w + ring) - r.x; r.h = Math.min(H, bx.y + bx.h + ring) - r.y
+    const reg = { w: r.w, h: r.h, bx: bx.x - r.x, by: bx.y - r.y, bw: bx.w, bh: bx.h }
+    const area = { x: r.x / W, y: r.y / H, w: r.w / W, h: r.h / H }
+    const b = Math.min(s.b, dur)
+    const groups = await restGroups(src, s.a, b, r, reg, jobId)
+    if (!groups) continue
+    // moments either side when the spot was clear, nearest first, up to five seconds out
+    const tries = []
+    for (let k = 0; k < 10; k++) {
+      for (const t of [s.a - 0.1 - k * 0.5, b + 0.1 + k * 0.5]) {
+        if (t >= 0 && t < dur - 0.05 && pointerLib.clearOfCursor(spans, t, area)) tries.push(t)
+      }
+    }
+    const clean = []
+    for (const t of tries.slice(0, 6)) { const f = await grabRegion(src, t, r); if (f) clean.push(f) }
+    const list = []
+    for (let g = 0; g < groups.length; g++) {
+      const G = groups[g]
+      let best = null
+      for (const c of clean) {
+        const fit = pointerLib.plateFit(G.rep, c, reg)
+        if (fit.residual <= 3 && (!best || fit.residual < best.fit.residual)) best = { c, fit }
+      }
+      const ga = G.t != null ? G.t : null, gb = g + 1 < groups.length ? groups[g + 1].t : b
+      if (!best || ga == null || gb == null || !(gb > ga)) continue
+      const png = path.join(os.tmpdir(), `qr-plate-${Date.now()}-${i}-${g}.png`)
+      try {
+        await new Promise((res, rej) => {
+          const p = spawn(FFMPEG, ['-y', '-v', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${bx.w}x${bx.h}`, '-i', '-', png])
+          p.on('error', rej)
+          p.on('close', code => code === 0 ? res() : rej(new Error('plate not written')))
+          p.stdin.end(pointerLib.platePixels([G.rep], best.c, best.fit.corr, reg, { also: G.moved }))
+        })
+        list.push({ a: g ? ga : s.a, b: g + 1 < groups.length ? gb : s.b, png, x: bx.x, y: bx.y })
+      } catch {}
+    }
+    if (list.length) plates[i] = list
+  }
+  return plates
+}
+
+// Filters that take the pointer out, in the frame after the crop: where a rest has a
+// clean patch it is laid over, everything else is filled from the box's edges by
+// delogo (brief, and while the pointer is moving the eye does not catch the fill).
+function cursorEraseFilters(spans, plates, clock, meta, crop, content, span) {
+  const W = meta.width, H = meta.height
+  if (!W || !H) return []
+  // crop rounds its origin down to the chroma grid
+  const ox = crop ? Math.floor(W * crop.x) & ~1 : 0, oy = crop ? Math.floor(H * crop.y) & ~1 : 0
+  const end = meta.duration || Infinity
+  const on = (a, b) => {
+    const A = clock(a), B = Math.min(clock(Math.min(b, end)), span || Infinity)
+    return B - A > 0.02 ? `enable='between(t,${A.toFixed(3)},${B.toFixed(3)})'` : null
+  }
+  const out = []
+  spans.forEach((s, i) => {
+    // what the patches leave uncovered is filled
+    let open = [[s.a, s.b]]
+    ;(plates[i] || []).forEach((p, k) => {
+      const en = on(p.a, p.b)
+      if (en) {
+        const L = `ce${i}x${k}`
+        out.push(`null[${L}a];movie='${filterPath(p.png)}',format=yuva420p[${L}p];` +
+          `[${L}a][${L}p]overlay=x=${p.x - ox}:y=${p.y - oy}:format=auto:${en}`)
+      }
+      open = open.flatMap(([a, b]) => [[a, Math.min(b, p.a)], [Math.max(a, p.b), b]]).filter(([a, b]) => b > a)
+    })
+    // delogo wants its box a pixel inside the frame; a slide left unpatched is filled
+    // piece by piece, never as one long band
+    for (const q of s.pieces || [s]) {
+      const x0 = Math.max(1, Math.round(q.x * W) - ox), y0 = Math.max(1, Math.round(q.y * H) - oy)
+      const x1 = Math.min(content.w - 1, Math.round((q.x + q.w) * W) - ox), y1 = Math.min(content.h - 1, Math.round((q.y + q.h) * H) - oy)
+      if (x1 - x0 < 3 || y1 - y0 < 3) continue
+      for (const [a, b] of open) {
+        const en = on(a, b)
+        if (en) out.push(`delogo=x=${x0}:y=${y0}:w=${x1 - x0}:h=${y1 - y0}:${en}`)
+      }
+    }
+  })
+  return out
 }
 
 // smoothstep, written the way ffmpeg's expression parser wants it
@@ -1368,13 +1536,18 @@ function zoomMoments(data, opts = {}) {
     outEnd: g.until + hold + ease,
     x: g.x, y: g.y,
   }))
-  // A click somewhere else before the last moment has let go: pull back in time for
-  // it rather than jumping the pan mid-zoom.
+  // A click somewhere else before the last moment has let go, or so soon after that
+  // the frame would sit at 1x for under `settle`: stay in and pan across to it. Pulling
+  // all the way out and pushing straight back in reads as a bounce, not an edit. The
+  // pan ends on the click, as the cursor's glide does, and waits for the last click of
+  // the run it leaves unless that would make it a snap.
+  const settle = opts.settle ?? 0.8, pan = opts.pan ?? 0.7
   for (let i = 1; i < moments.length; i++) {
     const p = moments[i - 1], n = moments[i]
-    if (p.outEnd <= n.inStart) continue
-    p.outEnd = Math.max(p.inEnd + 0.1, n.inStart)
-    p.outStart = Math.max(p.inEnd, p.outEnd - ease)
+    if (p.outEnd + settle <= n.inStart) continue
+    n.inStart = Math.max(p.inEnd, Math.min(groups[i - 1].until, n.inEnd - 0.3), n.inEnd - pan)
+    p.outStart = p.outEnd = n.inStart
+    n.from = { x: p.x, y: p.y }
   }
   return moments
 }
@@ -1390,14 +1563,29 @@ function zoomExpr(moments, disp, zMax, trimStart) {
     if (d <= 0) continue
     const upP = smooth(ramp(T, a.toFixed(3), b.toFixed(3)))
     const downP = smooth(ramp(T, d.toFixed(3), c.toFixed(3)))   // reversed: 0 at d, 1 at c
-    const amount = `if(lt(${T},${b.toFixed(3)}),${upP},if(lt(${T},${c.toFixed(3)}),1,${downP}))`
+    // a moment handing over to the next one (zoomMoments' pan) never pulls back
+    const out = d - c > 0.001 ? `if(lt(${T},${c.toFixed(3)}),1,${downP})` : '1'
     const inWindow = `between(${T},${a.toFixed(3)},${d.toFixed(3)})`
     // Per-moment scale lets an explicit zoom say how far it goes. Auto-zoom moments
     // carry none and fall back to the single global amount exactly as before.
     const zm = m.scale != null ? m.scale : zMax
-    z = `if(${inWindow},1+${(zm - 1).toFixed(3)}*(${amount}),${z})`
     const cx = Math.min(1, Math.max(0, (m.x - disp.x) / disp.width)).toFixed(4)
     const cy = Math.min(1, Math.max(0, (m.y - disp.y) / disp.height)).toFixed(4)
+    const f = m.from
+    if (f) {
+      // arriving from another moment: already zoomed, so the in-ease is a pan on the
+      // same curve, the focus and any change of scale moving together
+      const fz = f.scale != null ? f.scale : zm
+      const px = Math.min(1, Math.max(0, (f.x - disp.x) / disp.width)).toFixed(4)
+      const py = Math.min(1, Math.max(0, (f.y - disp.y) / disp.height)).toFixed(4)
+      const lerp = (from, to) => `if(lt(${T},${b.toFixed(3)}),${from}+(${to}-${from})*${upP},${to})`
+      z = `if(${inWindow},if(lt(${T},${b.toFixed(3)}),${fz.toFixed(3)}+${(zm - fz).toFixed(3)}*${upP},1+${(zm - 1).toFixed(3)}*(${out})),${z})`
+      fx = `if(${inWindow},${lerp(px, cx)},${fx})`
+      fy = `if(${inWindow},${lerp(py, cy)},${fy})`
+      continue
+    }
+    const amount = `if(lt(${T},${b.toFixed(3)}),${upP},${out})`
+    z = `if(${inWindow},1+${(zm - 1).toFixed(3)}*(${amount}),${z})`
     fx = `if(${inWindow},${cx},${fx})`
     fy = `if(${inWindow},${cy},${fy})`
   }
@@ -1416,17 +1604,8 @@ const zoomFps = meta => ((meta.fps || 30) >= 45 ? 60 : 30)
 function explicitZoomFilter(zooms, meta, clock, frame) {
   const list = (zooms || []).filter(z => z && z.end > z.start)
   if (!list.length) return null
-  const ease = 0.45
-  const moments = list.map(z => {
-    const s0 = clock(z.start), s1 = clock(z.end)
-    const e = Math.min(ease, Math.max(0, (s1 - s0) / 2))
-    return {
-      inStart: s0, inEnd: s0 + e,
-      outStart: s1 - e, outEnd: s1,
-      x: z.x != null ? z.x : 0.5, y: z.y != null ? z.y : 0.5,
-      scale: Math.max(1.05, Math.min(4, z.scale || 1.8)),
-    }
-  }).sort((a, b) => a.inStart - b.inStart)
+  // the plan the editor previews: same ease, and zooms close together pan across
+  const moments = Overlays.zoomPlan(list.map(z => ({ ...z, start: clock(z.start), end: clock(z.end) })))
   const { z, fx, fy } = zoomExpr(moments, UNIT, 1.8, 0)   // already on the output clock
   return { filter: zoompan(z, fx, fy, meta, frame), moments: moments.length }
 }
@@ -1470,19 +1649,23 @@ function outClock(cuts, start, end) {
 }
 
 // ── marks ────────────────────────────────────────────────────────────────────
-// Things drawn onto the frame for a stretch of time: a redaction, a spotlight or a
-// numbered step. Rendered before any zoom, so they belong to the content rather than
-// the screen: a redaction stays over the sensitive text wherever a zoom moves it.
+// Things drawn onto the frame for a stretch of time: a redaction, a blur, a spotlight
+// or a numbered step. Rendered before any zoom, so they belong to the content rather
+// than the screen: a redaction stays over the sensitive text wherever a zoom moves it.
 //
 // Coordinates are 0..1 fractions of the frame (x, y is the top-left corner, w, h the
 // size), the same convention zooms use, because that is what an agent can reason about.
+// A step's x, y is the point it numbers, the corner of a card say, and the badge is
+// centred there.
+//
+// Redactions and blurs change pixels, so they are filters here. Spotlights and steps
+// only draw over the picture, so they are ASS events (ui/overlays.js), which gives them
+// soft edges, round shapes and eased motion that drawbox and drawtext cannot.
 //
 // A redaction destroys what is under it. It is not a blur that could be reversed: the
 // region is scaled down to a few pixels and back up, so the original detail is not in
 // the output at all.
-const STEP_GOLD = [240, 169, 60]   // #F0A93C: steps are an intent, and red is reserved for recording
-
-function markFilters(marks, clock, font, tag = 'mk') {
+function markFilters(marks, clock, font, tag = 'mk', size = null, span = 0) {
   const out = []
   const f = n => Math.max(0, Math.min(1, +n || 0)).toFixed(4)
   ;(marks || []).forEach((m, i) => {
@@ -1500,43 +1683,184 @@ function markFilters(marks, clock, font, tag = 'mk') {
         `scale='max(1,iw/24)':'max(1,ih/24)':flags=neighbor,` +
         `scale='iw*24':'ih*24':flags=neighbor[${L}c];` +
         `[${L}a][${L}c]overlay=x='main_w*${X}':y='main_h*${Y}':${on}`)
-    } else if (m.kind === 'blur') {
+    } else if (m.kind === 'blur' && size) {
       // Gaussian, for softening something distracting. Not for secrets: a blur can
-      // be partly undone, which is what redact is for.
+      // be partly undone, which is what redact is for. The patch is cut a feather
+      // wider than the region and laid back through a round-cornered mask whose edge
+      // fades over that feather, so there is no box, and it eases in and out.
       const sigma = Math.max(4, Math.min(60, +m.strength || 18))
-      out.push(`split[${L}a][${L}b];[${L}b]${crop},gblur=sigma=${sigma}:steps=3[${L}c];` +
-        `[${L}a][${L}c]overlay=x='main_w*${X}':y='main_h*${Y}':${on}`)
-    } else if (m.kind === 'spotlight') {
-      // everything else steps back; the region keeps its original pixels
-      out.push(`split[${L}a][${L}b];[${L}a]${crop}[${L}r];` +
-        `[${L}b]drawbox=x=0:y=0:w=iw:h=ih:color=black@0.55:t=fill:${on}[${L}d];` +
-        `[${L}d][${L}r]overlay=x='main_w*${X}':y='main_h*${Y}':${on}`)
-    } else if (m.kind === 'step') {
-      const n = String(m.n || i + 1).replace(/[^0-9A-Za-z]/g, '').slice(0, 3) || String(i + 1)
-      // A gold circle (a pill past one character) with the numeral centred in it.
-      // drawtext's own box is a tight square, and its boxborderw takes no expression,
-      // so a padding in terms of h silently became 0. The badge is painted instead:
-      // cut its patch out, colour an antialiased pill over it with geq, put it back.
-      // Sizes are fractions of the frame height, so it reads the same at any size.
-      const D = 0.096, Wd = (D + (n.length - 1) * 0.62 * 0.062).toFixed(4)
-      const bx = `min(iw*${X},iw-ow)`, by = `min(ih*${Y},ih-oh)`
-      const edge = `clip(H/2-hypot(max(0,abs(X+0.5-W/2)-(W-H)/2),Y+0.5-H/2)+0.5,0,1)`
-      const [r, g, b] = STEP_GOLD
-      out.push(`split[${L}a][${L}b];[${L}b]crop=w='ih*${Wd}':h='ih*${D}':x='${bx}':y='${by}',format=rgba,` +
-        `geq=r='lerp(r(X,Y),${r},${edge})':g='lerp(g(X,Y),${g},${edge})':b='lerp(b(X,Y),${b},${edge})':a=255[${L}c];` +
-        `[${L}a][${L}c]overlay=x='min(main_w*${X},main_w-overlay_w)':y='min(main_h*${Y},main_h-overlay_h)':${on},` +
-        `drawtext=text='${n}':` + (font ? `fontfile='${filterPath(font)}':` : '') +
-        `fontsize='h*0.062':fontcolor=0x231703:` +
-        `x='min(w*${X},w-h*${Wd})+h*${Wd}/2-tw/2':y='min(h*${Y},h-h*${D})+h*${D}/2-th/2':${on}`)
+      const even = n => 2 * Math.round(n / 2)
+      const rx = +X * size.w, ry = +Y * size.h, rw = Math.max(4, +W * size.w), rh = Math.max(4, +H * size.h)
+      const F = Math.max(6, Math.round(size.h * 0.012))
+      const x0 = Math.max(0, even(rx - F)), y0 = Math.max(0, even(ry - F))
+      const cw = Math.max(4, Math.min(size.w - x0, even(rw + 2 * F + (rx - F - x0)))), ch = Math.max(4, Math.min(size.h - y0, even(rh + 2 * F + (ry - F - y0))))
+      const r = Math.min(size.h * 0.014, rw / 2, rh / 2)
+      const mx = (rx - x0 + rw / 2).toFixed(1), my = (ry - y0 + rh / 2).toFixed(1)
+      const qx = `(abs(X-${mx})-${(rw / 2 - r).toFixed(1)})`, qy = `(abs(Y-${my})-${(rh / 2 - r).toFixed(1)})`
+      // signed distance to the rounded rectangle, then a smoothstep across the feather
+      const d = `(hypot(max(${qx},0),max(${qy},0))+min(max(${qx},${qy}),0)-${r.toFixed(1)})`
+      const s = `clip(0.5-${d}/${F},0,1)`
+      const T = Math.min(0.35, (+b - +a) / 3)
+      // a mark a few frames long just appears: fade's d=0 would mean 25 frames
+      const fades = T < 0.04 ? [] : [+a > 0.05 ? `fade=t=in:st=${a}:d=${T.toFixed(3)}:alpha=1` : null,
+        +b < span - 0.05 ? `fade=t=out:st=${(+b - T).toFixed(3)}:d=${T.toFixed(3)}:alpha=1` : null].filter(Boolean)
+      out.push(`split[${L}a][${L}b];` +
+        `${still(cw, ch, 'gray')},geq=lum='255*${s}*${s}*(3-2*${s})'[${L}m];` +
+        `[${L}b]crop=${cw}:${ch}:${x0}:${y0},gblur=sigma=${sigma}:steps=3,format=yuva420p[${L}p];` +
+        `[${L}p][${L}m]alphamerge${fades.length ? ',' + fades.join(',') : ''}[${L}c];` +
+        `[${L}a][${L}c]overlay=x=${x0}:y=${y0}:format=auto:${on}`)
     }
   })
   return out
 }
 
+// ── overlays ─────────────────────────────────────────────────────────────────
+// The faces ui/overlays.js writes its ASS in, each cut once and renamed to a family
+// of its own in a folder libass is pointed at (see fontinstance.renamed). SF Pro for
+// captions and titles, SF Pro Rounded for step numerals; a caption or label font the
+// person picked is used in its bold cut.
+const Overlays = require('./ui/overlays')
+const SF_FILE = '/System/Library/Fonts/SFNS.ttf', SF_ROUNDED = '/System/Library/Fonts/SFNSRounded.ttf'
+
+function assFonts(opts = {}) {
+  const fi = require('./fontinstance')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-overlay-'))
+  const cut = (file, want) => { try { return fs.existsSync(file) ? fi.staticInstance(file, want) : null } catch { return null } }
+  const fallback = textFace(null, 48)
+  const capName = opts.captionStyle && opts.captionStyle.font
+  const O = Overlays.FONT
+  const faces = {
+    [O.caption]: (capName && capName !== 'SF Pro' && FONT_FILES[capName] ? textFace(capName, 48) : cut(SF_FILE, { wght: 700, opsz: 32 })) || fallback,
+    [O.title]: cut(SF_FILE, { wght: 600, opsz: 80 }) || fallback,     // SF Pro Display Semibold
+    [O.sub]: cut(SF_FILE, { wght: 500, opsz: 32 }) || fallback,
+    [O.num]: cut(SF_ROUNDED, { wght: 700 }) || cut(SF_FILE, { wght: 700 }) || fallback,
+  }
+  const labels = {}
+  for (const t of opts.texts || []) {
+    if (!t || !t.font || !FONT_FILES[t.font] || t.font === 'SF Pro' || labels[t.font]) continue
+    labels[t.font] = 'Fetch Label ' + t.font.replace(/[^A-Za-z0-9 ]/g, '')
+    faces[labels[t.font]] = textFace(t.font, Math.round(1080 * (+t.sizeFrac || 0.05)))
+  }
+  const metrics = {}
+  for (const [family, file] of Object.entries(faces)) {
+    if (!file) continue
+    try {
+      const named = fi.renamed(file, family)
+      fs.symlinkSync(named, path.join(dir, family.replace(/\W+/g, '') + '.ttf'))
+      metrics[family] = fi.measurer(named)
+    } catch (e) { console.error('overlay font failed:', family, e.message) }
+  }
+  const ROLE = { caption: O.caption, title: O.title, sub: O.sub }
+  const measure = (text, px, role) => {
+    const m = metrics[ROLE[role] || role] || metrics[O.caption]
+    return m ? m(text, px) / m.line : String(text).length * px * 0.47
+  }
+  return { dir, measure, family: name => labels[name] || null }
+}
+
+// Times (output clock) when the product put something where the captions go, a toast
+// or a bottom sheet, so those phrases can move to the top (Overlays.captionClutter).
+// A 96x54 grey copy at 4fps of the cropped picture is plenty to see a toast arrive.
+// zooms are the edit's explicit zooms, so a frame is judged through the window that
+// is actually on screen; under auto zoom the window is not known here, so no dodging.
+function captionClutterTimes(src, { start, end, crop, zooms, autoZoom, clock }) {
+  if (autoZoom && !(zooms && zooms.length)) return Promise.resolve([])
+  const w = 96, h = 54, fps = 4
+  const vf = [crop ? `crop=w='2*floor(iw*${crop.w}/2)':h='2*floor(ih*${crop.h}/2)':x='iw*${crop.x}':y='ih*${crop.y}'` : null,
+    `fps=${fps}`, `scale=${w}:${h}:flags=area`, 'format=gray'].filter(Boolean).join(',')
+  // the same plan the export zooms by, pans included; a frame mid-move is not judged
+  const moves = Overlays.zoomPlan((zooms || []).filter(z => z && z.end > z.start)
+    .map(z => ({ ...z, start: clock(z.start), end: clock(z.end) }))).map(m => {
+    const vw = 1 / m.scale, clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
+    return { ...m, win: { x: clamp(m.x - vw / 2, 0, 1 - vw), y: clamp(m.y - vw / 2, 0, 1 - vw), w: vw, h: vw } }
+  })
+  const view = t => {
+    for (const m of moves) {
+      if (t < m.inStart || t > m.outEnd) continue
+      return t < m.inEnd || t > m.outStart ? null : m.win
+    }
+    return { x: 0, y: 0, w: 1, h: 1 }
+  }
+  return new Promise(res => {
+    const p = spawn(FFMPEG, ['-v', 'error', '-ss', String(start), '-i', src, '-t', String(Math.max(0.1, end - start)),
+      '-an', '-vf', vf, '-f', 'rawvideo', '-'])
+    const bufs = []
+    p.stdout.on('data', b => bufs.push(b))
+    p.on('error', () => res([]))
+    p.on('close', () => {
+      const all = Buffer.concat(bufs), n = Math.floor(all.length / (w * h)), frames = []
+      for (let k = 0; k < n; k++) {
+        const t = start + k / fps
+        if (clock.kept && !clock.kept(t)) continue
+        frames.push({ t: clock(t), px: all.subarray(k * w * h, (k + 1) * w * h) })
+      }
+      try { res(Overlays.captionClutter(frames, w, h, view)) } catch { res([]) }
+    })
+  })
+}
+
+// Step badges nudged clear of what is around their point (Overlays.stepSpot) and
+// spotlights pulled in to what they light (Overlays.spotFit), each judged on a grey
+// copy of the cropped picture a moment after it lands. The rest come back as they were.
+async function stepSpots(src, marks, crop, content) {
+  const k = Math.min(1, 960 / content.w), w = 2 * Math.round(content.w * k / 2), h = 2 * Math.round(content.h * k / 2)
+  const vf = [crop ? `crop=w='2*floor(iw*${crop.w}/2)':h='2*floor(ih*${crop.h}/2)':x='iw*${crop.x}':y='ih*${crop.y}'` : null,
+    `scale=${w}:${h}:flags=area`, 'format=gray'].filter(Boolean).join(',')
+  const grab = at => new Promise(res => {
+    const p = spawn(FFMPEG, ['-v', 'error', '-ss', at.toFixed(3), '-i', src, '-frames:v', '1', '-an', '-vf', vf, '-f', 'rawvideo', '-'])
+    const bufs = []
+    p.stdout.on('data', b => bufs.push(b))
+    p.on('error', () => res(null))
+    p.on('close', () => { const b = Buffer.concat(bufs); res(b.length === w * h ? b : null) })
+  })
+  const out = []
+  let n = 0
+  for (const m of marks) {
+    if (!(m.end > m.start) || ++n > 16) { out.push(m); continue }
+    if (m.kind === 'spotlight') {
+      // the window pulled in to what it lights, judged once the target is up
+      const px = await grab(m.start + Math.min(1.0, (m.end - m.start) / 2))
+      out.push(px ? { ...m, ...Overlays.spotFit(px, w, h, m) } : m)
+      continue
+    }
+    if (m.kind !== 'step') { out.push(m); continue }
+    const px = await grab(m.start + Math.min(0.4, (m.end - m.start) / 2))
+    out.push(px ? { ...m, ...Overlays.stepSpot(px, w, h, m, content.h) } : m)
+  }
+  return out
+}
+
+// A title card's ground: the finished frame itself, blurred and dimmed, over the
+// card's window. It covers the opening from the first frame and clears as the title
+// leaves; a closing card gathers in over the end. The ASS title is drawn above it.
+function cardFilter(card, W, H, tag, span) {
+  const fw = 2 * Math.round(W / 12), fh = 2 * Math.round(H / 12)
+  const a = card.a.toFixed(3), b = card.b.toFixed(3), f = card.fade
+  const fades = card.opens
+    ? [`fade=t=out:st=${(card.b - f).toFixed(3)}:d=${f.toFixed(3)}:alpha=1`]
+    : [`fade=t=in:st=${a}:d=${f.toFixed(3)}:alpha=1`,
+       card.b < span - 0.05 ? `fade=t=out:st=${(card.b - 0.4).toFixed(3)}:d=0.4:alpha=1` : null].filter(Boolean)
+  // A radial scrim in the app's warm near-black, lighter in the middle where the title
+  // sits and darker toward the edges, drawn once at a sixteenth of the size: a flat
+  // luma cut made every ground the same muddy grey-green whatever was recorded
+  const sw = 2 * Math.round(W / 16), sh = 2 * Math.round(H / 16)
+  const r2 = `(pow((X-${sw / 2})/${sw / 2},2)+pow((Y-${sh / 2})/${sh / 2},2))/2`
+  const scrim = `color=c=0x140E08:s=${sw}x${sh}:r=1:d=1,format=rgba,` +
+    `geq=r=20:g=14:b=8:a='255*(0.42+0.30*min(1,${r2}))',scale=${W}:${H}:flags=bicubic`
+  return `split[${tag}m][${tag}c];[${tag}c]trim=start=${a}:end=${b},` +
+    `scale=${fw}:${fh}:flags=area,gblur=sigma=${(fh * 0.075).toFixed(2)}:steps=2,scale=${W}:${H}:flags=bicubic,` +
+    `eq=brightness=-0.06:saturation=1.15[${tag}g];${scrim}[${tag}s];` +
+    `[${tag}g][${tag}s]overlay=format=auto,format=yuva420p,${fades.join(',')}[${tag}v];` +
+    `[${tag}m][${tag}v]overlay=eof_action=pass:format=auto`
+}
+
 // clock is outClock for this export (a number is read as a trim start, for older
 // callers), crop the editor's crop. opts.cursor stands in for the sidecar.
 function autoZoomFilter(srcArg, meta, opts = {}, clock = 0, frame, crop) {
-  const data = opts.cursor || readCursor(srcArg)
+  // An agent's pointer track is what happened in the take; the Mac's own pointer,
+  // if one was recorded, belonged to whoever was sitting there
+  const ptr = !opts.cursor && pointerTrack(srcArg, opts)
+  const data = opts.cursor || (ptr ? pointerLib.asCursorData(ptr.points) : readCursor(srcArg))
   if (!data || !(data.display || data.windowBounds)) return null
   if (typeof clock === 'number') { const s = clock; clock = t => t - s; clock.kept = t => t >= s }
   const moments = zoomMoments(data, { ...opts, clock, crop })
@@ -1634,14 +1958,19 @@ function backdropGeometry(srcW, srcH, opts) {
     outH = 2 * Math.round((outW / target) / 2)
   }
 
+  // band: a share of the height kept below the video for captions, in place of the
+  // bottom margin, so they sit on the backdrop rather than on the product
+  const band = Math.max(0, Math.min(0.25, +opts.band || 0))
+  const bottom = band ? Math.max(band, inset) : inset
   const boxW = 2 * Math.round((outW * (1 - inset * 2)) / 2)
-  const boxH = 2 * Math.round((outH * (1 - inset * 2)) / 2)
+  const boxH = 2 * Math.round((outH * (1 - inset - bottom)) / 2)
   const scale = Math.min(boxW / srcW, boxH / srcH)
   const vidW = 2 * Math.round((srcW * scale) / 2)
   const vidH = 2 * Math.round((srcH * scale) / 2)
   const radius = Math.max(6, Math.round(opts.radius ?? Math.min(vidW, vidH) * 0.035))
   const ox = Math.round((outW - vidW) / 2)
-  const oy = Math.round((outH - vidH) / 2)
+  // with a band the video hangs from the top margin; the band takes what is left
+  const oy = band ? Math.round(outH * inset + (boxH - vidH) / 2) : Math.round((outH - vidH) / 2)
   const blur = Math.max(4, Math.round(vidH * 0.035))
   return { outW, outH, vidW, vidH, radius, ox, oy, blur }
 }
@@ -1666,11 +1995,13 @@ function backdropChain(vLabel, srcW, srcH, opts) {
     // One decode, two uses: the sharp framed copy and the blurred fill behind it.
     // The fill is blurred at an eighth of the size and scaled back up: a blur this
     // wide leaves no detail to lose, and it is 64 times fewer pixels to blur.
-    const sigma = Math.max(12, Math.round(outH * 0.03))
+    // Wide and low in contrast, so it reads as the product's colour rather than its
+    // shapes: at under half this a dark strip in the picture smeared across the backdrop.
+    const sigma = Math.max(24, Math.round(outH * 0.07))
     const fw = 2 * Math.round(outW / 16), fh = 2 * Math.round(outH / 16)
     parts.push(`[${vLabel}]split[bdsharp][bdfill]`)
     parts.push(`[bdfill]scale=${fw}:${fh}:force_original_aspect_ratio=increase:flags=area,crop=${fw}:${fh},` +
-               `gblur=sigma=${(sigma * fw / outW).toFixed(2)}:steps=2,eq=brightness=-0.07:saturation=1.15,` +
+               `gblur=sigma=${(sigma * fw / outW).toFixed(2)}:steps=2,eq=contrast=0.72:brightness=-0.07:saturation=1.15,` +
                `scale=${outW}:${outH}:flags=bicubic,setsar=1,format=yuv420p[bg]`)
     vidSrc = 'bdsharp'
   } else if (imageBd) {
@@ -1697,7 +2028,25 @@ function backdropChain(vLabel, srcW, srcH, opts) {
              `geq=r=0:g=0:b=0:a='if(between(X,${pad},${pad + vidW})*between(Y,${pad},${pad + vidH}),` +
              `0.6*${roundedAlpha(vidW, vidH, radius).replace(/X/g, `(X-${pad})`).replace(/Y/g, `(Y-${pad})`)}/255*255,0)',` +
              `boxblur=${blur}:2[sh]`)
-  parts.push(`[bg][sh]overlay=${ox - pad}:${oy - pad + Math.round(blur * 0.9)}[bgs]`)
+  // An opening title card clears onto the product scaling up into place from a little
+  // smaller, eased out, shadow and all, rather than the frame just being there. It
+  // holds small under the card, so the blurred ground the card shows is the same shape.
+  // A closing card is the same move backwards: the frame settles back to 92 percent on
+  // the zoom's smoothstep while the card's scrim gathers over it.
+  const rv = opts.reveal, cl = opts.close
+  const shY = oy - pad + Math.round(blur * 0.9)
+  if (rv || cl) {
+    const kIn = rv ? `(1-0.085*pow(1-clip((t-${rv.at.toFixed(3)})/${rv.dur.toFixed(3)},0,1),3))` : '1'
+    const q = cl ? `clip((t-${cl.at.toFixed(3)})/${cl.dur.toFixed(3)},0,1)` : null
+    const kOut = cl ? `(1-0.08*${q}*${q}*(3-2*${q}))` : '1'
+    const k = `(${kIn}*${kOut})`
+    const grow = (label, w, h) => `[${label}]scale=w='2*trunc(${w}*${k}/2)':h='2*trunc(${h}*${k}/2)':eval=frame:flags=bicubic[${label}k]`
+    parts.push(grow('sh', shW, shH), grow('vid', vidW, vidH))
+    parts.push(`[bg][shk]overlay=x='${ox - pad}+(${shW}-w)/2':y='${shY}+(${shH}-h)/2'[bgs]`)
+    parts.push(`[bgs][vidk]overlay=x='${ox}+(${vidW}-w)/2':y='${oy}+(${vidH}-h)/2':format=auto,format=yuv420p,setsar=1[vout]`)
+    return { chain: parts.join(';'), outW, outH, inputs }
+  }
+  parts.push(`[bg][sh]overlay=${ox - pad}:${shY}[bgs]`)
   parts.push(`[bgs][vid]overlay=${ox}:${oy}:format=auto,format=yuv420p,setsar=1[vout]`)
   return { chain: parts.join(';'), outW, outH, inputs }
 }
@@ -1780,6 +2129,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
   if (!srcArg || !fs.existsSync(srcArg)) throw new Error(`No recording at ${srcArg}. It may have been renamed or deleted.`)
   const { src, meta, done } = await ensureSeekable(srcArg, jobId)
   const tmpFiles = []
+  let overlayDir = null
   try {
     const dur = meta.duration
     const start = Math.max(0, opts.start || 0)
@@ -1810,26 +2160,101 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     // other and with the cuts
     const clock = outClock(opts.cuts, start, end || dur)
 
-    // marks first: a redaction must cover the content wherever a zoom then moves it
-    for (const mf of markFilters(opts.marks, clock, FONT)) vf.push(mf)
-
-    let zoomInfo = null
     const even = n => 2 * Math.floor(n / 2)
     const frame = c ? { w: even((meta.width || 1920) * c.w), h: even((meta.height || 1080) * c.h) } : null
     // With a backdrop the video ends up at the framed size, and its geometry follows
     // the cropped frame (it used to follow the source, which squashed any crop).
+    // Captions under a framed video get a band of their own below it, on the backdrop,
+    // so a caption never sits on the product's text (Overlays.captionLayout)
+    const cst0 = opts.captionStyle || {}
+    const capBand = !!(opts.captions && opts.backdrop && fmtEarly.video && !fmtEarly.gif &&
+      (!cst0.position || cst0.position === 'bottom') && cst0.fx == null &&
+      ((Array.isArray(opts.cues) && opts.cues.length) || readCues(srcArg).length))
+    const band = capBand ? Overlays.CAP_BAND : 0
     const bdGeo = opts.backdrop && fmtEarly.video && !fmtEarly.gif
       ? backdropGeometry(frame ? frame.w : srcW, frame ? frame.h : srcH, {
-          inset: opts.inset, radius: opts.radius, scale: opts.scale,
+          inset: opts.inset, radius: opts.radius, scale: opts.scale, band,
           outWidth: opts.scale === 720 ? 1280 : 1920,
           outAspect: opts.backdropAspect || null,   // null keeps the source shape
         })
       : null
+    // marks first: a redaction must cover the content wherever a zoom then moves it
+    const content = c ? { w: 2 * Math.floor(srcW * c.w / 2), h: 2 * Math.floor(srcH * c.h / 2) } : { w: srcW, h: srcH }
+    const outSpan = clock(end || dur)
+    // the Mac's pointer out before anything is drawn over where it was
+    const macSpans = macCursorSpans(srcArg, opts)
+      .filter(s => clock(Math.min(s.b, dur || s.b)) - clock(s.a) > 0.02)
+    if (macSpans.length) {
+      const plates = await cursorPlates(src, macSpans, meta, jobId)
+      for (const p of Object.values(plates)) tmpFiles.push(p.png)
+      for (const f of cursorEraseFilters(macSpans, plates, clock, meta, c, content, outSpan)) vf.push(f)
+    }
+    // Every overlay animates on the clock, and libass and fade only draw on frames that
+    // exist. A native take writes none while the screen is still, so a spotlight easing
+    // in or a caption's highlight moving over a still screen froze, then jumped when the
+    // next frame came. Constant rate before anything is drawn.
+    if (fmtEarly.video && ((opts.marks || []).length || opts.captions || (opts.texts || []).length)) {
+      vf.push(`fps=${zoomFps(meta)}`)
+    }
+    for (const mf of markFilters(opts.marks, clock, FONT, 'mk', content, outSpan)) vf.push(mf)
+    // Spotlights and steps, drawn in the recording's own space so a zoom carries them
+    const overlayFonts = assFonts(opts)
+    overlayDir = overlayFonts.dir
+    const drawn = await stepSpots(src, (opts.marks || []).filter(m => m && (m.kind === 'spotlight' || m.kind === 'step')), c, content)
+    const contentAss = Overlays.contentScript({
+      W: content.w, H: content.h,
+      marks: drawn.map(m => ({ ...m, start: clock(m.start), end: clock(m.end) })),
+      zooms: (opts.zooms || []).map(z => ({ start: clock(z.start), end: clock(z.end), scale: z.scale })),
+      // output pixels per recorded pixel before any zoom, so a spotlight's edge is
+      // sized for the finished frame
+      px: (bdGeo ? bdGeo.vidH : (opts.scale === 1080 || opts.scale === 720 ? opts.scale : content.h)) / content.h,
+    })
+    if (contentAss) {
+      const ap = path.join(overlayFonts.dir, 'content.ass')
+      fs.writeFileSync(ap, contentAss)
+      vf.push(`ass='${filterPath(ap)}':fontsdir='${filterPath(overlayFonts.dir)}'`)
+    }
+
+    // The agent's cursor, over the marks and under any zoom, so a zoom magnifies it with
+    // the content. On a constant rate first: a native take writes no frames while the
+    // screen is still, which is exactly when the cursor glides to its next target.
+    const ptr = pointerTrack(srcArg, opts)
+    if (ptr) {
+      const W = c ? 2 * Math.floor(srcW * c.w / 2) : srcW, H = c ? 2 * Math.floor(srcH * c.h / 2) : srcH
+      // out: finished-frame pixels per pixel here, so the arrow is sized for the export
+      const out = (bdGeo ? bdGeo.vidH : (opts.scale === 1080 || opts.scale === 720 ? opts.scale : H)) / H
+      const geo = { W, H, clock, crop: c, scale: ptr.scale, end: clock(end || dur), out }
+      // the tag's name in the rounded bold the step badges use
+      const font = { family: Overlays.FONT.num, measure: (s, px) => overlayFonts.measure(s, px, Overlays.FONT.num) }
+      const ass = pointerLib.pointerAss(ptr.points, { ...geo, font })
+      if (ass) {
+        const fps = zoomFps(meta)
+        const ap = path.join(overlayFonts.dir, 'pointer.ass')
+        fs.writeFileSync(ap, ass)
+        vf.push(`fps=${fps}`, `subtitles='${filterPath(ap)}':fontsdir='${filterPath(overlayFonts.dir)}'`)
+        // Biscuit's badge rides the arrow. A picture, so an overlay whose place is an
+        // expression of t (pointerBadge), evaluated on each frame, fading in with the arrow.
+        const badge = pointerLib.pointerBadge(ptr.points, geo, fps)
+        const png = [path.join(process.resourcesPath || '.', 'app', pointerLib.BADGE.file), path.join(__dirname, pointerLib.BADGE.file)]
+          .find(f => fs.existsSync(f))
+        if (badge && badge.moves.length && png) {
+          const st = badge.start.toFixed(3)
+          // a bounded loop: an endless one keeps the graph from ever finishing
+          vf.push(`null[pba];` +
+            `movie='${filterPath(png)}',scale=${badge.d}:${badge.d}:flags=lanczos,format=rgba,` +
+            `loop=loop=${Math.ceil(badge.stop * fps) + fps}:size=1,setpts=N/(${fps}*TB),` +
+            `fade=t=in:st=${st}:d=0.16:alpha=1,format=yuva420p[pbb];` +
+            `[pba][pbb]overlay=x='${badge.x}':y='${badge.y}':eval=frame:format=auto:enable='gte(t,${st})'`)
+        }
+      }
+    }
+
+    let zoomInfo = null
     // so zoom outputs straight at that size rather than scaling up to the source
     // size only for the backdrop to scale it down again
     const zoomTo = bdGeo ? { w: bdGeo.vidW, h: bdGeo.vidH } : frame
     if (opts.zooms && opts.zooms.length) zoomInfo = explicitZoomFilter(opts.zooms, meta, clock, zoomTo)
-    else if (opts.autoZoom) zoomInfo = autoZoomFilter(srcArg, meta, opts.autoZoomOpts || {}, clock, zoomTo, c)
+    else if (opts.autoZoom) zoomInfo = autoZoomFilter(srcArg, meta, { ...(opts.autoZoomOpts || {}), pointer: opts.pointer }, clock, zoomTo, c)
     if (zoomInfo) {
       // ScreenCaptureKit writes a frame only when the screen changes, so a native take
       // is variable frame rate, with gaps of seconds on a still screen. zoompan emits
@@ -1862,78 +2287,77 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     const overlayFilters = []
     const target = framed ? overlayFilters : vf
 
-    // text layers → drawtext, text via textfile so quotes/newlines can't break the filter
-    for (const [i, t] of (opts.texts || []).entries()) {
-      if (!t || !String(t.text || '').trim()) continue
-      const tf = path.join(os.tmpdir(), `qr-text-${Date.now()}-${i}.txt`)
-      fs.writeFileSync(tf, String(t.text))
-      tmpFiles.push(tf)
-      const px = Math.max(10, Math.round((t.sizeFrac || 0.05) * (framed ? (opts.scale === 720 ? 720 : 1080) : outH)))
-      const face = textFace(t.font, px)
-      const parts = [
-        `textfile='${filterPath(tf)}'`,
-        'expansion=none',        // user text is literal: '%' must not strftime-expand
-        face ? `fontfile='${filterPath(face)}'` : null,
-        t.align && t.align !== 'center' ? `text_align=${t.align === 'left' ? 'L' : 'R'}` : null,
-        `fontsize=${px}`,
-        `fontcolor=${t.color || 'white'}`,
-        t.align === 'left' ? `x=main_w*${(+t.fx || 0.5).toFixed(4)}`
-          : t.align === 'right' ? `x=main_w*${(+t.fx || 0.5).toFixed(4)}-text_w`
-          : `x=main_w*${(+t.fx || 0.5).toFixed(4)}-text_w/2`,
-        `y=main_h*${(+t.fy || 0.5).toFixed(4)}-text_h/2`,
-        // measure by the font's line, not the glyphs, so the box and the centre do not
-        // shift with ascenders and descenders ("ace" and "Weekly" sit alike, as in CSS)
-        'y_align=font',
-      ].filter(Boolean)
-      // the stage pads a boxed layer .2em .45em inside a 1.2em line (editor.css);
-      // drawtext's line is 1em, so the top and bottom take the other .1em
-      if (t.box) parts.push('box=1', 'boxcolor=black@0.45', `boxborderw=${Math.round(px * 0.3)}|${Math.round(px * 0.45)}`)
-      // layer times are absolute in the source; the output clock restarts at the trim point
-      if (t.start != null && t.end != null && t.end > t.start) {
-        parts.push(`enable='between(t,${Math.max(0, t.start - start).toFixed(2)},${Math.max(0, t.end - start).toFixed(2)})'`)
-      }
-      target.push('drawtext=' + parts.join(':'))
-    }
-
+    // Captions, title cards and labels, on the finished frame, from one ASS script
+    // (ui/overlays.js). Every time goes through the clock, so a caption after a cut
+    // still lands on its word and a title after a trim is not late by the trim.
+    const cv = captionCanvas(framed && bdGeo, croppedW, croppedH, outH, opts)
+    let phrases = null
     // Captions on means "burn them if there are any". Every new edit starts with it
     // on, so throwing here made a take with nothing to transcribe (no mic, no system
     // audio) impossible to export until someone found the toggle.
-    const srtSrc = opts.captions ? sidecarIn(srcArg, '.srt') : null
-    if (srtSrc && fs.existsSync(srtSrc)) {
-      const cs = opts.captionStyle || {}
-      let srtUse = srtSrc
-      let cues = null
-      // cue times are absolute in the source; the trimmed output restarts its clock
-      // at `start`, so shift and clip them or the captions run late by exactly `start`
-      if (start > 0 || end) {
-        cues = readCues(srcArg)
-          .filter(c => c.end > start && (!end || c.start < end))
-          .map(c => ({
-            start: Math.max(0, c.start - start),
-            end: Math.max(0.1, Math.min(c.end, end || c.end) - start),
-            text: c.text,
-          }))
-        const tmp = path.join(os.tmpdir(), `qr-sub-${Date.now()}.srt`)
-        fs.writeFileSync(tmp, cuesToSrt(cues))
-        tmpFiles.push(tmp)
-        srtUse = tmp
+    if (opts.captions) {
+      const cues = Array.isArray(opts.cues) && opts.cues.length ? opts.cues : readCues(srcArg)
+      let wordsDoc = null
+      try { wordsDoc = JSON.parse(fs.readFileSync(sidecarIn(srcArg, '.words.json'), 'utf8')) } catch {}
+      // on the voice, not the recogniser's early guess (Overlays.snapToSpeech)
+      const toks = Overlays.spokenWords(cues, wordsDoc)
+        .filter(w => clock.kept(w.start))
+        .map(w => ({ ...w, start: clock(w.start), end: clock(Math.max(w.start, w.end)) }))
+      // in the band below a framed video a phrase has the width for one line
+      if (toks.length) phrases = Overlays.captionPhrases(toks, capBand ? { wrapAt: Overlays.BAND_WRAP } : {})
+      // a caption never lands on the product's own toast: those phrases go to the top
+      const cst = opts.captionStyle || {}
+      if (phrases && fmtEarly.video && !capBand && (!cst.position || cst.position === 'bottom') && cst.fx == null) {
+        const busy = await captionClutterTimes(src, { start, end: end || dur, crop: c, zooms: opts.zooms, autoZoom: opts.autoZoom, clock })
+        const framed = (opts.zooms || []).filter(z => z && z.end > z.start).map(z => ({ a: clock(z.start), b: clock(z.end) }))
+        if (busy.length) phrases = Overlays.placeCaptions(phrases, busy, framed)
       }
-      if (cs.fx != null && cs.fy != null) {
-        const cv = captionCanvas(framed && bdGeo, croppedW, croppedH, outH, opts)
-        const ap = path.join(os.tmpdir(), `qr-sub-${Date.now()}.ass`)
-        fs.writeFileSync(ap, cuesToAss(cues || readCues(srcArg), cv.w, cv.h, cs))
-        tmpFiles.push(ap)
-        target.push(`subtitles='${filterPath(ap)}'`)
-      } else {
-        target.push(`subtitles='${filterPath(srtUse)}':force_style='${subStyle(outH, cs)}'`)
-      }
+    }
+    const texts = (opts.texts || []).filter(t => t && String(t.text || '').trim()).map(t => {
+      const timed = t.start != null && t.end != null && t.end > t.start
+      return { ...t, start: timed ? clock(t.start) : null, end: timed ? clock(t.end) : null, family: overlayFonts.family(t.font) }
+    }).filter(t => t.start == null || t.end > t.start)
+    const cards = fmtEarly.video ? Overlays.titleCards(texts, outSpan) : []
+    cards.forEach((card, i) => target.push(cardFilter(card, cv.w, cv.h, `tc${i}`, outSpan)))
+    // as an opening card clears, the framed video scales up into place
+    const opening = cards.find(k => k.opens)
+    const reveal = opening ? { at: opening.b - opening.fade, dur: opening.fade + 0.2 } : null
+    // and as a closing card gathers, it settles back
+    const closing = cards.find(k => !k.opens && k.b >= outSpan - 0.05)
+    const close = closing ? { at: closing.a, dur: Math.min(1.2, closing.fade + 0.5) } : null
+    const capBox = framed && bdGeo ? { x: bdGeo.ox, y: bdGeo.oy, w: bdGeo.vidW, h: bdGeo.vidH } : null
+    // Framed, captions sit on frosted glass: the frame blurred through a feathered mask
+    // drawn by libass, so the UI under a caption goes soft instead of reading through
+    // it. Only framed, where the composite's size is known exactly: alphamerge needs
+    // the mask and the blurred band to match to the pixel.
+    const frost = capBox && fmtEarly.video
+      ? Overlays.captionFrost({ W: cv.w, H: cv.h, phrases, capStyle: opts.captionStyle || {}, measure: overlayFonts.measure, box: capBox })
+      : null
+    // one band for the captions at the bottom, and one for any moved to the top
+    if (frost) frost.bands.forEach((fb, i) => {
+      const mp = path.join(overlayFonts.dir, `frost${i}.ass`)
+      fs.writeFileSync(mp, fb.script)
+      const band = `crop=${cv.w}:${fb.h}:0:${fb.y}`
+      target.push(`split[cfm${i}][cfc${i}];[cfc${i}]${band},gblur=sigma=${(cv.h * 0.009).toFixed(2)}[cfb${i}];` +
+        `color=c=black:s=${cv.w}x${fb.h}:r=${zoomFps(meta)}:d=${(outSpan + 1).toFixed(3)},` +
+        `ass='${filterPath(mp)}',format=gray[cfk${i}];` +
+        `[cfb${i}][cfk${i}]alphamerge[cfa${i}];[cfm${i}][cfa${i}]overlay=0:${fb.y}:eof_action=pass:format=auto`)
+    })
+    const frameAss = Overlays.frameScript({ W: cv.w, H: cv.h, phrases, capStyle: opts.captionStyle || {},
+      texts, span: outSpan, measure: overlayFonts.measure, box: capBox, frosted: !!frost })
+    if (frameAss) {
+      const ap = path.join(overlayFonts.dir, 'frame.ass')
+      fs.writeFileSync(ap, frameAss)
+      target.push(`ass='${filterPath(ap)}':fontsdir='${filterPath(overlayFonts.dir)}'`)
     }
 
     const fadeIn = +opts.fadeIn > 0 ? +opts.fadeIn : 0
     const fadeOut = +opts.fadeOut > 0 ? +opts.fadeOut : 0
     const span = outDur || dur || 0
-    if (fadeIn) vf.push(`fade=t=in:st=0:d=${fadeIn}`)
-    if (fadeOut && span) vf.push(`fade=t=out:st=${Math.max(0, span - fadeOut).toFixed(2)}:d=${fadeOut}`)
+    // Framed, the fade takes the whole finished frame, backdrop, captions and title
+    // card included, as it does unframed; on the video alone the backdrop stayed lit.
+    if (fadeIn) target.push(`fade=t=in:st=0:d=${fadeIn}`)
+    if (fadeOut && span) target.push(`fade=t=out:st=${Math.max(0, span - fadeOut).toFixed(2)}:d=${fadeOut}`)
 
     // An added audio track: people often record voice separately. It can sit
     // under the recording's own audio, or replace it entirely.
@@ -2059,9 +2483,10 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     } else if (opts.backdrop && fmt.video && !fmt.gif) {
       // framed look: everything above feeds [vin], then the backdrop composites it
       const geo = backdropChain('vin', frame ? frame.w : srcW, frame ? frame.h : srcH, {
-        backdrop: opts.backdrop, inset: opts.inset, radius: opts.radius, scale: opts.scale, fps: zoomFps(meta),
+        backdrop: opts.backdrop, inset: opts.inset, radius: opts.radius, scale: opts.scale, fps: zoomFps(meta), band,
         outWidth: opts.scale === 720 ? 1280 : 1920,
         outAspect: opts.backdropAspect || null,   // null keeps the source shape
+        reveal, close,
       })
       const srcLabel = cutGraph ? '[cutv]' : VSRC
       const pre = (cutGraph ? cutGraph + ';' : '') +
@@ -2104,6 +2529,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
              format: fmt.ext, mb: +(fs.statSync(dest).size / 1e6).toFixed(1) }
   } finally {
     tmpFiles.forEach(f => { try { fs.unlinkSync(f) } catch {} })
+    if (overlayDir) fs.rmSync(overlayDir, { recursive: true, force: true })
     done()
   }
 }
@@ -2112,6 +2538,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
 // One file per recording holding everything about its edit. See ui/fetchdoc.js
 // for why it exists and what the ids mean.
 const fetchdoc = require('./ui/fetchdoc')
+const pointerLib = require('./ui/pointer')
 
 function readDoc(src, dur) {
   let raw = null
@@ -2120,6 +2547,8 @@ function readDoc(src, dur) {
 }
 
 function writeDoc(src, doc) {
+  // sidecarOut makes its folder, so a late write for a trashed take would resurrect it
+  if (!src || !fs.existsSync(src)) throw new Error('no such recording: ' + src)
   const out = fetchdoc.normalize(doc, src, doc && doc.dur)
   fs.writeFileSync(sidecarOut(src, '.fetchdoc.json'), JSON.stringify(out, null, 2))
   return out
@@ -2146,7 +2575,7 @@ module.exports = {
   probeMeta, readCues, writeCues, cancel, formatList, FFMPEG, flattenAudio,
   sidecarOut, sidecarIn, migrateSidecars,
   setTakesRoot, takeDir, deliverablePath, exportDest, renameTake,
-  speechRegions, buildBeats, buildCues, beatsFromCursor, readCursor,
+  speechRegions, buildBeats, buildCues, beatsFromCursor, readCursor, readPointer, pointerTrack, macCursorSpans, cursorPlates, cursorEraseFilters,
   zoomMoments, zoomExpr, autoZoomFilter, explicitZoomFilter, outClock, backdropGeometry,
   readDoc, writeDoc, beatsFor,
   fontList: () => Object.keys(FONT_FILES),

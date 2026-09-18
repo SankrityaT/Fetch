@@ -113,6 +113,11 @@ ipcMain.handle('pick-save-dir', async () => {
 })
 ipcMain.handle('reveal-save-dir', () => shell.openPath(resolvedSaveDir()))
 
+// A launch driven by a script (a debugging port, or FETCH_BEHIND=1) opens the window
+// behind whatever the person is using. A shown window activates the app, and the
+// person's typing then lands in Fetch's composer instead of the app they are in.
+const launchedBehind = app.commandLine.hasSwitch('remote-debugging-port') || process.env.FETCH_BEHIND === '1'
+
 function createWindows() {
   control = new BrowserWindow({
     width: 1240, height: 800,
@@ -122,8 +127,10 @@ function createWindows() {
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 18, y: 18 },
     backgroundColor: '#0B0A09',
+    show: !launchedBehind,
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   })
+  if (launchedBehind) control.showInactive()
   control.loadFile('control.html')
   if (process.env.FETCH_FRONT === '1') { control.setAlwaysOnTop(true, 'screen-saver'); control.focus() }
   // dev: capture our own window so UI iteration doesn't depend on window focus
@@ -225,6 +232,8 @@ app.whenReady().then(() => {
     proc: require('./processor'),
     isRecording: () => recState === 'recording' || recState === 'paused',
     listWindows: listWindowsJson,
+    // how much of a window others in front of it hide (WindowList --covered), or null
+    windowCovered: id => runHelper(['--covered', String(id)]).then(o => { try { return JSON.parse(o || 'null') } catch { return null } }),
     getPrefs: loadPrefs,
     // Exports an agent asks for go through the same queue as the ones a person
     // starts, one heavy job at a time, so ten requests in a second cannot become ten
@@ -240,7 +249,8 @@ app.whenReady().then(() => {
         throw new Error('unknown op ' + op)
       },
     }),
-    setQuiet: on => { quietTake = !!on },
+    setQuiet: (on, agent) => { quietTake = !!on; agentTake = !!agent },
+    pointer: agentPointer,
     setPrefs: patch => {
       writePrefs(patch)
       if (control && !control.isDestroyed()) control.webContents.send('prefs-changed', patch)
@@ -341,6 +351,7 @@ app.on('will-quit', () => globalShortcut.unregisterAll())
 app.on('before-quit', () => {
   showBorder(false)
   showHud(false)
+  hideAgentCursor()
   stopBubble()
 })
 
@@ -391,19 +402,22 @@ function showBorder(on) {
   border = new BrowserWindow({
     x: start.x, y: start.y, width: start.width, height: start.height,
     frame: false, transparent: true, hasShadow: false, resizable: false, movable: false,
-    focusable: false, skipTaskbar: true, enableLargerThanScreen: true, show: !chosenWindow,
+    focusable: false, skipTaskbar: true, enableLargerThanScreen: true, show: false,
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   })
+  // shown inactive, always: show() activates Fetch and takes the keyboard from the app being recorded
+  if (!chosenWindow) border.showInactive()
   border.setIgnoreMouseEvents(true, { forward: true })
   border.setAlwaysOnTop(true, 'screen-saver')
-  border.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // an agent's take must never move the person's Space (see the agent cursor below)
+  border.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: agentTake })
   border.setContentProtection(true)          // excluded from the recording
   border.loadFile('border.html')
   if (process.env.FETCH_DEBUG_HALO) console.log('halo target', JSON.stringify({ window: chosenWindow, source: chosenSourceId, start }))
 
   if (chosenWindow) {
     const bin = winListBin()
-    if (!fs.existsSync(bin)) { border.show(); return }
+    if (!fs.existsSync(bin)) { border.showInactive(); return }
     borderFollow = require('child_process').spawn(bin, ['--follow', String(chosenWindow.id)])
     let buf = ''
     borderFollow.stdout.on('data', d => {
@@ -417,8 +431,80 @@ function showBorder(on) {
       if (process.env.FETCH_DEBUG_HALO) console.log('halo', JSON.stringify(border.getBounds()), 'window', JSON.stringify(b))
       if (!border.isVisible()) border.showInactive()
     })
-    borderFollow.on('error', () => { if (border && !border.isDestroyed()) border.show() })
+    borderFollow.on('error', () => { if (border && !border.isDestroyed()) border.showInactive() })
   }
+}
+
+// ---------- the agent's cursor, live ----------
+// While an agent records, the person at the desk sees where it is pointing: Fetch's
+// own cursor (agent-cursor.html, the one the export draws) over the recorded window.
+// It is a picture and nothing more. Click-through, never focusable, content protected
+// so no capture sees it, and it never moves or clicks the Mac's pointer. It appears on
+// the take's first pointer call and goes when the take stops.
+let agentCursor = null, agentCursorLast = null, agentCursorQueue = null
+// The recorded frame in screen points now: the window's latest bounds from the same
+// WindowList --follow stream the halo uses (null while it is off screen), or the display
+function agentCursorFrame() {
+  const s = cursorSamples
+  if (!s || !s.native) return null
+  if (s.kind !== 'window') return s.display ? { ...s.display } : null
+  const b = s.bounds[s.bounds.length - 1]
+  if (!b || b[5] === 0) return null
+  return { x: b[1], y: b[2], width: b[3], height: b[4] }
+}
+function agentCursorSend(msg) {
+  if (!agentCursor || agentCursor.isDestroyed()) return
+  if (agentCursor.webContents.isLoading()) { agentCursorQueue = msg; return }
+  agentCursor.webContents.send('agent-cursor', msg)
+}
+// glide: a pointer call animates there; a moved window just carries the cursor along
+function agentCursorTo(f, click, glide) {
+  const B = agentCursorFrame()
+  if (!B) { if (agentCursor && !agentCursor.isDestroyed()) agentCursor.hide(); return }
+  const d = screen.getDisplayMatching({ x: Math.round(B.x), y: Math.round(B.y),
+    width: Math.max(1, Math.round(B.width)), height: Math.max(1, Math.round(B.height)) }).bounds
+  if (!agentCursor || agentCursor.isDestroyed()) {
+    agentCursor = new BrowserWindow({
+      x: d.x, y: d.y, width: d.width, height: d.height,
+      frame: false, transparent: true, hasShadow: false, resizable: false, movable: false,
+      focusable: false, skipTaskbar: true, enableLargerThanScreen: true, show: false,
+      webPreferences: { nodeIntegration: true, contextIsolation: false },
+    })
+    agentCursor.setIgnoreMouseEvents(true)
+    agentCursor.setAlwaysOnTop(true, 'screen-saver')
+    // skipTransformProcessType: without it Electron flips Fetch to a UI element and back to
+    // a foreground app, and macOS answers by sliding the person to Fetch's Space mid-take
+    agentCursor.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })
+    agentCursor.setContentProtection(true)     // never in a recording, this one or any other
+    agentCursor.webContents.once('did-finish-load', () => {
+      if (agentCursorQueue) { agentCursor.webContents.send('agent-cursor', agentCursorQueue); agentCursorQueue = null }
+    })
+    agentCursor.loadFile('agent-cursor.html')
+  } else {
+    const now = agentCursor.getBounds()
+    // the window moved to another display: the overlay follows, the cursor jumps
+    if (now.x !== d.x || now.y !== d.y || now.width !== d.width || now.height !== d.height) {
+      agentCursor.setBounds(d); glide = false
+    }
+  }
+  if (!agentCursor.isVisible()) agentCursor.showInactive()
+  agentCursorLast = { f, B }
+  const msg = { x: B.x + f.x * B.width - d.x, y: B.y + f.y * B.height - d.y, click: !!click, glide: !!glide }
+  agentCursorSend(msg)
+  if (process.env.FETCH_DEBUG_CURSOR) console.log('agent cursor', JSON.stringify({ ...msg, at: Date.now(), overlay: agentCursor.getBounds() }))
+}
+// Each bounds report from the follow stream: keep the cursor on the same spot of the window
+function agentCursorReflow() {
+  if (!agentCursorLast || !agentCursor || agentCursor.isDestroyed()) return
+  const B = agentCursorFrame(), L = agentCursorLast.B
+  if (B && L && B.x === L.x && B.y === L.y && B.width === L.width && B.height === L.height && agentCursor.isVisible()) return
+  agentCursorTo(agentCursorLast.f, false, false)
+}
+function hideAgentCursor() {
+  if (process.env.FETCH_DEBUG_CURSOR && agentCursor) console.log('agent cursor gone', Date.now())
+  agentCursorLast = null; agentCursorQueue = null
+  if (agentCursor && !agentCursor.isDestroyed()) agentCursor.destroy()
+  agentCursor = null
 }
 
 // ---------- recording toolbar ----------
@@ -434,11 +520,13 @@ function showHud(on) {
     width: w, height: h,
     x: Math.round(wa.x + wa.width / 2 - w / 2), y: wa.y + wa.height - h - 26,
     frame: false, transparent: true, hasShadow: false, resizable: false,
-    skipTaskbar: true, alwaysOnTop: true, movable: true,
+    skipTaskbar: true, alwaysOnTop: true, movable: true, show: false, acceptFirstMouse: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false },
   })
+  // an agent's take leaves the keyboard with the person; first-mouse keeps Stop one click
+  if (agentTake) hud.showInactive(); else hud.show()
   hud.setAlwaysOnTop(true, 'screen-saver')
-  hud.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  hud.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: agentTake })
   hud.setContentProtection(true)         // stays out of the capture
   hud.loadFile('hud.html')
 }
@@ -494,6 +582,9 @@ function toRenderer(action) { if (control && !control.isDestroyed()) control.web
 const HOTKEY_REC = 'Alt+Shift+Command+R'
 const HOTKEY_PAUSE = 'Alt+Shift+Command+P'
 let quietTake = false
+// An agent started this take: nothing it shows may activate Fetch, because the person
+// is typing in another app and their keystrokes would follow the focus into Fetch.
+let agentTake = false
 ipcMain.on('rec-state', (e, state) => {
   // Pause exists only while something records, so the rest of the time the chord
   // belongs to whatever app is in front (Shift+Command+P is VS Code's palette).
@@ -506,6 +597,9 @@ ipcMain.on('rec-state', (e, state) => {
   updater.setRecState(state)
   if (tray) { tray.setImage(trayIcon(state === 'recording')); tray.setContextMenu(trayMenu()) }
   const live = state === 'recording' || state === 'paused'
+  if (!live) hideAgentCursor()
+  const byAgent = agentTake
+  if (!live) agentTake = false
   if (quietTake) {
     if (!live) quietTake = false
     return
@@ -513,11 +607,29 @@ ipcMain.on('rec-state', (e, state) => {
   showBorder(live)
   showHud(live)
   if (live && control && !control.isDestroyed()) control.hide()   // get the app out of the shot
-  if (!live && control && !control.isDestroyed()) control.show()
+  if (!live && control && !control.isDestroyed()) byAgent ? control.showInactive() : control.show()
 })
 
 ipcMain.on('reveal', (e, p) => shell.showItemInFolder(p))
 ipcMain.on('open-folder', () => shell.openPath(resolvedSaveDir()))
+// The Finder's own Trash, so a take comes back with Put Back and a folder on another
+// volume goes to that volume's Trash instead of failing to move. Answers how many went.
+ipcMain.handle('trash-items', async (e, paths) => {
+  const t0 = Date.now()
+  const gone = []
+  for (const p of paths || []) {
+    if (!p || !fs.existsSync(p)) continue
+    try { await shell.trashItem(p); gone.push(p) } catch (err) { console.error('could not trash', p, err.message) }
+  }
+  // Logged like any other change, with no `by` since a person did it here. A take
+  // that vanished with nothing in the log could not be told apart from something
+  // outside Fetch removing it.
+  if (gone.length) {
+    activity.record({ op: 'recordings.trash', title: 'Moved a recording to the Trash',
+      detail: gone.length === 1 ? gone[0] : `${gone[0]} and ${gone.length - 1} more`, ms: Date.now() - t0, ok: true, error: null })
+  }
+  return gone.length
+})
 
 
 
@@ -616,7 +728,7 @@ ipcMain.on('cam-record', (e, on, screenStartedAt) => {
 // spans or everything after the first pause would drift.
 function camPause(paused) {
   if (!camTake) return
-  if (paused) camTake.pausedAt = Date.now()
+  if (paused) camTake.pausedAt = camTake.pausedAt || Date.now()   // a lost window can already hold it
   else if (camTake.pausedAt) { camTake.gaps.push([camTake.pausedAt, Date.now()]); camTake.pausedAt = 0 }
 }
 
@@ -694,6 +806,7 @@ function startNativeCursor(take, opts) {
         }
         s.bounds.push([Date.now(), b.x, b.y, b.width, b.height, b.onScreen ? 1 : 0])
       }
+      if (take.agent) agentCursorReflow()
     })
     cursorFollow.on('error', () => {})
   }
@@ -707,7 +820,7 @@ function stopCursorSampler() {
 function cursorPause(paused) {
   const s = cursorSamples
   if (!s || !s.native) return
-  if (paused) s.pausedAt = Date.now()
+  if (paused) s.pausedAt = s.pausedAt || Date.now()
   else if (s.pausedAt) { s.gaps.push([s.pausedAt, Date.now()]); s.pausedAt = 0 }
 }
 
@@ -740,6 +853,7 @@ function nativeCursorData(s) {
   const tail = take.stopAt ? clock(take.stopAt, true) : null
   return {
     t0, kind: s.kind, display: s.display, scale: s.scale,
+    ...(take.cursorHidden ? { inPicture: false } : {}),
     ...(s.kind === 'window' ? { windowId: s.windowId, windowBounds } : {}),
     // The last clicks before stop are the stop itself (the tray icon, then its menu),
     // and a zoom that late would be cut off by the end anyway.
@@ -747,6 +861,48 @@ function nativeCursorData(s) {
   }
 }
 
+
+// ---------- the agent's own cursor ----------
+// An agent take is recorded without the Mac's pointer and the agent reports its own
+// through the pointer tool. Reports are kept on wall-clock time and put onto the video
+// clock when the take is written, like the recorded cursor, so one made before the
+// first frame lands on it and pauses are taken out.
+const pointerLib = require('./ui/pointer')
+
+function agentPointer(args = {}) {
+  const take = nativeRec
+  if (!take || !take.agent) throw new Error('no agent take is recording; the pointer only applies to a take started with record_start')
+  const s = cursorSamples && cursorSamples.native && cursorSamples.take === take ? cursorSamples : null
+  if (recState === 'paused' || (s && s.pausedAt)) throw new Error('the recording is paused, so this pointer was not recorded')
+  // screen points map against where the recorded window or display is right now
+  let bounds = null
+  if (s && s.kind === 'window') {
+    const b = s.bounds[s.bounds.length - 1]
+    if (b) bounds = { x: b[1], y: b[2], width: b[3], height: b[4] }
+  } else if (s) bounds = s.display
+  const f = pointerLib.toFraction(args, bounds, take.kind)
+  const at = Date.now()
+  take.pointer.push([at, f.x, f.y, args.click ? 1 : 0])
+  // and shown live, to the person watching; a picture only, it never moves their mouse.
+  // Not once the take is stopping or has ended, or a late call would bring it back.
+  if (!take.stopAt && !take.endedAlone) try { agentCursorTo(f, !!args.click, true) } catch (err) { console.error('agent cursor:', err.message) }
+  const t0 = take.firstFrameAt || (take.started && take.started.startedAt) || at
+  return { x: f.x, y: f.y, click: !!args.click, at: +(Math.max(0, at - t0) / 1000).toFixed(2), points: take.pointer.length }
+}
+
+// What .pointer.json holds: t in seconds on the video clock, x, y fractions of the
+// recorded frame
+function pointerData(take, s) {
+  if (!take.pointer || !take.pointer.length) return null
+  const t0 = take.firstFrameAt || (take.started && take.started.startedAt) || take.pointer[0][0]
+  const clock = pointerLib.videoClock(t0, (s && s.gaps) || [], (s && s.pausedAt) || 0)
+  const points = take.pointer.map(([at, x, y, click]) => {
+    const ms = clock(at, true)
+    return { t: ms / 1000, x, y, ...(click ? { click: true } : {}) }
+  })
+  return { v: 1, kind: take.kind || (s && s.kind) || 'display', scale: (s && s.scale) || null,
+    points: pointerLib.normalizeTrack(points) }
+}
 
 // Park the camera take beside the finished recording, with a sidecar describing how the
 // two line up in time.
@@ -885,6 +1041,8 @@ ipcMain.handle('native-available', () => ({
 ipcMain.handle('native-start', async (e, opts = {}) => {
   const bin = recorderPath()
   if (!bin) return { ok: false, error: 'the recorder helper is not in this build' }
+  // one that ended on its own before the renderer knew it had started is not in the way
+  if (nativeRec && nativeRec.endedAlone && nativeRec.proc.exitCode !== null) nativeRec = null
   if (nativeRec) return { ok: false, error: 'already recording' }
 
   const out = path.join(os.tmpdir(), `fetch-take-${Date.now()}.mov`)
@@ -913,11 +1071,19 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
   if (opts.systemAudio) args.push('--system-audio')
   if (opts.mic) { args.push('--mic'); if (opts.micDeviceId) args.push('--mic-device', opts.micDeviceId) }
   if (opts.hevc) args.push('--hevc')
-  if (opts.hideCursor) args.push('--no-cursor')
+  // An agent's take never shows the Mac's own pointer: that belongs to the person at
+  // the desk, and the agent draws its own (the pointer tool, ui/pointer.js)
+  const agentTake = !!(agentBridge.startingAgentTake && agentBridge.startingAgentTake())
+  if (opts.hideCursor || agentTake) args.push('--no-cursor')
+  if (process.env.FETCH_DEBUG_CURSOR) console.log('recorder args', JSON.stringify({ agentTake, args }))
 
   const child = require('child_process').spawn(bin, args)
-  const take = { proc: child, out, started: null, resolveStop: null, error: null, firstFrameAt: null, clicks: [] }
+  const take = { proc: child, out, started: null, resolveStop: null, error: null, firstFrameAt: null, clicks: [],
+    kind: opts.windowId ? 'window' : 'display' }
   nativeRec = take
+  if (agentTake) { take.agent = true; take.pointer = [] }
+  // so the export knows there is no pointer in these pixels to lift out
+  if (opts.hideCursor) take.cursorHidden = true
 
   let buf = ''
   child.stdout.on('data', d => {
@@ -941,12 +1107,29 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
         if (!onHud) take.clicks.push([ev.t, ev.x, ev.y])
       }
       if (ev.event === 'error') { take.error = ev.message; console.log('recorder:', ev.message) }
-      if (ev.event === 'stopped' && take.resolveStop) take.resolveStop(ev)
+      // The recorder holds a lost window as a pause while it looks for it again, so
+      // the camera and the cursor track have to lose the same span or they drift.
+      if (ev.event === 'interrupted' && recState === 'recording') { take.held = true; camPause(true); cursorPause(true) }
+      // a person who paused while it was lost keeps the gap open until they resume
+      if (ev.event === 'recovered' && take.held) { take.held = false; if (recState === 'recording') { camPause(false); cursorPause(false) } }
+      if (ev.event === 'stopped') { take.stoppedEv = ev; if (take.resolveStop) take.resolveStop(ev) }
     }
   })
   child.stderr.on('data', d => { if (!app.isPackaged) console.log('recorder stderr:', String(d).trim()) })
   child.on('close', () => {
+    // the capture is over however it ended, so the agent's cursor has nothing to point at
+    if (nativeRec === take) hideAgentCursor()
     if (take.resolveStop) take.resolveStop(null)   // died without reporting
+    else if (nativeRec === take && take.started && control && !control.isDestroyed()) {
+      // Nobody asked it to stop: the window closed or the display went away. The
+      // recorder still finished the file, so the take stays current and the renderer
+      // ends it through the usual stop and commit, which names it, writes its
+      // sidecars and answers an agent waiting on record_stop.
+      take.endedAlone = true
+      if (agentBridge.takeEndedAlone) agentBridge.takeEndedAlone()
+      control.webContents.send('native-ended', { kind: take.kind, reason: take.error || '' })
+      return
+    }
     if (nativeRec === take) nativeRec = null
   })
 
@@ -972,18 +1155,22 @@ ipcMain.on('native-resume', () => { try { nativeRec && nativeRec.proc.stdin.writ
 ipcMain.handle('native-stop', async () => {
   const take = nativeRec
   if (!take) return { ok: false, error: 'not recording' }
-  const done = new Promise(res => { take.resolveStop = res })
-  take.stopAt = Date.now()
-  try { take.proc.stdin.write('stop\n') } catch {}
-  const ev = await Promise.race([done, new Promise(r => setTimeout(() => r(null), 20000))])
+  hideAgentCursor()          // gone the moment the take stops, not when the file lands
+  let ev = take.stoppedEv || null
+  if (!take.endedAlone) {
+    const done = new Promise(res => { take.resolveStop = res })
+    take.stopAt = Date.now()
+    try { take.proc.stdin.write('stop\n') } catch {}
+    ev = await Promise.race([done, new Promise(r => setTimeout(() => r(null), 20000))])
+  }
   nativeRec = null
   if (cursorSamples && cursorSamples.native) stopCursorSampler()
-  if (!ev || !fs.existsSync(take.out)) {
+  if (!ev || !fs.existsSync(take.out) || !fs.statSync(take.out).size) {
     // nothing will be committed, so nothing should outlive it into the next take
     if (cursorSamples && cursorSamples.native) cursorSamples = null
-    return { ok: false, error: take.error || 'the take was not written' }
+    return { ok: false, error: take.error || 'the take was not written', endedAlone: !!take.endedAlone, kind: take.kind }
   }
-  return { ok: true, tmp: take.out, frames: ev.frames, dropped: ev.dropped }
+  return { ok: true, tmp: take.out, frames: ev.frames, dropped: ev.dropped, stillMs: ev.stillMs || 0, endedAlone: !!take.endedAlone, kind: take.kind }
 })
 
 // Move a finished native take into the save folder, reusing the same naming and
@@ -1003,8 +1190,17 @@ ipcMain.handle('native-commit', async (e, tmp) => {
     return { ok: false, error: err.message }
   }
   stopCursorSampler()
+  const agentTake = cursorSamples && cursorSamples.native && cursorSamples.take && cursorSamples.take.agent
+    ? cursorSamples.take : null
+  const ptr = agentTake && pointerData(agentTake, cursorSamples)
+  if (ptr) {
+    try { fs.writeFileSync(proc.sidecarOut(file, '.pointer.json'), JSON.stringify(ptr)) }
+    catch (err) { console.error('pointer track not saved:', err.message) }
+  }
   const cursor = cursorSamples && cursorSamples.native ? nativeCursorData(cursorSamples) : cursorSamples
-  if (cursor && (cursor.points.length || (cursor.clicks || []).length)) {
+  // In an agent's take the Mac's pointer was the person's, doing something else, and
+  // auto-zoom must not follow their clicks into it
+  if (cursor && !agentTake && (cursor.points.length || (cursor.clicks || []).length)) {
     try { fs.writeFileSync(proc.sidecarOut(file, '.cursor.json'), JSON.stringify(cursor)) }
     catch (err) { console.error('cursor track not saved:', err.message) }
   }

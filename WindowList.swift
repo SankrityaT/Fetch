@@ -154,6 +154,47 @@ if args.count >= 3, args[1] == "--follow", let id = UInt32(args[2]) {
     }
 }
 
+// `--covered <id>`: how much of the window others in front of it hide, as JSON
+// {"covered":0.4,"by":["Safari"],"x":..,"y":..,"width":..,"height":..}, or null when it
+// is not on screen. macOS sends no frames for a covered window, so an agent's take of
+// one freezes; this lets record_start say so before anything is recorded. CoreGraphics
+// lists on-screen windows front to back and needs no Screen Recording permission.
+if args.count >= 3, args[1] == "--covered", let id = UInt32(args[2]) {
+    let all = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+    func frame(_ w: [String: Any]) -> CGRect? {
+        guard let b = w[kCGWindowBounds as String] as? [String: CGFloat] else { return nil }
+        return CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0)
+    }
+    guard let at = all.firstIndex(where: { ($0[kCGWindowNumber as String] as? Int) == Int(id) }),
+          let target = frame(all[at]), target.width > 0, target.height > 0 else { print("null"); exit(0) }
+    // ordinary windows in front of it; Fetch's own (the halo, the agent's cursor) and
+    // system chrome are never in the recording
+    let above: [(CGRect, String)] = all[..<at].compactMap { w in
+        let owner = w[kCGWindowOwnerName as String] as? String ?? ""
+        guard (w[kCGWindowLayer as String] as? Int ?? 0) == 0,
+              (w[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
+              !SKIP.contains(owner), let r = frame(w), r.intersects(target) else { return nil }
+        return (r, owner)
+    }
+    // sampled on a grid, so overlapping windows in front are not counted twice
+    let n = 48
+    var hidden = 0
+    var by = [String]()
+    for i in 0..<n { for j in 0..<n {
+        let p = CGPoint(x: target.minX + (CGFloat(i) + 0.5) * target.width / CGFloat(n),
+                        y: target.minY + (CGFloat(j) + 0.5) * target.height / CGFloat(n))
+        if let hit = above.first(where: { $0.0.contains(p) }) {
+            hidden += 1
+            if !by.contains(hit.1) { by.append(hit.1) }
+        }
+    } }
+    let out: [String: Any] = ["covered": Double(hidden) / Double(n * n), "by": by,
+        "x": Int(target.minX), "y": Int(target.minY), "width": Int(target.width), "height": Int(target.height)]
+    let data = try! JSONSerialization.data(withJSONObject: out)
+    print(String(data: data, encoding: .utf8)!)
+    exit(0)
+}
+
 let sem = DispatchSemaphore(value: 0)
 
 if #available(macOS 14.0, *) {
