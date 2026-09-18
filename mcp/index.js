@@ -11,6 +11,7 @@
 import { McpServer } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import * as z from 'zod/v4'
+import { readFileSync } from 'node:fs'
 import { call, setClient } from './bridge.js'
 
 const text = obj => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] })
@@ -183,6 +184,28 @@ function build() {
       }),
     },
     async args => text(await drive('recordings.rename', args)))
+
+  server.registerTool(
+    'get_frame',
+    {
+      description:
+        'Show one frame of a recording, as an image and a saved JPEG path, to look at what is on ' +
+        'screen at a moment before placing a zoom, redaction, spotlight or step. Positions ' +
+        'in apply_edit are fractions of the frame from the top left, 0 to 1, so a point a ' +
+        'quarter across and halfway down is x 0.25, y 0.5.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        at: z.number().min(0).describe('Seconds into the recording.'),
+      }),
+    },
+    async args => {
+      // The image itself, not only its path: an agent inside Fetch's chat has no file
+      // tool to open a path with, and seeing the frame is the whole point of the call.
+      const r = await drive('frame', args, { timeoutMs: 60000 })
+      const out = text(r)
+      try { out.content.push({ type: 'image', mimeType: 'image/jpeg', data: readFileSync(r.image).toString('base64') }) } catch {}
+      return out
+    })
 
   server.registerTool(
     'remove_dead_air',

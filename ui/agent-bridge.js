@@ -63,6 +63,7 @@ const TITLES = {
   'edit.export': 'Exported a video',
   'recordings.rename': 'Renamed a recording',
   'edit.silence': 'Removed dead air',
+  frame: 'Looked at a frame',
   'edit.enhance': 'Cleaned up the audio',
   'settings.set': 'Changed settings',
   'recordings.trash': 'Moved a recording to the Trash',
@@ -203,6 +204,13 @@ const ops = {
   // camera take, edit document) move with the file and the take stays in the Library.
   // A name is cleaned of anything that could turn it into a path.
   // ── the rest of what a person can do ─────────────────────────────────
+  async frame(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    if (!fs.existsSync(args.path)) throw new Error('no such file')
+    const r = await deps.proc.frameAt(args.path, args.at)
+    return { image: r.file, at: r.at, source_width: r.width, source_height: r.height }
+  },
+
   async 'edit.silence'(args = {}) {
     if (!args.path) throw new Error('path is required')
     const r = await deps.runOp('silence', args.path, {
@@ -454,6 +462,7 @@ function logOp(op, ctx, t0, args, result, error) {
   else if (op === 'recordings.list' && result) detail = `${result.length} recordings`
   else if (op === 'probe' && args && args.path) detail = args.path
   else if (op === 'edit.silence' && result) detail = `${result.removed_percent}% removed, ${result.path}`
+  else if (op === 'frame' && result) detail = `${result.at}s`
   else if (op === 'edit.enhance' && result) detail = result.path
   else if (op === 'recordings.trash' && result) detail = result.trashed
   else if (op === 'settings.set' && args && args.settings) detail = Object.keys(args.settings).join(', ')

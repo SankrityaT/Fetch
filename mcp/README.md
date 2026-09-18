@@ -84,6 +84,7 @@ record_start({ window: "<id>" })
 | `apply_edit` | Change any part of the edit. Only the fields sent change; lists replace as a whole. |
 | `export` | Render the edit to a file, through the same queue as the app. |
 | `rename_recording` | Rename a recording; its transcript, camera take and edit move with it. |
+| `get_frame` | One frame as an image (and a JPEG path), to see what is on screen before placing a zoom or a redaction. |
 | `remove_dead_air` | Cut silent gaps into a new file beside the original. |
 | `enhance_audio` | Denoise and level the voice into a new file beside the original. |
 | `get_settings` / `set_settings` | Save folder, camera, mic, system audio, countdown and the rest. |
@@ -93,7 +94,8 @@ record_start({ window: "<id>" })
 telemetry. The refusal is in the app (`ui/record-policy.js`), not in a description an
 agent could ignore, and a request that includes any of them is refused as a whole.
 
-Tools return paths and counts rather than payloads. `transcribe` gives you the
+Tools return paths and counts rather than payloads. `get_frame` is the one exception,
+because the image is what was asked for; it is capped at 1280 wide, about 30KB. `transcribe` gives you the
 subtitle path and word count; pass `include_text` only when the transcript itself is
 needed, since a long one is thousands of tokens of context.
 

@@ -891,6 +891,23 @@ async function thumbnail(srcArg, atSec, onProgress, jobId) {
   } finally { done() }
 }
 
+// ---- a frame for an agent to look at ------------------------------------
+// Separate from thumbnail(), which writes the library poster. A model that can read
+// images uses this to place a zoom, a redaction or a step by what is on screen, so
+// it goes to a temp dir and is capped at 1280 wide: enough to read UI text, and far
+// fewer image tokens than a Retina frame.
+async function frameAt(srcArg, atSec, maxW = 1280) {
+  const { src, meta, done } = await ensureSeekable(srcArg)
+  try {
+    const at = Math.min(Math.max(0, +atSec || 0), Math.max(0, (meta.duration || 1) - 0.05))
+    const dest = path.join(os.tmpdir(), `fetch-frame-${path.parse(srcArg).name}-${at.toFixed(2)}.jpg`)
+    await run(FFMPEG, ['-y', '-ss', String(at), '-i', src, '-frames:v', '1',
+      '-vf', `scale='min(${maxW},iw)':-2`, '-q:v', '4', dest])
+    if (!fs.existsSync(dest)) throw new Error('could not grab a frame at that time')
+    return { file: dest, at: +at.toFixed(2), width: meta.width, height: meta.height }
+  } finally { done() }
+}
+
 // ---- filmstrip for the timeline's video lane ---------------------------
 // One tiled PNG of evenly spaced frames, cached next to the clip so the timeline
 // does not re-render it on every open.
@@ -1708,6 +1725,7 @@ function beatsFor(src, dur) {
 }
 
 module.exports = {
+  frameAt,
   backdropList, filmstrip,
   toMp4, convert, removeSilence, enhanceAudio, trim, transcribe, burnCaptions, toGif,
   thumbnail, waveform, applyEdit, listRecordings, importFile, forgetFile,

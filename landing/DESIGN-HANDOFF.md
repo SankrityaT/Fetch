@@ -62,11 +62,13 @@ Group these into three or four sections. Do not render them as a grid of identic
 feature cards (see Anti-patterns).
 
 **Agents drive it, on your plan**
-- MCP server with 18 tools. `record_start`, `record_stop`, `record_status`,
+- MCP server with 19 tools. `record_start`, `record_stop`, `record_status`,
   `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
   `list_beats`, `get_edit`, `apply_edit`, `export`, `rename_recording`,
   `remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`,
-  `delete_recording`.
+  `delete_recording`, `get_frame`.
+- The agent can look at any frame, so "blur the API key" or "zoom into the save
+  button" lands on the right pixels. Verified with Claude Code.
 - Everything the editor can do, an agent can do: trim, cut, crop, aspect, text in any
   installed font, caption style, zoom into a named moment, backdrops, camera, denoise,
   loudness, fades, music, and blur, spotlight or number a region of the screen.
