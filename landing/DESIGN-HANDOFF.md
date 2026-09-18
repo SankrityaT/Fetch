@@ -1,154 +1,197 @@
-# Fetch: landing page design handoff
+# Fetch 2.0: landing page brief
 
-Everything here is lifted straight from the shipping app, so the site and the product
-cannot drift apart. `BRAND.md` in the repo root is the full design system; this is the
-subset a landing page needs.
+For whoever builds the site. Read this before designing anything. Everything claimed
+below is shipped and verified unless it sits under **Do not claim**. If a claim is not
+in this file, do not put it on the page.
 
-## What is in this folder
+`PRODUCT.md` is the product source of truth, `BRAND.md` the voice and mascot, `DESIGN.md`
+the visual system, `fetch-tokens.css` the real CSS variables. This file is the subset a
+landing page needs, plus the story.
 
-| file | use |
-|---|---|
-| `fetch-tokens.css` | The app's actual CSS custom properties. Drop it in and use the variables. |
-| `assets/fonts/` | All four faces, woff2, self-hosted. No Google Fonts request. |
-| `assets/mascot/` | 17 stills of Biscuit plus 4 alpha motion clips |
-| `assets/sprite.svg` | 78 Phosphor icons as an SVG sprite (`<use href="sprite.svg#i-record-fill">`) |
-| `assets/fetch-icon-1024.png` | App icon, for the hero, favicon and the Product Hunt thumbnail |
+---
 
-## Positioning
+## What changed: 1.x to 2.0
 
-> Record it. Fetch it. Ship it.
+**Fetch 1.x** was a free, local Mac screen recorder and editor. Good, and in a category
+that is already lost: Recordly is free, open source, cross platform, native capture,
+22k stars and shipping daily. Leading with "another Mac screen recorder" loses on day
+one. **Do not pitch Fetch as a screen recorder.**
 
-A macOS screen recorder and editor that runs entirely on your machine, and the
-recording primitive an agent can drive.
+**Fetch 2.0** is an **agent-native workspace for recording and shipping real software.**
+An agent you already pay for (Claude Code, Codex) can record your actual screen, find
+the moment you care about by what you said, zoom into it, and export the finished
+video, from a CLI with the app closed or from a chat inside the app. You can see
+everything it did, and undo it.
 
-**"Loom without the subscription" is no longer the pitch.** That framing puts Fetch in
-a fight it cannot win: Recordly is free, open source, cross platform, native
-ScreenCaptureKit, 22k stars, shipping daily. Leading with "another Mac screen
-recorder" loses on day one.
+## The one line
 
-The pitch is that Fetch records **your real screen, driven by the agent you already
-pay for**. Everything stays on the machine: no key, no token, no upload.
+> Your agent can record your real screen, and edit it by what you said.
 
-That claim is load-bearing because the competition structurally cannot make it:
+Alternatives in the same spirit, pick one and never use all three:
 
-| | what it records | where it runs |
-|---|---|---|
-| Clueso agent | a cloud browser, web apps only, needs your staging login | their cloud |
-| Moonjar | the iOS Simulator, mobile apps | local Mac, MCP |
-| HyperFrames | HTML it renders itself, never a real app | their cloud |
-| **Fetch** | **any real window: native apps, terminals, editors, browsers** | **your Mac** |
+- "Record real software. Let your agent cut it."
+- "The screen recorder your agent can drive."
+- "Say it once. Fetch finds it, zooms in, and ships the clip."
 
-So the page must show something none of them can produce. Not a web app, not a
-simulator. An agent recording a real desktop application, with captions, end to end.
-A web-app demo is indistinguishable from Clueso's and throws away the difference.
+## Why nobody else can make this claim
 
-Two supporting claims, in this order:
+This is the argument the page exists to make. Every competitor routed around the hard
+part, and the hard part is exactly what Fetch does.
 
-1. **Works with the agent you already have.** Claude Code, Codex, Cursor, Windsurf,
-   Zed. Their real marks are in `assets/agents/` in the app repo. Fetch never sees a
-   model, a key or a token.
-2. **On-device transcription.** Captions come free with the recording, and no
-   competitor in this set does it at all.
+| | records | edits by | where |
+|---|---|---|---|
+| **Clueso** | a cloud browser, web apps only, needs your staging login | clicks | their cloud |
+| **Moonjar** | the iOS Simulator | taps | your Mac |
+| **HyperFrames** | HTML it renders itself, never a real app | code | their cloud |
+| **Fetch** | **any real window: native apps, terminals, editors, browsers** | **what you said** | **your Mac** |
 
-The category is uniformly cool violet (Loom, Screen Studio) or pure black (Mosaic),
-and the agent-tools category is uniformly bright and airy. Fetch is deliberately
-**warm**: retriever gold on a warm near-black. If the page looks like it could be
-Loom's, it is wrong.
+Two structural wins, both real:
 
-## Colour
+1. **The real machine.** A cloud browser can only ever record a web app, and a
+   simulator only a phone. Fetch records Xcode, Figma, a terminal, your own Electron
+   build, anything on screen.
+2. **The transcript is the spine.** Moonjar's caption track is empty in every one of its
+   screenshots, because a simulator recording has no audio. Fetch transcribes on device,
+   so the timeline is named from your words: `B2 And pick only the family label`, not
+   `Tap`. An agent can be told "zoom into the bit where I pick the family label" and find
+   it. That cannot be copied without an audio pipeline.
 
-Never use pure `#000` or pure `#fff`. The blacks are warm and the white is off-white.
+## Shipped in 2.0
 
-| token | hex | use |
-|---|---|---|
-| `--ink-0` | `#0A0908` | page background |
-| `--ink-1` | `#1A1714` | cards, panels |
-| `--ink-2` | `#241F1B` | raised surfaces, inputs |
-| `--ink-3` | `#37302B` | hairlines and borders |
-| `--fur-1` | `#F0A93C` | **primary accent**, Biscuit's coat |
-| `--fur-0` | `#FFD9A0` | gold tint, hover wash |
-| `--fur-2` | `#C97F1E` | pressed, deep gold |
-| `--rec` | `#FF4438` | the record state and nothing else, ever |
-| `--text-0` | `#FBFAF8` | primary text |
-| `--text-1` | `#BDB5AC` | secondary text |
-| `--text-2` | `#8E857C` | tertiary, timecodes |
+Group these into three or four sections. Do not render them as a grid of identical
+feature cards (see Anti-patterns).
 
-Gold means intent: primary action, selection, focus. Red is reserved exclusively for
-recording. That discipline is what makes a record button unmissable, and it is the
-single easiest way to make the page feel like the product.
+**Agents drive it, on your plan**
+- MCP server with 12 tools. `record_start`, `record_stop`, `record_status`,
+  `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
+  `list_beats`, `get_edit`, `apply_edit`, `export`.
+- The whole pipeline runs headless from a CLI with the app closed: transcribe, find the
+  beat, zoom into it, export. Verified end to end driven as Codex.
+- Works with Claude Code, Codex, Cursor, Windsurf and Zed. A Connect screen detects
+  which you have and wires them up, with the real vendor marks.
+- No API key, no bill. It runs on the Claude or ChatGPT plan you already have.
 
-## Type
+**A chat inside the app**
+- Docked beside your work (Cmd J). The front screen is Biscuit asking "What are we
+  recording today?" with a composer, not a button.
+- Every tool call shows as its own row as it happens, with how long it took. An agent
+  recording your screen is never a spinner.
+- It remembers the conversation, so "now caption it" knows what "it" is.
+- `@` to point at a recording by name instead of describing it.
+- A microphone that dictates your message, transcribed on your Mac.
 
-- **Bricolage Grotesque 800** for display: headlines, big numbers. Tracking `-0.03em`.
-- **Geist 400 to 700** for all body and UI text.
-- **Instrument Serif italic** for exactly one accented word per screen, never more.
-  The app's hero does this: "What are we recording *today*?"
-- **Geist Mono** for timecodes, durations, file sizes, anything that must not reflow.
+**Edits you can name**
+- Beats: the timeline is labelled with what you said, and splits at your real pauses.
+- Every object has a short id: clips `C1`, zooms `Z1`, text `T1`, beats `B1`. The same id
+  appears on screen, in the agent's tool call, and in the history.
+- Zooms an agent places by name render in the export, eased in and out.
+- Captions that break at your pauses, not mid-sentence.
 
-Sizes: 11, 12, 13, 15, 18, 24, 32, 48. Nothing in between. On a marketing page you will
-want larger display sizes than the app uses; scale the display face up freely, but keep
-body text on the same ramp.
+**You can see all of it, and it stays yours**
+- **Activity**: a log of everything done on this Mac and who did it. A row with the
+  Claude or Codex mark was an agent. **A row with no mark was you.**
+- **Recording access**: apps an agent may never record, pre-filled with password
+  managers, Messages, Mail, Keychain and System Settings. Enforced in code before a take
+  starts, and on a full-screen take those windows are left out of the frame so the
+  pixels are never captured.
+- You always see a take in progress: red border, floating controls, Biscuit.
+  Shift Cmd R stops one an agent started, same as your own.
+- Recordings are files on your Desktop. Nothing uploads.
 
-## Shape, elevation and motion
+**Optional, and labelled as the exception**
+- Voiceover through your own ElevenLabs account: re-narrate a take from its transcript
+  without re-recording. The only feature that uses the internet, and the app says so
+  where you use it. The key lives in the macOS Keychain.
 
-- Radii: 10 small, 14 cards, 20 panels and modals, 999 for every pill and icon button.
-- Elevation is done with **light, not shadow**: a 1px `--ink-3` hairline plus
-  `inset 0 1px 0 rgba(255,255,255,.04)`. One real shadow only, on modals.
-- 8px spacing grid. Card padding never below 14px, never mismatched top and bottom.
-- Motion: 120ms hovers, 200ms panels, 320ms modals. Entrances
-  `cubic-bezier(.2,.8,.2,1)`, exits `cubic-bezier(.4,0,1,1)`. Respect
-  `prefers-reduced-motion`.
+## The hero
 
-## Biscuit
+One demo carries the page. It must show something no competitor can produce, which
+means **not a web app and not a simulator.** A web-app demo is indistinguishable from
+Clueso and throws away the whole argument.
 
-A golden retriever, and the emotional narrator of the product rather than a logo in a
-corner. He reacts to state:
+The sequence, as a real screen recording (no mockups):
 
-| state | asset |
-|---|---|
-| idle, ready | `idle.png`, or `motion/sleeping.webm` for a resting hero |
-| recording | `recording.png`, `running.png` |
-| thinking, processing | `thinking.png`, `motion/thinking.webm` |
-| exporting | `motion/exporting.webm` (running with the film reel) |
-| done | `done.png`, `celebrating.png`, `sit-film.png` |
-| error | `sad.png` |
+1. A terminal. Someone types into Claude Code: *"Record my Xcode window, then zoom into
+   the part where I explain the fix."*
+2. Fetch records a real native app. The red border and Biscuit are visible.
+3. The Fetch timeline fills with beats named from the narration.
+4. The agent calls `list_beats`, finds the right one, calls `apply_edit`, and `Z1`
+   appears on the timeline directly under that beat.
+5. The exported clip plays, zooming exactly there, captions underneath.
 
-He is a soft, illustrated golden retriever puppy: rounded shapes, warm gold coat, cream
-chest and muzzle, large dark eyes, long floppy ears. Shaded, but never 3D, never
-photorealistic, never in human clothes, and he does not speak in first person.
+If that is too long for a hero, cut to steps 3 to 5: beats appearing from speech, then
+`Z1` landing under the named beat, then the zoom playing. That fragment alone is the
+thing nobody else has.
 
-`idle.png` is the logo. It is the app icon, the titlebar mark and the hero, so use it
-as the site's mark and favicon too. There is exactly one Biscuit: do not draw or
-generate a second, simplified version for small sizes, crop this one to the head.
+## Do not claim
 
-The motion clips are **VP9 WebM with alpha**. They composite over any background in a
-browser. Two gotchas: ffmpeg reports them as `yuv420p` with no alpha because its VP9
-decoder ignores WebM alpha, so do not "fix" them based on what ffmpeg says. And Safari
-does not support VP9 alpha, so pair each `<video>` with a PNG poster fallback.
+These are **not** built. Putting them on the page would be false.
+
+- **Fetch does not drive apps or browsers.** It records. Playwright drives browsers,
+  a computer-use agent drives native apps, `simctl` drives the Simulator. Say
+  "composes with", never "controls your apps".
+- Arrows, numbered steps, a magnifying loupe, "lift one row", multi-device frames,
+  styled backgrounds. These are Moonjar's screenshot features. Not in Fetch.
+- Redaction or spotlight effects in the export. In progress, not shipped.
+- Understanding your codebase or reading your source. Not built.
+- Cross-platform. macOS only (13 or later for native capture).
+- "AI-generated" anything. The agent is the person's own, not Fetch's.
+
+Two things are built but not yet verified end to end. Fine to mention, not to headline:
+voiceover past the connect screen, and full-screen exclusion of protected windows at
+the pixel level.
 
 ## Voice
 
-Plain, short, a little warm. Never cutesy-baby, never corporate.
+See `BRAND.md`. Plain, short, a little warm. **No em dashes, anywhere.**
 
-- Good: "Nothing recorded yet." / "Grabbing your screen..." / "Saved to Desktop."
-- Bad: "Woof! Biscuit couldn't find any videos! :(" / "Operation completed successfully."
+- Trust is built from named exclusions, not adjectives. "Never records 1Password,
+  Messages or Mail" beats "private by design".
+- Say what it does, then what it will not do. The app's own settings copy does this and
+  it is the best writing in the product.
+- Biscuit speaks in first person only when introducing himself. Everywhere else he is
+  described or not mentioned.
 
-**No em dashes anywhere.** Use a comma, a colon, a full stop, or parentheses.
+## Visual direction
 
-## Copy that is already true
+Dark and warm: retriever gold on a warm near-black. **This is the differentiation, not a
+default.** The whole agent-tool category is light and airy (Moonjar, Claude, Replit),
+and the screen-recorder category is violet (Loom, Screen Studio). If the page could
+belong to either, it is wrong.
 
-Use these as-is. Every one describes something the app actually does.
+- Depth from tone, not borders: a raised surface is lighter, things that float cast a
+  wide soft shadow. See the Elevation section of `DESIGN.md`.
+- One faint warm light pool in the corners of the page, never behind the content.
+- Big radii, generous air.
+- Real product screenshots and recordings only. The app is the illustration.
+- Show the ids. `B2`, `Z1` in mono on a chip are the most specific, most ownable visual
+  in the product.
 
-- "Record your screen, your camera and your voice. Edit it. Ship it. No subscription."
-- "Move the camera bubble after you record." (the camera is captured to its own file,
-  not burned into the screen, so it can be repositioned and resized in the editor)
-- "Transcribed on your Mac, in seconds. The audio never leaves the machine."
-- "It zooms where you click, on its own."
-- "Your recordings never leave your machine."
+## Anti-patterns
 
-## The one screenshot rule
+- Identical feature-card grids (icon, heading, two lines, repeated).
+- Gradient text. Glassmorphism as decoration.
+- Hero metrics ("10x faster").
+- Violet, pure black, or a light cream page.
+- Stock "AI" imagery: sparkles, orbs, neural nets.
+- Any mockup of a feature under **Do not claim**.
 
-`LAUNCH-SHOTLIST.md` in the repo root lists the shots worth capturing. The single most
-persuasive frame is the editor: timeline with the video and audio lanes, transcript
-panel on the right, camera bubble on the canvas. It shows in one image that this is a
-real editor and not a toy recorder.
+## Assets
+
+| path | use |
+|---|---|
+| `fetch-tokens.css` | the app's real CSS variables |
+| `assets/fonts/` | Bricolage Grotesque, Geist, Geist Mono, Instrument Serif, self-hosted |
+| `assets/mascot/` | Biscuit, 17 stills and 4 alpha motion clips |
+| `assets/sprite.svg` | 78 Phosphor icons |
+| `assets/fetch-icon-1024.png` | app icon |
+| `../assets/agents/` | official Claude, Codex, Cursor, Windsurf, Zed marks, unmodified |
+
+Vendor marks keep their own background: Claude and Zed are bare glyphs on a Fetch tile,
+Codex, Cursor and Windsurf are the tile. Never recolour them.
+
+## Open questions for the builder
+
+- Which of the three one-liners. Pick one.
+- Whether the hero is the full sequence or the three-step fragment. Depends on what
+  plays well at the top of a page without sound.

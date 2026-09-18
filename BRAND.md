@@ -111,9 +111,9 @@ circle instead of sitting at a small fixed radius, the same geometry Biscuit is 
 from.
 A card's inner padding is never smaller than 14px, and never mismatched top/bottom.
 
-Elevation is done with *light*, not black shadow: a 1px `--ink-3` hairline plus a
-subtle inner top highlight (`inset 0 1px 0 rgba(255,255,255,.04)`). One real shadow
-only, on modals.
+Elevation changed in 2.0: depth comes from tone first, then wide soft shadows on
+things that genuinely float, then a 1px top highlight. Hairlines are the exception now,
+not the default. The full rule and the shadow scale live in `DESIGN.md`, Elevation.
 
 ## Motion
 
@@ -138,3 +138,19 @@ smaller than 14px and never recolored outside the palette.
 3. Nothing is only-color-coded; state also changes icon, weight, or label.
 4. Empty states are never a bare sentence. They get Biscuit, one line, and one action.
 5. Destructive actions are never adjacent to primary actions.
+
+## Talking about agents
+
+2.0 puts an agent in the product, so the voice needs rules for it.
+
+- **The agent is theirs, not ours.** "Runs on your Claude plan", "your Codex", never
+  "Fetch AI" or "our assistant". Fetch does not have a model.
+- **Say what it will not do, by name.** "Fetch's tools only. No shell, no files, no
+  network." A list of exclusions earns more trust than any adjective.
+- **Name the one exception where it happens.** Voiceover is the only feature that uses
+  the internet. Its panel says exactly what is sent (the script) and what is not (the
+  recording, the audio, the filenames). No other copy gets to be vague about the network.
+- **Attribution is plain.** In the activity log the agent's name, or "You". Never
+  "the AI", never "automatically".
+- **Ids are nouns.** `B2`, `Z1`, `C3` appear in copy exactly as on screen, in mono. Do not
+  explain them; they explain themselves the first time someone sees one next to its span.
