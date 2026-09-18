@@ -757,6 +757,11 @@ function tidySaveFolders() {
 
 ipcMain.handle('list-recordings', () => { tidySaveFolders(); return proc.listRecordings() })
 ipcMain.handle('probe', (e, src) => proc.probeMeta(src))
+// The edit document, and the beats a recording is scrubbed by.
+ipcMain.handle('read-doc', (e, src, dur) => proc.readDoc(src, dur))
+ipcMain.handle('write-doc', (e, src, doc) => proc.writeDoc(src, doc))
+ipcMain.handle('beats-for', (e, src, dur) => proc.beatsFor(src, dur))
+
 ipcMain.handle('read-cues', (e, src) => proc.readCues(src))
 ipcMain.handle('write-cues', (e, src, cues) => proc.writeCues(src, cues))
 ipcMain.handle('cancel-job', (e, id) => {

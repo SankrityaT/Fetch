@@ -294,3 +294,45 @@ video.motion, img.motion { display:block; }
 .cam-corners button[data-c="tr"] i { justify-self:end;   align-self:start }
 .cam-corners button[data-c="bl"] i { justify-self:start; align-self:end }
 .cam-corners button[data-c="br"] i { justify-self:end;   align-self:end }
+
+/* ── beats ────────────────────────────────────────────────────────────────
+   Named spans taken from what was said in the recording. They tile the full
+   duration and sit directly above the lanes, sharing their pixel mapping, so a
+   label always covers the frames it describes.
+
+   Deliberately quieter than the lanes below: this is a legend for the take, not
+   another thing to fight the filmstrip for attention. Gold is reserved for the
+   span the playhead is currently inside. */
+
+.tl-beats {
+  position:relative; height:30px; margin-bottom:var(--s-2);
+  border-radius:var(--r-sm); overflow:hidden; background:var(--ink-1); border:var(--edge);
+}
+
+.tl-beat {
+  position:absolute; top:0; bottom:0;
+  display:flex; align-items:center; gap:6px;
+  padding:0 8px; min-width:0; overflow:hidden;
+  background:var(--ink-2); border:none; border-right:1px solid var(--ink-0);
+  color:var(--text-2); text-align:left; cursor:pointer;
+  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in);
+}
+.tl-beat:last-child { border-right:none; }
+.tl-beat:hover { background:var(--ink-3); color:var(--text-0); }
+
+/* the id is the handle an agent uses, so it is always visible, never on hover only */
+.tl-beat-id {
+  flex:none; font-size:9px; font-weight:600; letter-spacing:.02em;
+  color:var(--text-2); opacity:.75;
+}
+.tl-beat-label {
+  min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font:500 var(--t-11)/1 var(--font-ui);
+}
+
+.tl-beat[data-active="true"] {
+  background:rgba(240,169,60,.16); color:var(--fur-0);
+  box-shadow:inset 0 0 0 1px rgba(240,169,60,.35);
+}
+.tl-beat[data-active="true"] .tl-beat-id { color:var(--fur-1); opacity:1; }
+
