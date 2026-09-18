@@ -49,7 +49,8 @@ cheaper than the effect.
 
 - **10** thumbnail insets, tooltips, compact rows
 - **14** cards, tiles, popovers
-- **20** primary panels and modals
+- **20** primary panels
+- **26** cards and modals, since 2.0 (`--r-xl`)
 - **999** pills: buttons, chips, badges, segmented controls
 - **full circle** icon-only controls and small avatars, the geometry Biscuit is built from
 
@@ -57,9 +58,30 @@ A card's inner padding is never below 14px and never mismatched top to bottom.
 
 ## Elevation
 
-**Light, not shadow.** A 1px `--ink-3` hairline plus `--sheen`, an inset top highlight at
-4% white. Exactly one real shadow exists, on modals (`--shadow-modal`). Anything else
-casting a shadow is wrong.
+Rewritten for 2.0. The old rule was "light, not shadow", with a 1px hairline on almost
+every surface and one shadow in the whole app. It made every panel a box drawn on a flat
+plane. Depth now comes from three things, in this order:
+
+1. **Tone.** A raised surface is lighter than the one below it. Does the most work, costs
+   nothing.
+2. **Shadow**, only for things that genuinely float, and wide rather than tight: on a
+   near-black ground a small shadow is invisible.
+   - `--shadow-1` resting card
+   - `--shadow-2` docked panel or raised well
+   - `--shadow-3` floating over content: popovers, menus, mention lists
+   - `--shadow-modal` modals
+3. **Light.** `--sheen`, a 1px inset highlight along the top edge.
+
+`--edge-soft` (4.5% white) replaces `--edge` wherever tone already separates. A full
+`--edge` hairline is for where two surfaces of the same tone genuinely meet.
+
+**Ground.** One very faint warm pool in opposite corners (`body` in `tokens.css`). Never
+centred: centred, it sits behind the content column and washes out the contrast the
+shadows exist to create.
+
+**Blur** (`--blur-over`) only on layers that sit over content and must stay legible
+while it shows through. Today that is exactly two: the chat pane and the titlebar.
+Anything else wanting blur is decoration and is refused.
 
 ## Motion
 
@@ -86,14 +108,19 @@ active or recording states, regular otherwise.
 
 ## Agent-facing surfaces
 
+Every object an agent can name is drawn with its id visible, not on hover: beats as
+`B2` on the strip, zooms as `Z1 2.0x` on their track. The id is the handle, and a handle
+you cannot see is not one.
+
 Anything an agent can change has extra obligations, because the person did not do it:
 
 - **Stable short ids.** Every referenceable object gets one (`C1`, `Z2`, `W3`). Ids are
   the nouns natural language needs, they render in `--font-mono`, and the same id
   appears in the UI, the history and the agent's tool call.
-- **Agent-controlled surfaces are read-only.** If an agent owns a surface, the human does
-  not drag it. Show a lock, say "Agent-controlled", and give a worked example of what to
-  say instead. Divergent state makes history a lie.
+- **Both can edit; the log says who.** An earlier draft made agent-driven surfaces
+  read-only, copying a competitor. That was wrong for Fetch: a competitor locks its timeline
+  because it has no editor, and Fetch's editor is an advantage. Divergence is handled by
+  one edit document both write to, and by the activity log attributing every change.
 - **Attribute every change.** Agent name, vendor mark, timestamp, duration, outcome.
   Rows with no agent mark were done by a human.
 - **Vendor marks keep their own background.** Claude and Zed are bare glyphs and sit on a
