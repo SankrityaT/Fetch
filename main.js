@@ -32,6 +32,7 @@ const telemetry = require('./ui/telemetry')
 const agentBridge = require('./ui/agent-bridge')
 const jobQueue = require('./ui/job-queue')
 const activity = require('./ui/activity-log')
+const agentChat = require('./ui/agent-chat')
 
 // ---------- preferences ----------
 // Persisted to <userData>/prefs.json. Loaded lazily and cached in memory;
@@ -758,6 +759,22 @@ function tidySaveFolders() {
 
 ipcMain.handle('list-recordings', () => { tidySaveFolders(); return proc.listRecordings() })
 ipcMain.handle('probe', (e, src) => proc.probeMeta(src))
+// The in-app chat. Runs on the person's own Claude Code or Codex, so events stream
+// back from a real CLI rather than from any model Fetch talks to itself.
+ipcMain.on('chat-send', (e, payload) => {
+  const reply = ev => { try { e.sender.send('chat-event', ev) } catch {} }
+  try {
+    agentChat.send(payload, reply)
+  } catch (err) {
+    reply({ kind: 'done', ok: false, error: err.message, ms: 0 })
+  }
+})
+ipcMain.on('chat-cancel', () => agentChat.cancel())
+ipcMain.handle('chat-engines', async () => {
+  const d = await require('./ui/agent-connect').detect()
+  return d.clients.filter(c => c.installed && (c.id === 'claude' || c.id === 'codex'))
+})
+
 // The activity log. Read by the Activity view; written from the bridge and from
 // every job that finishes here.
 ipcMain.handle('activity-read', (e, limit) => activity.read(limit || 300))
