@@ -35,7 +35,9 @@ function build() {
       description:
         'Start recording the Mac screen. Returns once recording has actually begun. ' +
         'Recording continues until record_stop is called, which returns the file path. ' +
-        'Only one recording can run at a time.',
+        'Only one recording can run at a time. Depending on the person\'s Recording ' +
+        'access setting, Fetch may first ask them to approve the take, so this can wait ' +
+        'on a person; if they decline, it fails with that reason.',
       inputSchema: z.object({
         display: z.string().optional()
           .describe('Display id to record. Omit to record the main display.'),
@@ -47,8 +49,8 @@ function build() {
       }),
     },
     async args => {
-      // The app counts down before capturing and the take resolves only when the
-      // file exists, so this can legitimately sit for a while.
+      // Waits on the person's approval (in Ask mode) and the countdown, so this can
+      // legitimately sit for a while. Resolves when capture has begun.
       const r = await drive('record.start', args, { timeoutMs: 15 * 60 * 1000 })
       return text(r)
     })
@@ -57,11 +59,11 @@ function build() {
     'record_stop',
     {
       description:
-        'Stop the recording that is currently running. The file path is returned by ' +
-        'the record_start call that started it.',
+        'Stop the recording that is currently running. Returns the saved file path ' +
+        'and size once the file is written.',
       inputSchema: z.object({}),
     },
-    async () => text(await drive('record.stop')))
+    async () => text(await drive('record.stop', {}, { timeoutMs: 3 * 60 * 1000 })))
 
   server.registerTool(
     'record_status',
@@ -112,8 +114,13 @@ function build() {
       description:
         'Read the current edit of a recording: its clips, zooms, text layers and beats, ' +
         'each with a short stable id (C1, Z1, T1, B1) and times in seconds. Use the ids ' +
-        'from this when calling apply_edit.',
-      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
+        'from this when calling apply_edit. Captions are summarised as a count unless ' +
+        'include_cues is set, which returns every caption with its id (S1...), times and text, ' +
+        'for correcting words the transcriber misheard (send the corrected list as cues).',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        include_cues: z.boolean().optional().describe('Include the caption text. Default false.'),
+      }),
     },
     async args => text(await drive('edit.get', args, { timeoutMs: 60000 })))
 
@@ -124,18 +131,23 @@ function build() {
         'Change the edit of a recording. Send only what you are changing: anything you ' +
         'leave out is kept, so adding a zoom never touches the crop or the captions. ' +
         'Read get_edit first; its `options` lists the allowed values. ' +
-        'All positions and sizes are 0 to 1 fractions of the frame; all times are ' +
-        'seconds in the original recording.\n' +
+        'All positions and sizes are 0 to 1 fractions of the frame AFTER the crop (use ' +
+        'get_frame with cropped: true to see it); all times are seconds in the original ' +
+        'recording.\n' +
         'LISTS (sending one replaces that whole list; omit id on new items):\n' +
         '- clips [{id,start,end}]: the kept pieces in order. Trimming or cutting is ' +
         'changing these.\n' +
-        '- zooms [{id,start,end,scale,x,y}]: scale e.g. 1.8; x,y the point to zoom to.\n' +
-        '- marks [{id,kind,start,end,x,y,w,h,n}]: kind is redact (destroys the region, ' +
-        'for anything private), spotlight (darkens everything else) or step (a numbered ' +
-        'badge; n is the number). x,y is the top-left corner.\n' +
+        '- zooms [{id,start,end,scale,x,y}]: scale e.g. 1.8; x,y the point to centre on.\n' +
+        '- marks [{id,kind,start,end,x,y,w,h,n,strength}]: kind is redact (destroys the ' +
+        'region, for anything private), blur (a Gaussian blur, strength 4 to 60, default ' +
+        '18; softens but can be partly undone, so never for secrets), spotlight (darkens ' +
+        'everything else) or step (a numbered badge; n is the number). x,y is the top-left ' +
+        'corner.\n' +
         '- texts [{id,text,start,end,fx,fy,sizeFrac,color,box,font,align}]: overlays. ' +
         'fx,fy is the centre; sizeFrac is text height as a fraction of the frame, e.g. 0.06; ' +
         'start and end null for the whole clip.\n' +
+        '- cues [{id,start,end,text}]: the captions. Read them with get_edit include_cues, ' +
+        'correct the text, and send the whole list back.\n' +
         'SETTINGS (merged, so send only the fields you change):\n' +
         '- look {denoise, loudnorm, gain (dB, -10 to 10), fadeIn, fadeOut (seconds), ' +
         'burnCaps (burn captions into the video), zoomAmt (auto-zoom depth), bdInset, bdRadius}\n' +
@@ -196,6 +208,8 @@ function build() {
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
         at: z.number().min(0).describe('Seconds into the recording.'),
+        cropped: z.boolean().optional().describe('Show the frame after the edit\'s crop, which is the frame ' +
+          'zoom, mark and text positions are measured against. Default false: the whole recording.'),
       }),
     },
     async args => {

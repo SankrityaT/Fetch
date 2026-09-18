@@ -378,6 +378,7 @@ async function openInEditor(src) {
   mount.innerHTML = EDITOR_HTML
 
   ed.src = src; ed.texts = []; ed.cues = []; ed.crop = null; ed.selText = null; ed.peaks = []
+  ed.docReady = false
   wireEditor()
 
   const v = $('edVideo')
@@ -411,6 +412,21 @@ async function openInEditor(src) {
   if ($('burnCaps')) $('burnCaps').checked = ed.cues.length > 0
   renderCues(); paintCaption(); dragCaption()
 
+  // The saved edit. The editor used to open every clip blank and never read this,
+  // so an edit lived only as long as the window: after a restart the first read of
+  // the clip returned the blank state and wrote it over the saved one.
+  let saved = null
+  try { saved = await ipcRenderer.invoke('read-doc', src, ed.dur) } catch {}
+  if (ed.src !== src) return                 // another clip was opened meanwhile
+  if (saved && window.fetchDoc) {
+    const srtCues = ed.cues
+    window.fetchDoc.load(saved)
+    // the .srt is what caption edits write to, so it wins when it has anything
+    if (srtCues.length) { ed.cues = srtCues; renderCues(); paintCaption() }
+  }
+  ed.docReady = true
+  startDocAutosave(src)
+
   runJob({ op: 'waveform', src, opts: { buckets: 1200 } }, 'Waveform').then(r => {
     if (r && r.peaks) { ed.peaks = r.peaks; drawWave() }
   })
@@ -418,6 +434,24 @@ async function openInEditor(src) {
     const img = $('strip')
     if (r && r.file && img) img.src = 'file://' + r.file + '?t=' + Date.now()
   })
+}
+
+// Every change to the open clip's edit, by hand or by an agent, is written to its
+// document, so the edit survives a restart and both see the same thing. A cheap
+// compare on an interval rather than a hook in every control: nothing can be missed.
+let docSaveTimer = null
+function startDocAutosave(src) {
+  clearInterval(docSaveTimer)
+  let last = null
+  try { last = JSON.stringify(window.fetchDoc.get()) } catch {}
+  docSaveTimer = setInterval(() => {
+    if (ed.src !== src || !window.fetchDoc) { clearInterval(docSaveTimer); return }
+    let cur
+    try { cur = JSON.stringify(window.fetchDoc.get()) } catch { return }
+    if (cur === last) return
+    last = cur
+    ipcRenderer.invoke('write-doc', src, JSON.parse(cur)).catch(() => {})
+  }, 1500)
 }
 
 // ── wiring ──────────────────────────────────────────────────────────────
@@ -937,11 +971,21 @@ function wireEditor() {
     // A partial update: anything the agent did not send is kept. Replacing the whole
     // document here is what let "add a zoom" wipe the crop, the caption font and the
     // backdrop, none of which the agent had been shown.
-    apply: patch => {
+    apply: async patch => {
       docToEd(FD.normalize(FD.mergeDoc(docFromEd(), patch), ed.src, ed.dur))
+      // Captions are burned from the .srt, so corrected wording has to reach it too,
+      // or the editor shows the fix while the export burns the original mistake.
+      if (patch && Array.isArray(patch.cues)) {
+        await ipcRenderer.invoke('write-cues', ed.src, ed.cues)
+        if (typeof renderCues === 'function') renderCues()
+        if (typeof paintCaption === 'function') paintCaption()
+      }
       return window.fetchDoc.get()
     },
-    src: () => ed.src || null,
+    // Only once the clip's saved edit is loaded. Reporting the clip as open any earlier
+    // let an agent read the blank state and write it over the saved edit.
+    src: () => (ed.docReady && ed.src) || null,
+    load: doc => docToEd(doc),
   }
 
     $('doExport').onclick = exportModal
@@ -1137,7 +1181,7 @@ async function upgradeName() {
 
 // Marks as their own track. A redaction in particular must be visible before export:
 // it is the one edit where missing it means something private ships.
-const MARK_LABEL = { redact: 'Redact', spotlight: 'Spotlight', step: 'Step' }
+const MARK_LABEL = { redact: 'Redact', blur: 'Blur', spotlight: 'Spotlight', step: 'Step' }
 function renderMarks() {
   const host = $('tlMarks')
   if (!host) return
@@ -1435,6 +1479,27 @@ const BD_CSS = {
   violet: 'linear-gradient(135deg,#A78BFA,#3B1D6E)',
   slate:  'linear-gradient(135deg,#64748B,#0F172A)',
   ink:    'linear-gradient(135deg,#2A2320,#0A0908)',
+  blur:   '#1A1714',     // the real fill is the canvas layer below
+}
+// The blur backdrop previews as the current frame, blurred by CSS, behind the video.
+// Redrawn on load, seek and pause, not per frame: it is a background, and the export
+// is what renders it exactly.
+function paintBlurFill(frame, v) {
+  let c = frame.querySelector('canvas.bd-fill')
+  if (ed.backdrop !== 'blur') { if (c) c.remove(); return }
+  if (!c) {
+    c = document.createElement('canvas')
+    c.className = 'bd-fill'
+    frame.prepend(c)
+    const draw = () => {
+      if (ed.backdrop !== 'blur' || !v.videoWidth) return
+      c.width = 320; c.height = Math.round(320 * v.videoHeight / v.videoWidth)
+      try { c.getContext('2d').drawImage(v, 0, 0, c.width, c.height) } catch {}
+    }
+    for (const ev of ['loadeddata', 'seeked', 'pause']) v.addEventListener(ev, draw)
+    c._draw = draw
+  }
+  c._draw()
 }
 // Fit the video inside the stage, keeping its aspect. Done in JS because
 // max-height:100% does not clamp a replaced element whose height is derived from
@@ -1459,6 +1524,7 @@ function paintBackdrop() {
   const frame = $('stageFrame'), v = $('edVideo')
   if (!frame || !v) return
   if (!ed.backdrop) {
+    paintBlurFill(frame, v)
     frame.dataset.bd = 'none'
     frame.style.background = ''
     frame.style.aspectRatio = ''
@@ -1485,6 +1551,7 @@ function paintBackdrop() {
     return
   }
   frame.dataset.bd = ed.backdrop
+  paintBlurFill(frame, v)
   frame.style.background = ed.backdropFile
     ? `url("file://${encodeURI(ed.backdropFile).replace(/"/g, '%22')}") center/cover no-repeat`
     : (BD_CSS[ed.backdrop] || BD_CSS.dusk)

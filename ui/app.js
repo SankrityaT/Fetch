@@ -228,7 +228,7 @@ function tick() {
 
 async function countdown() {
   const secs = window.prefs && Number.isInteger(window.prefs.countdown) ? window.prefs.countdown : 3
-  if (secs <= 0) return
+  if (secs <= 0 || window.__quietTake) return      // an agent's take has no one to count down for
   const cd = $('countdown')
   if (!cd.querySelector('.motion')) {
     const v = document.createElement('video')
@@ -276,6 +276,9 @@ function finishTake(file, mb) {
   // Tell main a take landed. hotkey() is fire-and-forget, so without this an agent
   // that asked for a recording has no way to learn where the file went.
   try { ipcRenderer.send('take-finished', { file, mb: +mb }) } catch {}
+  // A background take lands in the library and the agent gets its path. Nothing pops
+  // up over whatever the person is doing.
+  if (window.__quietTake) { window.__quietTake = false; refreshLibrary(); return }
   mood('done')
   refreshLibrary()
   const pf = window.prefs || {}
