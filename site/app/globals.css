@@ -341,25 +341,28 @@
    The hero image is a scene, not a texture: a ball coming down over a hill,
    and Biscuit placed on that hill in image coordinates. object-cover would
    crop differently at every viewport and walk him off the grass, so the
-   image sits in a stage that keeps its own aspect ratio, covers the panel,
-   anchors to the bottom so the hill is always there, and crops from the
-   left first because the ball is on the right. */
+   image sits in a stage that keeps its own aspect ratio and anchors to the
+   bottom so the hill is always there.
+
+   The words are centred, and the streak runs toward the right, so the stage
+   is sized a little wider than the panel and placed so the ball always lands
+   at 87% across (the ball is at 76.75% of the painting). The streak's faint
+   tail passes behind the headline, where a pool of shadow swallows it. */
 .hero-stage {
-  --w: max(100cqw, calc(100cqh * 1.7864));
+  --w: max(120cqw, calc(100cqh * 1.893));
   position: absolute;
   bottom: 0;
   width: var(--w);
   aspect-ratio: 2944 / 1648;
-  left: calc((100cqw - var(--w)) * 0.72);
+  left: calc(87cqw - var(--w) * 0.7675);
 }
 
 /* A phone is taller than the painting, so covering it would put the ball in
    the middle of the paragraph. Below md the scene gets its own band at the
-   bottom of the panel instead, sized off the width, and the words sit on the
-   plain sky above it. */
+   bottom of the panel instead, sized off the width. */
 @media (max-width: 767px) {
   .hero-stage {
-    --w: calc(100cqw * 2.2);
+    --w: 220cqw;
   }
 }
 

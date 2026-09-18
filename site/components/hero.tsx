@@ -2,19 +2,18 @@ import Image from "next/image";
 import { AgentDemo } from "./agent-demo";
 import { Icon } from "./icon";
 
-/* The pitch is not "another Mac screen recorder". Recordly is free, open source
- * and shipping daily, and that fight is lost on day one. The pitch is the thing
- * the rest of the agent category structurally cannot do: record a real window on
- * a real Mac, driven by the agent you already pay for, with nothing leaving it.
+/* The pitch is not "another Mac screen recorder". It is what Fetch 2 adds: a
+ * real window on a real Mac, recorded by the agent you already pay for, with
+ * nothing leaving the machine.
  *
  * The picture is the name of the product. Your agent threw the ball; Biscuit is
  * on the hill, waiting for it. He is the real app asset placed on top of the
  * painting rather than something the image model drew, because a generated dog
  * is a slightly different dog, and there is only one Biscuit.
  *
- * Text sits left, in the dark part of the sky, so the streak never runs through
- * a word. The run underneath rises over the bottom edge of the scene: the story
- * first, then the proof. */
+ * The words are centred in the dark sky and the ball lands to their right. The
+ * run underneath rises over the bottom edge of the scene: the story first,
+ * then the proof. */
 export function Hero() {
   return (
     <section className="px-3 pt-3 md:px-4 md:pt-4">
@@ -49,16 +48,16 @@ export function Hero() {
 
           {/* Legibility, not decoration: the sky is dark already, these only
               make sure it stays dark behind the words at every crop. */}
-          <div className="absolute inset-0 bg-[linear-gradient(90deg,rgb(12_9_7/0.78)_0%,rgb(12_9_7/0.45)_38%,transparent_62%)] md:bg-[linear-gradient(90deg,rgb(12_9_7/0.6)_0%,rgb(12_9_7/0.25)_40%,transparent_60%)]" />
+          <div className="absolute inset-0 bg-[radial-gradient(58%_46%_at_50%_40%,rgb(12_9_7/0.82)_0%,rgb(12_9_7/0.5)_45%,transparent_78%)]" />
           <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-[rgb(12_9_7/0.55)] to-transparent" />
         </div>
         <div aria-hidden="true" className="grain pointer-events-none absolute inset-0 -z-10" />
 
         {/* ── the words ─────────────────────────────────────────────── */}
-        <div className="relative mx-auto flex h-full max-w-[1240px] flex-col justify-center px-5 pb-[380px] pt-28 md:px-10 md:pb-44">
-          <div className="max-w-[640px]">
+        <div className="relative mx-auto flex h-full max-w-[1240px] flex-col justify-center px-5 pb-[380px] pt-28 text-center md:px-10 md:pb-64">
+          <div className="mx-auto max-w-[860px]">
             <p
-              className="rise flex w-fit items-center gap-2 rounded-pill bg-white/[0.07] py-1.5 pl-1.5 pr-3.5 text-13 font-semibold text-text-1 shadow-[inset_0_0_0_1px_rgb(255_255_255/0.08)] backdrop-blur-md"
+              className="rise mx-auto flex w-fit items-center gap-2 rounded-pill bg-white/[0.07] py-1.5 pl-1.5 pr-3.5 text-13 font-semibold text-text-1 shadow-[inset_0_0_0_1px_rgb(255_255_255/0.08)] backdrop-blur-md"
               style={{ ["--i" as string]: 0 }}
             >
               <span className="rounded-pill bg-fur-1 px-2 py-0.5 text-12 text-[#231703]">New</span>
@@ -66,7 +65,7 @@ export function Hero() {
             </p>
 
             <h1
-              className="rise mt-7 text-balance text-[clamp(2.7rem,5.6vw,5.2rem)] leading-[0.98]"
+              className="rise mt-7 text-balance text-[clamp(2.7rem,6vw,5.6rem)] leading-[0.98]"
               style={{ ["--i" as string]: 1 }}
             >
               Let your agent record the{" "}
@@ -74,7 +73,7 @@ export function Hero() {
             </h1>
 
             <p
-              className="rise mt-7 max-w-[48ch] text-pretty text-18 leading-[1.55] text-text-1"
+              className="rise mx-auto mt-7 max-w-[56ch] text-pretty text-18 leading-[1.55] text-text-1"
               style={{ ["--i" as string]: 2 }}
             >
               Fetch is a Mac screen recorder that Claude Code, Codex and Cursor can
@@ -83,7 +82,7 @@ export function Hero() {
             </p>
 
             <div
-              className="rise mt-9 flex flex-wrap items-center gap-3"
+              className="rise mt-9 flex flex-wrap items-center justify-center gap-3"
               style={{ ["--i" as string]: 3 }}
             >
               <a

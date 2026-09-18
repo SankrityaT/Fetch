@@ -1,16 +1,17 @@
 import Image from "next/image";
+import { Icon } from "./icon";
 
-/* The one claim the rest of the category structurally cannot make. Every row is
- * from the positioning in landing/DESIGN-HANDOFF.md, and every one of them is
- * about where the pixels come from, which is the only thing that matters here:
- * a web-app demo from Fetch would be indistinguishable from Clueso's. Only
- * shipped products belong in this table. */
-const ROWS = [
-  { who: "Clueso", records: "A cloud browser. Web apps only, and it wants your staging login.", where: "Their cloud" },
-  { who: "HyperFrames", records: "HTML it renders itself. Never a real app.", where: "Their cloud" },
+/* What Fetch records, said about Fetch alone. It is free and open source and
+ * has nothing to win by naming anyone else, so this section shows the range
+ * instead of a comparison: every kind of window on a Mac is fair game, because
+ * the capture is ScreenCaptureKit on the real machine rather than a browser or
+ * a page drawn for the purpose. */
+const KINDS = [
+  { icon: "app-window", title: "Native apps", eg: "Xcode, Figma, Notion, the app you are building" },
+  { icon: "monitor", title: "Terminals", eg: "Terminal, iTerm, Ghostty, a test run as it happens" },
+  { icon: "cursor-text", title: "Editors", eg: "VS Code, Cursor, Zed, with the diff on screen" },
+  { icon: "link-simple", title: "Browsers", eg: "Chrome, Safari, Arc, or one Playwright opened" },
 ];
-
-const WINDOWS = ["Xcode", "Terminal", "Figma", "VS Code", "Chrome", "Simulator", "Your own app"];
 
 export function RealMachine() {
   return (
@@ -29,51 +30,31 @@ export function RealMachine() {
               It records the <em className="accent pr-[0.06em] font-normal">real</em> thing.
             </h2>
             <p className="mx-auto mt-5 max-w-[54ch] text-18 leading-[1.55] text-text-1">
-              Other agent tools record a browser in the cloud, or a page they drew
-              themselves. Fetch records whatever window is on your Mac.
+              Whatever window is open on your Mac, an agent can record it. One
+              window on its own, or the whole screen.
             </p>
           </div>
 
-          <div className="mx-auto mt-12 max-w-[860px] overflow-hidden rounded-panel raised">
-            <div className="grid grid-cols-[7.5rem_1fr] gap-x-6 border-b border-white/[0.05] px-6 py-3 font-mono text-11 uppercase tracking-[0.08em] text-text-2 md:grid-cols-[9rem_1fr_7rem]">
-              <span>Tool</span>
-              <span>What it can record</span>
-              <span className="hidden md:block">Runs</span>
-            </div>
-            {ROWS.map((r) => (
-              <div
-                key={r.who}
-                className="grid grid-cols-[7.5rem_1fr] gap-x-6 border-b border-white/[0.04] px-6 py-4 text-15 md:grid-cols-[9rem_1fr_7rem]"
-              >
-                <span className="font-semibold text-text-1">{r.who}</span>
-                <span className="text-text-2">{r.records}</span>
-                <span className="hidden text-text-2 md:block">{r.where}</span>
-              </div>
-            ))}
-            <div className="grid grid-cols-[7.5rem_1fr] gap-x-6 bg-fur-1/[0.07] px-6 py-5 text-15 md:grid-cols-[9rem_1fr_7rem]">
-              <span className="flex items-center gap-2 font-semibold text-text-0">
-                <Image src="/fetch-icon-1024.png" alt="" width={40} height={40} className="size-5 rounded-[5px]" />
-                Fetch
-              </span>
-              <span className="text-text-0">
-                Any real window. Native apps, terminals, editors, browsers.
-              </span>
-              <span className="hidden font-semibold text-text-0 md:block">Your Mac</span>
-            </div>
-          </div>
-
-          <ul className="mx-auto mt-10 flex max-w-[760px] flex-wrap justify-center gap-2">
-            {WINDOWS.map((w) => (
-              <li
-                key={w}
-                className="rounded-pill bg-ink-1 px-3.5 py-1.5 font-mono text-12 text-text-1 shadow-[inset_0_0_0_1px_var(--color-ink-3)]"
-              >
-                {w}
+          <ul className="mx-auto mt-12 grid max-w-[900px] gap-3 sm:grid-cols-2">
+            {KINDS.map((k) => (
+              <li key={k.title} className="flex items-start gap-4 rounded-[18px] raised px-5 py-5">
+                <span className="grid size-10 shrink-0 place-items-center rounded-full bg-ink-2 text-fur-1">
+                  <Icon name={k.icon} className="size-5" />
+                </span>
+                <span>
+                  <span className="block text-18 font-semibold tracking-[-0.01em] text-text-0">
+                    {k.title}
+                  </span>
+                  <span className="mt-1 block text-15 leading-[1.5] text-text-2">{k.eg}</span>
+                </span>
               </li>
             ))}
           </ul>
-          <p className="mt-4 text-center text-13 text-text-2">
-            The Simulator is on that list too. It is just a window.
+
+          <p className="mx-auto mt-8 max-w-[52ch] text-center text-15 text-text-2">
+            The iOS Simulator too. It is just a window. Fetch records, and whatever
+            drives the app, Playwright, <span className="font-mono text-13 text-text-1">simctl</span> or
+            you, stays in charge of it.
           </p>
         </div>
       </div>
