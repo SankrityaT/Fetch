@@ -20,7 +20,7 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
-const { spawn } = require('child_process')
+const { spawn, spawnSync } = require('child_process')
 
 const connect = require('./agent-connect')
 
@@ -52,7 +52,33 @@ function mcpConfigPath() {
   return p
 }
 
-function argsFor(engine, prompt, model, effort) {
+// ── attachments ─────────────────────────────────────────────────────────
+// Images go to the model as images, not as paths: the chat allows only Fetch's tools,
+// so an agent handed a path to a screenshot has nothing to open it with. Anything
+// else (a recording, a document) travels as a path, which the Fetch tools can use.
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|heic|tiff?)$/i
+
+// A Retina screenshot can be 6K wide and several MB, past what the API takes and
+// pointlessly expensive. Scale to 1568 on the long edge (the size models actually
+// see at), as PNG or JPEG so HEIC and TIFF work too. sips ships with macOS.
+function prepareImage(file) {
+  const jpeg = /\.jpe?g$/i.test(file)
+  const out = path.join(os.tmpdir(), `fetch-att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${jpeg ? 'jpg' : 'png'}`)
+  const r = spawnSync('/usr/bin/sips', ['-Z', '1568', '-s', 'format', jpeg ? 'jpeg' : 'png', file, '--out', out], { stdio: 'ignore' })
+  if (r.status !== 0 || !fs.existsSync(out)) return { file, type: jpeg ? 'image/jpeg' : 'image/png' }
+  return { file: out, type: jpeg ? 'image/jpeg' : 'image/png' }
+}
+
+function splitAttachments(list = []) {
+  const images = [], others = []
+  for (const f of list) {
+    if (!f || !fs.existsSync(f)) continue
+    ;(IMAGE_EXT.test(f) ? images : others).push(f)
+  }
+  return { images: images.slice(0, 8), others }
+}
+
+function argsFor(engine, prompt, model, effort, images = []) {
   if (engine === 'codex') {
     // Codex streams JSONL from `exec --json`. Its MCP servers come from the user's
     // own config, which the Connect screen already wrote.
@@ -60,15 +86,18 @@ function argsFor(engine, prompt, model, effort) {
     if (sessions.codex) a.push('resume', sessions.codex)
     if (model) a.push('--model', model)
     if (effort) a.push('-c', `model_reasoning_effort="${effort}"`)
+    for (const im of images) a.push('-i', im.file)
     a.push(prompt)
     return a
   }
-  const a = [
-    '-p', prompt,
+  // With images the message goes in on stdin as content blocks, so the prompt is not
+  // an argument at all; see send().
+  const a = images.length ? ['-p', '--input-format', 'stream-json'] : ['-p', prompt]
+  a.push(
     '--output-format', 'stream-json', '--verbose',
     '--mcp-config', mcpConfigPath(),
     '--allowedTools', ALLOWED.join(','),
-  ]
+  )
   // Carry the thread. Without this each turn starts from nothing and a follow-up
   // like "now caption that one" refers to something the agent never saw.
   if (sessions.claude) a.push('--resume', sessions.claude)
@@ -96,7 +125,7 @@ function checked(engine, model, effort) {
   return { model: m.id, effort: m.efforts.includes(effort) ? effort : null }
 }
 
-function send({ engine = 'claude', model = null, effort = null, prompt }, onEvent) {
+function send({ engine = 'claude', model = null, effort = null, prompt, attachments = [] }, onEvent) {
   if (current) throw new Error('already working on something')
 
   const bin = connect.binFor(engine)
@@ -104,12 +133,24 @@ function send({ engine = 'claude', model = null, effort = null, prompt }, onEven
 
   const t0 = Date.now()
   const pick = checked(engine, model, effort)
-  const child = spawn(bin, argsFor(engine, prompt, pick.model, pick.effort), {
-    stdio: ['ignore', 'pipe', 'pipe'],
+  const att = splitAttachments(attachments)
+  if (att.others.length) {
+    prompt += '\n\nFiles the user attached:\n' + att.others.map(f => `- ${f}`).join('\n')
+  }
+  const images = att.images.map(prepareImage)
+  const viaStdin = engine !== 'codex' && images.length > 0
+  const child = spawn(bin, argsFor(engine, prompt, pick.model, pick.effort, images), {
+    stdio: [viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     // A login shell's PATH, because the CLI shells out to node and git itself.
     env: { ...process.env, PATH: `${path.dirname(connect.nodeBin())}:${process.env.PATH || ''}` },
   })
   current = child
+  if (viaStdin) {
+    const content = images.map(im => ({ type: 'image',
+      source: { type: 'base64', media_type: im.type, data: fs.readFileSync(im.file).toString('base64') } }))
+    content.push({ type: 'text', text: prompt })
+    child.stdin.end(JSON.stringify({ type: 'user', message: { role: 'user', content } }) + '\n')
+  }
 
   let buf = ''
   let stderr = ''
