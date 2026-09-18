@@ -33,6 +33,7 @@ const agentBridge = require('./ui/agent-bridge')
 const jobQueue = require('./ui/job-queue')
 const activity = require('./ui/activity-log')
 const agentChat = require('./ui/agent-chat')
+const voice = require('./ui/voice')
 
 // ---------- preferences ----------
 // Persisted to <userData>/prefs.json. Loaded lazily and cached in memory;
@@ -771,6 +772,27 @@ ipcMain.on('chat-send', (e, payload) => {
 })
 ipcMain.on('chat-cancel', () => agentChat.cancel())
 ipcMain.on('chat-new', () => agentChat.newConversation())
+
+// Voiceover, through the person's own ElevenLabs account. The only part of Fetch
+// that uses the network, and the key lives in the Keychain (see ui/voice.js).
+ipcMain.handle('voice-status', () => voice.status())
+ipcMain.handle('voice-connect', (e, key) => voice.connect(key))
+ipcMain.handle('voice-disconnect', () => voice.clearKey())
+ipcMain.handle('voice-voices', () => voice.voices())
+ipcMain.handle('voice-speak', async (e, { src, text, voiceId, settings }) => {
+  const out = proc.sidecarOut(src, '.vo.mp3')
+  const t0 = Date.now()
+  try {
+    await voice.speak({ text, voiceId, outPath: out, settings })
+    activity.record({ op: 'voice.speak', title: 'Generated a voiceover',
+      detail: `${String(text).length} characters`, ms: Date.now() - t0, ok: true })
+    return { ok: true, file: out }
+  } catch (err) {
+    activity.record({ op: 'voice.speak', title: 'Generated a voiceover',
+      ms: Date.now() - t0, ok: false, error: err.message })
+    return { ok: false, error: err.message }
+  }
+})
 ipcMain.handle('chat-engines', async () => {
   const d = await require('./ui/agent-connect').detect()
   return d.clients.filter(c => c.installed && (c.id === 'claude' || c.id === 'codex'))
