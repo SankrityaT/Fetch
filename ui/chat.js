@@ -238,9 +238,36 @@
           </div>
         </div>`
 
+  // Over the editor the examples are edits to the take on screen, picked from what its
+  // edit is missing (ui/edit-assist.js), so a take with captions is not offered them.
+  const Assist = require('./ui/edit-assist')
+  function introHtml() {
+    const src = contextSrc()
+    if (!src) return INTRO
+    let doc = null
+    try { doc = window.fetchDoc.get() } catch {}
+    const meta = window.ed && window.ed.meta
+    const chips = Assist.suggestions(doc, { hasAudio: meta ? meta.hasAudio !== false : true })
+    return `
+        <div class="chat-intro" data-for="${esc(src)}">
+          <p>Ask for an edit to <strong>${esc(stemOf(src))}</strong> in plain words. Each change
+             lights up on the timeline, and can be undone.</p>
+          <div class="chat-egs">
+            ${chips.map(c => `<button type="button" class="chat-eg" data-ask="${esc(c.ask)}">${esc(c.label)}</button>`).join('')}
+          </div>
+        </div>`
+  }
+  // Only while the thread is still empty: once a conversation starts, it owns the pane.
+  function paintIntro() {
+    const cur = list && list.querySelector('.chat-intro')
+    if (!cur) return
+    cur.outerHTML = introHtml()
+    wireIntro()
+  }
+
   function wireIntro() {
     list.querySelectorAll('.chat-eg').forEach(b => {
-      b.onclick = () => { input.value = b.textContent; grow(); input.focus(); sync() }
+      b.onclick = () => { input.value = b.dataset.ask || b.textContent; grow(); input.focus(); sync() }
     })
   }
 
@@ -262,7 +289,7 @@
       </div>
 
       <div class="chat-list" id="chatList">
-        ${INTRO}
+        ${introHtml()}
       </div>
 
       <form class="chat-composer" id="chatForm">
@@ -299,7 +326,16 @@
       paintOn()
       input.focus()
     })
-    window.addEventListener('fetch:editor-open', () => { ctxOff = false; paintOn() })
+    window.addEventListener('fetch:editor-open', () => { ctxOff = false; paintOn(); paintIntro() })
+    window.addEventListener('fetch:editor-ready', () => { paintOn(); paintIntro() })
+    window.addEventListener('fetch:editor-closed', () => { paintOn(); paintIntro() })
+    // The take is context only while its editor is the view on screen. Leaving it for
+    // the Record screen or the Library takes the chip, and the edit chips, with it.
+    const edView = document.querySelector('.view[data-view="editor"]')
+    if (edView) new MutationObserver(() => { paintOn(); paintIntro() })
+      .observe(edView, { attributes: true, attributeFilter: ['hidden'] })
+    // an agent's edit changes what is worth suggesting, and what can be undone
+    window.addEventListener('fetch:agent-edit', () => { paintIntro(); paintUndo() })
     // a rename can move the open recording under the chip, so look again before typing
     input.addEventListener('focus', () => paintOn())
     input.addEventListener('input', () => { grow(); sync(); updateMention() })
@@ -467,6 +503,9 @@
   // scrollHeight leaves out the border, so without it a one-line box sat 2px short
   // and showed a scrollbar. It scrolls only once it reaches its cap.
   const grow = () => {
+    // a closed pane measures 0, which pinned the box at 0px and clipped the text
+    // once it opened; leave the CSS height until there is something to measure
+    if (!input.offsetParent) { input.style.height = ''; return }
     input.style.height = 'auto'
     const want = input.scrollHeight + input.offsetHeight - input.clientHeight
     input.style.height = Math.min(want, 160) + 'px'
@@ -569,7 +608,7 @@
       'chat-msg chat-me' + (typed ? '' : ' chat-me-only-att'))
   }
 
-  function submit() {
+  async function submit() {
     const typed = input.value.trim()
     if ((!typed && !attach.length) || state.busy) return
     // a pref changed while the pane stayed open still decides this turn
@@ -586,25 +625,36 @@
     input.value = ''; grow()
     startTurn()
 
-    const ctx = contextSrc()
-    let prompt = text
+    // Every turn opens with where things stand now: the take on screen and its edit.
+    // The open take is what "this" means, not what "my latest" means, and a resumed
+    // session must not answer either from memory.
+    turn.pending = true
+    let prompt = (await contextHeader()) + '\n\n' + text
     // Tagged recordings travel as exact paths, so the agent acts on the file that was
     // pointed at rather than one it guessed from a description.
     if (sentTags.length) {
       prompt += '\n\nRecordings the user tagged:\n' +
         sentTags.map(t => `- ${t.name}: ${t.path}`).join('\n')
     }
-    // The open take is what "this" means, not what "my latest" means: without saying
-    // so, an agent asked for the newest take quietly used the open one instead.
-    if (ctx && !sentTags.some(t => t.path === ctx)) {
-      prompt += `\n\n(Open in the Fetch editor: ${ctx}. Use it when the person says "this" ` +
-        `or names no recording. For "latest", "last" or "newest", check list_recordings instead. ` +
-        `Name the recording you acted on in your reply.)`
-    }
+    turn.pending = false
+    // stopped while the header was being read: nothing was sent, so nothing to cancel
+    if (turn.stopped) { render({ kind: 'done', ok: false, cancelled: true }); return }
 
     const pick = state.pick && state.pick.engine === state.engine ? state.pick : {}
     ipcRenderer.send('chat-send', { engine: state.engine, model: pick.model, effort: pick.effort, prompt,
       attachments: sentAtt.map(a => a.path), display })
+  }
+
+  // Read fresh on every send, never cached: the whole point is that it is current.
+  async function contextHeader() {
+    const src = contextSrc()
+    let open = null
+    if (src) {
+      let doc = null
+      try { if (window.ed && window.ed.docReady) doc = window.fetchDoc.get() } catch {}
+      open = { path: src, dur: window.ed && window.ed.dur, doc }
+    }
+    return Assist.contextHeader({ open, omitted: !src && ctxOff && !!currentSrc() && editorShown() })
   }
 
   // ── a turn in progress ─────────────────────────────────────────────────
@@ -613,7 +663,9 @@
   let statusEl = null
   function startTurn() {
     state.busy = true; sync()
-    turn.made = false
+    turn.made = false; turn.stopped = false
+    // one chat turn is one level of undo, however many passes the agent makes
+    if (window.fetchUndo) window.fetchUndo.mark()
     setFace('think')
     const e = state.engines.find(x => x.id === state.engine)
     hideStatus()
@@ -629,6 +681,7 @@
 
   function stop() {
     if (!state.busy) return
+    if (turn.pending) { turn.stopped = true; return }
     ipcRenderer.send('chat-cancel')
     sendBtn.disabled = true                     // until the turn reports it has ended
     if (statusEl) statusEl.lastElementChild.textContent = 'Stopping…'
@@ -638,7 +691,7 @@
     if (state.busy) return
     const ok = await ipcRenderer.invoke('chat-new').catch(() => false)
     if (!ok) return
-    list.innerHTML = INTRO
+    list.innerHTML = introHtml()
     wireIntro()
     state.tools.clear()
     lastCard = null
@@ -735,7 +788,7 @@
   }
 
   let lastCard = null                  // { key, node }, so repeated edits update one card
-  function card(tool, data, inp) {
+  function card(tool, data, inp, replayed) {
     const c = cardInfo(tool, data, inp)
     if (!c) return false
     const key = tool + '|' + c.path
@@ -755,7 +808,34 @@
       `</button>`, 'chat-card-wrap')
     lastCard = { key, node: n }
     fillThumb(n.querySelector('.chat-card-thumb'), c)
+    // An edit the agent made can be taken back from the card that reports it, for as
+    // long as it is still the latest agent change to that take. A card replayed from
+    // the log reports an older session's change, which undo never held.
+    const level = tool === 'apply_edit' && !replayed && window.fetchUndo ? window.fetchUndo.level(c.path) : 0
+    if (level) {
+      n.dataset.undoFor = c.path
+      n.dataset.undoLevel = level
+      n.insertAdjacentHTML('beforeend', `<button type="button" class="chat-card-undo">` +
+        `${ico('arrow-counter-clockwise', 'icon-sm')}Undo Biscuit's change</button>`)
+    }
+    paintUndo()                        // an older card for this take is no longer the latest
     return true
+  }
+
+  function paintUndo() {
+    if (!list) return
+    list.querySelectorAll('.chat-card-wrap[data-undo-for]').forEach(w => {
+      const b = w.querySelector('.chat-card-undo')
+      if (b) b.hidden = !window.fetchUndo || window.fetchUndo.level(w.dataset.undoFor) !== +w.dataset.undoLevel
+    })
+  }
+
+  async function undoCard(b) {
+    const w = b.closest('.chat-card-wrap')
+    b.disabled = true
+    const ok = window.fetchUndo && await window.fetchUndo.undo(w.dataset.undoFor, +w.dataset.undoLevel).catch(() => false)
+    if (ok) b.outerHTML = `<span class="chat-card-undone">${ico('check', 'icon-sm')}Undone</span>`
+    else { b.disabled = false; paintUndo() }
   }
 
   // The Library's poster when the file has one, else the video's own early frame,
@@ -783,6 +863,8 @@
   }
 
   function openCard(e) {
+    const u = e.target.closest('.chat-card-undo')
+    if (u) { undoCard(u); return }
     const c = e.target.closest('.chat-card')
     if (!c) return
     const p = c.dataset.path
@@ -805,7 +887,12 @@
     try { if (window.fetchDoc && typeof window.fetchDoc.src === 'function' && window.fetchDoc.src()) return window.fetchDoc.src() } catch {}
     return (window.ed && window.ed.src) || null
   }
-  const contextSrc = () => ctxOff ? null : currentSrc()
+  // A take left open behind the Record screen is not what "this" means there.
+  const editorShown = () => {
+    const v = document.querySelector('.view[data-view="editor"]')
+    return !!(v && !v.hidden)
+  }
+  const contextSrc = () => ctxOff || !editorShown() ? null : currentSrc()
 
   function paintOn() {
     const host = pane.querySelector('#chatOn')
@@ -826,7 +913,7 @@
     // whoever started the turn.
     dropIntro()
     if (ev.kind === 'user') { renderUser(ev); return }
-    if (ev.kind === 'text') add(md(ev.text), 'chat-msg chat-them')
+    if (ev.kind === 'text') add(md(Assist.plainDashes(ev.text)), 'chat-msg chat-them')
     else if (ev.kind === 'tool') {
       toolRow(ev)
       if (!replay) setFace(faceForTool(toolOf(ev)))
@@ -836,7 +923,7 @@
       const name = ev.tool || (row && row.dataset.tool) || ''
       toolDone(ev)
       // the card names the file, so the row's one-line summary would say it twice
-      if (ev.ok && card(name, ev.data, row && row._input) && row) row.querySelector('.chat-tool-sum').textContent = ''
+      if (ev.ok && card(name, ev.data, row && row._input, replay) && row) row.querySelector('.chat-tool-sum').textContent = ''
       if (replay) return
       if (!ev.ok) setFace('fail')
       else {
@@ -889,7 +976,11 @@
       input.value = hero.value; hero.value = ''
       hero.dispatchEvent(new Event('input')); grow(); sync()
     }
-    if (state.open) { input.focus(); refreshEngines(); paintOn() }
+    if (state.open) { input.focus(); refreshEngines(); paintOn(); paintIntro(); paintUndo() }
+    window.dispatchEvent(new CustomEvent('fetch:chat-toggle', { detail: { open: state.open } }))
+    // The pane pushes the stage rather than covering it, and the window did not resize,
+    // so the editor is told to measure again: the video, the timeline and its tracks.
+    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')))
   }
 
   // The saved pref is the source of truth, not the last pick this pane made, so a

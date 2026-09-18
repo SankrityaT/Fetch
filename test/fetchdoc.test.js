@@ -84,6 +84,12 @@ is('a corrupt array is dropped, not fatal', d.normalize({ clips: 'nope' }, '/a.m
   const doc = d.normalize({ clips: [{ start: 0, end: 1 }, { start: 2, end: 3 }] }, '/a.mov', 3)
   is('missing ids are filled in', doc.clips.map(c => c.id), ['C1', 'C2'])
 }
+{
+  // a zoom asked for with times alone lands on the export's defaults, not undefined
+  const doc = d.normalize({ zooms: [{ start: 0, end: 2 }, { start: 3, end: 4, scale: 2.5, x: 0, y: 0.2 }] }, '/a.mov', 6)
+  is('a bare zoom gets 1.8x on the centre', ['scale', 'x', 'y'].map(k => doc.zooms[0][k]), [1.8, 0.5, 0.5])
+  is('a zoom that says where keeps it, 0 included', ['scale', 'x', 'y'].map(k => doc.zooms[1][k]), [2.5, 0, 0.2])
+}
 
 // ---- export opts ----
 {

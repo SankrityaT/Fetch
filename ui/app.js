@@ -71,16 +71,47 @@ const usableThumb = t => typeof t === 'string' && t.length > 512   // empty capt
 let thumbBusy = false
 async function refreshSourceThumb() {
   if (thumbBusy) return
-  if (!setup.source || setup.mode !== 'screen') return
+  if (setup.mode === 'window' ? !setup.window : !setup.source || setup.mode !== 'screen') return
   if (document.querySelector('.view[data-view="record"]').hidden) return
   if (document.querySelector('.scrim')) return                      // the wizard is polling instead
   if (document.visibilityState !== 'visible' || !document.hasFocus()) return
+  if (recording()) return
+  if (setup.mode === 'window') { refreshWindowTarget(); return }
   thumbBusy = true
   try {
     const fresh = (await ipcRenderer.invoke('get-sources')).find(x => x.id === setup.source.id)
     if (fresh && usableThumb(fresh.thumb)) { setup.source.thumb = fresh.thumb; $('sourceThumb').src = fresh.thumb }
   } catch {} finally { thumbBusy = false }
 }
+
+// A window can close under the setup card, or end a take by closing. Find it again:
+// the same id, or the same app and title reopened under a new one. Failing both, the
+// card goes back to asking for a window rather than naming one that is gone.
+async function refreshWindowTarget(withShot = true) {
+  const w = setup.window
+  if (setup.mode !== 'window' || !w || thumbBusy) return !!w
+  thumbBusy = true
+  try {
+    let list
+    try { list = await ipcRenderer.invoke('list-windows') } catch { return true }
+    // an empty list is the helper failing (it answers [] on a timeout), not every
+    // window on the Mac closing, so the pick stands
+    if (!list || !list.length) return true
+    if (setup.window !== w) return !!setup.window
+    const hit = (list || []).find(x => x.id === w.id) ||
+      (list || []).find(x => x.app === w.app && x.title === w.title)
+    if (!hit) { setup.window = null; applySetup(); return false }
+    let shot = null
+    if (withShot) try { shot = await ipcRenderer.invoke('window-shot', hit.id, 520) } catch {}
+    if (setup.window !== w) return !!setup.window
+    setup.window = { ...hit, shot: usableThumb(shot) ? shot : w.shot }
+    if (hit.id !== w.id) applySetup()           // the halo follows the new id
+    else paintHeroReady()
+    return true
+  } finally { thumbBusy = false }
+}
+// a picture that fails to load falls back to the tile under it, never a broken image
+$('sourceThumb').addEventListener('error', e => e.target.removeAttribute('src'))
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') refreshSourceThumb()
 })
@@ -269,18 +300,32 @@ async function nameTake(file) {
   }
 }
 
-async function finishTake(file, mb) {
+// An agent's take borrowed the setup card (applySetup in agent-bridge.js kept the
+// person's own aside). Once the take is over, named or failed, it goes back.
+function restorePersonSetup() {
+  const was = window.__personSetup
+  if (!was) return
+  window.__personSetup = null
+  Object.assign(setup, was)
+  applySetup()
+  paintHeroCta()           // applySetup relabels the first chip "Change setup"
+}
+
+async function finishTake(file, mb, info = {}) {
   file = await nameTake(file)
+  restorePersonSetup()
   // Tell main a take landed. hotkey() is fire-and-forget, so without this an agent
   // that asked for a recording has no way to learn where the file went.
-  try { ipcRenderer.send('take-finished', { file, mb: +mb }) } catch {}
+  try { ipcRenderer.send('take-finished', { ...info, file, mb: +mb }) } catch {}
   // A background take lands in the library and the agent gets its path. Nothing pops
   // up over whatever the person is doing.
-  if (window.__quietTake) { window.__quietTake = false; refreshLibrary(); return }
+  // The stop above left him on "Working on it...", which stayed until someone
+  // changed view; hand the hero back to its resting line.
+  if (window.__quietTake) { window.__quietTake = false; mood('idle'); paintHeroCta(); refreshLibrary(); return }
   mood('done')
   refreshLibrary()
   const pf = window.prefs || {}
-  if (pf.autoConvertMp4) runJob({ op: 'mp4', src: file }, 'Converting to MP4').then(() => refreshLibrary())
+  if (pf.autoConvertMp4) runJob({ op: 'mp4', src: file }, 'MP4 copy', { done: 'Saved an MP4 copy' }).then(() => refreshLibrary())
   if (pf.openEditorAfter) { openInEditor(file); return }     // straight to the editor, no prompt
   afterRecording(file, mb)
 }
@@ -324,7 +369,15 @@ async function startNative() {
   return true
 }
 
-async function stopNative() {
+// A second stop (the hotkey again, an agent's record_stop landing on a take that
+// already ended) must not start a second commit of the same file.
+let nativeStopping = false
+async function stopNative(ended) {
+  if (nativeStopping) return
+  nativeStopping = true
+  try { await stopNativeOnce(ended) } finally { nativeStopping = false }
+}
+async function stopNativeOnce(ended) {
   const r = await ipcRenderer.invoke('native-stop')
   ipcRenderer.send('cam-record', false)
   ipcRenderer.send('cam-visible', false)
@@ -333,25 +386,51 @@ async function stopNative() {
   clearInterval(ticker); ticker = null
   $('start').disabled = false
   nativeTake = false
+  recState = 'idle'
+  const gone = ((r && r.kind) || (ended && ended.kind)) === 'display' ? 'The display' : 'The window'
   if (!r || !r.ok) {
-    const why = r && r.error ? r.error : 'Nothing was captured'
+    const why = r && r.endedAlone ? `${gone} went away before anything was recorded.`
+      : r && r.error ? r.error : 'Nothing was captured'
     try { ipcRenderer.send('take-failed', { error: why }) } catch {}
-    mood('error'); toast(why, 'bad'); return
+    restorePersonSetup()
+    mood('error'); toast(why, 'bad')
+    if (r && r.endedAlone) refreshWindowTarget()
+    return
   }
   mood('working')
   const c = await ipcRenderer.invoke('native-commit', r.tmp)
   if (!c || !c.ok) {
     // the take is still on disk, so say where rather than losing someone's recording
+    restorePersonSetup()
     mood('error')
     toast(`Could not save it. The recording is at ${r.tmp}`, 'bad', 12000)
+    try { ipcRenderer.send('take-failed', { error: `could not save the take, it is at ${r.tmp}` }) } catch {}
     return
   }
   if (r.dropped) console.log(`dropped ${r.dropped} frames of ${r.frames}`)
   const mb = (require('fs').statSync(c.file).size / 1e6).toFixed(1)
-  finishTake(c.file, mb)
+  // how long a window sent nothing new, so an agent can be told its window was covered
+  const still = r.kind === 'window' && r.stillMs ? { stillMs: r.stillMs } : {}
+  if (!r.endedAlone) { finishTake(c.file, mb, still); return }
+  // Named from the window it recorded before the card forgets that window
+  await finishTake(c.file, mb, { ...still, endedAlone: true, reason: `${gone.toLowerCase()} went away` })
+  toast(`${gone} went away, so the recording stopped. Saved what was captured.`, '', 7000)
+  refreshWindowTarget()
 }
+// The recorder lost what it was capturing and gave up looking for it. Its file is
+// finished, so end the take the way Stop would.
+ipcRenderer.on('native-ended', (e, info) => { if (nativeTake) stopNative(info || {}) })
 
 async function startRecording() {
+  // A window that has since closed would otherwise fall through to recording the
+  // whole screen, which is not what anyone picked.
+  if (setup.mode === 'window' && !(await refreshWindowTarget(false))) {
+    const why = 'That window is closed. Pick another one.'
+    try { ipcRenderer.send('take-failed', { error: why }) } catch {}
+    if (window.__quietTake) { window.__quietTake = false; restorePersonSetup(); return }
+    mood('error'); toast(why, 'bad'); openSetup()
+    return
+  }
   try {
     mood('arming')
     $('start').disabled = true
@@ -403,6 +482,7 @@ async function startRecording() {
       const blob = new Blob(chunks, { type: 'video/webm' })
       if (!blob.size) {
         try { ipcRenderer.send('take-failed', { error: 'Nothing was captured' }) } catch {}
+        restorePersonSetup()
         mood('error'); toast('Nothing was captured', 'bad'); return
       }
       mood('working')
@@ -429,6 +509,10 @@ async function startRecording() {
     $('start').disabled = false
     ipcRenderer.send('cam-disarm')          // no take, so no camera left rolling for it
     try { ipcRenderer.send('take-failed', { error: e.message }) } catch {}
+    // An agent's take that never started still hands the card back, and must not
+    // leave the person's next take running as a hidden background one.
+    window.__quietTake = false
+    restorePersonSetup()
     if (/screen recording is blocked/i.test(e.message || '')) screenBlocked()
     else { mood('error'); toast(e.message, 'bad', 7000) }
   }
@@ -483,11 +567,12 @@ ipcRenderer.on('edit-job', (e, j) => {
 })
 // quiet: true skips the success toast, for background work the user did not ask
 // for (thumbnails, waveforms, filmstrips). Failures always surface either way.
-function runJob(payload, label, { quiet = false } = {}) {
+// done replaces "<label> done" where that would not read as a sentence.
+function runJob(payload, label, { quiet = false, done = null } = {}) {
   const cid = 'c' + (++jobSeq)
   return new Promise(resolve => {
     jobs.set(cid, j => {
-      if (j.status === 'done') { jobs.delete(cid); if (!quiet) toast(`${label} done`, 'ok'); resolve(j.result) }
+      if (j.status === 'done') { jobs.delete(cid); if (!quiet) toast(done || `${label} done`, 'ok'); resolve(j.result) }
       if (j.status === 'error') { jobs.delete(cid); toast(j.message, 'bad', 6000); resolve(null) }
       if (j.status === 'cancelled') { jobs.delete(cid); resolve(null) }
     })
@@ -501,57 +586,16 @@ function runJob(payload, label, { quiet = false } = {}) {
 // to touch control.html.
 const Library = require('./ui/library.js')
 
-// A take folder groups itself: the raw take in Original/ is the original, and the
-// deliverable on top plus any working versions are its exports. Loose takes from
-// before take folders have exports written next to them as name-edit.mp4,
-// name-cut.mp4 and so on, grouped by name. Either way the library shows takes, not a
-// pile of files.
-const DERIVED = /-(edit|cut|audio|trim|captions|converted|gif)$/
-function groupTakes(list) {
-  const byBase = new Map()
-  for (const c of list) {
-    const stem = c.name.replace(/\.[^.]+$/, '')
-    const base = c.take ? 'take:' + c.take : DERIVED.test(stem) ? stem.replace(DERIVED, '') : stem
-    if (!byBase.has(base)) byBase.set(base, { base, take: c.take || null, original: null, derived: [], copy: null })
-    const g = byBase.get(base)
-    // the unedited MP4 autoConvertMp4 left on top is the take itself, not an export
-    if (c.copy) g.copy = c
-    else if (c.deliverable) g.derived.unshift(c)     // the finished video reads first
-    else if (DERIVED.test(stem)) g.derived.push(c)
-    else if (!g.original || c.mtime > g.original.mtime) {
-      if (g.original) g.derived.push(g.original)
-      g.original = c
-    } else g.derived.push(c)
-  }
-  // a derived file whose original was deleted still deserves a card
-  for (const g of byBase.values()) {
-    if (!g.original && g.derived.length) g.original = g.derived.shift()
-    if (!g.original && g.copy) { g.original = g.copy; g.copy = null }
-  }
-  return [...byBase.values()].filter(g => g.original)
-    .sort((a, b) => b.original.mtime - a.original.mtime)
-}
+// Grouping files into takes, and naming each card and export row, lives in its own
+// pure module so the rules can be tested without a window.
+const { DERIVED, groupTakes, takeTitle, takeWhere, takeRows, exportLabel, libraryColumns, dealColumns } = require('./ui/take-list')
 
-// move to Trash rather than unlink, so a misclick is recoverable
-function trash(paths) {
-  const dir = path.join(os.homedir(), '.Trash')
-  let moved = 0
-  for (const p of paths) {
-    if (!p || !fs.existsSync(p)) continue
-    let dest = path.join(dir, path.basename(p))
-    let n = 1
-    while (fs.existsSync(dest)) {
-      const e = path.extname(p), b = path.basename(p, e)
-      dest = path.join(dir, `${b} ${++n}${e}`)
-    }
-    try { fs.renameSync(p, dest); moved++ } catch {}
-  }
-  return moved
-}
+// move to Trash rather than unlink, so a misclick is recoverable (Put Back included)
+const trash = paths => ipcRenderer.invoke('trash-items', paths).catch(() => 0)
 // Support files live in a hidden folder beside the media, so the save folder only
 // holds recordings and exports. Mirrors sidecarPath() in processor.js.
 const SIDE_DIR = '.fetch'
-const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
+const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
 const sidecarPath = (media, ext) =>
   path.join(path.dirname(media), SIDE_DIR, path.basename(media).replace(/\.[^.]+$/, '') + ext)
 const sidecarIn = (media, ext) => {
@@ -638,7 +682,10 @@ function startRename(card, g) {
 
   const input = document.createElement('input')
   input.className = 'clip-name clip-name-edit'
-  input.value = currentBase
+  // a timestamp name is not worth editing, so start empty with the readable title as a hint
+  const stamp = /^recording-\d{12,14}$/i.test(currentBase)
+  input.value = stamp ? '' : currentBase
+  if (stamp) input.placeholder = takeTitle(g)
   input.maxLength = 200
   nameEl.replaceWith(input)
   input.focus(); input.select()
@@ -649,6 +696,7 @@ function startRename(card, g) {
   const commit = () => {
     if (done) return
     done = true
+    if (stamp && !input.value.trim()) { restore(); return }
     const check = sanitizeClipName(input.value)
     if (check.error) { toast(check.error, 'bad'); restore(); return }
     if (check.name === currentBase) { restore(); return }
@@ -666,6 +714,8 @@ function startRename(card, g) {
 // job landing mid-render) is dropped rather than starting a second overlapping wave
 let libraryRefreshing = false
 async function refreshLibrary() {
+  // before the in-flight guard, so a delete during a refresh still closes its take
+  if (window.editorCloseIfGone) window.editorCloseIfGone()
   if (libraryRefreshing) return
   libraryRefreshing = true
   try {
@@ -677,6 +727,7 @@ async function refreshLibrary() {
 async function refreshLibraryOnce() {
   const list = await ipcRenderer.invoke('list-recordings')
   const grid = $('libGrid')
+  grid._cards = null                            // an empty state must not be re-dealt on resize
   const groups = groupTakes(list)
 
   // the folder bar lives above the grid and survives refreshes as its own element
@@ -703,7 +754,7 @@ async function refreshLibraryOnce() {
   }
 
   grid.innerHTML = ''
-  const needsThumb = []
+  const needsThumb = [], cards = []
   for (const g of visible) {
     const c = g.original
     const card = el('div', 'clip')
@@ -712,22 +763,21 @@ async function refreshLibraryOnce() {
         ${c.poster ? `<img src="file://${encodeURI(c.poster).replace(/#/g, '%23').replace(/\?/g, '%3F')}" alt="">` : `<span class="ph">${ico('film-strip', 'icon-xl')}</span>`}
         <span class="clip-play"><span>${ico('play-fill', 'icon-lg')}</span></span>
         <span class="clip-badges">
-          <span class="badge">${c.ext}</span>
           ${c.srt ? '<span class="badge gold">CC</span>' : ''}
-          ${c.imported ? '<span class="badge">imported</span>' : ''}
+          ${c.imported ? `<span class="badge">imported ${c.ext}</span>` : ''}
           ${g.derived.length ? `<span class="badge gold">${g.derived.length} export${g.derived.length === 1 ? '' : 's'}</span>` : ''}
         </span>
       </button>
       <div class="clip-body">
         <div class="clip-name-row">
-          <div class="clip-name" title="${escHtml(g.take ? path.basename(g.take) : c.name)}">${escHtml(g.take ? path.basename(g.take).replace(/^recording-/, '') : c.name.replace(/^recording-/, '').replace(/\.[^.]+$/, ''))}</div>
+          <div class="clip-name" title="${escHtml(g.take ? path.basename(g.take) : c.name)}">${escHtml(takeTitle(g))}</div>
           ${Library.tagHTML(c.path)}
         </div>
-        <div class="clip-meta">${c.mb} MB · ${fmtAgo(c.mtime)}</div>
-        ${g.derived.length ? `<div class="derived">${g.derived.map(d => `
+        <div class="clip-meta">${c.mb} MB · ${fmtAgo(c.mtime)}${takeWhere(g) ? ` · ${escHtml(takeWhere(g))}` : ''}</div>
+        ${takeRows(g).length ? `<div class="derived">${takeRows(g).map(d => `
           <button class="derived-row" data-p="${d.path}">
             ${ico('film-strip', 'icon-sm')}
-            <span class="d-name">${d.name.replace(/^recording-[0-9]+/, '').replace(/^-/, '') || d.name}</span>
+            <span class="d-name" title="${escHtml(d.name)}">${escHtml(exportLabel(d, g))}</span>
             <span class="d-size mono">${d.mb} MB</span>
           </button>`).join('')}</div>` : ''}
         <div class="clip-acts">
@@ -755,10 +805,13 @@ async function refreshLibraryOnce() {
       b.onclick = () => openPlayer(b.dataset.p)
       b.ondblclick = () => openInEditor(b.dataset.p)
     })
-    grid.appendChild(card)
+    cards.push(card)
 
     if (!c.poster) needsThumb.push(c)
   }
+  grid._cards = cards
+  grid._cols = 0
+  dealLibrary(grid)
 
   // Missing thumbnails run quietly (no "Thumbnail done" toast per clip) and capped per
   // pass, so a big library doesn't spawn dozens of ffmpeg processes at once. They land
@@ -768,6 +821,25 @@ async function refreshLibraryOnce() {
     Promise.all(batch.map(c => runJob({ op: 'thumb', src: c.path, atSec: 1 }, 'Thumbnail', { quiet: true })))
       .then(results => { if (results.some(Boolean)) refreshLibrary() })
   }
+}
+
+// Deals the cards into columns, left to right, so the newest takes are the top row.
+// Again whenever the width crosses a column boundary (window resize, chat docked).
+function dealLibrary(grid) {
+  if (!grid._ro) {
+    grid._ro = new ResizeObserver(() => dealLibrary(grid))
+    grid._ro.observe(grid)
+  }
+  const cards = grid._cards
+  if (!cards || !cards.length || !grid.isConnected) return
+  const n = libraryColumns(grid.clientWidth || 1240)
+  if (n === grid._cols && cards[0].parentElement && cards[0].parentElement.parentElement === grid) return
+  grid._cols = n
+  grid.replaceChildren(...dealColumns(cards, n).map(col => {
+    const c = el('div', 'lib-col')
+    c.append(...col)
+    return c
+  }))
 }
 
 function confirmDelete(g) {
@@ -780,10 +852,10 @@ function confirmDelete(g) {
       <p class="dim" style="font-size:var(--t-12)">
         ${all.length === 1 ? 'This take' : `This take and its ${g.derived.length} export${g.derived.length === 1 ? '' : 's'}`},
         plus any captions and thumbnails. You can get them back from the Trash.</p>
-      <label class="opt" style="padding:6px 0"><span class="opt-txt">
+      ${g.derived.length ? `<label class="opt" style="padding:6px 0"><span class="opt-txt">
         <span class="opt-title">Keep the original</span>
         <span class="opt-sub">delete only the exports</span></span>
-        <span class="switch"><input type="checkbox" id="keepOrig"><span class="track"></span></span></label>
+        <span class="switch"><input type="checkbox" id="keepOrig"><span class="track"></span></span></label>` : ''}
     </div>
     <div class="modal-foot"><div style="flex:1"></div>
       <button class="btn btn-sm" data-close>Cancel</button>
@@ -793,12 +865,16 @@ function confirmDelete(g) {
   const close = () => scrim.remove()
   scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)
   scrim.onclick = e => { if (e.target === scrim) close() }
-  scrim.querySelector('#doDel').onclick = () => {
-    const keep = scrim.querySelector('#keepOrig').checked
+  scrim.querySelector('#doDel').onclick = async e => {
+    // the Trash answers asynchronously; a second click would report the take as lost
+    if (e.currentTarget.disabled) return
+    e.currentTarget.disabled = true
+    // with no exports there is nothing to keep the original apart from, so no switch
+    const keep = !!(scrim.querySelector('#keepOrig') || {}).checked
     const targets = keep ? g.derived : all
     // a whole take folder goes as one, so it comes back from the Trash in one piece
     const whole = g.take && !keep
-    const n = whole ? trash([g.take]) : trash(targets.flatMap(t => [t.path, ...sidecars(t.path)]))
+    const n = await (whole ? trash([g.take]) : trash(targets.flatMap(t => [t.path, ...sidecars(t.path)])))
     targets.forEach(t => Library.forgetPath(t.path))   // folders never hold onto dead paths
     close()
     if (whole) toast(n ? `Moved "${path.basename(g.take)}" to Trash` : 'Could not move it to Trash', n ? 'ok' : 'bad')

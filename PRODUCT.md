@@ -53,7 +53,8 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
 
 **Surfaces**
 - Record screen: Biscuit, "What are we recording today?", a composer, chips. The
-  direct record action is always the first chip.
+  direct record action is the first chip until a setup exists; then the setup card's
+  red Start is the one record control, and the chip steps aside.
 - Chat pane (Cmd J): spawns the person's own Claude Code or Codex with the Fetch MCP
   server attached. Streams every tool call as a row with its duration. Remembers the
   conversation (`--resume` on the session id). `@` tags a recording by exact path.
@@ -85,7 +86,7 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   `S` subtitles, `B` beats, `M` marks.
 - The nine values that used to live only as slider positions now persist in `look`.
 
-**MCP tools** (`mcp/index.js`), 19: `record_start`, `record_stop`, `record_status`,
+**MCP tools** (`mcp/index.js`), 20: `record_start`, `record_stop`, `record_status`, `pointer`,
 `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
 `list_beats`, `get_edit`, `apply_edit`, `export`, `rename_recording`,
 `remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`, `delete_recording`,
@@ -95,6 +96,20 @@ installed font, caption style and position, zooms, backdrops, camera, denoise, l
 gain, fades, music, redaction, spotlight and numbered steps. The pipeline runs with the
 window closed. Settings that decide what may be recorded, and telemetry, are refused
 to agents in code.
+
+**The agent's own cursor** (`ui/pointer.js`). An agent's take is recorded without the
+Mac's pointer, which belongs to the person at the desk. The agent reports where its
+pointer is with `pointer` as it acts (fractions of the window, page pixels plus the
+viewport, or screen points); each report is stamped on the take's video clock and saved
+as `.fetch/<stem>.pointer.json`. The cursor is Fetch's own, never the system's: a
+near-black macOS arrow with a crisp light edge, about 30 px tall at 1080, carrying a
+round Biscuit badge (`idle.png` cropped to the head, `assets/mascot/badge.png`), named
+"Biscuit" for a moment at each click. The export draws it gliding between the points,
+pressing with a gold ripple on clicks, before any zoom so zooms magnify it. While the take records, the same cursor is shown live over
+the recorded window (`agent-cursor.html`: click-through, never focused, kept out of
+every capture) and goes when the take stops. Nothing moves the person's mouse. Its clicks
+are what auto-zoom follows. The track is `pointer` in the edit document, so it can be
+supplied or corrected afterwards.
 
 **Not built**, and not to be claimed: driving apps (Fetch records, other tools drive),
 arrows, loupes, "lift one row", multi-device frames, reading the project's source code.

@@ -43,6 +43,12 @@ let deps = {}                  // { getWindow, toRenderer, proc, isRecording }
 // "did not start" timer that was never cleared on start, so any agent take longer
 // than 30 seconds reported an error to the agent while it was still recording.
 let pendingTake = null         // { phase: 'starting'|'recording'|'stopping', resolve, reject, timer }
+// A take that ended on its own (the window closed) with nobody waiting on it. The
+// agent that started it learns its path from the record_stop it sends next.
+let endedTake = null
+// When a take ended on its own and is still being saved, so a record_stop in that
+// second waits for the path instead of hearing "not recording".
+let endingAt = 0
 
 function socketPath() {
   const dir = app ? app.getPath('userData') : require('os').tmpdir()
@@ -57,6 +63,7 @@ const TITLES = {
   'record.start': 'Started recording',
   'record.stop': 'Stopped recording',
   'record.pause': 'Paused recording',
+  'record.pointer': 'Moved its pointer',
   'windows.list': 'Looked at open windows',
   'displays.list': 'Looked at displays',
   'recordings.list': 'Listed recordings',
@@ -89,7 +96,8 @@ const ops = {
   },
 
   async 'record.status'() {
-    return { recording: deps.isRecording(), pending: !!pendingTake }
+    const ended = !deps.isRecording() && endedTake ? { ended: { path: endedTake.path, stopped_early: endedTake.stopped_early } } : {}
+    return { recording: deps.isRecording(), pending: !!pendingTake, ...ended }
   },
 
   // Starts a take through the renderer so every visible affordance still happens.
@@ -97,6 +105,7 @@ const ops = {
   async 'record.start'(args = {}, ctx) {
     if (deps.isRecording()) throw new Error('already recording')
     if (pendingTake) throw new Error('a take is already being awaited')
+    endedTake = null; endingAt = 0
 
     const win = deps.getWindow()
     if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
@@ -106,10 +115,18 @@ const ops = {
     // prose and prose is a suggestion.
     await enforceAccess(args, ctx)
 
+    // macOS sends no frames for the part of a window another covers, so a take of a
+    // covered window is a frozen picture. Say so before recording anything, with the
+    // way round it, rather than hand back a take of stale frames (occludedTake).
+    if (args.window != null && !args.allow_covered && deps.windowCovered) {
+      const hold = occludedTake(await deps.windowCovered(args.window).catch(() => null))
+      if (hold) return hold
+    }
+
     await applySetup(win, args)
     // In the background unless the person asked to watch (a person-only setting).
     const quiet = !(deps.getPrefs && deps.getPrefs().agentTakesVisible)
-    if (deps.setQuiet) deps.setQuiet(quiet)
+    if (deps.setQuiet) deps.setQuiet(quiet, true)
     await win.webContents.executeJavaScript(`window.__quietTake = ${quiet}`)
     deps.toRenderer('start')
 
@@ -126,7 +143,12 @@ const ops = {
   },
 
   async 'record.stop'() {
-    if (!deps.isRecording()) throw new Error('not recording')
+    if (!deps.isRecording() && endedTake && Date.now() - endedTake.at < 30 * 60e3) {
+      const { at, ...r } = endedTake; endedTake = null
+      return r
+    }
+    const ending = !deps.isRecording() && endingAt && Date.now() - endingAt < 2 * 60e3
+    if (!deps.isRecording() && !ending) throw new Error('not recording')
     // Returns the finished file. A take started by a person has no waiter, so one is
     // made here; either way stop answers with the path once it is on disk.
     const done = new Promise((resolve, reject) => {
@@ -139,8 +161,17 @@ const ops = {
         }, 120000),
       }
     })
-    deps.toRenderer('stop')
+    if (!ending) deps.toRenderer('stop')
     return await done
+  },
+
+  // Where the agent's own pointer is, during its take. The take has no Mac pointer in
+  // it (native-start records agent takes with --no-cursor), so this is the only cursor
+  // the video will show. Stamped on the take's clock in main.js, which also shows it
+  // live over the recorded window (agent-cursor.html). Neither moves the Mac's pointer.
+  async 'record.pointer'(args = {}) {
+    if (!deps.pointer) throw new Error('this version of Fetch cannot draw a pointer')
+    return deps.pointer(args)
   },
 
   async 'record.pause'() {
@@ -189,6 +220,8 @@ const ops = {
     // The words themselves only on request: a long transcript is thousands of tokens,
     // but correcting what the recogniser misheard needs them.
     if (args.include_cues) out.captions.cues = (doc.cues || []).map(c => ({ id: c.id, start: c.start, end: c.end, text: c.text }))
+    // likewise the pointer track, which is hundreds of points on a long take
+    if (args.include_pointer) out.pointer.track = pointerTrack(args.path, doc)
     return out
   },
 
@@ -291,7 +324,7 @@ const ops = {
       refresh()
       return { trashed: take, folder: true, recoverable: true }
     }
-    const side = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
+    const side = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
       .map(e => deps.proc.sidecarIn(args.path, e)).filter(f => f !== args.path && fs.existsSync(f))
     for (const f of [args.path, ...side]) await shell.trashItem(f)
     refresh()
@@ -341,7 +374,7 @@ const ops = {
     const groups = new Map()
     for (const c of list) {
       const stem = path.parse(c.path).name
-      const key = c.take ? 'take:' + c.take : stem.replace(DERIVED, '')
+      const key = c.take ? 'take:' + c.take : path.join(path.dirname(c.path), stem.replace(DERIVED, ''))
       if (!groups.has(key)) groups.set(key, { take: c.take || null, original: null, deliverable: null, copy: null, versions: [] })
       const g = groups.get(key)
       if (c.copy) g.copy = c                  // autoConvertMp4's unedited MP4, not an export
@@ -476,8 +509,16 @@ async function inEditor(path, expr) {
 // injects into a page (Playwright's page.mouse, anything over CDP) never moves it, so
 // such a take records no clicks and a still pointer, and auto-zoom silently does
 // nothing. Saying so lets the agent place zooms itself instead of exporting a flat video.
+// An agent take's own pointer track, when it has one, is what auto-zoom follows.
+function pointerTrack(path, doc) {
+  const t = path && deps.proc.pointerTrack ? deps.proc.pointerTrack(path, { pointer: doc.pointer }) : null
+  return t ? t.points : []
+}
+
 function pointerSummary(path, doc) {
-  const data = path && deps.proc.readCursor ? deps.proc.readCursor(path) : null
+  const track = pointerTrack(path, doc)
+  const own = track.length ? require('./pointer').asCursorData(track) : null
+  const data = own || (path && deps.proc.readCursor ? deps.proc.readCursor(path) : null)
   if (!data) return { recorded: false, clicks: 0, autoZoomSpots: 0 }
   const clips = doc.clips || []
   const clock = t => t
@@ -485,10 +526,33 @@ function pointerSummary(path, doc) {
   let spots = 0
   try { spots = deps.proc.zoomMoments(data, { clock, crop: doc.crop }).length } catch {}
   const out = { recorded: true, clicks: (data.clicks || []).length, autoZoomSpots: spots }
+  if (own) { out.source = Array.isArray(doc.pointer) ? 'edit' : 'agent'; out.points = track.length }
+  // the Mac's pointer is in the pixels whenever the take recorded one, so say whether
+  // the export will lift it out (hideMacCursor)
+  const mac = path && deps.proc.readCursor ? deps.proc.readCursor(path) : null
+  if (mac && mac.inPicture !== false) {
+    out.macCursorInPicture = true
+    out.macCursorHidden = doc.hideMacCursor === true || (doc.hideMacCursor !== false && track.length > 0)
+  }
   if (!spots) out.note = 'No clicks or pointer pauses in the picture, so auto-zoom has nothing to zoom on. ' +
-    'Input from Playwright or another driver that does not move the real pointer is not seen. ' +
-    'Place zooms with the zooms list instead.'
+    'Input from Playwright or another driver that does not move the real pointer is not seen unless it ' +
+    'is reported with the pointer tool during the take. Place zooms with the zooms list instead.'
   return out
+}
+
+// A text's time on the output clock and the output's length, which is what decides
+// whether an unstyled text is a title card (see ui/overlays.js textStyle)
+const overlays = require('./overlays')
+function outputLength(doc) { return (doc.clips || []).reduce((n, c) => n + Math.max(0, c.end - c.start), 0) }
+function textOnOutput(doc, t) {
+  const clips = (doc.clips || []).slice().sort((a, b) => a.start - b.start)
+  const at = s => {
+    if (s == null) return null
+    let acc = 0
+    for (const c of clips) { if (s < c.start) return acc; if (s <= c.end) return acc + s - c.start; acc += c.end - c.start }
+    return acc
+  }
+  return { ...t, start: at(t.start), end: at(t.end) }
 }
 
 function summarise(doc, path) {
@@ -500,10 +564,14 @@ function summarise(doc, path) {
 
     clips: (doc.clips || []).map(c => ({ id: c.id, start: r(c.start), end: r(c.end) })),
     zooms: (doc.zooms || []).map(z => ({ id: z.id, start: r(z.start), end: r(z.end), scale: z.scale, x: z.x, y: z.y })),
-    marks: (doc.marks || []).map(m => ({ id: m.id, kind: m.kind, start: r(m.start), end: r(m.end), x: m.x, y: m.y, w: m.w, h: m.h, n: m.n })),
+    marks: (doc.marks || []).map(m => ({ id: m.id, kind: m.kind, start: r(m.start), end: r(m.end), x: m.x, y: m.y, w: m.w, h: m.h, n: m.n,
+      ...(m.kind === 'blur' ? { strength: m.strength || 18 } : {}) })),
+    // style says how each text will export, worked out the same way the exporter does
+    // when the text does not set one
     texts: (doc.texts || []).map(t => ({
       id: t.id, text: t.text, start: t.start, end: t.end,
-      fx: t.fx, fy: t.fy, sizeFrac: t.sizeFrac, color: t.color, box: t.box, font: t.font || 'Helvetica', align: t.align || 'center',
+      fx: t.fx, fy: t.fy, sizeFrac: t.sizeFrac, color: t.color, box: t.box, font: t.font || 'SF Pro', align: t.align || 'center',
+      style: overlays.textStyle(textOnOutput(doc, t), outputLength(doc)), ...(t.subtitle ? { subtitle: t.subtitle } : {}),
     })),
     beats: (doc.beats || []).map(b => ({ id: b.id, start: r(b.start), end: r(b.end), label: b.label })),
     captions: { count: (doc.cues || []).length, style: doc.capStyle },
@@ -524,6 +592,8 @@ function summarise(doc, path) {
       // in) is offered to agents the moment it exists, not when this line is edited
       backdrops: [null, ...deps.proc.backdropList().map(b => b.id)],
       captionPositions: ['top', 'middle', 'bottom'],
+      captionHighlights: ['word', 'pill', 'none'],
+      textStyles: ['title', 'lower-third', 'label'],
       markKinds: ['redact', 'blur', 'spotlight', 'step'],
       aspects: [null, 16 / 9, 9 / 16, 1, 4 / 5],
       cropAR: ['free', '16:9', '9:16', '1:1', '4:5'],
@@ -544,23 +614,30 @@ async function applySetup(win, args) {
     systemAudio: args.system_audio === true,
     camera: args.camera === true,
   }
+  // The take borrows the person's setup card. What it held is kept aside and put back
+  // when the take ends (restorePersonSetup in app.js), or their next take would aim at
+  // the agent's window, often closed by then, with their mic switched off.
   const js = `(async () => {
     const w = ${JSON.stringify(wanted)}
-    if (w.mic !== null) setup.mic = w.mic
-    if (w.systemAudio !== null) setup.sys = w.systemAudio
-    if (w.camera !== null) setup.cam = w.camera
-    if (w.window) {
-      const list = await ipcRenderer.invoke('list-windows')
-      const hit = (list || []).find(x => String(x.id) === w.window)
-      if (!hit) throw new Error('no window with id ' + w.window)
-      setup.mode = 'window'; setup.window = hit
-    } else {
-      const srcs = await ipcRenderer.invoke('get-sources')
-      const screens = srcs.filter(s => s.isScreen)
-      const hit = w.display ? screens.find(s => s.id.includes(':' + w.display + ':')) : screens[0]
-      if (!hit) throw new Error('no display with id ' + w.display)
-      setup.mode = 'screen'; setup.source = hit
-    }
+    if (!window.__personSetup) window.__personSetup = { mode: setup.mode, source: setup.source,
+      window: setup.window, mic: setup.mic, sys: setup.sys, cam: setup.cam }
+    try {
+      if (w.mic !== null) setup.mic = w.mic
+      if (w.systemAudio !== null) setup.sys = w.systemAudio
+      if (w.camera !== null) setup.cam = w.camera
+      if (w.window) {
+        const list = await ipcRenderer.invoke('list-windows')
+        const hit = (list || []).find(x => String(x.id) === w.window)
+        if (!hit) throw new Error('no window with id ' + w.window)
+        setup.mode = 'window'; setup.window = hit
+      } else {
+        const srcs = await ipcRenderer.invoke('get-sources')
+        const screens = srcs.filter(s => s.isScreen)
+        const hit = w.display ? screens.find(s => s.id.includes(':' + w.display + ':')) : screens[0]
+        if (!hit) throw new Error('no display with id ' + w.display)
+        setup.mode = 'screen'; setup.source = hit
+      }
+    } catch (e) { restorePersonSetup(); throw e }
     applySetup()
     return true
   })()`
@@ -591,7 +668,8 @@ function handleLine(sock, line, ctx) {
 
 // Reads are noise in a log meant to answer "what did it do to my machine", so the
 // pure lookups are skipped and anything with an effect is kept.
-const QUIET = new Set(['ping', 'hello', 'record.status'])
+// The pointer is a note about the take, sent many times a take, not an action.
+const QUIET = new Set(['ping', 'hello', 'record.status', 'record.pointer'])
 
 function logOp(op, ctx, t0, args, result, error) {
   if (QUIET.has(op)) return
@@ -618,6 +696,43 @@ function logOp(op, ctx, t0, args, result, error) {
   })
 }
 
+// What record_start answers for a window others cover by more than a sliver, or null
+// to go ahead. Fetch records, it does not drive, so it will not raise the window
+// itself: it offers the two ways round it, the person bringing it forward, or the
+// display it is on, recorded whole, with the crop that shows just this window.
+const COVERED = 0.08
+function occludedTake(cov) {
+  if (!cov || !(cov.covered > COVERED)) return null
+  const out = {
+    recording: false, status: 'occluded',
+    covered: Math.round(cov.covered * 100) / 100, covered_by: cov.by || [],
+    note: `${Math.round(cov.covered * 100)}% of that window is behind ${(cov.by || []).join(', ') || 'other windows'}, ` +
+      'and macOS sends no frames for a covered window, so the take would freeze. Nothing was recorded. ' +
+      'Ask the person to bring the window to the front and call record_start again, or record its display ' +
+      'with record_start { display } and then apply_edit { crop } with the crop given here. ' +
+      'record_start { window, allow_covered: true } records it anyway.',
+  }
+  try {
+    const { screen } = require('electron')
+    const d = screen.getDisplayMatching({ x: cov.x, y: cov.y, width: cov.width, height: cov.height })
+    const b = d.bounds, f = n => Math.round(Math.max(0, Math.min(1, n)) * 1000) / 1000
+    out.display = String(d.id)
+    out.crop = { x: f((cov.x - b.x) / b.width), y: f((cov.y - b.y) / b.height),
+      w: f(cov.width / b.width), h: f(cov.height / b.height) }
+  } catch {}
+  return out
+}
+
+// macOS stops sending a window's frames while another window covers it. The take
+// still runs to Stop (the recorder holds the last picture), but an agent should hear
+// that part of its video is a frozen frame, and why, rather than find out on playback.
+function stillNote(stillMs) {
+  if (!(stillMs >= 3000)) return null
+  return `The window showed nothing new for ${(stillMs / 1000).toFixed(1)} s, so that stretch of the video ` +
+    'holds one frozen picture. Usually another window was covering it: macOS sends no frames for a ' +
+    'covered window. Keep the recorded window uncovered while recording.'
+}
+
 function start(d) {
   deps = d
   if (server) return
@@ -632,12 +747,24 @@ function start(d) {
       p.resolve({ recording: true, started_at: new Date().toISOString() })
     })
     ipcMain.on('take-finished', (e, info) => {
-      if (!pendingTake || pendingTake.phase !== 'stopping') return
+      endingAt = 0
+      const note = stillNote(info && info.stillMs)
+      const r = { path: info && info.file, mb: info && info.mb,
+        ...(info && info.endedAlone ? { stopped_early: info.reason || 'the capture ended on its own' } : {}),
+        ...(note ? { note } : {}) }
+      if (!pendingTake || pendingTake.phase !== 'stopping') {
+        if (info && info.endedAlone) endedTake = { ...r, at: Date.now() }
+        return
+      }
       clearTimeout(pendingTake.timer)
       const p = pendingTake; pendingTake = null
-      p.resolve({ path: info && info.file, mb: info && info.mb })
+      p.resolve(r)
     })
     ipcMain.on('take-failed', (e, info) => {
+      endingAt = 0
+      // A take that failed before it went live never sent the idle rec-state that
+      // clears this, so the person's next take would run without border or HUD.
+      if (deps.setQuiet) deps.setQuiet(false)
       if (!pendingTake) return
       clearTimeout(pendingTake.timer)
       const p = pendingTake; pendingTake = null
@@ -670,6 +797,11 @@ function start(d) {
   })
 }
 
+// Whether the take about to start is an agent's, so main.js records it without the
+// Mac's pointer. True from record.start until capture begins.
+const startingAgentTake = () => !!pendingTake && pendingTake.phase === 'starting'
+const takeEndedAlone = () => { endingAt = Date.now() }
+
 function stop() {
   if (!server) return
   try { server.close() } catch {}
@@ -677,4 +809,4 @@ function stop() {
   server = null
 }
 
-module.exports = { start, stop, socketPath, VERSION }
+module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEndedAlone, stillNote, occludedTake }

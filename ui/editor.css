@@ -5,6 +5,8 @@
    back to content height, which pushed the timeline off the bottom of the window. */
 #editorMount { height:100%; min-height:0; display:flex; flex-direction:column; }
 #editorMount > .ed { flex:1 1 auto; min-height:0; }
+/* the flex above outranks .empty's grid, so its centring is restated here */
+#editorMount.empty { align-items:center; justify-content:center; }
 .ed { display:flex; height:100%; min-height:0; overflow:hidden; background:var(--ink-0); }
 .ed-main { flex:1 1 auto; min-width:0; min-height:0; display:flex; flex-direction:column; }
 
@@ -41,9 +43,40 @@
 .txt-layer { position:absolute; padding:4px 10px; border:1.5px dashed transparent; border-radius:var(--r-sm);
   font-weight:700; white-space:pre; cursor:move; transform:translate(-50%,-50%); line-height:1.2; }
 .txt-layer[data-sel="true"] { border-color:var(--fur-1); }
-/* matches the export: drawtext's box is square, padded in proportion to the text
-   (boxborderw in processor.js), and the text is the font's bold cut */
-.txt-layer[data-box="true"] { background:rgba(0,0,0,.45); padding:.2em .45em; border-radius:0; }
+/* matches the export (ui/overlays.js): a label is bold with a soft bloom, or on a
+   dark pill; a title is the display face with a quieter line under it; a lower
+   third hangs from its point with a gold rule */
+.txt-layer { text-shadow:0 0 .3em rgba(10,9,8,.45), 0 .04em .1em rgba(0,0,0,.35); }
+.txt-layer[data-box="true"] { background:rgba(20,17,15,.74); padding:.28em .55em; border-radius:999px; text-shadow:none; }
+.txt-layer[data-style="title"] { display:flex; flex-direction:column; align-items:center; gap:.3em;
+  font-family:-apple-system,"SF Pro Display",system-ui,sans-serif; letter-spacing:-.022em; text-shadow:none; }
+.txt-layer[data-style="title"] .ts { font-weight:500; letter-spacing:.01em; opacity:.78; }
+.txt-layer[data-style="lower-third"] { transform:none; display:flex; flex-direction:column; text-align:left;
+  border-left:.09em solid var(--fur-1); padding-left:.45em; font-family:-apple-system,"SF Pro Display",system-ui,sans-serif; }
+.txt-layer[data-style="lower-third"] .ts { font-weight:500; opacity:.8; }
+/* a layer outside its time is still there to edit, but reads as not on screen now */
+.txt-layer[data-live="false"]:not([data-sel="true"]) { opacity:.35; }
+
+/* marks and title cards on the stage, drawn the way the export draws them */
+.ov-stage { position:absolute; inset:0; pointer-events:none; overflow:hidden; border-radius:inherit; }
+.stage-frame > .bd-fill ~ .ov-stage { position:absolute; z-index:1; }
+.ov-clip { position:absolute; overflow:hidden; }
+.ov-zoom { position:absolute; inset:0; transform-origin:0 0; }
+.ov-card { position:absolute; inset:0; opacity:0; backdrop-filter:blur(22px) brightness(.52) saturate(.8);
+  -webkit-backdrop-filter:blur(22px) brightness(.52) saturate(.8); }
+.ov-spot { position:absolute; box-shadow:0 0 0 200vmax rgba(10,9,8,.46); opacity:0;
+  transition:opacity 500ms var(--ease-in); }
+.ov-spot[data-on="true"] { opacity:1; }
+.ov-blur { position:absolute; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); opacity:0;
+  transition:opacity 350ms var(--ease-in); }
+.ov-blur[data-on="true"] { opacity:1; }
+.ov-step { position:absolute; display:grid; place-items:center; border-radius:50%; box-sizing:border-box;
+  background:var(--fur-1); color:var(--ink-1); border:solid #fff; font-weight:700;
+  font-family:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif;
+  transform:translate(-50%,-50%) scale(.35); opacity:0;
+  transition:transform 340ms cubic-bezier(.3,1.6,.5,1), opacity 160ms var(--ease-in); }
+.ov-step[data-on="true"] { transform:translate(-50%,-50%) scale(1); opacity:1; }
+@media (prefers-reduced-motion:reduce) { .ov-step, .ov-spot, .ov-blur { transition:none; } }
 .txt-layer:hover:not([data-editing="true"]) { outline:1.5px dashed rgba(240,169,60,.75); outline-offset:3px; }
 .txt-layer[data-editing="true"] { cursor:text; outline:2px solid var(--fur-1); outline-offset:3px; }
 
@@ -64,6 +97,9 @@
 .pc:hover { background:var(--ink-3); }
 .pc.main { width:46px; height:46px; background:var(--fur-1); border-color:var(--fur-1); color:#231703; }
 .pc.main:hover { background:var(--fur-0); }
+.pc:disabled { opacity:.35; cursor:default; }
+.pc:disabled:hover { background:transparent; }
+#edUndo { margin-left:var(--s-2); }
 
 /* ── inspector ───────────────────────────────────────────────────────── */
 .ed-inspector { flex:0 0 312px; width:312px; border-left:var(--edge); background:var(--ink-1);
@@ -115,7 +151,11 @@
 #playhead { position:absolute; top:0; bottom:0; width:2px; background:#fff; pointer-events:none;
   box-shadow:0 0 8px rgba(255,255,255,.5); }
 .tl-ticks { position:absolute; inset:0; pointer-events:none; }
-.tl-ticks span { position:absolute; top:4px; font-family:var(--font-mono); font-size:9.5px; color:var(--text-2);
+/* on the same dark pill as the lane tags: bare grey text vanished over a light take's
+   thumbnails */
+.tl-ticks span { position:absolute; top:4px; height:16px; padding:0 5px; border-radius:var(--r-pill);
+  background:rgba(10,9,8,.72); backdrop-filter:blur(6px);
+  font:500 9.5px/16px var(--font-mono); color:var(--text-1);
   transform:translateX(-50%); }
 
 
@@ -179,10 +219,13 @@
 .cap-overlay[data-pos="top"] { align-items:flex-start; padding-top:5%; }
 .cap-overlay[data-pos="middle"] { align-items:center; }
 .cap-overlay[data-pos="bottom"] { padding-bottom:6%; }
-.cap-overlay span { font-weight:700; line-height:1.3; text-align:center; max-width:92%;
-  text-shadow:0 2px 6px rgba(0,0,0,.65); }
-.cap-overlay span[data-boxed="true"] { background:rgba(0,0,0,.62); padding:.18em .5em;
-  border-radius:6px; text-shadow:none; }
+/* The export's look (ui/overlays.js): bold white words, no slab, a wide soft bloom
+   for legibility on a light UI, the spoken word in gold or on a gold pill. */
+.cap-overlay span { font-weight:700; line-height:1.18; text-align:center; max-width:92%; letter-spacing:-.005em;
+  text-shadow:0 0 .35em rgba(10,9,8,.6), 0 0 .8em rgba(10,9,8,.45), 0 .05em .1em rgba(0,0,0,.45); }
+.cap-overlay .w[data-on="true"] { color:var(--fur-1); }
+.cap-overlay .w[data-pill="true"] { background:var(--fur-1); color:var(--ink-1); text-shadow:none;
+  border-radius:999px; padding:0 .16em; margin:0 -.16em; }
 
 /* cut regions on the timeline */
 .tl-wrap[data-cut="true"] { cursor:crosshair; }
@@ -440,8 +483,8 @@ video.motion, img.motion { display:block; }
   transition:background var(--dur-1) var(--ease-in);
 }
 .tl-zoom:hover { background:rgba(240,169,60,.26); }
-.tl-zoom-id { font-size:9.5px; font-weight:600; }
-.tl-zoom-x { font-size:9.5px; color:var(--fur-1); opacity:.85; }
+.tl-zoom-id { font-size:11px; font-weight:600; }
+.tl-zoom-x { font-size:11px; color:var(--fur-1); opacity:.85; }
 
 /* ── marks ────────────────────────────────────────────────────────────────
    Redactions read as a warning, because missing one before export means something
@@ -454,8 +497,8 @@ video.motion, img.motion { display:block; }
 }
 .tl-mark:hover { background:var(--ink-3); }
 .tl-mark[data-kind="redact"] { background:rgba(251,191,36,.14); border-color:rgba(251,191,36,.45); color:#FDE68A; }
-.tl-mark-id { font-size:9.5px; font-weight:600; }
-.tl-mark-kind { font-size:9.5px; opacity:.85; white-space:nowrap; }
+.tl-mark-id { font-size:11px; font-weight:600; }
+.tl-mark-kind { font-size:11px; opacity:.85; white-space:nowrap; }
 
 /* ── text layers ──────────────────────────────────────────────────────────
    Neutral like marks: a text is presentation. The selected one gets the gold edge
@@ -472,8 +515,54 @@ video.motion, img.motion { display:block; }
 .tl-text:focus-visible { outline:2px solid var(--fur-1); outline-offset:-2px; }
 .tl-text[data-sel="true"] { border-color:var(--fur-1); color:var(--text-0); }
 .tl-text[data-sel="true"] .tl-text-words { font-weight:600; }
-.tl-text-id { font-size:9.5px; font-weight:600; }
-.tl-text-words { font-size:9.5px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tl-text-id { font-size:11px; font-weight:600; }
+.tl-text-words { font-size:11px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 /* the blurred fill sits under everything else in the frame */
 .stage-frame > .bd-fill ~ * { position:relative; z-index:1; }
 .stage-frame > .bd-fill ~ .cap-overlay, .stage-frame > .bd-fill ~ .cam-bubble { position:absolute; z-index:2; }
+
+/* ── asking for an edit ───────────────────────────────────────────────────
+   The chat is part of editing, so the way in sits in the transport beside the take's
+   name. While the pane is open the button reads as pressed, with the gold edge a
+   pressed chip has, so the state is an edge and a fill, not colour alone. */
+.ed-main { container-type:inline-size; }
+.ed-ask { gap:6px; padding:0 10px 0 4px; }
+.ed-ask-dog { width:20px; height:20px; flex:none; border-radius:50%; object-fit:cover;
+  object-position:50% 20%; background:var(--ink-3); }
+.ed-kbd { font:500 var(--t-11)/1 var(--font-mono); color:var(--text-2); }
+.ed-ask[aria-pressed="true"] { background:rgba(240,169,60,.14); border-color:var(--fur-1); color:var(--fur-0); }
+.ed-ask[aria-pressed="true"] .ed-kbd { color:var(--fur-1); }
+.ed-undo-agent { gap:6px; }
+.ed-undo-agent[hidden] { display:none; }
+/* Beside an open chat the stage can be narrow: labels go first, then the skip
+   buttons, the length and the timeline's heading, and every control that stays is
+   a full circle. The skip buttons go before the take's name is cut short: at 1240
+   wide with the chat docked they left it "SuiteA Latest Ta...", and a click on the
+   timeline still gets anywhere faster. */
+@container (max-width:640px) {
+  .ed-transport .ed-lbl, .ed-transport .ed-kbd { display:none; }
+  .ed-ask, .ed-undo-agent { width:28px; padding:0; }
+}
+@container (max-width:600px) {
+  #edBack, #edFwd { display:none; }
+}
+@container (max-width:440px) {
+  #edOutLen, .ed-name, .tl-bar > .caps { display:none; }
+  .ed-transport { justify-content:space-between; }
+}
+
+/* What an agent just changed lights up for about a second: an edge, never a layout
+   change, so nothing under the pointer moves. */
+.agent-flash { outline:2px solid var(--fur-1); outline-offset:-2px; }
+@media (prefers-reduced-motion:no-preference) {
+  .agent-flash { animation:agentFlash 1.1s var(--ease-in) both; }
+  .stage-frame.agent-flash { animation-name:agentFlashEdge; }
+}
+@keyframes agentFlash {
+  0%, 35% { outline-color:var(--fur-1); filter:brightness(1.35); }
+  100% { outline-color:rgba(240,169,60,0); filter:none; }
+}
+@keyframes agentFlashEdge {
+  0%, 35% { outline-color:var(--fur-1); }
+  100% { outline-color:rgba(240,169,60,0); }
+}

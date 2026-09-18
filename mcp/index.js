@@ -37,12 +37,18 @@ function build() {
         'Recording continues until record_stop is called, which returns the file path. ' +
         'Only one recording can run at a time. Depending on the person\'s Recording ' +
         'access setting, Fetch may first ask them to approve the take, so this can wait ' +
-        'on a person; if they decline, it fails with that reason.',
+        'on a person; if they decline, it fails with that reason. The take is recorded ' +
+        'without the Mac\'s own pointer; report yours with the pointer tool as you act, and ' +
+        'the video draws a cursor there. If the window is mostly covered by other windows, ' +
+        'nothing is recorded and this returns status "occluded" with what covers it, the ' +
+        'display it is on and the crop that shows just that window.',
       inputSchema: z.object({
         display: z.string().optional()
           .describe('Display id to record. Omit to record the main display.'),
         window: z.string().optional()
           .describe('Window id from list_windows. Records that window only, instead of a display.'),
+        allow_covered: z.boolean().optional()
+          .describe('Record a window even when other windows cover it. Its covered part will not update.'),
         mic: z.boolean().optional().describe('Include the microphone. Default off.'),
         system_audio: z.boolean().optional().describe('Include audio playing on the Mac. Default off.'),
         camera: z.boolean().optional().describe('Record the camera bubble. Default off; only when the person asked for their face.'),
@@ -62,7 +68,10 @@ function build() {
         'Stop the recording that is currently running. Returns the saved file path ' +
         'and size once the file is written. Each take gets its own folder, ' +
         '~/Movies/Fetch/<Take>/ by default, and the path returned is the raw take in its ' +
-        'Original/ subfolder; pass that path to the editing tools.',
+        'Original/ subfolder; pass that path to the editing tools. If the recorded window ' +
+        'closed before this was called, the take up to that moment is already saved: this ' +
+        'returns its path with stopped_early set. If a recorded window showed nothing new for ' +
+        'several seconds (usually because another window covered it), note says so.',
       inputSchema: z.object({}),
     },
     async () => text(await drive('record.stop', {}, { timeoutMs: 3 * 60 * 1000 })))
@@ -74,6 +83,49 @@ function build() {
       inputSchema: z.object({}),
     },
     async () => text(await drive('record.status')))
+
+  // An agent take is recorded without the Mac's pointer, which belongs to the person at
+  // the desk. This is how the agent's own pointer gets into the video instead, and onto
+  // the person's screen while it records. It is drawn, never the person's mouse.
+  server.registerTool(
+    'pointer',
+    {
+      description:
+        'During a take started with record_start, say where your pointer is, so the video shows ' +
+        'a cursor gliding to it (and pressing, with a ripple, when click is true). The take is ' +
+        'recorded without the Mac\'s own pointer, so without these calls the video has no cursor. ' +
+        'The cursor is Fetch\'s own (a gold arrow with a round badge), drawn in the export and ' +
+        'shown live over the recorded window so the person watching sees where you are acting. ' +
+        'Nothing moves or clicks the person\'s mouse: this only reports a position. Never move ' +
+        'the real pointer yourself; drive the app with your usual tool and report here. ' +
+        'Call it right before each action you take in the recorded window: before a click with ' +
+        'click true, before typing into a field, before hovering. Each call is stamped when it ' +
+        'arrives; the cursor arrives there at that moment and glides from the previous point. ' +
+        'Clicks reported here are also what auto-zoom zooms on.\n' +
+        'Coordinates, one of:\n' +
+        '- x, y as fractions 0 to 1 of the recorded window (or display), from its top left.\n' +
+        '- x, y as page pixels (CSS, page zoom 100%) with viewport, for a browser window: read ' +
+        '{inner_width: innerWidth, inner_height: innerHeight, outer_width: outerWidth, ' +
+        'outer_height: outerHeight} from the page once (Playwright: page.evaluate). The browser ' +
+        'chrome (tabs, toolbar) sits above the page, so Fetch places the point at ' +
+        'x = ((outerWidth - innerWidth) / 2 + pageX) / outerWidth and ' +
+        'y = (outerHeight - innerHeight + pageY) / outerHeight of the window. For an element, ' +
+        'use the centre of its boundingBox(). Window takes only: for a display take send ' +
+        'screen points (add window.screenX and screenY) with window_relative false.\n' +
+        '- x, y as macOS screen points with window_relative false, for native app drivers.',
+      inputSchema: z.object({
+        x: z.number().describe('Across: a fraction 0 to 1 by default, page pixels with viewport, screen points with window_relative false.'),
+        y: z.number().describe('Down, in the same units as x.'),
+        click: z.boolean().optional().describe('A click happens here now: the cursor presses and ripples. Default false.'),
+        window_relative: z.boolean().optional()
+          .describe('Default true: x, y are fractions of the recorded window or display. False: macOS screen points.'),
+        viewport: z.object({
+          inner_width: z.number(), inner_height: z.number(),
+          outer_width: z.number(), outer_height: z.number(),
+        }).optional().describe('The browser\'s innerWidth, innerHeight, outerWidth, outerHeight; x, y are then page pixels.'),
+      }),
+    },
+    async args => text(await drive('record.pointer', args)))
 
   // Discovery, so a target can actually be chosen. The usual shape is: something
   // else (Playwright, simctl, a shell command) opens the window, then list_windows
@@ -122,6 +174,7 @@ function build() {
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
         include_cues: z.boolean().optional().describe('Include the caption text. Default false.'),
+        include_pointer: z.boolean().optional().describe('Include the pointer track (pointer.track), to adjust it. Default false.'),
       }),
     },
     async args => text(await drive('edit.get', args, { timeoutMs: 60000 })))
@@ -139,30 +192,54 @@ function build() {
         'LISTS (sending one replaces that whole list; omit id on new items):\n' +
         '- clips [{id,start,end}]: the kept pieces in order. Trimming or cutting is ' +
         'changing these.\n' +
-        '- zooms [{id,start,end,scale,x,y}]: scale e.g. 1.8; x,y the point to centre on.\n' +
+        '- zooms [{id,start,end,scale,x,y}]: scale e.g. 1.8; x,y the point to centre on. ' +
+        'Left out, scale is 1.8 and x,y the frame centre, so "zoom in on the first two ' +
+        'seconds" is just {start:0,end:2}: add it, do not ask for numbers the person did not give.\n' +
         '- marks [{id,kind,start,end,x,y,w,h,n,strength}]: kind is redact (destroys the ' +
         'region, for anything private), blur (a Gaussian blur, strength 4 to 60, default ' +
-        '18; softens but can be partly undone, so never for secrets), spotlight (darkens ' +
-        'everything else) or step (a numbered badge; n is the number). x,y is the top-left ' +
-        'corner.\n' +
-        '- texts [{id,text,start,end,fx,fy,sizeFrac,color,box,font,align}]: overlays. ' +
-        'fx,fy is the centre; sizeFrac is text height as a fraction of the frame, e.g. 0.06; ' +
-        'start and end null for the whole clip.\n' +
+        '18; softens but can be partly undone, so never for secrets; soft rounded edge), ' +
+        'spotlight (dims everything else to about half; a zoom starting or ending within ' +
+        '1.2s of it, or up to 3s inside it, carries it, so the two read as one move) or step (a round gold badge; n is the ' +
+        'number, left out the steps count 1, 2, 3 in order). For redact, blur and spotlight x,y is the top-left corner; for step x,y is ' +
+        'the point it numbers, e.g. the corner of a card, and the badge is centred there so ' +
+        'it never covers the card\'s label.\n' +
+        '- texts [{id,text,start,end,fx,fy,sizeFrac,color,box,font,align,style,subtitle}]: ' +
+        'overlays. fx,fy is the centre; sizeFrac is text height as a fraction of the frame, ' +
+        'e.g. 0.06; start and end null for the whole clip. style is title (a title card: the ' +
+        'frame blurred and dimmed behind a large title and a smaller subtitle, animated in; ' +
+        'at the start the video rises into place as it clears; use for the opening and ' +
+        'closing seconds, e.g. the product name, then the URL), lower-third (a name and a ' +
+        'line under it, bottom left, with a gold rule) or label (a short line over the ' +
+        'video; box puts it on a dark pill). Without style, a centred text in the first or ' +
+        'last second, up to 8s long, is a title and anything else a label. subtitle is the ' +
+        'smaller line; without it, "Title · subtitle" or a line break splits the text. ' +
+        'Titles and lower thirds use the house face; font applies to labels.\n' +
         '- cues [{id,start,end,text}]: the captions. Read them with get_edit include_cues, ' +
         'correct the text, and send the whole list back.\n' +
+        '- pointer [{t,x,y,click}]: the cursor drawn in the video, from pointer calls during an ' +
+        'agent take. Unlike everything else, x,y are fractions of the whole recording (before ' +
+        'the crop), so a crop does not move it. Read it with get_edit include_pointer. [] draws ' +
+        'no cursor; null goes back to the track recorded with the take.\n' +
+        '- hideMacCursor: true lifts the Mac\'s own pointer out of a take that has it in the ' +
+        'pixels (older agent takes, a person\'s take), false keeps it, null (the default) ' +
+        'lifts it only when a pointer track is drawn instead.\n' +
         'SETTINGS (merged, so send only the fields you change):\n' +
         '- look {denoise, loudnorm, gain (dB, -10 to 10), fadeIn, fadeOut (seconds), ' +
         'burnCaps (burn captions into the video), zoomAmt (auto-zoom depth), bdInset, bdRadius}\n' +
-        '- capStyle {font, scale, colour (#RRGGBB), position (top|middle|bottom), boxed}\n' +
+        '- capStyle {font, scale, colour (#RRGGBB), position (top|middle|bottom), highlight ' +
+        '(word: the spoken word turns gold, pill: it sits on a gold pill, none)}. Captions ' +
+        'are bold white with a soft shadow, in short phrases of up to two lines, fading in ' +
+        'and out; boxed is ignored.\n' +
         '- camera {on, x, y, size}: only if a camera was recorded; x,y the bubble centre, ' +
         'size 0.1 to 0.45.\n' +
         '- crop {x,y,w,h} or null to remove it; cropAR sets the crop shape.\n' +
         '- backdrop: a name from options.backdrops, or null. outAspect: output shape, e.g. ' +
         '0.5625 for vertical, or null.\n' +
         '- autoZoom: true to zoom automatically on each click, or where the pointer settled ' +
-        'if nothing was clicked. Explicit zooms win over it. It follows the real pointer ' +
-        'only: clicks a driver injects into a page (Playwright page.mouse, anything over ' +
-        'CDP) are not seen. pointer.autoZoomSpots in the result says how many it found; ' +
+        'if nothing was clicked. Explicit zooms win over it. It follows the pointer track ' +
+        'when the take has one (clicks sent with the pointer tool), otherwise the real ' +
+        'pointer, which never sees clicks a driver injects into a page (Playwright ' +
+        'page.mouse, anything over CDP). pointer.autoZoomSpots in the result says how many it found; ' +
         'at 0, place zooms yourself.\n' +
         'Returns the full edit as it now stands.',
       inputSchema: z.object({

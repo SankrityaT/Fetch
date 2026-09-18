@@ -18,6 +18,11 @@
 }
 .chat[hidden] { display:none; }
 #stage.with-chat { margin-right:380px; }
+/* Toasts centre on what is being looked at, not the window: beside the pane, and in
+   the editor over the preview column, so they never land on the inspector's Export. */
+#stage.with-chat ~ .toasts { left:calc(50% - 190px); }
+#stage:has(> .view[data-view="editor"]:not([hidden])) ~ .toasts { left:calc(50% - 156px); }
+#stage.with-chat:has(> .view[data-view="editor"]:not([hidden])) ~ .toasts { left:calc(50% - 346px); }
 /* One conversation, one composer: with the pane open the Record screen's own composer
    steps aside, and its chips send to the pane. */
 #stage.with-chat .hero-ask { display:none; }
@@ -132,8 +137,24 @@
 .chat-card-act { color:var(--text-1); transition:color var(--dur-1) var(--ease-in); }
 .chat-card:hover .chat-card-act { color:var(--fur-1); }
 .chat-card-ok { flex:none; display:grid; place-items:center; color:var(--good); }
+/* Undo sits under the card, not in it: the card opens the file, and one control never
+   does two things. Quiet until wanted, like New chat. */
+.chat-card-undo, .chat-card-undone {
+  display:inline-flex; align-items:center; gap:6px; height:28px; margin:var(--s-2) 0 0 var(--s-1);
+  padding:0 10px 0 8px; border-radius:var(--r-pill); font:500 var(--t-12)/1 var(--font-ui);
+}
+.chat-card-undo {
+  color:var(--text-1); background:transparent; border:1px solid transparent; cursor:pointer;
+  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in);
+}
+.chat-card-undo:hover:not(:disabled) { background:var(--ink-2); color:var(--text-0); }
+.chat-card-undo:active:not(:disabled) { background:var(--ink-3); transform:translateY(1px); }
+.chat-card-undo:disabled { opacity:.35; cursor:default; }
+.chat-card-undo[hidden] { display:none; }
+.chat-card-undone { color:var(--text-2); }
+.chat-intro p strong { color:var(--text-0); font-weight:600; }
 @media (prefers-reduced-motion: reduce) {
-  .chat-card, .chat-send { transition:none; }
+  .chat-card, .chat-send, .chat-card-undo { transition:none; }
   .chat-status-dot { animation:none; }
 }
 

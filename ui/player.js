@@ -9,7 +9,8 @@
 
 function openPlayer(clip) {
   const src = typeof clip === 'string' ? clip : clip.path
-  const name = (typeof clip === 'string' ? clip.split('/').pop() : clip.name) || 'Recording'
+  const file = (typeof clip === 'string' ? clip.split('/').pop() : clip.name) || 'Recording'
+  const name = require('./ui/take-list').legacyTitle(file.replace(/\.[^.]+$/, '')) || file
   const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 
   const scrim = document.createElement('div')

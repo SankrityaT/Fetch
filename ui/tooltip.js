@@ -21,6 +21,9 @@
     if (!text) return hide()
     tip.textContent = text
     tip.dataset.on = 'true'
+    // measure at the origin: left where the last tip was, a fixed box shrinks to the
+    // room remaining, so a long label near the right edge wrapped and sat flush to it
+    tip.style.left = '0px'
     const r = el.getBoundingClientRect()
     const w = tip.offsetWidth, h = tip.offsetHeight
     const vw = window.innerWidth, vh = window.innerHeight

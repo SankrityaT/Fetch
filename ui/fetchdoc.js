@@ -24,6 +24,7 @@
 // Pure: no Electron, no filesystem, no DOM. processor.js does the IO.
 
 const KINDS = { clips: 'C', zooms: 'Z', texts: 'T', cues: 'S', beats: 'B', marks: 'M' }
+const { normalizeTrack } = require('./pointer')
 
 const r3 = n => Math.round(n * 1000) / 1000
 
@@ -35,12 +36,21 @@ function emptyDoc(src, dur) {
     clips: [], zooms: [], texts: [], cues: [], beats: [],
     // redactions, spotlights and numbered steps drawn onto the frame for a stretch
     marks: [],
+    // The agent's own cursor, [{t, x, y, click}] (see ui/pointer.js). null means the
+    // track recorded with the take, [] means no cursor at all. Not id'd: a track is
+    // hundreds of points, and it is edited as one thing.
+    pointer: null,
+    // The Mac's own pointer, where the take has it in the pixels: true lifts it out,
+    // false keeps it, null lifts it only when the agent's cursor is drawn instead.
+    hideMacCursor: null,
     look: {
       zoomAmt: 1.7, bdInset: 0.06, bdRadius: 14, burnCaps: true,
       denoise: false, loudnorm: false, gain: 0, fadeIn: 0, fadeOut: 0,
     },
     crop: null, cropAR: 'free',
-    capStyle: { font: 'Helvetica', scale: 1, colour: '#FFFFFF', position: 'bottom', boxed: true },
+    // highlight: 'word' tints the word being spoken gold, 'pill' sits it on a gold pill,
+    // 'none' leaves the line plain. boxed is kept for older files and no longer draws.
+    capStyle: { font: 'SF Pro', scale: 1, colour: '#FFFFFF', position: 'bottom', boxed: true, highlight: 'word' },
     camera: null, audioTrack: null,
     backdrop: null, backdropFile: null, outAspect: null, autoZoom: false,
     nextId: { C: 1, Z: 1, T: 1, S: 1, B: 1, M: 1 },
@@ -169,6 +179,15 @@ function normalize(doc, src, dur) {
   for (const kind of Object.keys(KINDS)) {
     out[kind] = Array.isArray(doc[kind]) ? doc[kind].filter(Boolean) : []
   }
+  out.pointer = Array.isArray(doc.pointer) ? normalizeTrack(doc.pointer) : null
+  // A zoom sent with times alone gets the export's own defaults written in, so the
+  // timeline, the result an agent reads back and the render all agree on it.
+  out.zooms = out.zooms.map(z => ({
+    ...z,
+    scale: Number.isFinite(+z.scale) && +z.scale > 0 ? +z.scale : 1.8,
+    x: Number.isFinite(+z.x) && z.x !== null ? +z.x : 0.5,
+    y: Number.isFinite(+z.y) && z.y !== null ? +z.y : 0.5,
+  }))
 
   // A document whose counter sits below an id already in use would hand out a
   // duplicate, and two objects answering to C2 is worse than a gap in the sequence.
@@ -209,13 +228,17 @@ function toExportOpts(doc, extra = {}) {
     autoZoom: !!doc.autoZoom,
     autoZoomOpts: { zoom: L.zoomAmt },
     zooms: (doc.zooms || []).map(z => ({ start: z.start, end: z.end, scale: z.scale, x: z.x, y: z.y })),
-    marks: (doc.marks || []).map(m => ({ kind: m.kind, start: m.start, end: m.end, x: m.x, y: m.y, w: m.w, h: m.h, n: m.n })),
+    marks: (doc.marks || []).map(m => ({ kind: m.kind, start: m.start, end: m.end, x: m.x, y: m.y, w: m.w, h: m.h, n: m.n, strength: m.strength })),
+    pointer: Array.isArray(doc.pointer) ? doc.pointer : null,
+    hideMacCursor: typeof doc.hideMacCursor === 'boolean' ? doc.hideMacCursor : null,
     backdrop: doc.backdrop || null,
     backdropAspect: doc.outAspect || null,
     inset: L.bdInset,
     radius: L.bdRadius,
     captions: !!L.burnCaps,
     captionStyle: doc.capStyle,
+    // the words on screen come from the document, which a person or agent may have corrected
+    cues: (doc.cues || []).map(c => ({ start: c.start, end: c.end, text: c.text })),
     camera: doc.camera && doc.camera.on ? doc.camera : null,
     denoise: !!L.denoise,
     loudnorm: !!L.loudnorm,
@@ -248,6 +271,7 @@ function mergeDoc(current, patch) {
   for (const [k, v] of Object.entries(patch || {})) {
     if (v === undefined) continue
     if (LISTS.includes(k)) out[k] = Array.isArray(v) ? v : out[k]
+    else if (k === 'pointer') out[k] = v === null || Array.isArray(v) ? v : out[k]   // null: back to the recorded track
     else if (OBJECTS.includes(k) && v && typeof v === 'object' && !Array.isArray(v)) {
       out[k] = { ...(out[k] || {}), ...v }
     } else out[k] = v          // crop, cropAR, backdrop, outAspect, autoZoom: null is a real value
