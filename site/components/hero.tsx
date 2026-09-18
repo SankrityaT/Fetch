@@ -101,7 +101,7 @@ export function Hero() {
               </a>
             </div>
 
-            <p className="rise mt-5 text-13 text-text-2" style={{ ["--i" as string]: 3 }}>
+            <p className="rise mt-6 text-15 font-semibold text-text-0 [text-shadow:0_1px_2px_rgb(12_9_7/0.7),0_0_18px_rgb(12_9_7/0.8)]" style={{ ["--i" as string]: 3 }}>
               Free and open source. macOS 13 or later.
             </p>
           </div>

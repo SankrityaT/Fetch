@@ -3,6 +3,7 @@ import { Agents } from "@/components/agents";
 import { ByHand } from "@/components/by-hand";
 import { Closing } from "@/components/closing";
 import { Hero } from "@/components/hero";
+import { MeetBiscuit } from "@/components/meet-biscuit";
 import { Prompts } from "@/components/prompts";
 import { RealMachine } from "@/components/real-machine";
 import { Receipts } from "@/components/receipts";
@@ -21,6 +22,7 @@ export default function Page() {
         <RealMachine />
         <Prompts />
         <Accountable />
+        <MeetBiscuit />
         <ByHand />
         <Receipts />
       </main>
