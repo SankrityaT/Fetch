@@ -62,9 +62,17 @@ Group these into three or four sections. Do not render them as a grid of identic
 feature cards (see Anti-patterns).
 
 **Agents drive it, on your plan**
-- MCP server with 12 tools. `record_start`, `record_stop`, `record_status`,
+- MCP server with 18 tools. `record_start`, `record_stop`, `record_status`,
   `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
-  `list_beats`, `get_edit`, `apply_edit`, `export`.
+  `list_beats`, `get_edit`, `apply_edit`, `export`, `rename_recording`,
+  `remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`,
+  `delete_recording`.
+- Everything the editor can do, an agent can do: trim, cut, crop, aspect, text in any
+  installed font, caption style, zoom into a named moment, backdrops, camera, denoise,
+  loudness, fades, music, and blur, spotlight or number a region of the screen.
+- An agent cannot change what it is allowed to record. Recording access, the
+  never-record list and telemetry are refused in code, not by asking nicely.
+- Deleting goes to the Trash. Nothing an agent does is permanent.
 - The whole pipeline runs headless from a CLI with the app closed: transcribe, find the
   beat, zoom into it, export. Verified end to end driven as Codex.
 - Works with Claude Code, Codex, Cursor, Windsurf and Zed. A Connect screen detects
@@ -130,9 +138,10 @@ These are **not** built. Putting them on the page would be false.
 - **Fetch does not drive apps or browsers.** It records. Playwright drives browsers,
   a computer-use agent drives native apps, `simctl` drives the Simulator. Say
   "composes with", never "controls your apps".
-- Arrows, numbered steps, a magnifying loupe, "lift one row", multi-device frames,
-  styled backgrounds. These are a competitor's screenshot features. Not in Fetch.
-- Redaction or spotlight effects in the export. In progress, not shipped.
+- Arrows, a magnifying loupe, "lift one row", multi-device frames. These are
+  a competitor's screenshot features. Not in Fetch. (Redaction, spotlight, numbered step
+  badges and styled backdrops are in Fetch and fine to claim, for video, not
+  screenshots.)
 - Understanding your codebase or reading your source. Not built.
 - Cross-platform. macOS only (13 or later for native capture).
 - "AI-generated" anything. The agent is the person's own, not Fetch's.

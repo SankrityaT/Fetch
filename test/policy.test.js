@@ -46,5 +46,24 @@ is('no false positive', p.isProtected('Google Chrome', p.DEFAULT_NEVER), false)
 // an unknown mode must not silently become permissive
 is('garbage mode falls back to ask', p.decide({ by:'agent', kind:'window', app:'Chrome' }, { mode:'nonsense' }).needsApproval, true)
 
+// ---- settings an agent may change ----
+const throws = (fn) => { try { fn(); return null } catch (e) { return e.message } }
+is('agent cannot open recording access',
+  /only be changed by a person/.test(throws(() => p.checkSettingsPatch({ recordAccess: 'always' }))), true)
+is('agent cannot empty the never-record list',
+  /only be changed by a person/.test(throws(() => p.checkSettingsPatch({ neverRecord: [] }))), true)
+is('agent cannot allow apps',
+  /only be changed by a person/.test(throws(() => p.checkSettingsPatch({ allowedRecordApps: ['1Password'] }))), true)
+is('agent cannot change telemetry',
+  /only be changed by a person/.test(throws(() => p.checkSettingsPatch({ telemetry: true }))), true)
+is('a refused key sinks the whole patch, nothing half applied',
+  /recordAccess/.test(throws(() => p.checkSettingsPatch({ camera: false, recordAccess: 'always' }))), true)
+is('unknown keys are refused', /not a setting/.test(throws(() => p.checkSettingsPatch({ theme: 'light' }))), true)
+is('countdown only takes 0, 3 or 5', /countdown/.test(throws(() => p.checkSettingsPatch({ countdown: 4 }))), true)
+is('booleans are not coerced from strings', /true or false/.test(throws(() => p.checkSettingsPatch({ mic: 'no' }))), true)
+is('a missing folder is refused', /saveDir/.test(throws(() => p.checkSettingsPatch({ saveDir: '/nope' }, () => false))), true)
+is('null folder means the Desktop', p.checkSettingsPatch({ saveDir: null }), { saveDir: null })
+is('a good patch passes through', p.checkSettingsPatch({ camera: false, countdown: 0 }), { camera: false, countdown: 0 })
+
 console.log(`\n  ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

@@ -103,7 +103,11 @@ const cleanup = []
   await test('applyEdit: no trim (whole clip)', () => p.applyEdit(SRC, { loudnorm: false }),
     r => { cleanup.push(r.file); const m = probe(r.file); return m.dur > 1 ? null : 'bad ' + JSON.stringify(m) })
 
-  await test('cancel mid-export', async () => {
+  // Needs a long real take to cancel partway through; takes are no longer all named
+  // recording-*.webm, so on a machine without one this is skipped rather than crashing.
+  const hasBig = require('fs').readdirSync(require('os').homedir() + '/Desktop').some(f => /^recording-.*\.webm$/.test(f))
+  if (!hasBig) console.log('skip: cancel mid-export (no recording-*.webm on the Desktop)\n')
+  else await test('cancel mid-export', async () => {
     const jobId = 999
     const big = require('fs').readdirSync(require('os').homedir() + '/Desktop')
       .filter(f => /^recording-.*\.webm$/.test(f))

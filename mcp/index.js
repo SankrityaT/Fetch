@@ -185,6 +185,84 @@ function build() {
     async args => text(await drive('recordings.rename', args)))
 
   server.registerTool(
+    'remove_dead_air',
+    {
+      description:
+        'Cut the silent gaps out of a recording and write a new file beside it. The ' +
+        'original is not changed. Returns the new path, how many segments were kept and ' +
+        'the percentage of time removed. Fails if the recording has no audio. For cuts ' +
+        'you want to keep editing, use apply_edit with clips instead.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        min_silence: z.number().min(0.2).max(5).optional()
+          .describe('Only gaps at least this long, in seconds, are removed. Default 0.7.'),
+        padding: z.number().min(0).max(1).optional()
+          .describe('Seconds of silence kept either side of each cut. Default 0.15.'),
+      }),
+    },
+    async args => text(await drive('edit.silence', args, { timeoutMs: 20 * 60 * 1000 })))
+
+  server.registerTool(
+    'enhance_audio',
+    {
+      description:
+        'Denoise and level the voice in a recording and write a new file beside it. The ' +
+        'original is not changed. Returns the new path. Fails if the recording has no ' +
+        'audio. To clean audio as part of an edited export instead, set look.denoise and ' +
+        'look.loudnorm with apply_edit.',
+      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
+    },
+    async args => text(await drive('edit.enhance', args, { timeoutMs: 20 * 60 * 1000 })))
+
+  server.registerTool(
+    'get_settings',
+    {
+      description:
+        'Read Fetch\'s recording settings: save folder, camera, microphone, system audio, ' +
+        'countdown, whether the editor opens after a take, whether originals are kept, ' +
+        'quick record, and automatic updates. Also lists the settings only a person can ' +
+        'change.',
+      inputSchema: z.object({}),
+    },
+    async () => text(await drive('settings.get')))
+
+  server.registerTool(
+    'set_settings',
+    {
+      description:
+        'Change one or more of Fetch\'s settings. Only the keys sent change. Recording ' +
+        'access, the never-record list, allowed apps and telemetry cannot be changed here; ' +
+        'a request that includes any of them is refused as a whole.',
+      inputSchema: z.object({
+        settings: z.object({
+          saveDir: z.string().nullable().optional()
+            .describe('Existing folder for new recordings, or null for the Desktop.'),
+          camera: z.boolean().optional(),
+          mic: z.boolean().optional(),
+          systemAudio: z.boolean().optional(),
+          countdown: z.union([z.literal(0), z.literal(3), z.literal(5)]).optional()
+            .describe('Seconds before recording starts.'),
+          openEditorAfter: z.boolean().optional(),
+          keepOriginal: z.boolean().optional(),
+          quickRecord: z.boolean().optional(),
+          autoConvertMp4: z.boolean().optional(),
+          autoUpdate: z.boolean().optional(),
+        }).passthrough(),
+      }),
+    },
+    async args => text(await drive('settings.set', args)))
+
+  server.registerTool(
+    'delete_recording',
+    {
+      description:
+        'Move a recording, and its transcript, camera take and edit, to the macOS Trash. ' +
+        'Recoverable from the Trash with Put Back; nothing is permanently deleted.',
+      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
+    },
+    async args => text(await drive('recordings.trash', args)))
+
+  server.registerTool(
     'list_beats',
     {
       description:

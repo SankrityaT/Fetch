@@ -215,6 +215,21 @@ app.whenReady().then(() => {
     // Exports an agent asks for go through the same queue as the ones a person
     // starts, one heavy job at a time, so ten requests in a second cannot become ten
     // ffmpeg processes each threading across every core.
+    // Any other edit job an agent asks for (remove dead air, enhance audio) goes
+    // through the same queue as export, for the same reason.
+    runOp: (op, src, opts) => jobQueue.submit({
+      id: `agent:${op}:` + Date.now(), op,
+      run: () => {
+        const p = require('./processor'), jid = `agent-${op}-` + Date.now()
+        if (op === 'silence') return p.removeSilence(src, opts || {}, null, jid)
+        if (op === 'enhance') return p.enhanceAudio(src, opts || {}, null, jid)
+        throw new Error('unknown op ' + op)
+      },
+    }),
+    setPrefs: patch => {
+      writePrefs(patch)
+      if (control && !control.isDestroyed()) control.webContents.send('prefs-changed', patch)
+    },
     exportDoc: (src, opts) => jobQueue.submit({
       id: 'agent:export:' + Date.now(), op: 'export',
       run: () => require('./processor').applyEdit(src, opts, null, 'agent-export-' + Date.now()),
