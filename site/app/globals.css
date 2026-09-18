@@ -336,3 +336,34 @@
 @keyframes caret {
   50% { opacity: 0; }
 }
+
+/* ── the throw ────────────────────────────────────────────────────────────
+   The hero image is a scene, not a texture: a ball coming down over a hill,
+   and Biscuit placed on that hill in image coordinates. object-cover would
+   crop differently at every viewport and walk him off the grass, so the
+   image sits in a stage that keeps its own aspect ratio, covers the panel,
+   anchors to the bottom so the hill is always there, and crops from the
+   left first because the ball is on the right. */
+.hero-stage {
+  --w: max(100cqw, calc(100cqh * 1.7864));
+  position: absolute;
+  bottom: 0;
+  width: var(--w);
+  aspect-ratio: 2944 / 1648;
+  left: calc((100cqw - var(--w)) * 0.72);
+}
+
+/* A phone is taller than the painting, so covering it would put the ball in
+   the middle of the paragraph. Below md the scene gets its own band at the
+   bottom of the panel instead, sized off the width, and the words sit on the
+   plain sky above it. */
+@media (max-width: 767px) {
+  .hero-stage {
+    --w: calc(100cqw * 2.2);
+  }
+}
+
+@keyframes wait {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(0, -3%, 0); }
+}
