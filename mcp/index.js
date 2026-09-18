@@ -43,9 +43,9 @@ function build() {
           .describe('Display id to record. Omit to record the main display.'),
         window: z.string().optional()
           .describe('Window id from list_windows. Records that window only, instead of a display.'),
-        mic: z.boolean().optional().describe('Include the microphone.'),
-        system_audio: z.boolean().optional().describe('Include audio playing on the Mac.'),
-        camera: z.boolean().optional().describe('Show the floating camera bubble.'),
+        mic: z.boolean().optional().describe('Include the microphone. Default off.'),
+        system_audio: z.boolean().optional().describe('Include audio playing on the Mac. Default off.'),
+        camera: z.boolean().optional().describe('Record the camera bubble. Default off; only when the person asked for their face.'),
       }),
     },
     async args => {

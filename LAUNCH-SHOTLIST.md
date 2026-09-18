@@ -34,7 +34,7 @@ state (idle, recording, thinking, done, sad) instead of the UI narrating at you.
 | Camera bubble (draggable, resizable, native overlay) | `main.js`, `CamBubble.swift`, `ui/setup.js` | built — `main.js` has a silent reload-retry loop for when another app holds the camera |
 | Mic level meter + device pickers in setup | `ui/setup.js` | built |
 | 3-2-1 countdown before recording | `ui/app.js` | built |
-| Global hotkeys (⇧⌘R start/stop, ⇧⌘P pause) | `main.js` | built |
+| Global hotkeys (⌥⇧⌘R start/stop, ⌥⇧⌘P pause while recording) | `main.js` | built |
 | Recording HUD (timer, pause/stop, excluded from capture) | `main.js`, `hud.html` | built |
 | Recording border (shows captured display, excluded from capture) | `main.js`, `border.html` | built |
 | Tray icon + menu | `main.js` | built |

@@ -236,7 +236,7 @@
             'On: the red border and floating controls show, as for your own takes.',
             'agentVisibleToggle', !!p.agentTakesVisible)}
           <p class="acc-seen">${ico('circle-fill', 'icon-sm')}<span>Either way the menu bar icon turns red while
-            anything records, every take is in Activity, and <kbd>Shift</kbd><kbd>&#8984;</kbd><kbd>R</kbd>
+            anything records, every take is in Activity, and <kbd>&#8997;</kbd><kbd>Shift</kbd><kbd>&#8984;</kbd><kbd>R</kbd>
             stops one an agent started, the same as your own.</span></p>
         </div>
 

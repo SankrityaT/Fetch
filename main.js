@@ -41,7 +41,7 @@ const voice = require('./ui/voice')
 const PREFS_PATH = path.join(app.getPath('userData'), 'prefs.json')
 const DEFAULT_PREFS = {
   saveDir: null,           // null means "use Desktop", resolved at save time
-  camera: true,
+  camera: false,            // the camera is something a person turns on, never a default
   mic: true,
   systemAudio: true,
   countdown: 3,            // 0, 3 or 5 seconds
@@ -315,8 +315,10 @@ app.whenReady().then(() => {
     autoUpdate: loadPrefs().autoUpdate,
     onChange: () => { if (tray) tray.setContextMenu(trayMenu()) },
   })
-  globalShortcut.register('Shift+Command+R', () => toRenderer(recState === 'idle' ? 'start' : 'stop'))
-  globalShortcut.register('Shift+Command+P', () => toRenderer('pause'))
+  // Option is part of the chord on purpose. The old Shift+Command+R is hard reload in
+  // every browser, so refreshing a page started a full-screen recording with the
+  // camera on. Nothing on a Mac uses Option+Shift+Command+R.
+  globalShortcut.register(HOTKEY_REC, () => toRenderer(recState === 'idle' ? 'start' : 'stop'))
 
   // The bubble is deliberately NOT launched here. It appears when recording starts
   // and goes away when it stops, so the camera light never comes on unasked.
@@ -399,9 +401,9 @@ function trayMenu() {
     { label: rec ? 'Recording…' : paused ? 'Paused' : 'Fetch is ready', enabled: false },
     { type: 'separator' },
     { label: rec || paused ? 'Stop recording' : 'Start recording',
-      accelerator: 'Shift+Command+R', click: () => toRenderer(rec || paused ? 'stop' : 'start') },
+      accelerator: HOTKEY_REC, click: () => toRenderer(rec || paused ? 'stop' : 'start') },
     { label: paused ? 'Resume' : 'Pause', enabled: rec || paused,
-      accelerator: 'Shift+Command+P', click: () => toRenderer('pause') },
+      accelerator: HOTKEY_PAUSE, click: () => toRenderer('pause') },
   ]
   if (updater.getState().status === 'ready') {
     items.push({ type: 'separator' })
@@ -436,8 +438,15 @@ function toRenderer(action) { if (control && !control.isDestroyed()) control.web
 // controls, and the Fetch window is neither hidden nor pulled back to the front
 // afterwards. The menu bar icon still turns red, macOS shows its own recording
 // indicator, and every take is in Activity. Set by the bridge for the take it starts.
+const HOTKEY_REC = 'Alt+Shift+Command+R'
+const HOTKEY_PAUSE = 'Alt+Shift+Command+P'
 let quietTake = false
 ipcMain.on('rec-state', (e, state) => {
+  // Pause exists only while something records, so the rest of the time the chord
+  // belongs to whatever app is in front (Shift+Command+P is VS Code's palette).
+  const liveNow = state === 'recording' || state === 'paused'
+  if (liveNow && !globalShortcut.isRegistered(HOTKEY_PAUSE)) globalShortcut.register(HOTKEY_PAUSE, () => toRenderer('pause'))
+  if (!liveNow && globalShortcut.isRegistered(HOTKEY_PAUSE)) globalShortcut.unregister(HOTKEY_PAUSE)
   if (state === 'paused') camPause(true)
   if (state === 'recording' && recState === 'paused') camPause(false)
   recState = state

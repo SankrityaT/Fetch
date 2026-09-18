@@ -466,9 +466,12 @@ async function applySetup(win, args) {
   const wanted = {
     display: args.display != null ? String(args.display) : null,
     window: args.window != null ? String(args.window) : null,
-    mic: typeof args.mic === 'boolean' ? args.mic : null,
-    systemAudio: typeof args.system_audio === 'boolean' ? args.system_audio : null,
-    camera: typeof args.camera === 'boolean' ? args.camera : null,
+    // Off unless the agent asks. These used to fall back to the person's own defaults,
+    // so an agent recording a browser window in the background turned on their camera
+    // and microphone without anyone asking for either.
+    mic: args.mic === true,
+    systemAudio: args.system_audio === true,
+    camera: args.camera === true,
   }
   const js = `(async () => {
     const w = ${JSON.stringify(wanted)}
