@@ -1,7 +1,8 @@
 import Image from "next/image";
+import { Icon } from "./icon";
 
 /* Say a sentence, get an edit. Each card is a request an agent can carry out
- * over MCP today, the tool calls it takes, and a crop of the real panel it
+ * over MCP today, what it did in plain words, and a crop of the real panel it
  * changes. Nothing here is on the roadmap: dead air and voiceover are
  * deliberately absent because they are buttons for a person, not tools for an
  * agent, and they live in the next section instead. */
@@ -19,7 +20,7 @@ type Card = {
 const WIDE: Card = {
   tag: "Beats",
   ask: "Zoom in where it refuses 1Password",
-  calls: "list_beats → apply_edit  ·  Z1 on B2",
+  calls: "Finds the moment by what was said, and zooms in right there.",
   src: "/shots/v2/timeline.png",
   w: 2218,
   h: 360,
@@ -30,7 +31,7 @@ const CARDS: Card[] = [
   {
     tag: "Record",
     ask: "Record my terminal, then caption it",
-    calls: "list_windows → record_start",
+    calls: "Finds the window and records only that one.",
     src: "/shots/v2/home.png",
     w: 1141,
     h: 905,
@@ -39,7 +40,7 @@ const CARDS: Card[] = [
   {
     tag: "Captions",
     ask: "Caption it and burn them in",
-    calls: "transcribe → apply_edit",
+    calls: "Transcribed on your Mac, then burned into the video.",
     src: "/shots/v2/captions.png",
     w: 619,
     h: 1253,
@@ -48,7 +49,7 @@ const CARDS: Card[] = [
   {
     tag: "Look",
     ask: "Frame it on Dusk",
-    calls: "get_edit → apply_edit",
+    calls: "Set in the edit, ready for export.",
     src: "/shots/v2/look.png",
     w: 619,
     h: 1330,
@@ -59,6 +60,17 @@ const CARDS: Card[] = [
 function Bubble({ children }: { children: React.ReactNode }) {
   return (
     <p className="relative ml-auto w-fit max-w-full rounded-[18px] rounded-br-[6px] bg-fur-0 px-4 py-2.5 text-15 font-semibold leading-[1.35] text-[#2a1a04]">
+      {children}
+    </p>
+  );
+}
+
+function Done({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="flex items-start gap-2 text-15 leading-[1.5] text-text-1">
+      <span className="mt-[3px] grid size-[18px] shrink-0 place-items-center rounded-full bg-good/15 text-good">
+        <Icon name="check" className="size-3" />
+      </span>
       {children}
     </p>
   );
@@ -81,9 +93,9 @@ export function Prompts() {
             Say it in a sentence. The edit happens.
           </h2>
           <p className="mx-auto mt-5 max-w-[56ch] text-18 leading-[1.55] text-text-1">
-            Fetch names everything with a short id, so an agent can point at it:
-            C1 is a clip, Z1 a zoom, T1 a text, B1 a beat. The same ids are on
-            your timeline, so you always know what it touched.
+            Ask for an edit the way you would ask a person. Fetch labels every clip,
+            zoom and caption, so the agent changes exactly the one you meant, and
+            your timeline shows what it touched.
           </p>
         </div>
 
@@ -102,7 +114,7 @@ export function Prompts() {
               className="block h-auto w-full"
             />
           </div>
-          <p className="font-mono text-13 text-text-2">{WIDE.calls}</p>
+          <Done>{WIDE.calls}</Done>
         </article>
 
         <div className="mt-6 grid gap-6 md:grid-cols-3">
@@ -123,15 +135,14 @@ export function Prompts() {
                 />
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-ink-1 to-transparent" />
               </div>
-              <p className="font-mono text-13 text-text-2">{c.calls}</p>
+              <Done>{c.calls}</Done>
             </article>
           ))}
         </div>
 
         <p className="reveal mx-auto mt-10 max-w-[60ch] text-center text-15 text-text-2">
-          Then <span className="font-mono text-text-1">export</span>, and a finished
-          MP4 is on your Desktop. The agent never opened the editor, and you never
-          had to.
+          Then it exports, and a finished MP4 is on your Desktop. The agent never
+          opened the editor, and you never had to.
         </p>
       </div>
     </section>

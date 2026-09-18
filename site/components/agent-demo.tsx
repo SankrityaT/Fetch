@@ -6,7 +6,8 @@ import { Icon } from "./icon";
 
 /* The hero is a run, not a picture of one.
  *
- * Every row below is a real Fetch MCP tool, and every result is what that tool
+ * Every row below is a real Fetch MCP tool (named in ROWS, shown to people as
+ * plain words), and every result is what that tool
  * returned for the take in the editor on the right: an agent recorded the
  * policy test, transcribe came back with 34 words on this Mac, list_beats named
  * B1 to B4 from what was said, and apply_edit put Z1 at 1.8x on B2, the beat
@@ -24,9 +25,9 @@ const ROWS = [
   { tool: "list_windows", did: "Found the terminal" },
   { tool: "record_start", did: "Recording that window, nothing else" },
   { tool: "record_stop", did: "17 seconds, saved to your Desktop" },
-  { tool: "transcribe", did: "34 words, transcribed on this Mac" },
-  { tool: "list_beats", did: "B1 to B4, named from what was said" },
-  { tool: "apply_edit", did: "Z1 at 1.8× on B2" },
+  { tool: "transcribe", did: "Wrote the captions, on this Mac" },
+  { tool: "list_beats", did: "Split it into moments by what was said" },
+  { tool: "apply_edit", did: "Zoomed in where 1Password is refused" },
 ];
 
 const TYPE_MS = 24;
@@ -139,7 +140,7 @@ export function AgentDemo() {
                       className="size-7 shrink-0 rounded-[7px]"
                     />
                     <span className="min-w-0 flex-1">
-                      <span className="block font-mono text-12 text-text-2">{r.tool}</span>
+                      <span className="block text-12 font-semibold text-text-2">Used Fetch</span>
                       <span className="block truncate text-13 text-text-0">{r.did}</span>
                     </span>
                     <span
