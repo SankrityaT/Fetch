@@ -770,6 +770,7 @@ ipcMain.on('chat-send', (e, payload) => {
   }
 })
 ipcMain.on('chat-cancel', () => agentChat.cancel())
+ipcMain.on('chat-new', () => agentChat.newConversation())
 ipcMain.handle('chat-engines', async () => {
   const d = await require('./ui/agent-connect').detect()
   return d.clients.filter(c => c.installed && (c.id === 'claude' || c.id === 'codex'))

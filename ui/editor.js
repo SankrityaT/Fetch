@@ -259,6 +259,50 @@ const EDITOR_HTML = `
           <span class="switch"><input type="checkbox" id="camOn" checked><span class="track"></span></span></label>
       </section>
 
+      <section class="insp-panel" data-panel="voice" hidden>
+        <div class="vo-off" id="voOff">
+          <div class="insp-sec">Voiceover</div>
+          <p class="vo-lede">Speak your script in a studio voice over the same footage,
+            using your own ElevenLabs account.</p>
+          <button class="btn btn-sm" id="voConnectBtn" style="width:100%">Connect ElevenLabs</button>
+          <p class="vo-note">${ico('info', 'icon-sm')}<span>This is the only part of Fetch that
+            uses the internet. Your script is sent to ElevenLabs to be spoken. Your recording,
+            your audio and your filenames are not.</span></p>
+        </div>
+
+        <div class="vo-on" id="voOn" hidden>
+          <div class="insp-sec">Voice</div>
+          <div class="vo-voices" id="voVoices"></div>
+
+          <div class="insp-sec" style="margin-top:12px">Script</div>
+          <textarea class="vo-script" id="voScript" rows="5"
+            placeholder="What should be said over this take"></textarea>
+          <div class="vo-script-foot">
+            <button class="btn btn-sm btn-ghost" id="voFromCues">Use my transcript</button>
+            <span class="vo-count mono" id="voCount">0</span>
+          </div>
+
+          <div class="insp-sec" style="margin-top:12px">Delivery</div>
+          <div class="row"><span class="row-lbl">Stability</span>
+            <input type="range" class="slider" id="voStability" min="0" max="100" value="50">
+            <span class="row-val mono" id="voStabilityVal">50%</span></div>
+          <div class="row"><span class="row-lbl">Similarity</span>
+            <input type="range" class="slider" id="voSimilarity" min="0" max="100" value="75">
+            <span class="row-val mono" id="voSimilarityVal">75%</span></div>
+          <div class="row"><span class="row-lbl">Speed</span>
+            <input type="range" class="slider" id="voSpeed" min="70" max="120" value="100">
+            <span class="row-val mono" id="voSpeedVal">1.00x</span></div>
+
+          <button class="btn btn-primary btn-sm vo-go" id="voGenerate">
+            ${ico('sparkle', 'icon-sm')} Generate voiceover</button>
+          <div class="work" id="voProg" hidden>
+            <img class="biscuit" src="./assets/mascot/thinking.png" alt="">
+            <span class="work-label">Speaking</span><div class="bar indeterminate"><i></i></div>
+          </div>
+          <p class="vo-note"><span id="voUsage"></span></p>
+        </div>
+      </section>
+
       <section class="insp-panel" data-panel="audio" hidden>
         <div class="insp-sec">Sound</div>
         <label class="opt" style="padding:8px 0"><span class="opt-txt">
