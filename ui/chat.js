@@ -78,6 +78,8 @@
         <div class="chat-foot">
           <button type="button" class="chat-engine" id="chatEngine"></button>
           <span class="chat-hint" data-tip="Only Fetch's own tools. No shell, no files, no network.">Fetch's tools only</span>
+          <button type="button" class="chat-mic" id="chatMic"
+            data-tip="Dictate. Transcribed on this Mac.">${ico('microphone', 'icon-sm')}</button>
           <button type="submit" class="chat-send" id="chatSend" disabled>${ico('arrow-right', 'icon-sm')}</button>
         </div>
       </form>`
@@ -99,7 +101,60 @@
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() }
     })
     enginePill.onclick = cycleEngine
+    pane.querySelector('#chatMic').onclick = micToggle
   }
+
+  // ── dictation ──────────────────────────────────────────────────────────
+  // Speaking a message is as local as typing one: the audio goes to the transcriber
+  // already bundled in the app and never to a server. The honest counterpart to the
+  // voiceover panel, which is the one feature here that does use the network.
+  let rec = null, recChunks = [], recTimer = null, recStart = 0
+
+  async function micToggle() {
+    const btn = pane.querySelector('#chatMic')
+    if (rec) { stopDictation(); return }
+
+    let stream
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }) }
+    catch { toast('Fetch needs microphone access to dictate', 'bad', 6000); return }
+
+    recChunks = []
+    rec = new MediaRecorder(stream, { mimeType: 'audio/webm' })
+    rec.ondataavailable = e => { if (e.data && e.data.size) recChunks.push(e.data) }
+    rec.onstop = async () => {
+      // Release the mic before the transcribe round trip, so the macOS recording
+      // indicator does not stay lit while we are only thinking.
+      stream.getTracks().forEach(t => t.stop())
+      clearInterval(recTimer); recTimer = null
+      rec = null
+      btn.dataset.state = 'thinking'
+      btn.setAttribute('data-tip', 'Transcribing on this Mac')
+
+      const blob = new Blob(recChunks, { type: 'audio/webm' })
+      if (blob.size < 2000) { resetMic(btn); return }      // a stray tap, not speech
+      const buf = new Uint8Array(await blob.arrayBuffer())
+      const r = await ipcRenderer.invoke('dictate', buf).catch(() => null)
+      resetMic(btn)
+      if (!r || !r.ok || !r.text) { toast((r && r.error) || 'Nothing was said', 'bad'); return }
+      input.value = input.value.trim() ? input.value.trim() + ' ' + r.text : r.text
+      grow(); sync(); input.focus()
+    }
+
+    rec.start()
+    recStart = Date.now()
+    btn.dataset.state = 'recording'
+    recTimer = setInterval(() => {
+      const s = Math.floor((Date.now() - recStart) / 1000)
+      btn.setAttribute('data-tip', s + 's. Click to stop.')
+      if (s >= 120) stopDictation()        // a mic left open is nobody's intent
+    }, 250)
+  }
+
+  function resetMic(btn) {
+    btn.dataset.state = ''
+    btn.setAttribute('data-tip', 'Dictate. Transcribed on this Mac.')
+  }
+  function stopDictation() { if (rec && rec.state !== 'inactive') rec.stop() }
 
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px' }
   const sync = () => { sendBtn.disabled = state.busy || !input.value.trim() }
