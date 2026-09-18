@@ -31,7 +31,7 @@ const ALLOWED = [
   'list_windows', 'list_displays', 'list_recordings',
   'probe', 'transcribe',
   'get_edit', 'apply_edit', 'list_beats', 'export', 'rename_recording',
-  'remove_dead_air', 'enhance_audio', 'get_settings', 'set_settings', 'delete_recording',
+  'get_frame', 'remove_dead_air', 'enhance_audio', 'get_settings', 'set_settings', 'delete_recording',
 ].map(t => `mcp__fetch__${t}`)
 
 let current = null          // the one running turn, if any

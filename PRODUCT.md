@@ -71,11 +71,12 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   `S` subtitles, `B` beats, `M` marks.
 - The nine values that used to live only as slider positions now persist in `look`.
 
-**MCP tools** (`mcp/index.js`), 18: `record_start`, `record_stop`, `record_status`,
+**MCP tools** (`mcp/index.js`), 19: `record_start`, `record_stop`, `record_status`,
 `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
 `list_beats`, `get_edit`, `apply_edit`, `export`, `rename_recording`,
-`remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`, `delete_recording`.
-Every 1.0 option is reachable: trim and cuts as clips, crop and aspect, texts with any
+`remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`, `delete_recording`,
+`get_frame`. `get_frame` returns the image itself, so an agent places a zoom or a
+redaction by what it sees, not by guessing coordinates. Every 1.0 option is reachable: trim and cuts as clips, crop and aspect, texts with any
 installed font, caption style and position, zooms, backdrops, camera, denoise, loudness,
 gain, fades, music, redaction, spotlight and numbered steps. The pipeline runs with the
 window closed. Settings that decide what may be recorded, and telemetry, are refused
