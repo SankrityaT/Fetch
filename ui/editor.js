@@ -1820,6 +1820,19 @@ function exportOverlay(label) {
     },
     onCancel(fn) { scrim.querySelector('#expCancel').onclick = fn },
     close() { scrim.remove() },
+    // A beat of celebration between "encoding" and the Library, so finishing an
+    // export feels like an arrival rather than a window vanishing.
+    finish(line) {
+      const dog = scrim.querySelector('.export-dog')
+      if (dog) dog.replaceWith(Object.assign(new Image(), { src: './assets/mascot/celebrating.png', className: 'export-dog export-dog-done', alt: '' }))
+      const t = scrim.querySelector('.export-title'); if (t) t.textContent = 'Fetched.'
+      scrim.querySelector('#expPhase').textContent = line || 'Done'
+      scrim.querySelector('#expPct').textContent = ''
+      const f = scrim.querySelector('#expFill'); if (f) f.style.width = '100%'
+      const c = scrim.querySelector('#expCancel'); if (c) c.remove()
+      const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
+      return new Promise(r => setTimeout(() => { scrim.remove(); r() }, reduce ? 500 : 1100))
+    },
   }
 }
 
@@ -1866,7 +1879,8 @@ async function doExport(pick) {
     if (j.status === 'running') ov.progress(null, 'Encoding')
     if (j.status === 'progress' && j.pct != null) ov.progress(j.pct, 'Encoding')
     if (j.status === 'done') {
-      jobs.delete(cid); ov.close(); $('doExport').disabled = false
+      jobs.delete(cid); $('doExport').disabled = false
+      ov.finish(`Done · ${j.result.mb} MB`)
       // Settings can retire the source once an export succeeds. Trash, never unlink,
       // so an accidental setting is always recoverable.
       if (window.prefs && window.prefs.keepOriginal === false && ed.src !== j.result.file) {

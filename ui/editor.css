@@ -217,6 +217,9 @@ video.motion, img.motion { display:block; }
   background:var(--ink-1); border:var(--edge); box-shadow:var(--shadow-modal);
   animation:pop var(--dur-3) var(--ease-in); min-width:520px; }
 .export-dog { width:340px; height:196px; object-fit:contain; }
+.export-dog-done { animation:dog-land var(--dur-3) var(--ease-in); }
+@keyframes dog-land { from { transform:scale(.9); opacity:.4; } to { transform:none; opacity:1; } }
+@media (prefers-reduced-motion: reduce) { .export-dog-done { animation:none; } }
 .export-title { font-family:var(--font-display); font-weight:800; font-size:var(--t-24);
   letter-spacing:-.03em; }
 .export-sub { font-size:var(--t-12); color:var(--text-1); margin-top:-4px; }

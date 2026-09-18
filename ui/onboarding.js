@@ -148,7 +148,8 @@
     return (
       '<section class="ob-pane" aria-hidden="true">' +
         '<div class="ob-head">' +
-          '<img class="biscuit" src="./assets/mascot/focused.png" alt="">' +
+          '<span class="ob-duo"><img class="ob-prop" src="./assets/mascot/screen-prop.png" alt="">' +
+            '<img class="biscuit" src="./assets/mascot/focused.png" alt=""></span>' +
           '<div><h3>Let’s get you set up</h3><p>Fetch asks for three things, all at once, so recording never stalls on a permission prompt later.</p></div>' +
         '</div>' +
         '<div class="card ob-perm-card">' + PERM_ROWS.map(permRowHtml).join('') + '</div>' +

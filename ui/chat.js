@@ -47,6 +47,51 @@
 
   let pane, list, input, sendBtn, enginePill
 
+  // ── Biscuit's face follows the turn ──────────────────────────────────
+  // The chat already knows everything that happens in a turn, so the dog in its
+  // header says it at a glance: thinking while the agent reasons, the recording pose
+  // while it records, running while it renders, focused while it reads. A turn that
+  // made a file ends in a celebration, a plain answer in a wink, a failure in the sad
+  // face, which stays until the next message so it is not missed.
+  const FACE = {
+    rest: 'sit-happy', think: 'thinking', read: 'focused', record: 'recording',
+    render: 'running', made: 'celebrating', answer: 'wink', fail: 'sad',
+  }
+  const faceForTool = name => {
+    const t = String(name || '').replace(/^mcp__fetch__/, '')
+    if (t === 'record_start') return 'record'
+    if (/^(export|remove_dead_air|enhance_audio)$/.test(t)) return 'render'
+    return 'read'
+  }
+  let faceTimer = null
+  function setFace(k, holdMs) {
+    clearTimeout(faceTimer)
+    const src = `./assets/mascot/${FACE[k] || FACE.rest}.png`
+    const imgs = [pane && pane.querySelector('.chat-head .biscuit')]
+    // The Record screen's Biscuit mirrors the pane while a turn runs, since that is
+    // where a turn started from the front door is being watched. A turn is something
+    // happening, so it wakes him first, the same as any other mood change.
+    if (k !== 'rest' && window.Biscuit) window.Biscuit.wake()
+    const hero = document.getElementById('biscuit')
+    const heroOn = hero && hero.tagName === 'IMG' && hero.dataset.sleeping !== 'true' && hero.offsetParent
+    if (heroOn && k !== 'rest') { imgs.push(hero); heroTouched = true }
+    for (const img of imgs) {
+      if (!img || img.getAttribute('src') === src) continue
+      img.classList.add('face-swap')
+      img.src = src
+      setTimeout(() => img.classList.remove('face-swap'), 260)
+    }
+    if (holdMs) faceTimer = setTimeout(() => setFace('rest'), holdMs)
+    // back to rest: hand the Record screen's Biscuit back to idle, but only if this
+    // pane changed him, and never while he is asleep (he may be a video by then)
+    if (k === 'rest' && heroTouched) {
+      heroTouched = false
+      if (heroOn) hero.src = './assets/mascot/idle.png'
+    }
+  }
+  let heroTouched = false
+  const turn = { made: false }
+
   function build() {
     pane = document.createElement('aside')
     pane.className = 'chat'
@@ -329,6 +374,8 @@
     add(esc(text), 'chat-msg chat-me')
     input.value = ''; grow()
     state.busy = true; sync()
+    turn.made = false
+    setFace('think')
     sendBtn.classList.add('working')
 
     const ctx = window.ed && window.ed.src ? window.ed.src : null
@@ -361,10 +408,11 @@
   function toolRow(ev) {
     const n = add(
       `<span class="chat-tool-ico">${ico('circle-fill', 'icon-sm')}</span>` +
-      `<span class="chat-tool-name">${esc(ev.name)}</span>` +
+      `<span class="chat-tool-name">${esc(String(ev.name || '').replace(/^mcp__fetch__/, ''))}</span>` +
       `<span class="chat-tool-sum"></span>` +
       `<span class="chat-tool-ms mono"></span>`, 'chat-tool')
     n.dataset.state = 'running'
+    n.dataset.tool = String(ev.name || '').replace(/^mcp__fetch__/, '')
     state.tools.set(ev.id, n)
   }
 
@@ -387,9 +435,20 @@
     const intro = list.querySelector('.chat-intro')
     if (intro) intro.remove()
     if (ev.kind === 'text') add(md(ev.text), 'chat-msg chat-them')
-    else if (ev.kind === 'tool') toolRow(ev)
-    else if (ev.kind === 'result') toolDone(ev)
+    else if (ev.kind === 'tool') { toolRow(ev); setFace(faceForTool(ev.name)) }
+    else if (ev.kind === 'result') {
+      const row = state.tools.get(ev.id)
+      const name = row && row.dataset.tool
+      toolDone(ev)
+      if (!ev.ok) setFace('fail')
+      else {
+        if (/^(export|remove_dead_air|enhance_audio|record_stop)$/.test(name || '')) turn.made = true
+        setFace('think')
+      }
+    }
     else if (ev.kind === 'done') {
+      if (!ev.ok) setFace('fail')
+      else setFace(turn.made ? 'made' : 'answer', turn.made ? 3200 : 1800)
       state.busy = false; sync()
       sendBtn.classList.remove('working')
       // Any tool still marked running never reported back; say so rather than

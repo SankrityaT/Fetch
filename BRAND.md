@@ -24,6 +24,14 @@ emotional narrator. He reacts to state, and that is the whole personality mechan
 | processing / exporting | head tilt, thinking |
 | done | tail up, holding the file in his mouth |
 | error | ears down, apologetic |
+| an agent is reading (transcribe, beats, a frame) | focused |
+| an agent's turn made a file | celebrating, then back to sitting |
+| an agent answered without making anything | a wink, then back to sitting |
+| a take just landed | sitting with the film strip in his mouth (`sit-film.png`) |
+
+In the chat these follow the agent's turn live, tool by tool, in the pane header and
+on the Record screen at once. A failure face stays until the next message so it is
+not missed; the happy ones hand back to sitting after a moment.
 
 He is drawn as a soft, illustrated golden retriever puppy: rounded shapes, warm gold
 coat with a cream chest and muzzle, large dark eyes, long floppy ears. Shaded, but
@@ -38,7 +46,7 @@ literal, because that text is what an agent uses to choose a tool and personalit
 there costs accuracy.
 
 The single source of truth is `assets/mascot/`: `idle.png` is the face of the product
-and appears in the titlebar, the hero, the app icon and the menu bar. The other 16
+and appears in the titlebar, the hero, the app icon and the menu bar. The other
 stills are the same puppy in the states above, and the four clips in
 `assets/mascot/motion/` are the same character in motion.
 
