@@ -134,6 +134,22 @@ function build() {
     async args => text(await drive('edit.apply', args, { timeoutMs: 60000 })))
 
   server.registerTool(
+    'export',
+    {
+      description:
+        'Render a recording with its current edit (trim, cuts, zooms, text, captions) to ' +
+        'a new file, and return its path. Runs in the background queue, one export at a ' +
+        'time, so it can take a while for a long recording.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        format: z.enum(['mp4', 'webm', 'gif', 'mov']).optional().describe('Defaults to mp4.'),
+        quality: z.enum(['fast', 'balanced', 'best']).optional().describe('Defaults to balanced.'),
+        resolution: z.enum(['720', '1080']).optional().describe('Omit to keep the original size.'),
+      }),
+    },
+    async args => text(await drive('edit.export', args, { timeoutMs: 20 * 60 * 1000 })))
+
+  server.registerTool(
     'list_beats',
     {
       description:

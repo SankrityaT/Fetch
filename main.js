@@ -212,6 +212,13 @@ app.whenReady().then(() => {
     isRecording: () => recState === 'recording' || recState === 'paused',
     listWindows: listWindowsJson,
     getPrefs: loadPrefs,
+    // Exports an agent asks for go through the same queue as the ones a person
+    // starts, one heavy job at a time, so ten requests in a second cannot become ten
+    // ffmpeg processes each threading across every core.
+    exportDoc: (src, opts) => jobQueue.submit({
+      id: 'agent:export:' + Date.now(), op: 'export',
+      run: () => require('./processor').applyEdit(src, opts, null, 'agent-export-' + Date.now()),
+    }),
   })
 
   // Onboarding's Connect screen. Resolving binaries needs a login shell, which costs
