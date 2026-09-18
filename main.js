@@ -773,6 +773,22 @@ ipcMain.on('chat-send', (e, payload) => {
 ipcMain.on('chat-cancel', () => agentChat.cancel())
 ipcMain.on('chat-new', () => agentChat.newConversation())
 
+// Dictation for the chat composer. Runs through the transcriber already bundled in
+// the app, so speaking a message is as local as typing one. The counterpart to the
+// ElevenLabs panel: that one is the exception that uses the network, this one is not.
+ipcMain.handle('dictate', async (e, buf) => {
+  const tmp = path.join(os.tmpdir(), `fetch-dictate-${Date.now()}.webm`)
+  try {
+    fs.writeFileSync(tmp, Buffer.from(buf))
+    const r = await proc.transcribe(tmp, { quick: true }, null, 'dictate')
+    return { ok: true, text: (r.text || '').trim() }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  } finally {
+    try { fs.unlinkSync(tmp) } catch {}
+  }
+})
+
 // Voiceover, through the person's own ElevenLabs account. The only part of Fetch
 // that uses the network, and the key lives in the Keychain (see ui/voice.js).
 ipcMain.handle('voice-status', () => voice.status())

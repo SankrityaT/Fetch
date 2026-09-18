@@ -116,3 +116,39 @@
   font-family:var(--font-mono); font-size:11px;
   background:var(--ink-2); border-radius:4px; padding:1px 4px;
 }
+
+/* Dictation. Local, like everything else in here except the voiceover panel. */
+.chat-mic {
+  flex:none; width:30px; height:30px; border-radius:50%;
+  display:grid; place-items:center; color:var(--text-2);
+  background:var(--ink-2); border:var(--edge-soft);
+  transition:color var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in);
+}
+.chat-mic:hover { color:var(--text-0); }
+
+/* red only while the mic is actually open, which is the one state worth shouting */
+.chat-mic[data-state="recording"] {
+  background:rgba(255,68,56,.18); border-color:rgba(255,68,56,.5); color:var(--rec);
+  animation:micPulse 1.2s var(--ease-in) infinite;
+}
+@keyframes micPulse { 50% { box-shadow:0 0 0 5px rgba(255,68,56,.10) } }
+
+.chat-mic[data-state="thinking"] { color:var(--fur-1); animation:chatPulse 1s ease-in-out infinite; }
+
+/* Dictation. Local, like everything else in this pane except the voiceover panel. */
+.chat-mic {
+  flex:none; width:30px; height:30px; border-radius:50%;
+  display:grid; place-items:center; color:var(--text-2);
+  background:var(--ink-2); border:var(--edge-soft);
+  transition:color var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in);
+}
+.chat-mic:hover { color:var(--text-0); }
+
+/* red only while the mic is genuinely open, which is the one state worth shouting */
+.chat-mic[data-state="recording"] {
+  background:rgba(255,68,56,.18); border-color:rgba(255,68,56,.5); color:var(--rec);
+  animation:micPulse 1.2s var(--ease-in) infinite;
+}
+@keyframes micPulse { 50% { box-shadow:0 0 0 5px rgba(255,68,56,.10) } }
+
+.chat-mic[data-state="thinking"] { color:var(--fur-1); animation:chatPulse 1s ease-in-out infinite; }

@@ -387,6 +387,13 @@ async function transcribe(srcArg, opts, onProgress, jobId) {
     const words = j.wordTimings || []
     if (!words.length && !(j.text || '').trim()) throw new Error('no speech detected in this recording')
 
+    // Dictation wants the words and nothing else. Building cues, beats and three
+    // sidecars for a six second clip that is about to be deleted is pure waste, and
+    // it would litter tmpdir with .fetch folders.
+    if (opts && opts.quick) {
+      return { text: j.text || '', words: words.length, quick: true }
+    }
+
     const txtPath = sidecarOut(srcArg, '.txt'), srtPath = sidecarOut(srcArg, '.srt')
     fs.writeFileSync(txtPath, j.text || '')
 
