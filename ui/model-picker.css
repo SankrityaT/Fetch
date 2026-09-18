@@ -1,0 +1,87 @@
+/* The model picker popover. Floats over content, so it takes --shadow-3 and no blur:
+   DESIGN.md allows blur on exactly two layers and this is not one of them. */
+
+.mp {
+  position:fixed; z-index:60; width:340px;
+  display:flex; flex-direction:column;
+  background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-md);
+  box-shadow:var(--shadow-3), var(--sheen);
+  opacity:0; transform:translateY(4px);
+  transition:opacity var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in);
+}
+.mp[data-side="above"] { transform:translateY(-4px); }
+.mp.is-in { opacity:1; transform:none; }
+@media (prefers-reduced-motion: reduce) { .mp { transition:none; transform:none; } }
+
+.mp-search {
+  display:flex; align-items:center; gap:8px;
+  padding:0 12px; height:44px; flex:none;
+  border-bottom:var(--edge-soft); color:var(--text-2);
+}
+.mp-search input {
+  flex:1; min-width:0; background:none; border:0; outline:none;
+  font:inherit; font-size:var(--t-13); color:var(--text-0);
+}
+.mp-search input::placeholder { color:var(--text-2); }
+.mp-search kbd {
+  font:500 var(--t-11)/1 var(--font-mono); color:var(--text-2);
+  padding:3px 6px; border-radius:6px; background:var(--ink-2);
+}
+
+.mp-list { max-height:320px; overflow-y:auto; overflow-x:hidden; padding:4px 6px 6px; scrollbar-width:thin; }
+.mp-list::-webkit-scrollbar { width:10px; height:0; }
+.mp-list::-webkit-scrollbar-corner { background:transparent; }
+.mp-list::-webkit-scrollbar-thumb { background:var(--ink-3); border-radius:10px; border:3px solid var(--ink-1); }
+.mp-list::-webkit-scrollbar-track { background:transparent; }
+
+.mp-group {
+  display:flex; align-items:center; gap:7px;
+  padding:12px 8px 6px; font-size:var(--t-11); font-weight:600;
+  letter-spacing:.01em; color:var(--text-2);
+}
+.mp-group:first-child { padding-top:6px; }
+.mp-group img { width:14px; height:14px; border-radius:4px; object-fit:contain; }
+
+.mp-row {
+  display:flex; box-sizing:border-box; min-width:0; align-items:center; gap:8px; width:100%; text-align:left;
+  height:34px; padding:0 8px 0 10px; border-radius:var(--r-sm);
+  font-size:var(--t-13); color:var(--text-1);
+}
+.mp-row[data-cursor="true"] { background:var(--ink-2); color:var(--text-0); }
+.mp-row[aria-selected="true"] { color:var(--text-0); font-weight:500; }
+.mp-row:focus-visible { outline:2px solid var(--fur-1); outline-offset:-2px; }
+.mp-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mp-eff { font-size:var(--t-12); color:var(--text-2); font-weight:400; }
+.mp-def {
+  margin-left:auto; font:500 var(--t-11)/1 var(--font-mono); color:var(--text-2);
+  padding:3px 6px; border-radius:var(--r-pill); background:var(--ink-2);
+}
+.mp-row[data-cursor="true"] .mp-def { background:var(--ink-3); }
+.mp-check { margin-left:auto; width:16px; height:16px; flex:none; color:var(--fur-1); display:grid; place-items:center; }
+.mp-def + .mp-check { margin-left:0; }
+
+.mp-empty { padding:18px 10px; font-size:var(--t-12); color:var(--text-2); text-align:center; }
+
+/* effort: the levels the chosen model accepts, and only those */
+.mp-effort {
+  display:flex; align-items:center; gap:10px; flex:none;
+  padding:10px 12px; border-top:var(--edge-soft);
+}
+.mp-effort:empty { display:none; }
+.mp-effort-label { font-size:var(--t-12); color:var(--text-1); flex:none; }
+.mp-effort-none { margin-left:auto; font-size:var(--t-11); color:var(--text-2); }
+.mp-seg {
+  margin-left:auto; display:flex; gap:2px; padding:2px;
+  background:var(--ink-2); border-radius:var(--r-pill);
+}
+.mp-seg button {
+  height:24px; padding:0 8px; border-radius:var(--r-pill);
+  font-size:var(--t-11); font-weight:500; color:var(--text-2);
+  transition:color var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in);
+}
+.mp-seg button:hover { color:var(--text-0); }
+.mp-seg button[aria-checked="true"] { background:var(--fur-1); color:#231703; }
+.mp-seg button:focus-visible { outline:2px solid var(--fur-1); outline-offset:1px; }
+
+/* the pill that opens it: model name, then effort in a quieter weight */
+.mp-pill-eff { color:var(--text-2); font-weight:400; }

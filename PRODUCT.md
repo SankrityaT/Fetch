@@ -58,6 +58,9 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   server attached. Streams every tool call as a row with its duration. Remembers the
   conversation (`--resume` on the session id). `@` tags a recording by exact path.
   A microphone dictates, transcribed locally.
+  A model picker lists every model the installed CLIs can run (Codex's own catalogue,
+  Claude Code's model ids), grouped by CLI, searchable, with the effort levels each
+  model accepts. It starts on the person's own CLI default and remembers their pick.
 - Editor: beats strip named from speech, zoom track (`Z1 2.0x`), marks track
   (redact, spotlight, step), trim, cuts, text, captions, look, camera, audio, voiceover.
 - Library: masonry, each tile the real shape of its take.

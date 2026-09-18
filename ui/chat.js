@@ -39,6 +39,8 @@
     open: false,
     engine: 'claude',
     engines: [],
+    models: [],            // chat-models: what each installed CLI can run
+    pick: null,            // { engine, model, effort }, saved in prefs.chatModel
     busy: false,
     tools: new Map(),      // tool id -> its row, so the result can land on it
   }
@@ -116,7 +118,8 @@
       const x = e.target.closest('[data-untag]')
       if (x) { tags.splice(+x.dataset.untag, 1); paintTags() }
     })
-    enginePill.onclick = cycleEngine
+    enginePill.onclick = () => openPicker(enginePill)
+    enginePill.setAttribute('aria-haspopup', 'dialog')
     pane.querySelector('#chatMic').onclick = micToggle
   }
 
@@ -259,27 +262,49 @@
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px' }
   const sync = () => { sendBtn.disabled = state.busy || !input.value.trim() }
 
-  function paintEngine() {
+  // One label for both pills: vendor mark, model, then effort in a quieter weight.
+  // Before the catalogue arrives it falls back to the CLI name, so the pill is never
+  // blank on a slow first detect.
+  function pillHtml() {
     const e = state.engines.find(x => x.id === state.engine) || state.engines[0]
-    if (!e) {
+    if (!e) return null
+    const d = window.modelPicker && modelPicker.describe(state.models, state.pick)
+    const mark = `<img src="./assets/agents/${MARK[e.id]}.svg" alt="" onerror="this.remove()">`
+    return d
+      ? mark + `<span>${esc(d.model.label)}</span>` +
+        (d.effort ? `<span class="mp-pill-eff">${esc(d.effortLabel)}</span>` : '') + ico('caret-down', 'icon-sm')
+      : mark + `<span>${esc(e.label)}</span>`
+  }
+
+  function paintEngine() {
+    const html = pillHtml()
+    const e = state.engines.find(x => x.id === state.engine) || state.engines[0]
+    if (!html) {
       enginePill.innerHTML = `<span class="chat-engine-none">No agent connected</span>`
       pane.querySelector('#chatSub').textContent = 'no agent found'
       return
     }
     state.engine = e.id
-    enginePill.innerHTML =
-      `<img src="./assets/agents/${MARK[e.id]}.svg" alt="" onerror="this.remove()">` +
-      `<span>${esc(e.label)}</span>` +
-      (state.engines.length > 1 ? ico('caret-down', 'icon-sm') : '')
+    enginePill.innerHTML = html
     pane.querySelector('#chatSub').textContent = `on your ${e.label} plan`
   }
 
-  // Two engines at most, so a menu would be more clicks than a toggle.
-  function cycleEngine() {
-    if (state.engines.length < 2) return
-    const i = state.engines.findIndex(x => x.id === state.engine)
-    state.engine = state.engines[(i + 1) % state.engines.length].id
-    paintEngine()
+  // Choosing a model chooses its CLI too: a Codex model runs on Codex. Each CLI keeps
+  // its own conversation (ui/agent-chat.js), so switching back picks the thread up.
+  function openPicker(anchor) {
+    if (!window.modelPicker || !state.models.length) return
+    modelPicker.show(anchor, {
+      catalogue: state.models,
+      value: state.pick,
+      mark: id => `./assets/agents/${MARK[id]}.svg`,
+      onPick: v => {
+        state.pick = v
+        state.engine = v.engine
+        if (window.savePrefs) savePrefs({ chatModel: v })
+        paintEngine()
+        paintHeroEngine()
+      },
+    })
   }
 
   const atBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 80
@@ -326,7 +351,8 @@
         '<div class="chat-me-tags">' + sentTags.map(t => '<span>@' + esc(t.name) + '</span>').join('') + '</div>')
     }
 
-    ipcRenderer.send('chat-send', { engine: state.engine, prompt })
+    const pick = state.pick && state.pick.engine === state.engine ? state.pick : {}
+    ipcRenderer.send('chat-send', { engine: state.engine, model: pick.model, effort: pick.effort, prompt })
   }
 
   // One row per tool call, filled in when its result arrives. The row appears the
@@ -384,6 +410,11 @@
 
   async function refreshEngines() {
     try { state.engines = await ipcRenderer.invoke('chat-engines') || [] } catch { state.engines = [] }
+    try { state.models = await ipcRenderer.invoke('chat-models', state.engines.map(e => e.id)) || [] } catch { state.models = [] }
+    state.pick = window.modelPicker
+      ? modelPicker.resolve(state.models, state.pick || (window.prefs && window.prefs.chatModel))
+      : null
+    if (state.pick) state.engine = state.pick.engine
     paintEngine()
     if (window.__paintHeroEngine) window.__paintHeroEngine()
   }
@@ -423,7 +454,8 @@
     // mirror the engine pill so the front door says which plan this runs on
     const pill = document.getElementById('heroEngine')
     if (pill) {
-      pill.onclick = () => { cycleEngine(); paintHeroEngine() }
+      pill.onclick = () => openPicker(pill)
+      pill.setAttribute('aria-haspopup', 'dialog')
       window.__paintHeroEngine = paintHeroEngine
       paintHeroEngine()
     }
@@ -432,11 +464,7 @@
   function paintHeroEngine() {
     const pill = document.getElementById('heroEngine')
     if (!pill) return
-    const e = state.engines.find(x => x.id === state.engine) || state.engines[0]
-    pill.innerHTML = e
-      ? `<img src="./assets/agents/${MARK[e.id]}.svg" alt="" onerror="this.remove()"><span>${esc(e.label)}</span>` +
-        (state.engines.length > 1 ? ico('caret-down', 'icon-sm') : '')
-      : `<span class="chat-engine-none">No agent connected</span>`
+    pill.innerHTML = pillHtml() || `<span class="chat-engine-none">No agent connected</span>`
   }
 
   function init() {

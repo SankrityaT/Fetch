@@ -52,13 +52,14 @@ function mcpConfigPath() {
   return p
 }
 
-function argsFor(engine, prompt, model) {
+function argsFor(engine, prompt, model, effort) {
   if (engine === 'codex') {
     // Codex streams JSONL from `exec --json`. Its MCP servers come from the user's
     // own config, which the Connect screen already wrote.
     const a = ['exec', '--json']
     if (sessions.codex) a.push('resume', sessions.codex)
     if (model) a.push('--model', model)
+    if (effort) a.push('-c', `model_reasoning_effort="${effort}"`)
     a.push(prompt)
     return a
   }
@@ -72,6 +73,7 @@ function argsFor(engine, prompt, model) {
   // like "now caption that one" refers to something the agent never saw.
   if (sessions.claude) a.push('--resume', sessions.claude)
   if (model) a.push('--model', model)
+  if (effort) a.push('--effort', effort)
   return a
 }
 
@@ -84,14 +86,25 @@ function argsFor(engine, prompt, model) {
  *   { kind: 'result', id, ok, summary }
  *   { kind: 'done',   ms, ok, error }
  */
-function send({ engine = 'claude', model = null, prompt }, onEvent) {
+// Model and effort are checked against the catalogue before they reach argv: the
+// renderer is trusted, but a stale saved choice for a model that has since gone away
+// should fall back to the CLI's own default, not fail the turn.
+function checked(engine, model, effort) {
+  const eng = require('./models').catalogue([engine])[0]
+  const m = eng && eng.models.find(x => x.id === model)
+  if (!m) return { model: null, effort: null }
+  return { model: m.id, effort: m.efforts.includes(effort) ? effort : null }
+}
+
+function send({ engine = 'claude', model = null, effort = null, prompt }, onEvent) {
   if (current) throw new Error('already working on something')
 
   const bin = connect.binFor(engine)
   if (!bin) throw new Error(`${engine === 'codex' ? 'Codex' : 'Claude Code'} is not installed`)
 
   const t0 = Date.now()
-  const child = spawn(bin, argsFor(engine, prompt, model), {
+  const pick = checked(engine, model, effort)
+  const child = spawn(bin, argsFor(engine, prompt, pick.model, pick.effort), {
     stdio: ['ignore', 'pipe', 'pipe'],
     // A login shell's PATH, because the CLI shells out to node and git itself.
     env: { ...process.env, PATH: `${path.dirname(connect.nodeBin())}:${process.env.PATH || ''}` },
