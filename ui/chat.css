@@ -1,0 +1,207 @@
+/* The chat pane. Docked right, the same shape as the editor's inspector so the app
+   has one idea of what a side panel is.
+
+   It pushes the stage rather than covering it, because the most common thing to ask
+   about is the recording you are looking at. */
+
+.chat {
+  position:fixed; top:var(--titlebar); right:0; bottom:0; width:380px; z-index:40;
+  display:flex; flex-direction:column; min-height:0;
+  /* Sits over the app, so it is translucent and blurred: you keep a sense of the
+     recording behind it without the text ever fighting the video. This is the one
+     place in Fetch where blur is the right answer rather than decoration. */
+  background:color-mix(in srgb, var(--ink-1) 88%, transparent);
+  backdrop-filter:var(--blur-over);
+  -webkit-backdrop-filter:var(--blur-over);
+  border-left:var(--edge-soft);
+  box-shadow:var(--shadow-2);
+}
+.chat[hidden] { display:none; }
+#stage.with-chat { margin-right:380px; }
+
+.chat-head {
+  flex:none; display:flex; align-items:center; gap:var(--s-3);
+  padding:var(--s-3) var(--s-3) var(--s-3) var(--s-4); border-bottom:var(--edge);
+}
+.chat-head .biscuit { width:28px; height:28px; flex:none; }
+.chat-head-txt { flex:1; min-width:0; display:flex; flex-direction:column; }
+.chat-title { font-weight:600; font-size:var(--t-13); }
+.chat-sub { font-size:var(--t-11); color:var(--text-2); }
+
+.chat-list {
+  flex:1 1 0; min-height:0; overflow-y:auto; overscroll-behavior:contain;
+  padding:var(--s-4); display:flex; flex-direction:column; gap:var(--s-3);
+}
+
+.chat-intro p { font-size:var(--t-12); color:var(--text-1); line-height:1.55; margin-bottom:var(--s-3); }
+.chat-egs { display:flex; flex-direction:column; gap:var(--s-2); align-items:flex-start; }
+.chat-eg {
+  text-align:left; font-size:var(--t-12); color:var(--text-1); line-height:1.4;
+  padding:7px 11px; border-radius:var(--r-sm);
+  background:var(--ink-2); border:var(--edge);
+  transition:color var(--dur-1) var(--ease-in), border-color var(--dur-1) var(--ease-in);
+}
+.chat-eg:hover { color:var(--text-0); border-color:var(--ink-4); }
+
+.chat-msg { font-size:var(--t-12); line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+/* the person's own turn is the one thing in the pane with a bubble, so the
+   transcript reads as a conversation without every line being boxed */
+.chat-me {
+  align-self:flex-end; max-width:86%;
+  background:var(--ink-3); color:var(--text-0);
+  padding:9px 13px; border-radius:var(--r-md) var(--r-md) 5px var(--r-md);
+  box-shadow:var(--shadow-1);
+}
+.chat-them { color:var(--text-1); }
+.chat-err { color:#FFB4AD; font-size:var(--t-11); }
+
+/* a tool call is a fact, not speech, so it is set apart from both */
+.chat-tool {
+  display:flex; align-items:center; gap:var(--s-2);
+  padding:7px 11px; border-radius:var(--r-md);
+  background:rgba(255,255,255,.035); border:var(--edge-soft);
+  font-size:var(--t-11); color:var(--text-2);
+}
+.chat-tool-ico { display:grid; place-items:center; flex:none; width:14px; height:14px; }
+.chat-tool[data-state="running"] .chat-tool-ico { color:var(--fur-1); animation:chatPulse 1.1s ease-in-out infinite; }
+.chat-tool[data-state="ok"] .chat-tool-ico { color:var(--good); }
+.chat-tool[data-state="bad"] .chat-tool-ico { color:var(--rec); }
+@keyframes chatPulse { 50% { opacity:.35 } }
+
+.chat-tool-name { color:var(--text-1); font-weight:500; white-space:nowrap; }
+.chat-tool-sum { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-tool-ms { flex:none; }
+
+.chat-composer { flex:none; padding:var(--s-3); border-top:var(--edge); }
+.chat-ctx { margin-bottom:var(--s-2); }
+
+.chat-composer textarea {
+  width:100%; resize:none; display:block;
+  background:var(--ink-2); border:var(--edge); border-radius:var(--r-md);
+  padding:10px 12px; font-size:var(--t-12); line-height:1.5; color:var(--text-0);
+  max-height:160px; overflow-y:auto;
+}
+.chat-composer textarea::placeholder { color:var(--text-2); }
+.chat-composer textarea:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
+
+.chat-foot { display:flex; align-items:center; gap:var(--s-2); margin-top:var(--s-2); }
+
+/* the vendor mark keeps its own background, the same rule the Connect rows use */
+.chat-engine {
+  display:flex; align-items:center; gap:6px; flex:none;
+  padding:4px 8px 4px 5px; border-radius:var(--r-pill);
+  background:var(--ink-2); border:var(--edge);
+  font-size:var(--t-11); font-weight:500; color:var(--text-1);
+}
+.chat-engine:hover { color:var(--text-0); }
+.chat-engine img { width:15px; height:15px; border-radius:4px; object-fit:contain; }
+.chat-engine-none { color:var(--warn); padding:0 3px; }
+
+.chat-hint {
+  flex:1; min-width:0; font-size:var(--t-11); color:var(--text-2);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:default;
+}
+
+.chat-send {
+  flex:none; width:30px; height:30px; border-radius:50%;
+  display:grid; place-items:center;
+  background:var(--fur-1); color:#231703;
+  transition:opacity var(--dur-1) var(--ease-in);
+}
+.chat-send:disabled { opacity:.35; cursor:default; }
+.chat-send.working { animation:chatPulse 1.1s ease-in-out infinite; }
+
+.chat-them strong { color:var(--text-0); font-weight:600; }
+.chat-them code {
+  font-family:var(--font-mono); font-size:11px;
+  background:var(--ink-2); border-radius:4px; padding:1px 4px;
+}
+
+/* Dictation. Local, like everything else in here except the voiceover panel. */
+.chat-mic {
+  flex:none; width:30px; height:30px; border-radius:50%;
+  display:grid; place-items:center; color:var(--text-2);
+  background:var(--ink-2); border:var(--edge-soft);
+  transition:color var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in);
+}
+.chat-mic:hover { color:var(--text-0); }
+
+/* red only while the mic is actually open, which is the one state worth shouting */
+.chat-mic[data-state="recording"] {
+  background:rgba(255,68,56,.18); border-color:rgba(255,68,56,.5); color:var(--rec);
+  animation:micPulse 1.2s var(--ease-in) infinite;
+}
+@keyframes micPulse { 50% { box-shadow:0 0 0 5px rgba(255,68,56,.10) } }
+
+.chat-mic[data-state="thinking"] { color:var(--fur-1); animation:chatPulse 1s ease-in-out infinite; }
+
+/* Dictation. Local, like everything else in this pane except the voiceover panel. */
+.chat-mic {
+  flex:none; width:30px; height:30px; border-radius:50%;
+  display:grid; place-items:center; color:var(--text-2);
+  background:var(--ink-2); border:var(--edge-soft);
+  transition:color var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in);
+}
+.chat-mic:hover { color:var(--text-0); }
+
+/* red only while the mic is genuinely open, which is the one state worth shouting */
+.chat-mic[data-state="recording"] {
+  background:rgba(255,68,56,.18); border-color:rgba(255,68,56,.5); color:var(--rec);
+  animation:micPulse 1.2s var(--ease-in) infinite;
+}
+@keyframes micPulse { 50% { box-shadow:0 0 0 5px rgba(255,68,56,.10) } }
+
+.chat-mic[data-state="thinking"] { color:var(--fur-1); animation:chatPulse 1s ease-in-out infinite; }
+
+/* ── @ mentions ───────────────────────────────────────────────────────────
+   Floats above the composer rather than pushing it, because the composer is where
+   your eyes are and it should not move while you type. */
+.chat-composer { position:relative; }
+.chat-mention {
+  position:absolute; left:var(--s-3); right:var(--s-3); bottom:calc(100% - 4px);
+  max-height:300px; overflow-y:auto; z-index:5;
+  display:flex; flex-direction:column; padding:5px;
+  background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-lg);
+  box-shadow:var(--shadow-3);
+}
+.chat-mention[hidden] { display:none; }
+
+.chat-mention-row {
+  display:flex; align-items:center; gap:10px; width:100%; text-align:left;
+  padding:8px 10px; border-radius:var(--r-sm); color:var(--text-2);
+}
+.chat-mention-row[data-on="true"], .chat-mention-row:hover { background:var(--ink-2); color:var(--text-1); }
+.chat-mention-row svg { flex:none; }
+.chat-mention-txt { min-width:0; display:flex; flex-direction:column; gap:1px; }
+.chat-mention-name {
+  font-size:var(--t-12); color:var(--text-1);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+/* the matched part is what you typed, so it is the part you are looking for */
+.chat-mention-name strong { color:var(--text-0); font-weight:600; }
+.chat-mention-sub { font-size:var(--t-11); color:var(--text-2); }
+
+/* chips riding along with the message you are writing */
+.chat-ctx { display:flex; flex-wrap:wrap; gap:6px; }
+.chat-ctx[hidden] { display:none; }
+.chat-tag {
+  display:inline-flex; align-items:center; gap:6px; max-width:100%;
+  height:26px; padding:0 4px 0 9px; border-radius:var(--r-pill);
+  background:rgba(240,169,60,.12); border:1px solid rgba(240,169,60,.32);
+  font-size:var(--t-11); color:var(--fur-0);
+}
+.chat-tag span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chat-tag svg { flex:none; color:var(--fur-1); }
+.chat-tag button {
+  display:grid; place-items:center; width:18px; height:18px; flex:none;
+  border-radius:50%; color:var(--fur-1); opacity:.7;
+}
+.chat-tag button:hover { opacity:1; background:rgba(240,169,60,.2); }
+.chat-tag button svg { width:10px; height:10px; }
+
+/* after sending, what was tagged stays visible on the message it went with */
+.chat-me-tags { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+.chat-me-tags span {
+  font-size:var(--t-11); color:var(--fur-0); padding:1px 7px; border-radius:var(--r-pill);
+  background:rgba(240,169,60,.14);
+}

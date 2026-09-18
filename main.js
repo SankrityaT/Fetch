@@ -8,12 +8,32 @@ const os = require('os')
 // used by other dev Electron apps and its GPU/capture state can get poisoned
 app.setPath('userData', path.join(app.getPath('appData'), 'Fetch'))
 
+// Window enumeration helper. Module scope on purpose: both the whenReady IPC handlers
+// and native-start (registered at module level) need it. Declaring it inside whenReady
+// meant native-start referenced a name that did not exist in its scope, and the only
+// symptom would have been a protected app silently reappearing in a full-screen take.
+const winListBin = () => {
+  const packaged = path.join(process.resourcesPath || '.', 'WindowList')
+  return fs.existsSync(packaged) ? packaged : path.join(__dirname, 'WindowList')
+}
+const runHelper = args => new Promise(resolve => {
+  const bin = winListBin()
+  if (!fs.existsSync(bin)) return resolve('')
+  require('child_process').execFile(bin, args, { maxBuffer: 64 * 1024 * 1024, timeout: 15000 },
+    (err, stdout) => resolve(err ? '' : String(stdout).trim()))
+})
+const listWindowsJson = () =>
+  runHelper([]).then(o => { try { return JSON.parse(o || '[]') } catch { return [] } })
+
 let control, cam
 
 const updater = require('./ui/updater')
 const telemetry = require('./ui/telemetry')
 const agentBridge = require('./ui/agent-bridge')
 const jobQueue = require('./ui/job-queue')
+const activity = require('./ui/activity-log')
+const agentChat = require('./ui/agent-chat')
+const voice = require('./ui/voice')
 
 // ---------- preferences ----------
 // Persisted to <userData>/prefs.json. Loaded lazily and cached in memory;
@@ -31,6 +51,11 @@ const DEFAULT_PREFS = {
   quickRecord: false,
   autoUpdate: true,        // let Fetch check and download updates in the background
   telemetry: true,         // anonymous install count: a random id, the version, the OS
+  // What an agent may record. Defaults to 'ask' so a fresh install is never wide open,
+  // and neverRecord is seeded rather than empty (see ui/record-policy.js).
+  recordAccess: 'ask',
+  neverRecord: null,       // null means "use the seeded list"
+  allowedRecordApps: [],
 }
 let prefsCache = null
 function loadPrefs() {
@@ -185,7 +210,24 @@ app.whenReady().then(() => {
     toRenderer,
     proc: require('./processor'),
     isRecording: () => recState === 'recording' || recState === 'paused',
+    listWindows: listWindowsJson,
+    getPrefs: loadPrefs,
+    // Exports an agent asks for go through the same queue as the ones a person
+    // starts, one heavy job at a time, so ten requests in a second cannot become ten
+    // ffmpeg processes each threading across every core.
+    exportDoc: (src, opts) => jobQueue.submit({
+      id: 'agent:export:' + Date.now(), op: 'export',
+      run: () => require('./processor').applyEdit(src, opts, null, 'agent-export-' + Date.now()),
+    }),
   })
+
+  // Onboarding's Connect screen. Resolving binaries needs a login shell, which costs
+  // about a second, so warm it now: by the time anyone reaches that screen the answer
+  // is already cached and the rows paint immediately.
+  const agentConnect = require('./ui/agent-connect')
+  agentConnect.detect().catch(() => {})
+  ipcMain.handle('agents-detect', () => agentConnect.detect())
+  ipcMain.handle('agents-connect', (e, id) => agentConnect.connect(id))
 
   // Auto-answer getDisplayMedia with the user's chosen source (or the primary screen)
   let chosenSourceId = null
@@ -239,16 +281,6 @@ app.whenReady().then(() => {
   // ---------- window enumeration ----------
   // desktopCapturer returns almost nothing on current macOS, so a small
   // ScreenCaptureKit helper does the listing and the per-window previews.
-  const winListBin = () => {
-    const packaged = path.join(process.resourcesPath || '.', 'WindowList')
-    return fs.existsSync(packaged) ? packaged : path.join(__dirname, 'WindowList')
-  }
-  const runHelper = args => new Promise(resolve => {
-    const bin = winListBin()
-    if (!fs.existsSync(bin)) return resolve('')
-    require('child_process').execFile(bin, args, { maxBuffer: 64 * 1024 * 1024, timeout: 15000 },
-      (err, stdout) => resolve(err ? '' : String(stdout).trim()))
-  })
 
   ipcMain.handle('list-windows', async () => {
     const out = await runHelper([])
@@ -483,6 +515,57 @@ ipcMain.on('cursor-track', (e, on) => {
 })
 
 
+// Park the camera take beside the finished recording, with a sidecar describing how the
+// two line up in time.
+//
+// This lived inline in the 'save' handler, which is the Chromium webm path. The native
+// ScreenCaptureKit path commits through native-commit and never ran any of it, so on
+// macOS 13 and later, where native is the default, the bubble recorded to a temp file
+// that was then discarded. The screen take looked correct and the face was simply
+// absent in the editor, with nothing reporting an error. Both paths call this now,
+// which is the only way it stays fixed.
+async function parkCamTake(file) {
+  if (!camTake) return
+  const take = camTake; camTake = null
+  patchBubbleState({ record: false })
+  try {
+    if (take.pausedAt) take.gaps.push([take.pausedAt, Date.now()])
+    const dest = proc.sidecarOut(file, '.cam.mov')
+    // AVFoundation finalises the movie atom after stopRecording returns
+    for (let i = 0; i < 40 && !fs.existsSync(take.out); i++) await new Promise(r => setTimeout(r, 100))
+    let lastSize = -1
+    for (let i = 0; i < 40; i++) {
+      const sz = fs.existsSync(take.out) ? fs.statSync(take.out).size : 0
+      if (sz > 0 && sz === lastSize) break
+      lastSize = sz
+      await new Promise(r => setTimeout(r, 100))
+    }
+    if (fs.existsSync(take.out) && fs.statSync(take.out).size > 0) {
+      fs.copyFileSync(take.out, dest)          // tmpdir and the save dir can be different volumes
+      // read the start sidecar before deleting the take it is named after
+      let started = null
+      try { started = JSON.parse(fs.readFileSync(take.out.replace(/\.[^.]+$/, '.start.json'), 'utf8')) } catch {}
+      try { fs.unlinkSync(take.out) } catch {}
+      const d = screen.getPrimaryDisplay()
+      fs.writeFileSync(proc.sidecarOut(file, '.cam.json'), JSON.stringify({
+        file: dest,
+        screenStartedAt: take.screenStartedAt,
+        camStartedAt: started && started.startedAt || null,
+        bubbleSize: started && started.size || 260,
+        bubbleX: started ? started.x : null,
+        bubbleY: started ? started.y : null,
+        screenW: started ? started.screenW : null,
+        screenH: started ? started.screenH : null,
+        gaps: take.gaps,
+        display: { w: d.bounds.width, h: d.bounds.height },
+      }))
+    } else {
+      console.error('the camera take was empty, so this recording has no face video')
+    }
+  } catch (err) { console.error('cam take failed: ' + err.message) }
+  if (take.killWhenDone) { take.killWhenDone = false; stopBubble() }
+}
+
 ipcMain.handle('save', async (e, buf) => {
   const file = path.join(resolvedSaveDir(), `recording-${Date.now()}.webm`)
   fs.writeFileSync(file, Buffer.from(buf))
@@ -493,44 +576,7 @@ ipcMain.handle('save', async (e, buf) => {
   }
   cursorSamples = null
 
-  // park the camera take beside the recording and record how the two line up
-  if (camTake) {
-    const take = camTake; camTake = null
-    patchBubbleState({ record: false })
-    try {
-      if (take.pausedAt) take.gaps.push([take.pausedAt, Date.now()])
-      const dest = proc.sidecarOut(file, '.cam.mov')
-      // AVFoundation finalises the movie atom after stopRecording returns
-      for (let i = 0; i < 40 && !fs.existsSync(take.out); i++) await new Promise(r => setTimeout(r, 100))
-      let lastSize = -1
-      for (let i = 0; i < 40; i++) {
-        const sz = fs.existsSync(take.out) ? fs.statSync(take.out).size : 0
-        if (sz > 0 && sz === lastSize) break
-        lastSize = sz
-        await new Promise(r => setTimeout(r, 100))
-      }
-      if (fs.existsSync(take.out) && fs.statSync(take.out).size > 0) {
-        fs.copyFileSync(take.out, dest)          // tmpdir and the save dir can be different volumes
-        try { fs.unlinkSync(take.out) } catch {}
-        let started = null
-        try { started = JSON.parse(fs.readFileSync(take.out.replace(/\.[^.]+$/, '.start.json'), 'utf8')) } catch {}
-        const d = screen.getPrimaryDisplay()
-        fs.writeFileSync(proc.sidecarOut(file, '.cam.json'), JSON.stringify({
-          file: dest,
-          screenStartedAt: take.screenStartedAt,
-          camStartedAt: started && started.startedAt || null,
-          bubbleSize: started && started.size || 260,
-          bubbleX: started ? started.x : null,
-          bubbleY: started ? started.y : null,
-          screenW: started ? started.screenW : null,
-          screenH: started ? started.screenH : null,
-          gaps: take.gaps,
-          display: { w: d.bounds.width, h: d.bounds.height },
-        }))
-      }
-    } catch (err) { console.log('cam take failed: ' + err.message) }
-    if (take.killWhenDone) { take.killWhenDone = false; stopBubble() }
-  }
+  await parkCamTake(file)
   return file
 })
 
@@ -608,6 +654,20 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
   const args = ['--out', out, '--fps', String(opts.fps || 60)]
   if (opts.windowId) args.push('--window', String(opts.windowId))
   else if (opts.displayId) args.push('--display', String(opts.displayId))
+
+  // A display capture sees everything on screen, so the never-record list has to be
+  // applied here as well as at the bridge. Refusing window targets alone would leave a
+  // protected app visible in any full-screen take, which would make the promise on the
+  // Recording access screen false. This applies to human takes too: the point is that
+  // those pixels are never written, whoever pressed record.
+  if (!opts.windowId) {
+    try {
+      const recordPolicy = require('./ui/record-policy')
+      const wins = await listWindowsJson()
+      const drop = recordPolicy.windowsToExclude(wins, { neverRecord: loadPrefs().neverRecord })
+      if (drop.length) args.push('--exclude', drop.join(','))
+    } catch (err) { console.error('exclusion list failed:', err.message) }
+  }
   if (opts.systemAudio) args.push('--system-audio')
   if (opts.mic) { args.push('--mic'); if (opts.micDeviceId) args.push('--mic-device', opts.micDeviceId) }
   if (opts.hevc) args.push('--hevc')
@@ -684,6 +744,8 @@ ipcMain.handle('native-commit', async (e, tmp) => {
     catch (err) { console.error('cursor track not saved:', err.message) }
   }
   cursorSamples = null
+  // the native path never did this, which is why camera takes vanished on macOS 13+
+  await parkCamTake(file)
   return { ok: true, file }
 })
 
@@ -705,6 +767,70 @@ function tidySaveFolders() {
 
 ipcMain.handle('list-recordings', () => { tidySaveFolders(); return proc.listRecordings() })
 ipcMain.handle('probe', (e, src) => proc.probeMeta(src))
+// The in-app chat. Runs on the person's own Claude Code or Codex, so events stream
+// back from a real CLI rather than from any model Fetch talks to itself.
+ipcMain.on('chat-send', (e, payload) => {
+  const reply = ev => { try { e.sender.send('chat-event', ev) } catch {} }
+  try {
+    agentChat.send(payload, reply)
+  } catch (err) {
+    reply({ kind: 'done', ok: false, error: err.message, ms: 0 })
+  }
+})
+ipcMain.on('chat-cancel', () => agentChat.cancel())
+ipcMain.on('chat-new', () => agentChat.newConversation())
+
+// Dictation for the chat composer. Runs through the transcriber already bundled in
+// the app, so speaking a message is as local as typing one. The counterpart to the
+// ElevenLabs panel: that one is the exception that uses the network, this one is not.
+ipcMain.handle('dictate', async (e, buf) => {
+  const tmp = path.join(os.tmpdir(), `fetch-dictate-${Date.now()}.webm`)
+  try {
+    fs.writeFileSync(tmp, Buffer.from(buf))
+    const r = await proc.transcribe(tmp, { quick: true }, null, 'dictate')
+    return { ok: true, text: (r.text || '').trim() }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  } finally {
+    try { fs.unlinkSync(tmp) } catch {}
+  }
+})
+
+// Voiceover, through the person's own ElevenLabs account. The only part of Fetch
+// that uses the network, and the key lives in the Keychain (see ui/voice.js).
+ipcMain.handle('voice-status', () => voice.status())
+ipcMain.handle('voice-connect', (e, key) => voice.connect(key))
+ipcMain.handle('voice-disconnect', () => voice.clearKey())
+ipcMain.handle('voice-voices', () => voice.voices())
+ipcMain.handle('voice-speak', async (e, { src, text, voiceId, settings }) => {
+  const out = proc.sidecarOut(src, '.vo.mp3')
+  const t0 = Date.now()
+  try {
+    await voice.speak({ text, voiceId, outPath: out, settings })
+    activity.record({ op: 'voice.speak', title: 'Generated a voiceover',
+      detail: `${String(text).length} characters`, ms: Date.now() - t0, ok: true })
+    return { ok: true, file: out }
+  } catch (err) {
+    activity.record({ op: 'voice.speak', title: 'Generated a voiceover',
+      ms: Date.now() - t0, ok: false, error: err.message })
+    return { ok: false, error: err.message }
+  }
+})
+ipcMain.handle('chat-engines', async () => {
+  const d = await require('./ui/agent-connect').detect()
+  return d.clients.filter(c => c.installed && (c.id === 'claude' || c.id === 'codex'))
+})
+
+// The activity log. Read by the Activity view; written from the bridge and from
+// every job that finishes here.
+ipcMain.handle('activity-read', (e, limit) => activity.read(limit || 300))
+ipcMain.handle('activity-clear', () => { activity.clear(); return true })
+
+// The edit document, and the beats a recording is scrubbed by.
+ipcMain.handle('read-doc', (e, src, dur) => proc.readDoc(src, dur))
+ipcMain.handle('write-doc', (e, src, doc) => proc.writeDoc(src, doc))
+ipcMain.handle('beats-for', (e, src, dur) => proc.beatsFor(src, dur))
+
 ipcMain.handle('read-cues', (e, src) => proc.readCues(src))
 ipcMain.handle('write-cues', (e, src, cues) => proc.writeCues(src, cues))
 ipcMain.handle('cancel-job', (e, id) => {
@@ -735,10 +861,40 @@ ipcMain.handle('pick-file', async () => {
 let jobSeq = 0
 let jobsActive = 0   // reported to the updater, so it never installs mid-export
 
+// Work that finished here, whoever asked for it. A job carrying an external jobId
+// arrived over the socket, so it belongs to an agent; anything else was a person
+// pressing a button, and those entries deliberately carry no `by`. A log that showed
+// only agent activity could not tell you whether the cut in front of you was yours.
+const JOB_TITLES = {
+  export: 'Exported a video', mp4: 'Converted to MP4', convert: 'Converted a recording',
+  silence: 'Removed dead air', enhance: 'Cleaned up the audio', trim: 'Trimmed a recording',
+  captions: 'Burned in captions', gif: 'Made a GIF', transcribe: 'Transcribed a recording',
+}
+// Thumbnails, waveforms and filmstrips are how the UI draws itself rather than things
+// anyone did, and logging them would bury everything that matters.
+const JOB_QUIET = new Set(['thumb', 'waveform', 'filmstrip'])
+
+function logJob(payload, t0, result, error) {
+  if (JOB_QUIET.has(payload.op)) return
+  let detail = (result && result.file) || payload.src || null
+  if (payload.op === 'silence' && result) detail = `kept ${result.cuts} segments, saved ${result.savedPct}%`
+  if (payload.op === 'transcribe' && result) detail = `${result.words} words, ${(result.cues || []).length} cues`
+  activity.record({
+    op: payload.op,
+    title: JOB_TITLES[payload.op] || payload.op,
+    detail,
+    by: payload.jobId != null ? 'Agent' : null,
+    ms: Date.now() - t0,
+    ok: !error,
+    error,
+  })
+}
+
 ipcMain.handle('edit-job', async (e, payload) => {
   // Namespace caller-supplied ids. processor.cancel() keys off this, so a renderer
   // job and an agent job sharing a number would cancel each other.
   const id = payload.jobId != null ? `ext:${payload.jobId}` : ++jobSeq
+  const t0 = Date.now()
   const cid = payload.cid
   const wc = e.sender
   const send = (status, extra) => { if (!wc.isDestroyed()) wc.send('edit-job', { id, cid, status, ...extra }) }
@@ -771,11 +927,13 @@ ipcMain.handle('edit-job', async (e, payload) => {
         default: throw new Error('unknown op ' + payload.op)
       }
       send('done', { result })
+      logJob(payload, t0, result, null)
       return { ok: true, ...result }
       } })
     } catch (err) {
       if (err && err.cancelled) { send('cancelled', {}); return { ok: false, cancelled: true } }
       send('error', { message: String(err.message || err) })
+      logJob(payload, t0, null, String(err.message || err))
       return { ok: false, error: String(err.message || err) }
     }
   } finally {

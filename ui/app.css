@@ -9,7 +9,10 @@
      which sit at x=18 and run to about 78px, so the right matches it rather
      than the other way round. */
   padding:0 92px;
-  border-bottom:var(--edge); background:var(--ink-1);
+  border-bottom:var(--edge-soft);
+  background:color-mix(in srgb, var(--ink-1) 82%, transparent);
+  backdrop-filter:var(--blur-over);
+  -webkit-backdrop-filter:var(--blur-over);
   -webkit-app-region:drag;
 }
 #titlebar button, #titlebar .seg { -webkit-app-region:no-drag; }
@@ -70,16 +73,27 @@ body { display:flex; flex-direction:column; }
 /* ── library ─────────────────────────────────────────────────────────── */
 .view[data-view="library"] { padding:var(--s-6); }
 .lib-head { display:flex; align-items:center; gap:var(--s-3); margin-bottom:var(--s-4); }
-.lib-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(268px,1fr)); gap:var(--s-4); }
+/* Masonry, not a grid of equal boxes, because the takes are not equal shapes.
+   Every tile used to be forced to 16:10 and cropped to fill, which threw away the
+   one thing you scan a video library for: a vertical take and a wide one looked
+   identical until you read the label. CSS columns give real aspect ratios with no
+   layout script. */
+.lib-grid { columns:290px 4; column-gap:var(--s-4); }
 
-.clip { background:var(--ink-1); border:var(--edge); border-radius:var(--r-lg); box-shadow:var(--sheen);
-  overflow:visible; transition:border-color var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in); }
+.clip { background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-lg);
+  box-shadow:var(--shadow-1), var(--sheen);
+  break-inside:avoid; margin-bottom:var(--s-4);
+  overflow:visible; transition:box-shadow var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in); }
 .clip:hover { z-index:5; }                    /* tooltips sit above neighbouring cards */
 .clip .clip-shot { border-radius:var(--r-lg) var(--r-lg) 0 0; }
-.clip:hover { border-color:var(--ink-4); transform:translateY(-2px); }
-.clip-shot { position:relative; aspect-ratio:16/10; background:var(--ink-0); cursor:pointer; display:block;
+.clip:hover { box-shadow:var(--shadow-2), var(--sheen); transform:translateY(-2px); }
+.clip-shot { position:relative; background:var(--ink-0); cursor:pointer; display:block;
   width:100%; border:0; padding:0; overflow:hidden; }
-.clip-shot img { width:100%; height:100%; object-fit:cover; display:block; }
+/* height comes from the poster, so the tile is the shape of the take */
+.clip-shot img { width:100%; height:auto; display:block; }
+/* a take with no poster yet has nothing to give it height, so it falls back to the
+   old ratio rather than collapsing to a sliver */
+.clip-shot:not(:has(img)) { aspect-ratio:16/10; }
 .clip-shot .ph { position:absolute; inset:0; display:grid; place-items:center; color:var(--ink-4); }
 .clip-play { position:absolute; inset:0; display:grid; place-items:center; opacity:0;
   background:linear-gradient(transparent,rgba(11,10,9,.6)); transition:opacity var(--dur-1) var(--ease-in); }
@@ -439,3 +453,66 @@ img.biscuit { object-fit:contain; }
 /* keep the rightmost action's tooltip inside the window */
 .clip-acts .btn:last-child[data-tip]::after { left:auto; right:0; transform:translateX(0) translateY(4px); }
 .clip-acts .btn:last-child[data-tip]:hover::after { transform:translateX(0) translateY(0); }
+
+/* ── the hero composer ────────────────────────────────────────────────────
+   The Record screen asks a question, so it answers with a field rather than a
+   button. The direct path is still first in the chip row underneath: someone who
+   only wants to press record should never have to type a sentence to get there. */
+
+.hero-ask {
+  width:min(620px, 100%); margin:var(--s-5) auto 0;
+  background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-xl);
+  box-shadow:var(--shadow-2), var(--sheen);
+  padding:var(--s-4) var(--s-4) var(--s-3);
+  transition:box-shadow var(--dur-2) var(--ease-in);
+}
+.hero-ask:focus-within { box-shadow:var(--shadow-3), var(--sheen), 0 0 0 1px rgba(240,169,60,.3); }
+
+.hero-ask textarea {
+  width:100%; display:block; resize:none; border:0; background:none;
+  font-size:var(--t-15); line-height:1.5; color:var(--text-0);
+  max-height:140px; overflow-y:auto;
+}
+.hero-ask textarea::placeholder { color:var(--text-2); }
+.hero-ask textarea:focus { outline:none; }   /* the card itself shows focus */
+
+.hero-ask-foot { display:flex; align-items:center; gap:var(--s-2); margin-top:var(--s-3); }
+.hero-ask-grow { flex:1; }
+
+.hero-engine {
+  display:flex; align-items:center; gap:6px;
+  padding:5px 10px 5px 6px; border-radius:var(--r-pill);
+  background:var(--ink-2); border:var(--edge-soft);
+  font-size:var(--t-11); font-weight:500; color:var(--text-1);
+}
+.hero-engine:hover { color:var(--text-0); }
+.hero-engine img { width:16px; height:16px; border-radius:4px; object-fit:contain; }
+
+.hero-send {
+  width:34px; height:34px; border-radius:50%; display:grid; place-items:center;
+  background:var(--fur-1); color:#231703;
+  transition:opacity var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in);
+}
+.hero-send:disabled { opacity:.3; cursor:default; }
+.hero-send:not(:disabled):hover { transform:scale(1.06); }
+
+.hero-chips {
+  display:flex; flex-wrap:wrap; justify-content:center; gap:var(--s-2);
+  margin-top:var(--s-4);
+}
+.hero-chip {
+  display:inline-flex; align-items:center; gap:7px;
+  height:34px; padding:0 14px; border-radius:var(--r-pill);
+  background:var(--ink-1); border:var(--edge-soft); color:var(--text-1);
+  font-size:var(--t-12); font-weight:500;
+  box-shadow:var(--shadow-1);
+  transition:color var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in);
+}
+.hero-chip:hover { color:var(--text-0); transform:translateY(-1px); }
+.hero-chip svg { color:var(--text-2); }
+.hero-chip:hover svg { color:var(--fur-1); }
+
+/* the one that records, still reading as the primary thing you can do here */
+.hero-chip-go { background:rgba(240,169,60,.13); border-color:rgba(240,169,60,.3); color:var(--fur-0); }
+.hero-chip-go svg { color:var(--fur-1); }
+.hero-chip-go:hover { background:rgba(240,169,60,.2); color:var(--text-0); }

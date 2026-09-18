@@ -53,6 +53,7 @@ function show(view) {
   document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === view)))
   document.querySelectorAll('.view').forEach(v => { v.hidden = v.dataset.view !== view })
   if (view === 'library') refreshLibrary()
+  if (view === 'activity' && window.refreshActivity) window.refreshActivity()
   if (view === 'record') paintHeroCta()      // the pref may have changed in Settings
 }
 $('nav').addEventListener('click', e => {
@@ -514,7 +515,7 @@ function trash(paths) {
 // Support files live in a hidden folder beside the media, so the save folder only
 // holds recordings and exports. Mirrors sidecarPath() in processor.js.
 const SIDE_DIR = '.fetch'
-const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov']
+const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json']
 const sidecarPath = (media, ext) =>
   path.join(path.dirname(media), SIDE_DIR, path.basename(media).replace(/\.[^.]+$/, '') + ext)
 const sidecarIn = (media, ext) => {

@@ -13,22 +13,58 @@ API key or a token.
 
 ## Install
 
+Easiest: open Fetch and use the **Connect** screen in onboarding. It detects which
+clients you have, writes the right config for each one, and reads it back to confirm.
+For Codex it also raises `tool_timeout_sec`, which otherwise cuts off any recording
+longer than a minute.
+
+To wire it up by hand, point your client at the copy that ships inside the app:
+
 ```bash
-claude mcp add --scope user fetch -- npx -y @fetch-app/mcp
-codex  mcp add fetch -- npx -y @fetch-app/mcp
+NODE=$(command -v node)
+SHIM=/Applications/Fetch.app/Contents/Resources/app/mcp/index.js
+
+claude mcp add --scope user fetch -- "$NODE" "$SHIM"
+codex  mcp add fetch -- "$NODE" "$SHIM"
 ```
 
-Cursor, Cline, Zed and Windsurf take the same stdio command. Zed uses
-`context_servers` rather than `mcpServers`.
+Cursor, Cline and Windsurf take the same stdio command under `mcpServers`. Zed uses
+`context_servers` instead.
 
-**Codex users:** raise `tool_timeout_sec` in `~/.codex/config.toml`. It defaults to 60
-seconds, and a recording longer than that will be cut off mid-call.
+**Codex users installing by hand:** `tool_timeout_sec` defaults to 60 seconds, so a
+recording longer than that is cut off mid-call. Set it yourself:
 
 ```toml
 [mcp_servers.fetch]
-command = "npx"
-args = ["-y", "@fetch-app/mcp"]
 tool_timeout_sec = 900
+command = "/usr/local/bin/node"
+args = ["/Applications/Fetch.app/Contents/Resources/app/mcp/index.js"]
+```
+
+Use an absolute path to `node`. Your client does not inherit a login shell's `PATH`,
+so a bare `node` will not resolve for nvm installs.
+
+## Driving something, then recording it
+
+Fetch records. It does not drive a browser or a simulator, because mature tools
+already do: Playwright MCP for the web, `xcrun simctl` for the iOS Simulator, a shell
+command for anything else. The agent composes them.
+
+```
+list_windows({ app: "Chrome" })   ->  find the window the driver just opened
+record_start({ window: "12049" }) ->  record that window, not the whole screen
+```
+
+**Run the driver headed.** Playwright defaults to headless, and a headless browser has
+no window on screen, so there is nothing for any screen recorder to capture. Started
+headless it will silently produce a recording of your desktop with no browser in it.
+Launch Playwright MCP with `--headed`, or set `"headless": false` in its config.
+
+The iOS Simulator is an ordinary window, so it needs nothing special:
+
+```
+list_windows({ app: "Simulator" })
+record_start({ window: "<id>" })
 ```
 
 ## Tools
@@ -38,6 +74,8 @@ tool_timeout_sec = 900
 | `record_start` | Starts recording a display or a single window. Returns when the file exists. |
 | `record_stop` | Stops the current recording. |
 | `record_status` | Whether Fetch is recording. |
+| `list_windows` | Windows open on screen, with the id `record_start` takes. Filter with `app`. |
+| `list_displays` | Displays attached, with the id `record_start` takes. |
 | `list_recordings` | Known recordings, newest first, with paths. |
 | `probe` | Duration, resolution, frame rate, audio tracks. |
 | `transcribe` | On-device transcript, writes a `.srt` beside the file. |

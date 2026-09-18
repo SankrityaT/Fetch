@@ -7,6 +7,8 @@ const ed = {
   capStyle: { font: 'Helvetica', scale: 1, colour: '#FFFFFF', position: 'bottom', boxed: true },
   crop: null, cropAR: 'free',
   cuts: [], cutMode: false,
+  beats: [],          // named spans from the transcript, see processor.buildBeats
+  zooms: [],          // explicit zooms by id (Z1, Z2): {id, start, end, scale, x, y}
   audioTrack: null,   // {file, name, volume, offset, replace, peaks}
   cam: null,          // camera take: {file, x, y, size, ...} when one was recorded
   tab: 'trim',
@@ -42,6 +44,8 @@ const EDITOR_HTML = `
       <button class="btn btn-sm" id="addAudio">${ico('plus', 'icon-sm')} Add audio</button>
       <button class="btn btn-sm btn-ghost" id="tlFit" data-tip="Reset zoom">${ico('arrows-out-simple', 'icon-sm')}</button>
     </div>
+    <div class="tl-beats" id="tlBeats" hidden></div>
+    <div class="tl-zooms" id="tlZooms" hidden></div>
     <div class="tl-wrap" id="tlWrap">
       <div class="tl-lanes">
         <div class="tl-lane tl-lane-video" id="laneVideo">
@@ -78,6 +82,7 @@ const EDITOR_HTML = `
       <button data-tab="look"     aria-selected="false" data-tip="Look">${ico('sparkle', 'icon-sm')}</button>
       <button data-tab="camera"   aria-selected="false" data-tip="Camera" id="camTabBtn" hidden>${ico('video-camera', 'icon-sm')}</button>
       <button data-tab="audio"    aria-selected="false" data-tip="Audio">${ico('waveform', 'icon-sm')}</button>
+      <button data-tab="voice"    aria-selected="false" data-tip="Voiceover">${ico('speaker-simple-high', 'icon-sm')}</button>
     </div>
 
     <div class="insp-body">
@@ -257,6 +262,54 @@ const EDITOR_HTML = `
           <span class="switch"><input type="checkbox" id="camOn" checked><span class="track"></span></span></label>
       </section>
 
+      <section class="insp-panel" data-panel="voice" hidden>
+        <div class="vo-off" id="voOff">
+          <div class="insp-sec">Voiceover</div>
+          <p class="vo-lede">Speak your script in a studio voice over the same footage,
+            using your own ElevenLabs account.</p>
+          <form class="vo-connect" id="voConnectForm">
+            <input type="password" id="voKey" placeholder="ElevenLabs API key"
+              autocomplete="off" spellcheck="false">
+            <button class="btn btn-sm btn-primary" type="submit" id="voConnectBtn" disabled>Connect</button>
+          </form>
+          <p class="vo-note">${ico('info', 'icon-sm')}<span>This is the only part of Fetch that
+            uses the internet. Your script is sent to ElevenLabs to be spoken. Your recording,
+            your audio and your filenames are not.</span></p>
+        </div>
+
+        <div class="vo-on" id="voOn" hidden>
+          <div class="insp-sec">Voice</div>
+          <div class="vo-voices" id="voVoices"></div>
+
+          <div class="insp-sec" style="margin-top:12px">Script</div>
+          <textarea class="vo-script" id="voScript" rows="5"
+            placeholder="What should be said over this take"></textarea>
+          <div class="vo-script-foot">
+            <button class="btn btn-sm btn-ghost" id="voFromCues">Use my transcript</button>
+            <span class="vo-count mono" id="voCount">0</span>
+          </div>
+
+          <div class="insp-sec" style="margin-top:12px">Delivery</div>
+          <div class="row"><span class="row-lbl">Stability</span>
+            <input type="range" class="slider" id="voStability" min="0" max="100" value="50">
+            <span class="row-val mono" id="voStabilityVal">50%</span></div>
+          <div class="row"><span class="row-lbl">Similarity</span>
+            <input type="range" class="slider" id="voSimilarity" min="0" max="100" value="75">
+            <span class="row-val mono" id="voSimilarityVal">75%</span></div>
+          <div class="row"><span class="row-lbl">Speed</span>
+            <input type="range" class="slider" id="voSpeed" min="70" max="120" value="100">
+            <span class="row-val mono" id="voSpeedVal">1.00x</span></div>
+
+          <button class="btn btn-primary btn-sm vo-go" id="voGenerate">
+            ${ico('sparkle', 'icon-sm')} Generate voiceover</button>
+          <div class="work" id="voProg" hidden>
+            <img class="biscuit" src="./assets/mascot/thinking.png" alt="">
+            <span class="work-label">Speaking</span><div class="bar indeterminate"><i></i></div>
+          </div>
+          <p class="vo-note"><span id="voUsage"></span></p>
+        </div>
+      </section>
+
       <section class="insp-panel" data-panel="audio" hidden>
         <div class="insp-sec">Sound</div>
         <label class="opt" style="padding:8px 0"><span class="opt-txt">
@@ -311,6 +364,10 @@ const EDITOR_HTML = `
 </div>`
 
 // ── open ────────────────────────────────────────────────────────────────
+// The chat pane reads this to know which recording you are looking at, so a question
+// like "transcribe this" has something to point at.
+window.ed = ed
+
 async function openInEditor(src) {
   document.querySelector('#nav [data-view="editor"]').disabled = false
   show('editor')
@@ -343,6 +400,7 @@ async function openInEditor(src) {
   ed.dur = ed.meta.duration || v.duration || 0
   ed.in = 0; ed.out = ed.dur; ed.cur = 0
   paintTrim(); drawWave(); layoutTimeline(); paintTime(); paintPlayhead(); paintBackdrop()
+  loadBeats()
 
   loadCamTake(src)
   ed.cues = await ipcRenderer.invoke('read-cues', src)
@@ -383,7 +441,7 @@ function wireEditor() {
     if (ed.cur > ed.out) { v.pause(); seek(ed.in) }
     const inCut = ed.cuts.find(([a, b]) => ed.cur >= a && ed.cur < b - 0.05)
     if (inCut) seek(inCut[1] + 0.02)          // playback jumps removed sections
-    paintPlayhead(); paintTime(); highlightCue(); paintCaption(); syncCam()
+    paintPlayhead(); paintTime(); highlightCue(); paintCaption(); syncCam(); highlightBeat()
   }
 
   // trim
@@ -500,6 +558,7 @@ function wireEditor() {
     $('trProg').hidden = true; $('doTranscribe').disabled = false
     if (r) {
       ed.cues = r.cues || []; renderCues(); paintCaption(); dragCaption()
+        ed.beats = r.beats || []; renderBeats(); highlightBeat()
       if ($('burnCaps') && ed.cues.length) $('burnCaps').checked = true
       toast(`${r.words} words${r.rtfx ? ` · ${r.rtfx}x realtime` : ''}`, 'ok')
     }
@@ -639,7 +698,224 @@ function wireEditor() {
     }
   }
 
-  $('doExport').onclick = exportModal
+  // ── voiceover ──────────────────────────────────────────────────────────
+  // Re-narrate a take without re-recording it. Fetch already holds the transcript,
+  // so the flow is: take what you said, fix the stumbles, speak it back cleanly over
+  // the same footage. The result becomes the added audio track, which the exporter
+  // already knows how to mix or replace with.
+  let voVoices = []
+  let voPicked = null
+
+  function voSettings() {
+    return {
+      stability: +$('voStability').value / 100,
+      similarity: +$('voSimilarity').value / 100,
+      speed: +$('voSpeed').value / 100,
+    }
+  }
+
+  function renderVoices() {
+    const host = $('voVoices')
+    if (!host) return
+    if (!voVoices.length) { host.innerHTML = '<p class="vo-note"><span>No voices on this account yet.</span></p>'; return }
+    host.innerHTML = voVoices.map(v =>
+      '<button class="vo-voice" data-id="' + v.id + '" data-on="' + (v.id === voPicked) + '">' +
+        '<span class="vo-voice-play" data-preview="' + (v.preview || '') + '">' + ico('play-fill', 'icon-sm') + '</span>' +
+        '<span class="vo-voice-txt">' +
+          '<span class="vo-voice-name">' + escHtml(v.name) + '</span>' +
+          '<span class="vo-voice-tags">' +
+            [v.accent, v.age, v.use].filter(Boolean).map(escHtml).join(' &middot; ') +
+          '</span>' +
+        '</span>' +
+      '</button>').join('')
+  }
+
+  async function voRefresh() {
+    const st = await ipcRenderer.invoke('voice-status').catch(() => ({ connected: false }))
+    $('voOff').hidden = !!st.connected
+    $('voOn').hidden = !st.connected
+    if (!st.connected) return
+    if (st.used != null && st.limit != null) {
+      $('voUsage').textContent = `${st.used.toLocaleString()} of ${st.limit.toLocaleString()} characters used this month`
+    }
+    if (!voVoices.length) {
+      voVoices = await ipcRenderer.invoke('voice-voices').catch(() => [])
+      if (voVoices.length && !voPicked) voPicked = voVoices[0].id
+      renderVoices()
+    }
+  }
+
+  function wireVoice() {
+    if (!$('voOn')) return
+
+    // Electron refuses window.prompt outright, so the key is typed inline. It is a
+    // password field and it is cleared the moment it is handed over: nothing keeps a
+    // copy in the DOM once it is in the Keychain.
+    const keyField = $('voKey')
+    keyField.oninput = () => { $('voConnectBtn').disabled = !keyField.value.trim() }
+    $('voConnectForm').onsubmit = async e => {
+      e.preventDefault()
+      const key = keyField.value.trim()
+      if (!key) return
+      const btn = $('voConnectBtn'); btn.disabled = true; btn.textContent = 'Checking'
+      try {
+        await ipcRenderer.invoke('voice-connect', key)
+        keyField.value = ''
+        toast('ElevenLabs connected', 'ok')
+        voVoices = []; await voRefresh()
+      } catch (err) {
+        // Electron wraps a rejected handler as "Error invoking remote method 'x':
+        // Error: <real message>". Only the last part is worth showing.
+        const raw = String(err.message || err)
+        toast(raw.split(/Error:\s*/).pop().trim() || raw, 'bad', 7000)
+      }
+      btn.textContent = 'Connect'
+      btn.disabled = !keyField.value.trim()
+    }
+
+    // one <audio> reused, so previewing a second voice stops the first
+    let preview = null
+    $('voVoices').addEventListener('click', e => {
+      const play = e.target.closest('[data-preview]')
+      const row = e.target.closest('.vo-voice')
+      if (play && play.dataset.preview) {
+        e.stopPropagation()
+        if (preview) preview.pause()
+        preview = new Audio(play.dataset.preview)
+        preview.play().catch(() => toast('Could not play that preview', 'bad'))
+        return
+      }
+      if (row) { voPicked = row.dataset.id; renderVoices() }
+    })
+
+    const count = () => { $('voCount').textContent = String($('voScript').value.length) }
+    $('voScript').addEventListener('input', count)
+
+    $('voFromCues').onclick = () => {
+      if (!ed.cues.length) { toast('Transcribe this take first', 'bad'); return }
+      $('voScript').value = ed.cues.map(c => String(c.text || '').trim()).filter(Boolean).join(' ')
+      count()
+    }
+
+    // read at generate time rather than stored, so these only need to paint
+    const noop = () => {}
+    bindRange('voStability', noop, v => v + '%')
+    bindRange('voSimilarity', noop, v => v + '%')
+    bindRange('voSpeed', noop, v => (v / 100).toFixed(2) + 'x')
+
+    $('voGenerate').onclick = async () => {
+      const text = $('voScript').value.trim()
+      if (!text) { toast('Write something to say first', 'bad'); return }
+      if (!voPicked) { toast('Pick a voice first', 'bad'); return }
+      $('voProg').hidden = false
+      $('voGenerate').disabled = true
+      const r = await ipcRenderer.invoke('voice-speak', {
+        src: ed.src, text, voiceId: voPicked, settings: voSettings(),
+      })
+      $('voProg').hidden = true
+      $('voGenerate').disabled = false
+      if (!r || !r.ok) { toast((r && r.error) || 'Could not generate that', 'bad', 7000); return }
+
+      // Lands as the added audio track, replacing the original by default: the point
+      // of a voiceover is to stand in for the narration that was there.
+      const name = (voVoices.find(v => v.id === voPicked) || {}).name || 'Voiceover'
+      ed.audioTrack = { file: r.file, name: name + ' voiceover', volume: 1, offset: 0, replace: true }
+      $('extraPanel').hidden = false
+      $('extraName').textContent = ed.audioTrack.name
+      $('extraReplace').checked = true
+      $('laneExtra').hidden = false
+      const w = await runJob({ op: 'waveform', src: r.file }, 'Waveform', { quiet: true })
+      ed.audioTrack.peaks = (w && w.peaks) || []
+      drawExtraWave()
+      toast('Voiceover added, mixing over the take', 'ok')
+    }
+  }
+
+  wireVoice(); voRefresh()
+
+    // ── the edit document, as the agent sees it ────────────────────────────
+  // ui/fetchdoc.js is the canonical shape; `ed` is the working copy the UI drives.
+  // These two functions are the only place they are converted, so there is exactly
+  // one definition of "what the current edit is" for an agent to read or change.
+  const FD = require('./ui/fetchdoc')
+
+  function docFromEd() {
+    const base = ed.doc || FD.emptyDoc(ed.src, ed.dur)
+    const doc = FD.normalize(base, ed.src, ed.dur)
+
+    // Clips are derived from trim and cuts, but ids must survive: a clip that has
+    // not moved keeps the name an agent already used for it.
+    const fresh = FD.clipsFromTrim(ed.in, ed.out, ed.cuts, ed.dur)
+    const old = doc.clips || []
+    doc.clips = fresh.map((c, i) => ({
+      id: (old[i] && Math.abs(old[i].start - c.start) < 0.02) ? old[i].id : FD.mintId(doc, 'clips'),
+      start: c.start, end: c.end,
+    }))
+
+    doc.texts = (ed.texts || []).map((t, i) => ({ ...t, id: t.id || (old.texts && old.texts[i]?.id) || FD.mintId(doc, 'texts') }))
+    doc.cues = (ed.cues || []).map(c => ({ ...c }))
+    doc.beats = (ed.beats || []).map((b, i) => ({ ...b, id: b.id || 'B' + (i + 1) }))
+    doc.zooms = (ed.zooms || []).map(z => ({ ...z, id: z.id || FD.mintId(doc, 'zooms') }))
+    doc.crop = ed.crop; doc.cropAR = ed.cropAR
+    doc.capStyle = ed.capStyle
+    doc.camera = ed.cam || null
+    doc.audioTrack = ed.audioTrack || null
+    doc.backdrop = ed.backdrop || null
+    doc.outAspect = ed.outAspect || null
+    doc.autoZoom = !!ed.autoZoom
+
+    // the nine values that used to live only as slider positions
+    const num = (id, d) => { const n = $(id); return n ? +n.value : d }
+    doc.look = {
+      zoomAmt: num('zoomAmt', 170) / 100,
+      bdInset: num('bdInset', 6) / 100,
+      bdRadius: num('bdRadius', 14),
+      burnCaps: !!($('burnCaps') && $('burnCaps').checked),
+      denoise: !!($('denoise') && $('denoise').checked),
+      loudnorm: !!($('loudnorm') && $('loudnorm').checked),
+      gain: num('gain', 0),
+      fadeIn: num('fadeIn', 0) / 10,
+      fadeOut: num('fadeOut', 0) / 10,
+    }
+    return FD.ensureIds(doc)
+  }
+
+  // Apply a document back onto the editor. Used when an agent changes something, so
+  // the UI shows the change rather than quietly disagreeing with the file.
+  function docToEd(doc) {
+    ed.doc = doc
+    const t = FD.trimFromClips(doc.clips)
+    ed.in = t.start; ed.out = t.end; ed.cuts = t.cuts
+    ed.texts = (doc.texts || []).map(x => ({ ...x }))
+    ed.cues = (doc.cues || []).map(x => ({ ...x }))
+    ed.beats = (doc.beats || []).map(x => ({ ...x }))
+    ed.zooms = (doc.zooms || []).map(x => ({ ...x }))
+    ed.crop = doc.crop; ed.cropAR = doc.cropAR || 'free'
+    ed.capStyle = { ...ed.capStyle, ...(doc.capStyle || {}) }
+    ed.autoZoom = !!doc.autoZoom
+
+    const L = doc.look || {}
+    const set = (id, v) => { const n = $(id); if (n && v != null) n.value = v }
+    set('zoomAmt', Math.round(L.zoomAmt * 100)); set('bdInset', Math.round(L.bdInset * 100))
+    set('bdRadius', L.bdRadius); set('gain', L.gain)
+    set('fadeIn', Math.round(L.fadeIn * 10)); set('fadeOut', Math.round(L.fadeOut * 10))
+    const chk = (id, v) => { const n = $(id); if (n) n.checked = !!v }
+    chk('burnCaps', L.burnCaps); chk('denoise', L.denoise); chk('loudnorm', L.loudnorm)
+
+    paintTrim(); renderCuts(); renderTexts(); renderCues(); renderBeats(); renderZooms()
+    paintCaption(); highlightBeat(); layoutTimeline()
+  }
+
+  // The surface an agent drives, reached through the bridge. Deliberately small: a
+  // document in, a document out, and the editor repainted so the person watching
+  // sees what changed.
+  window.fetchDoc = {
+    get: () => docFromEd(),
+    apply: doc => { docToEd(FD.normalize(doc, ed.src, ed.dur)); return window.fetchDoc.get() },
+    src: () => ed.src || null,
+  }
+
+    $('doExport').onclick = exportModal
 
   document.querySelectorAll('.ed .slider').forEach(s => {
     const paint = () => s.style.setProperty('--fill', ((s.value - s.min) / (s.max - s.min) * 100) + '%')
@@ -693,8 +969,23 @@ const seek = t => {
   ed.cur = v.currentTime
   paintPlayhead(); paintTime()
   highlightCue(); paintCaption()      // the caption must follow the playhead, not just playback
-  syncCam()
+  syncCam(); highlightBeat()
 }
+
+// Clicking a named span is the fastest way back to a moment you remember by what was
+// said in it, which is the reason the labels exist at all.
+document.addEventListener('click', e => {
+  const z = e.target.closest('#tlZooms .tl-zoom')
+  if (z && ed.src) {
+    const zoom = ed.zooms.find(x => x.id === z.dataset.id)
+    if (zoom) seek(zoom.start)
+    return
+  }
+  const hit = e.target.closest('#tlBeats .tl-beat')
+  if (!hit || !ed.src) return
+  const beat = ed.beats[+hit.dataset.i]
+  if (beat) seek(beat.start)
+})
 
 function paintTime() {
   $('edTime').textContent = `${fmtTime(ed.cur)} / ${fmtTime(ed.dur)}`
@@ -746,6 +1037,70 @@ function paintTrim() {
   $('tlRange').textContent = `${fmtTime(ed.in)} to ${fmtTime(ed.out)}`
   renderCuts()
 }
+// ── beats ────────────────────────────────────────────────────────────────────
+// The named spans a recording is actually scrubbed by, taken from what was said
+// in it. A raw take and a cut one render the same strip, so the timeline reads
+// the same before and after editing.
+//
+// Widths come from the same t -> t/ed.dur * w mapping the lanes use, so a beat
+// sits exactly above the frames it covers.
+function renderBeats() {
+  const host = $('tlBeats')
+  if (!host) return
+  if (!ed.beats.length) { host.hidden = true; host.innerHTML = ''; return }
+  host.hidden = false
+  host.innerHTML = ed.beats.map((b, i) => {
+    const left = (b.start / ed.dur) * 100
+    const width = ((b.end - b.start) / ed.dur) * 100
+    return '<button class="tl-beat" data-i="' + i + '" style="left:' + left + '%;width:' + width + '%" ' +
+      'title="' + escHtml(b.label) + '">' +
+      '<span class="tl-beat-id mono">' + (b.id || 'B' + (i + 1)) + '</span>' +
+      '<span class="tl-beat-label">' + escHtml(b.label) + '</span>' +
+    '</button>'
+  }).join('')
+}
+
+// Explicit zooms as a track of their own, so a zoom an agent added is visible and
+// nameable rather than an effect you only discover after exporting.
+function renderZooms() {
+  const host = $('tlZooms')
+  if (!host) return
+  if (!ed.zooms.length) { host.hidden = true; host.innerHTML = ''; return }
+  host.hidden = false
+  host.innerHTML = ed.zooms.map(z => {
+    const left = (z.start / ed.dur) * 100
+    const width = Math.max(0.6, ((z.end - z.start) / ed.dur) * 100)
+    return '<button class="tl-zoom" data-id="' + escHtml(z.id) + '" style="left:' + left + '%;width:' + width + '%" ' +
+      'title="' + escHtml(z.id) + ' zooms ' + (z.scale || 1.8).toFixed(2) + 'x">' +
+      '<span class="tl-zoom-id mono">' + escHtml(z.id) + '</span>' +
+      '<span class="tl-zoom-x mono">' + (z.scale || 1.8).toFixed(1) + '&times;</span>' +
+    '</button>'
+  }).join('')
+}
+
+// Which beat the playhead is inside. Called from seek and from the playback loop,
+// so the strip tracks without its own timer.
+function highlightBeat() {
+  const host = $('tlBeats')
+  if (!host || !ed.beats.length) return
+  let active = -1
+  for (let i = 0; i < ed.beats.length; i++) {
+    if (ed.cur >= ed.beats[i].start && ed.cur < ed.beats[i].end) { active = i; break }
+  }
+  host.querySelectorAll('.tl-beat').forEach((n, i) => {
+    n.dataset.active = String(i === active)
+  })
+}
+
+// Load beats for the open clip. Cheap: reads the persisted word timings rather
+// than transcribing again, and falls back to pointer dwell for a silent take.
+async function loadBeats() {
+  try {
+    ed.beats = await ipcRenderer.invoke('beats-for', ed.src, ed.dur) || []
+  } catch { ed.beats = [] }
+  renderBeats(); highlightBeat()
+}
+
 function layoutTimeline() {
   const w = $('tlWrap').clientWidth
   const ticks = $('tlTicks'); ticks.innerHTML = ''
@@ -756,7 +1111,7 @@ function layoutTimeline() {
   paintTrim(); paintPlayhead()
 }
 window.addEventListener('resize', () => {
-  if (ed.src && $('tlWrap')) { drawWave(); drawExtraWave(); layoutTimeline(); paintBackdrop(); paintCaption(); paintCam() }
+  if (ed.src && $('tlWrap')) { drawWave(); drawExtraWave(); layoutTimeline(); renderBeats(); renderZooms(); paintBackdrop(); paintCaption(); paintCam() }
 })
 
 function drawWave() {
@@ -1394,6 +1749,7 @@ async function doExport(pick) {
       offset: ed.audioTrack.offset, replace: ed.audioTrack.replace,
     } : null,
     autoZoom: !!ed.autoZoom,
+    zooms: (ed.zooms || []).map(z => ({ start: z.start, end: z.end, scale: z.scale, x: z.x, y: z.y })),
     autoZoomOpts: { zoom: $('zoomAmt') ? +$('zoomAmt').value / 100 : 1.7 },
     backdrop: ed.backdrop || null,
     backdropAspect: ed.outAspect || null,

@@ -26,6 +26,8 @@
 const fs = require('fs')
 const net = require('net')
 const path = require('path')
+const policy = require('./record-policy')
+const activity = require('./activity-log')
 
 let app, ipcMain
 try { ({ app, ipcMain } = require('electron')) } catch {}
@@ -44,7 +46,31 @@ function socketPath() {
 }
 
 // ---------- ops ----------
+// Human-readable titles. The log is read by a person, so "Recorded a window" beats
+// "record.start ok". Ops with no entry here are still logged, under their own name.
+const TITLES = {
+  'record.start': 'Started recording',
+  'record.stop': 'Stopped recording',
+  'record.pause': 'Paused recording',
+  'windows.list': 'Looked at open windows',
+  'displays.list': 'Looked at displays',
+  'recordings.list': 'Listed recordings',
+  probe: 'Read a file\'s details',
+  transcribe: 'Transcribed a recording',
+  'edit.get': 'Read an edit',
+  'edit.apply': 'Changed an edit',
+  'edit.beats': 'Read the beats',
+  'edit.export': 'Exported a video',
+}
+
 const ops = {
+  // Sent once by the shim so the log can say which agent is driving rather than
+  // just "an agent". Unknown to older shims, which simply never call it.
+  async hello(args = {}, ctx) {
+    if (ctx) ctx.client = String(args.client || '').slice(0, 40) || null
+    return { ok: true }
+  },
+
   async ping() {
     return { version: VERSION, app: app ? app.getVersion() : '0', recording: deps.isRecording() }
   },
@@ -61,6 +87,11 @@ const ops = {
 
     const win = deps.getWindow()
     if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
+
+    // Access check before anything starts. This is the enforcement point: the rule
+    // lives here rather than in the MCP tool description, because a description is
+    // prose and prose is a suggestion.
+    await enforceAccess(args)
 
     await applySetup(win, args)
     deps.toRenderer('start')
@@ -91,6 +122,87 @@ const ops = {
     return { toggled: true }
   },
 
+  // Discovery. Without these an agent cannot target anything: record.start takes a
+  // window or display id and had no way to find one, so the only reachable behaviour
+  // was "record the main display". Driving a browser or a Simulator and then
+  // recording that window needs this.
+  //
+  // Icons are stripped. The helper attaches a ~20KB base64 PNG per window, which for
+  // a typical desktop is most of a megabyte of base64 in the agent's context for no
+  // benefit, and this server's rule is paths and summaries rather than payloads.
+  async 'windows.list'() {
+    const list = await deps.listWindows()
+    return (list || [])
+      .filter(w => w.width > 120 && w.height > 120)   // drop tooltips and shadow panes
+      .map(w => ({ id: w.id, app: w.app, title: w.title, width: w.width, height: w.height }))
+  },
+
+  async 'displays.list'() {
+    const { screen } = require('electron')
+    const primary = screen.getPrimaryDisplay().id
+    return screen.getAllDisplays().map(d => ({
+      id: String(d.id),
+      primary: d.id === primary,
+      width: d.size.width,
+      height: d.size.height,
+      scale: d.scaleFactor,
+    }))
+  },
+
+  // ── editing ────────────────────────────────────────────────────────────
+  // The same document the editor drives, so an agent working over MCP and a person
+  // working in the window are changing one thing, not two. Every change is written to
+  // the recording's .fetchdoc.json, so it survives the app closing and is what the
+  // next export reads.
+  async 'edit.get'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const doc = await inEditor(args.path, 'window.fetchDoc.get()')
+    deps.proc.writeDoc(args.path, doc)
+    return summarise(doc)
+  },
+
+  async 'edit.apply'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    if (!args.doc || typeof args.doc !== 'object') throw new Error('doc is required')
+    const doc = await inEditor(args.path, `window.fetchDoc.apply(${JSON.stringify(args.doc)})`)
+    deps.proc.writeDoc(args.path, doc)
+    return summarise(doc)
+  },
+
+  // Renders the recording's current edit, exactly what the editor's Export would.
+  // Reads the saved document rather than asking the window, so it works whether or
+  // not the clip is open, which is the point of doing it without the app.
+  async 'edit.export'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const FD = require('./fetchdoc')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    if (!doc.clips.length) {
+      // a recording nobody has edited has no clips yet; export all of it
+      doc.clips = [{ id: 'C1', start: 0, end: (meta && meta.duration) || doc.dur }]
+    }
+    const opts = FD.toExportOpts(doc, {
+      format: args.format || 'mp4',
+      quality: args.quality || 'balanced',
+      scale: args.resolution ? +args.resolution : undefined,
+    })
+    const r = await deps.exportDoc(args.path, opts)
+    const mb = r && r.file && require('fs').existsSync(r.file)
+      ? +(require('fs').statSync(r.file).size / 1e6).toFixed(1) : null
+    return { path: r && r.file, mb, seconds: +FD.outDuration(doc).toFixed(2) }
+  },
+
+  async 'edit.beats'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    // Same ids the timeline prints (B1, B2, ...). They were missing here, so an agent
+    // was told beats have ids and then handed `undefined`, while the person watching
+    // saw B2 on screen for the same span.
+    return deps.proc.beatsFor(args.path, meta && meta.duration)
+      .map((b, i) => ({ id: b.id || 'B' + (i + 1), ...b,
+        start: Math.round(b.start * 100) / 100, end: Math.round(b.end * 100) / 100 }))
+  },
+
   async 'recordings.list'() {
     // Through the app, never through processor directly: listRecordings falls back to
     // a different, empty library index outside Electron and ignores the saveDir pref.
@@ -112,6 +224,66 @@ const ops = {
     if (args.include_text) out.text = r.text
     return out
   },
+}
+
+// Refuse the take if the policy says so, with a reason the agent can relay verbatim.
+// Window targets are resolved to their owning app first, since the policy is written in
+// terms of apps and the caller only gives us an id.
+async function enforceAccess(args) {
+  const prefs = deps.getPrefs ? deps.getPrefs() : {}
+  const p = {
+    mode: prefs.recordAccess,
+    neverRecord: prefs.neverRecord,
+    allowedApps: prefs.allowedRecordApps,
+  }
+
+  let app = null
+  if (args.window != null) {
+    const list = await deps.listWindows()
+    const hit = (list || []).find(w => String(w.id) === String(args.window))
+    app = hit && hit.app
+  }
+
+  const verdict = policy.decide(
+    { by: 'agent', kind: args.window != null ? 'window' : 'display', app }, p)
+
+  if (!verdict.allow) throw new Error(`Fetch refused to record: ${verdict.reason}`)
+}
+
+// Open `path` in the editor if it is not already the clip on screen, then run `expr`
+// against it. Opening is visible on purpose: an agent editing a recording should be
+// seen doing it, the same way an agent recording is seen through the border.
+async function inEditor(path, expr) {
+  const win = deps.getWindow()
+  if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
+  const open = await win.webContents.executeJavaScript('window.fetchDoc ? window.fetchDoc.src() : null')
+  if (open !== path) {
+    await win.webContents.executeJavaScript(`openInEditor(${JSON.stringify(path)})`)
+    // openInEditor is async and wires the document only once the clip has loaded
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 150))
+      const now = await win.webContents.executeJavaScript('window.fetchDoc ? window.fetchDoc.src() : null')
+      if (now === path) break
+    }
+  }
+  return win.webContents.executeJavaScript(expr)
+}
+
+// What an agent needs back: every object by id with its timing, and nothing else.
+// The full document carries caption styling and slider values an agent rarely needs
+// and would spend context reading.
+function summarise(doc) {
+  const r = n => Math.round(n * 100) / 100
+  return {
+    duration: r(doc.dur || 0),
+    output: r((doc.clips || []).reduce((n, c) => n + (c.end - c.start), 0)),
+    clips: (doc.clips || []).map(c => ({ id: c.id, start: r(c.start), end: r(c.end) })),
+    zooms: (doc.zooms || []).map(z => ({ id: z.id, start: r(z.start), end: r(z.end), scale: z.scale, x: z.x, y: z.y })),
+    texts: (doc.texts || []).map(t => ({ id: t.id, text: t.text, start: t.start, end: t.end })),
+    captions: (doc.cues || []).length,
+    beats: (doc.beats || []).map(b => ({ id: b.id, start: r(b.start), end: r(b.end), label: b.label })),
+    look: doc.look,
+  }
 }
 
 // Point the renderer's setup at what was asked for, reusing the same state the UI
@@ -148,19 +320,49 @@ async function applySetup(win, args) {
 }
 
 // ---------- wire ----------
-function handleLine(sock, line) {
+function handleLine(sock, line, ctx) {
   let msg
   try { msg = JSON.parse(line) } catch { return }
   const id = msg && msg.id
   const reply = obj => { try { sock.write(JSON.stringify({ id, ...obj }) + '\n') } catch {} }
 
-  const fn = ops[msg && msg.op]
-  if (!fn) return reply({ ok: false, error: `unknown op: ${msg && msg.op}` })
+  const op = msg && msg.op
+  const fn = ops[op]
+  if (!fn) return reply({ ok: false, error: `unknown op: ${op}` })
 
+  const t0 = Date.now()
   Promise.resolve()
-    .then(() => fn(msg.args || {}))
-    .then(result => reply({ ok: true, result }))
-    .catch(err => reply({ ok: false, error: err && err.message ? err.message : String(err) }))
+    .then(() => fn(msg.args || {}, ctx))
+    .then(result => { logOp(op, ctx, t0, msg.args, result, null); reply({ ok: true, result }) })
+    .catch(err => {
+      const m = err && err.message ? err.message : String(err)
+      logOp(op, ctx, t0, msg.args, null, m)
+      reply({ ok: false, error: m })
+    })
+}
+
+// Reads are noise in a log meant to answer "what did it do to my machine", so the
+// pure lookups are skipped and anything with an effect is kept.
+const QUIET = new Set(['ping', 'hello', 'record.status'])
+
+function logOp(op, ctx, t0, args, result, error) {
+  if (QUIET.has(op)) return
+  let detail = null
+  if (op === 'record.start' && result) detail = result.path
+  else if (op === 'transcribe' && result) detail = `${result.words} words, ${result.cues} cues`
+  else if (op === 'windows.list' && result) detail = `${result.length} windows`
+  else if (op === 'recordings.list' && result) detail = `${result.length} recordings`
+  else if (op === 'probe' && args && args.path) detail = args.path
+
+  activity.record({
+    op,
+    title: TITLES[op] || op,
+    detail,
+    by: (ctx && ctx.client) || 'Agent',
+    ms: Date.now() - t0,
+    ok: !error,
+    error,
+  })
 }
 
 function start(d) {
@@ -189,6 +391,7 @@ function start(d) {
 
   server = net.createServer(sock => {
     sock.setEncoding('utf8')
+    const ctx = { client: null }         // filled in by the shim's hello
     let buf = ''
     sock.on('data', chunk => {
       buf += chunk
@@ -196,7 +399,7 @@ function start(d) {
       let i
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1)
-        if (line.trim()) handleLine(sock, line)
+        if (line.trim()) handleLine(sock, line, ctx)
       }
     })
     sock.on('error', () => {})

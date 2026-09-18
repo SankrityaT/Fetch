@@ -24,6 +24,10 @@ struct Options {
     var out = ""
     var displayID: CGDirectDisplayID?
     var windowID: CGWindowID?
+    // Windows the policy says must never be captured. Handed to ScreenCaptureKit so
+    // they are absent from the frame, rather than blurred or cropped afterwards: the
+    // pixels never exist, so nothing sensitive is ever written to disk.
+    var excludeWindowIDs: [CGWindowID] = []
     var fps: Int32 = 60
     var hevc = false
     var systemAudio = false
@@ -41,6 +45,7 @@ func parseArgs() -> Options {
         case "--out":       o.out = it.next() ?? ""
         case "--display":   if let v = it.next(), let n = UInt32(v) { o.displayID = n }
         case "--window":    if let v = it.next(), let n = UInt32(v) { o.windowID = n }
+        case "--exclude":   if let v = it.next() { o.excludeWindowIDs = v.split(separator: ",").compactMap { UInt32($0) } }
         case "--fps":       if let v = it.next(), let n = Int32(v) { o.fps = max(1, min(120, n)) }
         case "--hevc":      o.hevc = true
         case "--system-audio": o.systemAudio = true
@@ -139,7 +144,13 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             } else {
                 fail("no displays available to capture")
             }
-            filter = SCContentFilter(display: display, excludingWindows: [])
+            // Ids that are no longer on screen simply drop out here, which is the right
+            // behaviour: a closed window cannot be captured anyway.
+            let excluded = content.windows.filter { opts.excludeWindowIDs.contains($0.windowID) }
+            if !excluded.isEmpty {
+                FileHandle.standardError.write("excluding \(excluded.count) protected window(s)\n".data(using: .utf8)!)
+            }
+            filter = SCContentFilter(display: display, excludingWindows: excluded)
             // SCDisplay width/height are points; mode gives the real pixels
             let mode = CGDisplayCopyDisplayMode(display.displayID)
             width = mode?.pixelWidth ?? display.width

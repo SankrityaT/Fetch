@@ -106,11 +106,15 @@
 textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; resize:vertical; }
 
 /* ── card / panel ────────────────────────────────────────────────────── */
+/* A card is lifted by tone and a soft shadow, not outlined. The old hairline made
+   every card read as a box drawn on a flat plane; now that the ground carries a faint
+   warm pool, a lighter surface plus a wide shadow does the separating, and the border
+   only has to catch the top edge where light would fall. */
 .card {
-  background:var(--ink-1); border:var(--edge); border-radius:var(--r-lg);
-  box-shadow:var(--sheen); padding:var(--s-4);
+  background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-xl);
+  box-shadow:var(--shadow-1), var(--sheen); padding:var(--s-5);
 }
-.card-head { display:flex; align-items:center; gap:var(--s-2); margin-bottom:var(--s-3); }
+.card-head { display:flex; align-items:center; gap:var(--s-2); margin-bottom:var(--s-4); }
 .card-head h3 { font-size:var(--t-13); font-family:var(--font-ui); font-weight:600; letter-spacing:-.01em; }
 
 /* option row: label + sublabel on the left, control on the right */

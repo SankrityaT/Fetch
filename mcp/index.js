@@ -11,12 +11,22 @@
 import { McpServer } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import * as z from 'zod/v4'
-import { call } from './bridge.js'
+import { call, setClient } from './bridge.js'
 
 const text = obj => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] })
 
 function build() {
   const server = new McpServer({ name: 'fetch', version: '0.1.0' })
+
+  // Every call goes through here so Fetch can attribute it. The client names itself
+  // during initialize and that is the only reliable source: Claude Code, Codex and
+  // the rest are all Node programs, so the process tree just says "node" for every
+  // one of them. Read at call time rather than from an initialize hook, because the
+  // hook does not fire under serveStdio, and doing it here is idempotent anyway.
+  const drive = (op, args, opts) => {
+    try { setClient(server.server.getClientVersion()?.name) } catch {}
+    return call(op, args, opts)
+  }
 
   server.registerTool(
     'record_start',
@@ -38,7 +48,7 @@ function build() {
     async args => {
       // The app counts down before capturing and the take resolves only when the
       // file exists, so this can legitimately sit for a while.
-      const r = await call('record.start', args, { timeoutMs: 15 * 60 * 1000 })
+      const r = await drive('record.start', args, { timeoutMs: 15 * 60 * 1000 })
       return text(r)
     })
 
@@ -50,7 +60,7 @@ function build() {
         'the record_start call that started it.',
       inputSchema: z.object({}),
     },
-    async () => text(await call('record.stop')))
+    async () => text(await drive('record.stop')))
 
   server.registerTool(
     'record_status',
@@ -58,7 +68,97 @@ function build() {
       description: 'Whether Fetch is currently recording.',
       inputSchema: z.object({}),
     },
-    async () => text(await call('record.status')))
+    async () => text(await drive('record.status')))
+
+  // Discovery, so a target can actually be chosen. The usual shape is: something
+  // else (Playwright, simctl, a shell command) opens the window, then list_windows
+  // finds it and record_start captures that window rather than the whole screen.
+  server.registerTool(
+    'list_windows',
+    {
+      description:
+        'List the windows currently open on screen, with the id record_start takes. ' +
+        'Use this to record one application window rather than a whole display, for ' +
+        'example a browser a test driver just opened, or the iOS Simulator.',
+      inputSchema: z.object({
+        app: z.string().optional()
+          .describe('Only return windows whose application or title contains this, case insensitive.'),
+      }),
+    },
+    async (args = {}) => {
+      const all = await drive('windows.list')
+      const q = (args.app || '').toLowerCase()
+      const hits = q
+        ? all.filter(w => (w.app || '').toLowerCase().includes(q) || (w.title || '').toLowerCase().includes(q))
+        : all
+      return text(hits)
+    })
+
+  server.registerTool(
+    'list_displays',
+    {
+      description: 'List the displays attached, with the id record_start takes.',
+      inputSchema: z.object({}),
+    },
+    async () => text(await drive('displays.list')))
+
+  // ── editing ──────────────────────────────────────────────────────────
+  // Everything the editor window can do, drivable without opening it. The edit is
+  // one document, so an agent here and a person in the window change the same thing.
+  server.registerTool(
+    'get_edit',
+    {
+      description:
+        'Read the current edit of a recording: its clips, zooms, text layers and beats, ' +
+        'each with a short stable id (C1, Z1, T1, B1) and times in seconds. Use the ids ' +
+        'from this when calling apply_edit.',
+      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
+    },
+    async args => text(await drive('edit.get', args, { timeoutMs: 60000 })))
+
+  server.registerTool(
+    'apply_edit',
+    {
+      description:
+        'Change the edit of a recording. Pass the whole edit back with your changes: ' +
+        'clips [{id,start,end}] are the kept pieces in order, so trimming or cutting is ' +
+        'changing these; zooms [{id,start,end,scale,x,y}] zoom the frame, where x and y ' +
+        'are 0 to 1 fractions of the frame (0.5,0.5 is the centre) and scale is how far, ' +
+        'e.g. 1.8; texts [{id,text,start,end,fx,fy}] are overlays. Omit id on anything new ' +
+        'and one is assigned. Returns the edit as it now stands.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        doc: z.record(z.string(), z.any()).describe('The edit, as returned by get_edit, with changes.'),
+      }),
+    },
+    async args => text(await drive('edit.apply', args, { timeoutMs: 60000 })))
+
+  server.registerTool(
+    'export',
+    {
+      description:
+        'Render a recording with its current edit (trim, cuts, zooms, text, captions) to ' +
+        'a new file, and return its path. Runs in the background queue, one export at a ' +
+        'time, so it can take a while for a long recording.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        format: z.enum(['mp4', 'webm', 'gif', 'mov']).optional().describe('Defaults to mp4.'),
+        quality: z.enum(['fast', 'balanced', 'best']).optional().describe('Defaults to balanced.'),
+        resolution: z.enum(['720', '1080']).optional().describe('Omit to keep the original size.'),
+      }),
+    },
+    async args => text(await drive('edit.export', args, { timeoutMs: 20 * 60 * 1000 })))
+
+  server.registerTool(
+    'list_beats',
+    {
+      description:
+        'Named spans across a recording, taken from what was said in it: each has an id, ' +
+        'start, end and a label that is the words spoken at that point. Useful for finding ' +
+        'the moment to zoom into or cut, by what was said rather than by timecode.',
+      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
+    },
+    async args => text(await drive('edit.beats', args)))
 
   server.registerTool(
     'list_recordings',
@@ -66,7 +166,7 @@ function build() {
       description: 'List recordings Fetch knows about, newest first, with their file paths.',
       inputSchema: z.object({}),
     },
-    async () => text(await call('recordings.list')))
+    async () => text(await drive('recordings.list')))
 
   server.registerTool(
     'probe',
@@ -74,7 +174,7 @@ function build() {
       description: 'Read the duration, resolution, frame rate and audio tracks of a video file.',
       inputSchema: z.object({ path: z.string().describe('Absolute path to a video file.') }),
     },
-    async args => text(await call('probe', args)))
+    async args => text(await drive('probe', args)))
 
   server.registerTool(
     'transcribe',
@@ -89,7 +189,7 @@ function build() {
           .describe('Return the full transcript text as well as the file path.'),
       }),
     },
-    async args => text(await call('transcribe', args, { timeoutMs: 10 * 60 * 1000 })))
+    async args => text(await drive('transcribe', args, { timeoutMs: 10 * 60 * 1000 })))
 
   return server
 }

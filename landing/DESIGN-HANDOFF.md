@@ -38,12 +38,42 @@ site/
 
 > Record it. Fetch it. Ship it.
 
-A macOS screen recorder and editor that runs entirely on your machine. The one-line
-pitch is **"Loom without the subscription, and without the upload."**
+A macOS screen recorder and editor that runs entirely on your machine, and the
+recording primitive an agent can drive.
 
-The category is uniformly cool violet (Loom, Screen Studio) or pure black (Mosaic).
-Fetch is deliberately **warm**: retriever gold on a warm near-black. If the page looks
-like it could be Loom's, it is wrong.
+**"Loom without the subscription" is no longer the pitch.** That framing puts Fetch in
+a fight it cannot win: Recordly is free, open source, cross platform, native
+ScreenCaptureKit, 22k stars, shipping daily. Leading with "another Mac screen
+recorder" loses on day one.
+
+The pitch is that Fetch records **your real screen, driven by the agent you already
+pay for**. Everything stays on the machine: no key, no token, no upload.
+
+That claim is load-bearing because the competition structurally cannot make it:
+
+| | what it records | where it runs |
+|---|---|---|
+| Clueso agent | a cloud browser, web apps only, needs your staging login | their cloud |
+| Moonjar | the iOS Simulator, mobile apps | local Mac, MCP |
+| HyperFrames | HTML it renders itself, never a real app | their cloud |
+| **Fetch** | **any real window: native apps, terminals, editors, browsers** | **your Mac** |
+
+So the page must show something none of them can produce. Not a web app, not a
+simulator. An agent recording a real desktop application, with captions, end to end.
+A web-app demo is indistinguishable from Clueso's and throws away the difference.
+
+Two supporting claims, in this order:
+
+1. **Works with the agent you already have.** Claude Code, Codex, Cursor, Windsurf,
+   Zed. Their real marks are in `assets/agents/` in the app repo. Fetch never sees a
+   model, a key or a token.
+2. **On-device transcription.** Captions come free with the recording, and no
+   competitor in this set does it at all.
+
+The category is uniformly cool violet (Loom, Screen Studio) or pure black (Mosaic),
+and the agent-tools category is uniformly bright and airy. Fetch is deliberately
+**warm**: retriever gold on a warm near-black. If the page looks like it could be
+Loom's, it is wrong.
 
 ## Colour
 

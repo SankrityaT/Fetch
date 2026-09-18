@@ -21,6 +21,11 @@
 
   var fs = require('fs'), path = require('path'), os = require('os')
 
+  // Only used by the connect screen. Guarded because this file is also loadable
+  // outside Electron for quick visual checks.
+  var ipc = null
+  try { ipc = require('electron').ipcRenderer } catch (e) {}
+
   // Hard-coded per spec: the Settings page reads and writes this same file,
   // so every write here is a shallow merge, never a wholesale overwrite.
   var PREFS_DIR = path.join(os.homedir(), 'Library/Application Support/Fetch')
@@ -61,6 +66,7 @@
     { icon: 'paw-print', label: 'Welcome' },
     { icon: 'check-circle', label: 'Permissions' },
     { icon: 'sliders-horizontal', label: 'Defaults' },
+    { icon: 'sparkle', label: 'Connect' },
     { icon: 'check', label: 'Done' },
   ]
 
@@ -179,6 +185,91 @@
     )
   }
 
+  // The clients Fetch knows how to wire up. Order is deliberate: the two CLIs people
+  // most often already pay for come first, editors after.
+  // `mark` is the monogram shown until a real logo file exists. Two letters, because
+  // Claude Code, Codex and Cursor all start with C and a single letter tells you
+  // nothing about which row you are looking at.
+  // `chrome: true` means the mark is a bare glyph and needs our tile behind it.
+  // Codex, Cursor and Windsurf ship their own background in the artwork, so they
+  // become the tile themselves rather than sitting as a light square inside a dark
+  // one. `mark` is the monogram shown only if the logo file is ever missing.
+  var AGENTS = [
+    { id: 'claude',   label: 'Claude Code', sub: 'Anthropic', mark: 'CL', chrome: true },
+    { id: 'codex',    label: 'Codex',       sub: 'OpenAI',    mark: 'CX', chrome: false },
+    { id: 'cursor',   label: 'Cursor',      sub: 'Editor',    mark: 'CU', chrome: false },
+    { id: 'windsurf', label: 'Windsurf',    sub: 'Editor',    mark: 'WS', chrome: false },
+    { id: 'zed',      label: 'Zed',         sub: 'Editor',    mark: 'ZD', chrome: true },
+  ]
+
+  // Real marks live in assets/agents/<id>.svg. Until one is dropped in, the slot
+  // falls back to a monogram rather than an invented logo or a broken image icon.
+  function agentMark(a) {
+    return (
+      '<span class="ob-mark" data-agent="' + a.id + '" data-chrome="' + (a.chrome ? '1' : '0') + '">' +
+        '<img src="./assets/agents/' + a.id + '.svg" alt="" ' +
+             'onerror="this.remove()">' +
+        '<span class="ob-mark-fallback">' + a.mark + '</span>' +
+      '</span>'
+    )
+  }
+
+  function agentRowHtml(a) {
+    return (
+      '<div class="opt ob-agent" data-agent="' + a.id + '" data-state="unknown" hidden>' +
+        agentMark(a) +
+        '<div class="opt-txt">' +
+          '<span class="opt-title">' + a.label + '</span>' +
+          '<span class="opt-sub">' + a.sub + '</span>' +
+        '</div>' +
+        '<span class="ob-badge" data-badge="' + a.id + '"></span>' +
+        '<button class="btn btn-sm ob-agent-btn" data-connect="' + a.id + '" hidden>Connect</button>' +
+      '</div>'
+    )
+  }
+
+  function renderConnect() {
+    return (
+      '<section class="ob-pane ob-pane-connect" aria-hidden="true">' +
+        '<div class="ob-head">' +
+          '<img class="biscuit" src="./assets/mascot/sit-happy.png" alt="">' +
+          '<div>' +
+            '<h3>Let an agent <em class="accent">throw the ball.</em></h3>' +
+            '<p>I can take orders from the AI you already pay for. It starts and stops ' +
+              'my recordings, reads my transcripts and gets a finished file back.</p>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="ob-scroll">' +
+        '<div class="card ob-agent-card" id="obAgentCard">' +
+          '<div class="ob-agent-loading" id="obAgentLoading">' +
+            ico('spinner-gap', 'icon-sm') + '<span>Looking for what you have installed</span>' +
+          '</div>' +
+          AGENTS.map(agentRowHtml).join('') +
+          '<p class="micro dimmer ob-agent-empty" id="obAgentEmpty" hidden>' +
+            'I could not find any of these. Install one, or point your own client at the ' +
+            'command below.' +
+          '</p>' +
+        '</div>' +
+
+        '<button class="btn btn-ghost btn-sm ob-more" id="obAgentMore" hidden>Show more options</button>' +
+
+        '<div class="ob-manual" id="obManual" hidden>' +
+          '<p class="micro dimmer">Using something else? Add this as a stdio MCP server.</p>' +
+          '<div class="ob-cmd">' +
+            '<code class="mono" id="obCmd"></code>' +
+            '<button class="btn btn-ghost btn-icon btn-sm" id="obCmdCopy" title="Copy">' + ico('copy', 'icon-sm') + '</button>' +
+          '</div>' +
+        '</div>' +
+
+        '</div>' +
+
+        '<p class="caps ob-assure">You stay on your own plan. No key, no token, nothing leaves this Mac.</p>' +
+        '<button class="btn btn-primary btn-lg ob-cta" id="obContinue3">Continue</button>' +
+      '</section>'
+    )
+  }
+
   function renderDone() {
     return (
       '<section class="ob-pane ob-pane-center" aria-hidden="true">' +
@@ -226,13 +317,16 @@
         '</div>' +
         '<div class="ob-view">' +
           '<div class="ob-track" id="obTrack">' +
-            renderWelcome() + renderPermissions() + renderDefaults(state) + renderDone() +
+            renderWelcome() + renderPermissions() + renderDefaults(state) + renderConnect() + renderDone() +
           '</div>' +
         '</div>' +
       '</div>'
     document.body.appendChild(scrim)
 
     var track = scrim.querySelector('#obTrack')
+    // Pane count drives the track width and the slide distance. Hardcoding 400%/25%
+    // is what made adding this fifth screen a two-file change instead of one.
+    track.style.setProperty('--ob-panes', STEPS.length)
     var permPollTimer = null
 
     function setPerm(key, val) {
@@ -311,7 +405,7 @@
 
     function paint(animateRunner) {
       var prevStep = lastStep
-      track.style.transform = 'translateX(-' + (state.step * 25) + '%)'
+      track.style.transform = 'translateX(-' + (state.step * (100 / STEPS.length)) + '%)'
       scrim.querySelectorAll('.ob-pane').forEach(function (p, i) { p.setAttribute('aria-hidden', String(i !== state.step)) })
       scrim.querySelectorAll('.ob-step').forEach(function (s, i) {
         s.dataset.state = i === state.step ? 'active' : i < state.step ? 'done' : ''
@@ -320,7 +414,7 @@
         l.dataset.done = String(+l.dataset.line < state.step)
       })
       scrim.querySelector('#obBack').hidden = state.step === 0
-      scrim.querySelector('#obSkip').hidden = state.step === 3
+      scrim.querySelector('#obSkip').hidden = state.step === STEPS.length - 1
       updateRunner(prevStep, animateRunner)
       lastStep = state.step
       clearInterval(permPollTimer); permPollTimer = null
@@ -328,6 +422,7 @@
         refreshPerms()
         permPollTimer = setInterval(refreshPerms, 1500)
       }
+      if (state.step === 3) loadAgents()
     }
 
     function closeOverlay() {
@@ -337,11 +432,12 @@
       scrim.classList.add('ob-exit')
       setTimeout(function () { scrim.remove() }, 220)
     }
-    function goto(n) { state.step = Math.max(0, Math.min(3, n)); paint(true) }
+    function goto(n) { state.step = Math.max(0, Math.min(STEPS.length - 1, n)); paint(true) }
 
     scrim.querySelector('#obGetStarted').onclick = function () { goto(1) }
     scrim.querySelector('#obContinue1').onclick = function () { goto(2) }
     scrim.querySelector('#obContinue2').onclick = function () { goto(3) }
+    scrim.querySelector('#obContinue3').onclick = function () { goto(4) }
     scrim.querySelector('#obBack').onclick = function () { goto(state.step - 1) }
     scrim.querySelector('#obSkip').onclick = function () {
       writePrefs({ onboarded: true })
@@ -405,6 +501,114 @@
         if (window.prefs) window.prefs.countdown = state.countdown
       }
     })
+
+
+    // ── connect screen ────────────────────────────────────────────────────
+    // Detection shells out to a login shell the first time, so main primes it at
+    // startup and this usually resolves from cache. It still runs on arrival at the
+    // pane rather than at open, so nothing is spent by someone who skips past.
+    var agentsLoaded = false
+    var showingAll = false
+
+    function agentRow(id) { return scrim.querySelector('.ob-agent[data-agent="' + id + '"]') }
+
+    function setAgent(id, stateName, msg) {
+      var row = agentRow(id)
+      if (!row) return
+      var badge = row.querySelector('.ob-badge')
+      var btn = row.querySelector('.ob-agent-btn')
+      row.dataset.state = stateName
+      row.hidden = stateName === 'missing' && !showingAll
+
+      if (stateName === 'connected') {
+        badge.textContent = 'Connected'
+        btn.hidden = true
+      } else if (stateName === 'ready') {
+        badge.textContent = 'Detected'
+        btn.hidden = false; btn.disabled = false; btn.textContent = 'Connect'
+      } else if (stateName === 'working') {
+        badge.textContent = ''
+        btn.hidden = false; btn.disabled = true; btn.textContent = 'Connecting'
+      } else if (stateName === 'error') {
+        // Show what the client actually said. A generic toast here is untraceable.
+        badge.textContent = msg || 'Did not work'
+        btn.hidden = false; btn.disabled = false; btn.textContent = 'Try again'
+      } else {
+        badge.textContent = 'Not found'
+        btn.hidden = true
+      }
+    }
+
+    function applyDetection(res) {
+      var loading = scrim.querySelector('#obAgentLoading')
+      if (loading) loading.hidden = true
+
+      var cmd = scrim.querySelector('#obCmd')
+      if (cmd) cmd.textContent = res.command
+
+      var anyPresent = false
+      res.clients.forEach(function (c) {
+        if (c.installed) anyPresent = true
+        setAgent(c.id, c.connected ? 'connected' : c.installed ? 'ready' : 'missing')
+      })
+
+      // Nothing installed is a legitimate outcome, not an error: show the manual
+      // command straight away rather than hiding it behind a disclosure.
+      scrim.querySelector('#obAgentEmpty').hidden = anyPresent
+      scrim.querySelector('#obAgentMore').hidden = !anyPresent
+      if (!anyPresent) { showingAll = true; revealAll(); scrim.querySelector('#obManual').hidden = false }
+    }
+
+    function revealAll() {
+      scrim.querySelectorAll('.ob-agent').forEach(function (r) {
+        if (r.dataset.state === 'missing') r.hidden = !showingAll
+      })
+    }
+
+    function loadAgents() {
+      if (agentsLoaded || !ipc) return
+      agentsLoaded = true
+      withTimeout(ipc.invoke('agents-detect'), 20000)
+        .then(applyDetection)
+        .catch(function () {
+          // Detection failing must not strand anyone on this screen. Fall back to
+          // the manual path, which works regardless of what we could detect.
+          var loading = scrim.querySelector('#obAgentLoading')
+          if (loading) loading.hidden = true
+          showingAll = true; revealAll()
+          scrim.querySelector('#obManual').hidden = false
+          scrim.querySelector('#obAgentMore').hidden = true
+        })
+    }
+
+    scrim.querySelector('#obAgentMore').onclick = function (e) {
+      showingAll = !showingAll
+      revealAll()
+      scrim.querySelector('#obManual').hidden = !showingAll
+      e.currentTarget.textContent = showingAll ? 'Show fewer options' : 'Show more options'
+    }
+
+    scrim.querySelector('#obAgentCard').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-connect]')
+      if (!btn || !ipc) return
+      var id = btn.dataset.connect
+      setAgent(id, 'working')
+      withTimeout(ipc.invoke('agents-connect', id), 30000)
+        .then(function (r) {
+          if (r && r.ok) setAgent(id, 'connected')
+          else setAgent(id, 'error', (r && r.error) || 'Did not work')
+        })
+        .catch(function () { setAgent(id, 'error', 'Timed out') })
+    })
+
+    scrim.querySelector('#obCmdCopy').onclick = function (e) {
+      var text = scrim.querySelector('#obCmd').textContent
+      navigator.clipboard.writeText(text).then(function () {
+        var b = e.currentTarget
+        b.classList.add('ob-copied')
+        setTimeout(function () { b.classList.remove('ob-copied') }, 1200)
+      })
+    }
 
     paint(false)
     // offsetLeft on the step icons reads 0 until the modal has actually been
