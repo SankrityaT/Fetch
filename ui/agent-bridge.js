@@ -62,7 +62,13 @@ const TITLES = {
   'edit.beats': 'Read the beats',
   'edit.export': 'Exported a video',
   'recordings.rename': 'Renamed a recording',
+  'edit.silence': 'Removed dead air',
+  'edit.enhance': 'Cleaned up the audio',
+  'settings.set': 'Changed settings',
+  'recordings.trash': 'Moved a recording to the Trash',
 }
+
+const { AGENT_PREFS, HUMAN_ONLY_PREFS } = policy
 
 const ops = {
   // Sent once by the shim so the log can say which agent is driving rather than
@@ -196,6 +202,53 @@ const ops = {
   // Rename through the same helper the Library uses, so sidecars (transcript, beats,
   // camera take, edit document) move with the file and the take stays in the Library.
   // A name is cleaned of anything that could turn it into a path.
+  // ── the rest of what a person can do ─────────────────────────────────
+  async 'edit.silence'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const r = await deps.runOp('silence', args.path, {
+      minSilence: args.min_silence, pad: args.padding,
+    })
+    return { path: r.file, removed_percent: r.savedPct, kept_segments: r.cuts, seconds: r.duration }
+  },
+
+  async 'edit.enhance'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const r = await deps.runOp('enhance', args.path, {})
+    return { path: r.file }
+  },
+
+  // Settings an agent may read and change. Consent settings are refused in code
+  // (record-policy.js), not left to a tool description asking nicely.
+  async 'settings.get'() {
+    const p = deps.getPrefs ? deps.getPrefs() : {}
+    const out = {}
+    for (const k of AGENT_PREFS) if (k in p) out[k] = p[k]
+    out.human_only = HUMAN_ONLY_PREFS
+    return out
+  },
+
+  async 'settings.set'(args = {}) {
+    const clean = policy.checkSettingsPatch(args.settings, d => {
+      try { return fs.statSync(d).isDirectory() } catch { return false }
+    })
+    deps.setPrefs(clean)
+    return await ops['settings.get']()
+  },
+
+  // To the Trash, with Finder's Put Back, never a permanent delete. An agent should not
+  // be able to do something to a recording that a person cannot undo.
+  async 'recordings.trash'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    if (!fs.existsSync(args.path)) throw new Error('no such recording')
+    const { shell } = require('electron')
+    const side = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
+      .map(e => deps.proc.sidecarIn(args.path, e)).filter(f => f !== args.path && fs.existsSync(f))
+    for (const f of [args.path, ...side]) await shell.trashItem(f)
+    const win = deps.getWindow()
+    if (win && !win.isDestroyed()) win.webContents.executeJavaScript('refreshLibrary()').catch(() => {})
+    return { trashed: args.path, with_sidecars: side.length, recoverable: true }
+  },
+
   async 'recordings.rename'(args = {}) {
     if (!args.path) throw new Error('path is required')
     const naming = require('./naming')
@@ -232,6 +285,7 @@ const ops = {
 
   async probe(args = {}) {
     if (!args.path) throw new Error('path is required')
+    if (!fs.existsSync(args.path)) throw new Error('no such file')
     return await deps.proc.probeMeta(args.path)
   },
 
@@ -399,6 +453,10 @@ function logOp(op, ctx, t0, args, result, error) {
   else if (op === 'windows.list' && result) detail = `${result.length} windows`
   else if (op === 'recordings.list' && result) detail = `${result.length} recordings`
   else if (op === 'probe' && args && args.path) detail = args.path
+  else if (op === 'edit.silence' && result) detail = `${result.removed_percent}% removed, ${result.path}`
+  else if (op === 'edit.enhance' && result) detail = result.path
+  else if (op === 'recordings.trash' && result) detail = result.trashed
+  else if (op === 'settings.set' && args && args.settings) detail = Object.keys(args.settings).join(', ')
 
   activity.record({
     op,

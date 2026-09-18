@@ -33,6 +33,13 @@
     if (saved && typeof saved === 'object') Object.assign(window.prefs, saved)
   } catch {}
 
+  // An agent changed something over MCP. Main has already persisted it; this copy
+  // must follow or the next take would start with the old camera or countdown.
+  ipc.on('prefs-changed', (e, patch) => {
+    Object.assign(window.prefs, patch)
+    window.dispatchEvent(new CustomEvent('prefs-changed', { detail: patch }))
+  })
+
   // shallow merge into the in-memory copy and persist. Anything reading
   // window.prefs afterwards sees the change immediately.
   window.savePrefs = function savePrefs(patch) {

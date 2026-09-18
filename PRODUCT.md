@@ -58,8 +58,8 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   server attached. Streams every tool call as a row with its duration. Remembers the
   conversation (`--resume` on the session id). `@` tags a recording by exact path.
   A microphone dictates, transcribed locally.
-- Editor: beats strip named from speech, zoom track (`Z1 2.0x`), trim, cuts, text,
-  captions, look, camera, audio, voiceover.
+- Editor: beats strip named from speech, zoom track (`Z1 2.0x`), marks track
+  (redact, spotlight, step), trim, cuts, text, captions, look, camera, audio, voiceover.
 - Library: masonry, each tile the real shape of its take.
 - Activity: every action on the machine, attributed. No vendor mark means a person.
 - Settings: Recording access (never-record list), Connect, voiceover account.
@@ -68,17 +68,21 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
 - One canonical description of an edit, written to `.fetch/<stem>.fetchdoc.json`.
 - Clips, not trim plus cuts, are the model, so pieces can be named.
 - Ids from a per-document counter, never reused: `C` clips, `Z` zooms, `T` texts,
-  `S` subtitles, `B` beats.
+  `S` subtitles, `B` beats, `M` marks.
 - The nine values that used to live only as slider positions now persist in `look`.
 
-**MCP tools** (`mcp/index.js`): `record_start`, `record_stop`, `record_status`,
+**MCP tools** (`mcp/index.js`), 18: `record_start`, `record_stop`, `record_status`,
 `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
-`list_beats`, `get_edit`, `apply_edit`, `export`. Everything the editor window can do is
-reachable here, and the pipeline runs with the window closed.
+`list_beats`, `get_edit`, `apply_edit`, `export`, `rename_recording`,
+`remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`, `delete_recording`.
+Every 1.0 option is reachable: trim and cuts as clips, crop and aspect, texts with any
+installed font, caption style and position, zooms, backdrops, camera, denoise, loudness,
+gain, fades, music, redaction, spotlight and numbered steps. The pipeline runs with the
+window closed. Settings that decide what may be recorded, and telemetry, are refused
+to agents in code.
 
 **Not built**, and not to be claimed: driving apps (Fetch records, other tools drive),
-redaction or spotlight in the export (in progress), arrows, loupes, multi-device frames,
-reading the project's source code.
+arrows, loupes, "lift one row", multi-device frames, reading the project's source code.
 
 ## Strategic principles
 

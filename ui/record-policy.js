@@ -96,4 +96,40 @@ function windowsToExclude(windows, policy = {}) {
     .map(w => w.id)
 }
 
-module.exports = { decide, windowsToExclude, isProtected, DEFAULT_NEVER, MODES }
+// ── settings an agent may change ─────────────────────────────────────────
+// HUMAN_ONLY is the part that makes the rest of this file mean anything: an agent
+// that could set recordAccess to 'always' or empty the never-record list would pass
+// every check above. Telemetry is here because sharing anything is a person's call.
+const AGENT_PREFS = ['saveDir', 'camera', 'mic', 'systemAudio', 'countdown',
+  'openEditorAfter', 'keepOriginal', 'quickRecord', 'autoConvertMp4', 'autoUpdate']
+const HUMAN_ONLY_PREFS = ['recordAccess', 'neverRecord', 'allowedRecordApps', 'telemetry']
+
+// A settings patch from an agent, checked and coerced. Throws on the first problem
+// and refuses the patch as a whole, so nothing is half applied. `dirExists` is passed
+// in to keep this module free of the filesystem.
+function checkSettingsPatch(patch, dirExists = () => true) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('settings must be an object')
+  const keys = Object.keys(patch)
+  const refused = keys.filter(k => HUMAN_ONLY_PREFS.includes(k))
+  if (refused.length) throw new Error(`${refused.join(', ')} can only be changed by a person, in Fetch's Settings`)
+  const unknown = keys.filter(k => !AGENT_PREFS.includes(k))
+  if (unknown.length) throw new Error(`not a setting: ${unknown.join(', ')}`)
+  const out = {}
+  for (const k of keys) {
+    const v = patch[k]
+    if (k === 'countdown') {
+      if (![0, 3, 5].includes(v)) throw new Error('countdown must be 0, 3 or 5')
+      out[k] = v
+    } else if (k === 'saveDir') {
+      if (v !== null && !(typeof v === 'string' && dirExists(v))) throw new Error('saveDir must be an existing folder, or null for the Desktop')
+      out[k] = v
+    } else {
+      if (typeof v !== 'boolean') throw new Error(`${k} must be true or false`)
+      out[k] = v
+    }
+  }
+  return out
+}
+
+module.exports = { decide, windowsToExclude, isProtected, DEFAULT_NEVER, MODES,
+  AGENT_PREFS, HUMAN_ONLY_PREFS, checkSettingsPatch }

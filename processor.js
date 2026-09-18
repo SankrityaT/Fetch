@@ -71,10 +71,17 @@ function run(bin, args, onLine, jobId) {
       reject(new Error(tail || `${path.basename(bin)} exited ${code}`))
     })
     p.on('error', e => { unregister(jobId, p); reject(e) })
+    // Buffer partial lines: a pipe chunk can end mid-line, and handing onLine half a
+    // "silence_end: 4.21" line loses the event.
+    let partial = ''
     p.stderr.on('data', d => {
       err += d
-      if (onLine) d.toString().split('\n').forEach(l => l && onLine(l))
+      if (!onLine) return
+      const ls = (partial + d).split(/\r?\n|\r/)
+      partial = ls.pop()
+      ls.forEach(l => l && onLine(l))
     })
+    p.stderr.on('end', () => { if (onLine && partial) onLine(partial); partial = '' })
     p.stdout.on('data', d => { if (onLine) d.toString().split('\n').forEach(l => l.startsWith('PROGRESS') && onLine(l)) })
     p.once('exit', (code, sig) => { if (sig === 'SIGKILL') killed = true })
   })
@@ -93,8 +100,16 @@ const timeWatcher = (onProgress, total) => l => {
 // `ffmpeg -i` alone exits non-zero but prints the header instantly. The old
 // code decoded the entire file with `-f null -` just to read the duration.
 async function probeMeta(src) {
-  let out = ''
-  await run(FFMPEG, ['-hide_banner', '-i', src], l => { out += l + '\n' }).catch(() => {})
+  // Read stderr whole. run() hands its callback chunk pieces split on newlines, and a
+  // chunk boundary inside "Stream #0:1: Audio: aac" turned into a fake line break, so
+  // under load a file with audio was sometimes probed as having none.
+  const out = await new Promise(resolve => {
+    let buf = ''
+    const p = spawn(FFMPEG, ['-hide_banner', '-i', src])
+    p.stderr.on('data', d => { buf += d })
+    p.on('close', () => resolve(buf))
+    p.on('error', () => resolve(buf))
+  })
   const meta = { duration: 0, width: 0, height: 0, fps: 0, hasAudio: false, vcodec: null, acodec: null, audioTracks: 0 }
   const d = /Duration: (\d+):(\d+):(\d+\.\d+)/.exec(out)
   if (d) meta.duration = +d[1] * 3600 + +d[2] * 60 + +d[3]

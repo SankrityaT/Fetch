@@ -340,5 +340,6 @@
   // content once at load, since window.prefs is already settled by the time
   // this script runs (ui/prefs.js loads first and reads it synchronously).
   renderSettings()
+  window.addEventListener('prefs-changed', () => renderSettings())
   $('gearBtn').onclick = () => show('settings')
 })()

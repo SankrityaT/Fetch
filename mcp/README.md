@@ -79,6 +79,19 @@ record_start({ window: "<id>" })
 | `list_recordings` | Known recordings, newest first, with paths. |
 | `probe` | Duration, resolution, frame rate, audio tracks. |
 | `transcribe` | On-device transcript, writes a `.srt` beside the file. |
+| `list_beats` | Named spans from what was said, each with a `B` id, to find a moment by its words. |
+| `get_edit` | The recording's edit: clips, zooms, texts, captions, marks, look, crop, camera, audio, and the fonts and backdrops on offer. |
+| `apply_edit` | Change any part of the edit. Only the fields sent change; lists replace as a whole. |
+| `export` | Render the edit to a file, through the same queue as the app. |
+| `rename_recording` | Rename a recording; its transcript, camera take and edit move with it. |
+| `remove_dead_air` | Cut silent gaps into a new file beside the original. |
+| `enhance_audio` | Denoise and level the voice into a new file beside the original. |
+| `get_settings` / `set_settings` | Save folder, camera, mic, system audio, countdown and the rest. |
+| `delete_recording` | Move a recording and its sidecars to the Trash. Put Back works. |
+
+`set_settings` cannot change Recording access, the never-record list, allowed apps or
+telemetry. The refusal is in the app (`ui/record-policy.js`), not in a description an
+agent could ignore, and a request that includes any of them is refused as a whole.
 
 Tools return paths and counts rather than payloads. `transcribe` gives you the
 subtitle path and word count; pass `include_text` only when the transcript itself is

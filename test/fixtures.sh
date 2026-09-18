@@ -10,7 +10,16 @@ $F -hide_banner -v error -y -f lavfi -i "testsrc2=s=640x360:r=30:d=12" \
   -c:v libvpx-vp9 -b:v 500k -deadline realtime -cpu-used 8 -c:a libopus /tmp/fetch-test/silence.webm
 # assorted input containers
 SRC=$(ls -t ~/Desktop/recording-*.webm 2>/dev/null | head -1)
-[ -n "$SRC" ] && cp "$SRC" /tmp/fetch-test/test.webm
+if [ -n "$SRC" ]; then
+  cp "$SRC" /tmp/fetch-test/test.webm
+else
+  # No real take to borrow: synthesise one shaped like MediaRecorder's output. Written
+  # to a pipe, so the webm has no duration and no cues, which is the case that matters.
+  say -o /tmp/fetch-test/said.aiff "Open the filter panel, pick a status, and save it."
+  $F -hide_banner -v error -y -f lavfi -i "testsrc2=s=1280x720:r=30" -i /tmp/fetch-test/said.aiff \
+    -shortest -c:v libvpx-vp9 -b:v 800k -deadline realtime -cpu-used 8 -c:a libopus -f webm - \
+    > /tmp/fetch-test/test.webm
+fi
 $F -hide_banner -v error -y -fflags +genpts -i /tmp/fetch-test/test.webm -c copy /tmp/fetch-test/fixed.mkv
 for spec in "mov:libx264:aac" "mkv:libx264:aac" "avi:mpeg4:mp3" "m4v:libx264:aac"; do
   ext=${spec%%:*}; rest=${spec#*:}; v=${rest%%:*}; a=${rest##*:}
