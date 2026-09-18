@@ -20,12 +20,38 @@
   /* 8px grid */
   --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:24px; --s-6:32px; --s-7:48px; --s-8:64px;
 
-  --r-sm:10px; --r-md:14px; --r-lg:20px; --r-pill:999px;
+  --r-sm:10px; --r-md:14px; --r-lg:20px; --r-xl:26px; --r-pill:999px;
 
-  /* elevation is light, not shadow */
+  /* ── elevation ──────────────────────────────────────────────────────────
+     Rewritten. The old system put a 1px hairline on almost every surface, which
+     made every panel read as a box on a flat plane and the app as a wireframe of
+     itself. Depth now comes from three things in order of importance:
+
+       1. TONE. A raised surface is lighter than the one under it. This does the
+          most work and costs nothing.
+       2. SHADOW. Only things that genuinely float cast one, and then it is wide
+          and soft rather than tight and dark. On a near-black ground a small
+          shadow is invisible, so it has to be large to register at all.
+       3. LIGHT. A 1px inset highlight along the top edge, which is what sells a
+          surface as catching light from above.
+
+     A hairline is now the exception, for where two surfaces of the same tone
+     genuinely meet, rather than the default. */
   --edge:1px solid var(--ink-3);
-  --sheen:inset 0 1px 0 rgba(255,255,255,.04);
+  --edge-soft:1px solid rgba(255,255,255,.045);
+  --sheen:inset 0 1px 0 rgba(255,255,255,.045);
+
+  /* resting card: barely there, just enough to lift off the ground */
+  --shadow-1:0 1px 3px rgba(0,0,0,.5), 0 10px 28px -16px rgba(0,0,0,.7);
+  /* a docked panel or a raised well */
+  --shadow-2:0 2px 6px rgba(0,0,0,.35), 0 18px 48px -18px rgba(0,0,0,.65);
+  /* something genuinely floating over content: popovers, menus */
+  --shadow-3:0 8px 16px -6px rgba(0,0,0,.5), 0 32px 72px -24px rgba(0,0,0,.8);
   --shadow-modal:0 24px 70px -12px rgba(0,0,0,.75), 0 0 0 1px var(--ink-3);
+
+  /* Blur is for layers that sit OVER content and must stay legible while what is
+     behind them shows through. Never decorative, per DESIGN.md. */
+  --blur-over:saturate(140%) blur(20px);
 
   --ease-in:cubic-bezier(.2,.8,.2,1);
   --ease-out:cubic-bezier(.4,0,1,1);
@@ -47,6 +73,13 @@ button { cursor:pointer; }
 html,body { height:100%; }
 body {
   background:var(--ink-0);
+  /* One very wide, very faint warm pool behind everything. Flat #0A0908 across a
+     1240px window reads as an absence of light rather than a dark room; this gives
+     the eye somewhere to settle without becoming a visible gradient. */
+  background-image:
+    radial-gradient(70% 55% at 0% 0%, rgba(240,169,60,.040), transparent 62%),
+    radial-gradient(60% 50% at 100% 100%, rgba(240,169,60,.026), transparent 60%);
+  background-attachment:fixed;
   color:var(--text-0);
   font:400 var(--t-13)/1.5 var(--font-ui);
   -webkit-font-smoothing:antialiased;

@@ -9,7 +9,10 @@
      which sit at x=18 and run to about 78px, so the right matches it rather
      than the other way round. */
   padding:0 92px;
-  border-bottom:var(--edge); background:var(--ink-1);
+  border-bottom:var(--edge-soft);
+  background:color-mix(in srgb, var(--ink-1) 82%, transparent);
+  backdrop-filter:var(--blur-over);
+  -webkit-backdrop-filter:var(--blur-over);
   -webkit-app-region:drag;
 }
 #titlebar button, #titlebar .seg { -webkit-app-region:no-drag; }
