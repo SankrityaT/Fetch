@@ -12,8 +12,9 @@ import Image from "next/image";
  *     literal, the update manifest. The metrics endpoint is an env var rather
  *     than a literal, so a URL grep alone will not find it. Check
  *     ui/telemetry.js as well.
- *   - grep fetch / XMLHttpRequest / net.request / axios / WebSocket. Two call
- *     sites now: https.get in ui/updater.js, https.request in ui/telemetry.js
+ *   - grep fetch / XMLHttpRequest / net.request / axios / WebSocket. Three call
+ *     sites now: https.get in ui/updater.js, https.request in ui/telemetry.js,
+ *     and ui/voice.js, which only runs once someone pastes an ElevenLabs key
  *   - there is no auth code. The only `session` hits are Electron's display
  *     media permission API
  *   - saveDir defaults to null, which main.js resolves to the Desktop
@@ -38,17 +39,17 @@ import Image from "next/image";
 
 const RECEIPTS = [
   {
-    claim: "No account",
-    body: "There is no backend, so there is nothing to sign in to. Fetch has never had a server, which is a stronger promise than a privacy policy is.",
+    claim: "No account, no key",
+    body: "Fetch has no server to sign in to and holds no API key. When an agent drives it, that agent is the CLI you already signed in to, on the plan you already pay for.",
   },
   {
-    claim: "Two things it contacts",
-    body: "It asks GitHub whether a newer version exists, and once a day it says that one more copy of Fetch exists. That second one sends a random id, the app version and your macOS version. Never a filename, a recording, a transcript, or anything you typed. There is no account to attach it to.",
-    mono: "raw.githubusercontent.com  ·  /api/ping",
+    claim: "Three things it can contact",
+    body: "GitHub, to ask whether a newer version exists. A daily count that says one more copy of Fetch exists: a random id, the app version and your macOS version. And ElevenLabs, only if you connect voiceover, and only the script. Never a recording, a filename or anything you typed.",
+    mono: "raw.githubusercontent.com  \u00b7  /api/ping  \u00b7  api.elevenlabs.io",
   },
   {
-    claim: "Both have an off switch",
-    body: "Turn off auto-update and it stops asking. Turn off the install count in Settings and Fetch says nothing at all. Build it yourself without a metrics endpoint and that code path does not exist.",
+    claim: "Every one has an off switch",
+    body: "Turn off auto-update and it stops asking. Turn off the install count in Settings and Fetch says nothing at all. Voiceover is off until you paste your own key, and the key lives in the macOS Keychain.",
   },
   {
     claim: "Transcription runs on your Mac",
@@ -75,12 +76,12 @@ export function Receipts() {
     >
       <div className="mx-auto max-w-[1100px] px-6 md:px-10">
         <h2 className="max-w-[18ch] text-[clamp(2rem,3.6vw,3.25rem)]">
-          Nothing leaves your Mac. Here is the{" "}
-          <em className="accent pr-[0.06em] leading-[1.1]">receipt</em>.
+          Everything that leaves your Mac, on one{" "}
+          <em className="accent pr-[0.06em] font-normal leading-[1.1]">receipt</em>.
         </h2>
         <p className="mt-5 max-w-[52ch] text-18 leading-[1.55] text-text-1">
-          Loom uploads your recording and gives you a link back. Fetch writes a
-          file to your Desktop. Everything below follows from that.
+          &ldquo;Private&rdquo; means nothing on its own. So here is every request
+          Fetch can make, what is in it, and how to stop it.
         </p>
 
         <dl className="mt-14">

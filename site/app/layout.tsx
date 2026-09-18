@@ -44,15 +44,15 @@ const mono = localFont({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://fetch.app"),
-  title: "Fetch. Record it. Fetch it. Ship it.",
+  metadataBase: new URL("https://getfetch.fyi"),
+  title: "Fetch. Let your agent record the demo.",
   description:
-    "A macOS screen recorder and editor that runs entirely on your Mac. Move the camera bubble after you record. No account, no upload, no subscription.",
+    "A Mac screen recorder that Claude Code, Codex and Cursor can drive. It records any real window, captions it on your Mac and cuts it by what was said. No key, no token, no upload.",
   openGraph: {
-    title: "Fetch. Record it. Fetch it. Ship it.",
+    title: "Fetch. Let your agent record the demo.",
     description:
-      "A macOS screen recorder and editor that runs entirely on your Mac. No account, no upload, no subscription.",
-    images: ["/shots/editor.png"],
+      "A Mac screen recorder your agent can drive. Records any real window, captions it on-device. No key, no token, no upload.",
+    images: ["/shots/v2/editor.png"],
     type: "website",
   },
 };

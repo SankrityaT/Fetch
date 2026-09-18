@@ -277,3 +277,62 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── the stage ────────────────────────────────────────────────────────────
+   Fetch frames a recording on a backdrop, and Dusk is the one the app ships
+   first: F0A93C falling to 7A3E12 (processor.js BACKDROPS). The hero sits on
+   the same light, pushed down into the ink so it reads as a lamp in a dark
+   room rather than a gold slab. Gold as an accent stays under ten percent of
+   the page because this is the only place it is allowed to be ambient, and it
+   is the product's own output, not decoration. */
+@utility dusk {
+  background:
+    radial-gradient(120% 90% at 50% 118%, rgb(240 169 60 / 0.55) 0%, rgb(201 127 30 / 0.34) 22%, rgb(122 62 18 / 0.30) 42%, transparent 70%),
+    radial-gradient(80% 60% at 12% -10%, rgb(122 62 18 / 0.35) 0%, transparent 60%),
+    linear-gradient(180deg, #120d09 0%, #0f0b08 100%);
+}
+
+/* Film grain. Flat gradients band on a dark screen and look like a render;
+   a two percent noise reads as air. Inline SVG so it costs no request. */
+@utility grain {
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.09;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  }
+}
+
+/* Surfaces, in the app's order: tone first, then a top highlight, then a
+   wide soft shadow only for what floats. */
+@utility raised {
+  background: var(--color-ink-1);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.045);
+}
+@utility floating {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 8px 16px -6px rgb(0 0 0 / 0.5),
+    0 32px 72px -24px rgb(0 0 0 / 0.8);
+}
+
+/* Sections arrive as you reach them. Scroll-driven where the engine has it,
+   so there is no observer and no layout work; everywhere else the content is
+   simply there. */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .reveal {
+      animation: rise linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 42%;
+    }
+  }
+}
+
+@keyframes caret {
+  50% { opacity: 0; }
+}

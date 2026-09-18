@@ -80,7 +80,8 @@ export function SiteHeader() {
 
           <nav className="hidden items-center sm:flex">
             {[
-              ["The editor", "#editor"],
+              ["How it works", "#how"],
+              ["Agents", "#agents"],
               ["Privacy", "#privacy"],
               ["Source", "https://github.com/SankrityaT/Fetch"],
             ].map(([label, href]) => (
