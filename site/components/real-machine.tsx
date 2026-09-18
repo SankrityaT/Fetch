@@ -3,10 +3,10 @@ import Image from "next/image";
 /* The one claim the rest of the category structurally cannot make. Every row is
  * from the positioning in landing/DESIGN-HANDOFF.md, and every one of them is
  * about where the pixels come from, which is the only thing that matters here:
- * a web-app demo from Fetch would be indistinguishable from Clueso's. */
+ * a web-app demo from Fetch would be indistinguishable from Clueso's. Only
+ * shipped products belong in this table. */
 const ROWS = [
   { who: "Clueso", records: "A cloud browser. Web apps only, and it wants your staging login.", where: "Their cloud" },
-  { who: "Moonjar", records: "The iOS Simulator.", where: "Your Mac" },
   { who: "HyperFrames", records: "HTML it renders itself. Never a real app.", where: "Their cloud" },
 ];
 
@@ -29,8 +29,8 @@ export function RealMachine() {
               It records the <em className="accent pr-[0.06em] font-normal">real</em> thing.
             </h2>
             <p className="mx-auto mt-5 max-w-[54ch] text-18 leading-[1.55] text-text-1">
-              Other agent tools record a browser in the cloud, a simulator or a page
-              they drew themselves. Fetch records whatever window is on your Mac.
+              Other agent tools record a browser in the cloud, or a page they drew
+              themselves. Fetch records whatever window is on your Mac.
             </p>
           </div>
 
