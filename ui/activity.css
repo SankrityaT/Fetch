@@ -1,0 +1,62 @@
+/* Activity: a log of what happened and who did it.
+
+   A table would be the obvious shape and the wrong one. These rows are read by
+   scanning down the left for time and across for meaning, so the columns are sized
+   to their content and the row stays one line unless something failed. */
+
+.act-head { padding:var(--s-6) var(--s-6) var(--s-4); }
+.act-head h2 { font-size:var(--t-24); margin-bottom:var(--s-1); }
+.act-head p { font-size:var(--t-12); max-width:62ch; }
+
+.act-list { padding:0 var(--s-6) var(--s-7); }
+
+.act-day {
+  font-size:var(--t-11); font-weight:600; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--text-2); padding:var(--s-5) 0 var(--s-2);
+}
+.act-day:first-child { padding-top:0; }
+
+.act-row {
+  display:grid; grid-template-columns:52px 30px 1fr auto auto 20px;
+  align-items:center; gap:var(--s-3);
+  padding:var(--s-3) 0; border-top:1px solid var(--ink-2);
+}
+.act-row:hover { background:rgba(255,255,255,.015); }
+
+.act-time { font-size:var(--t-11); color:var(--text-2); }
+
+/* the operation glyph, with the vendor mark badged on its corner the way a small
+   app icon carries a badge: you read "what happened" first, "who" second */
+.act-ico {
+  position:relative; width:30px; height:30px; border-radius:var(--r-sm);
+  background:var(--ink-2); border:var(--edge);
+  display:grid; place-items:center; color:var(--text-1);
+}
+.act-badge {
+  position:absolute; right:-5px; bottom:-5px;
+  width:16px; height:16px; border-radius:5px; overflow:hidden;
+  background:var(--ink-1); border:1px solid var(--ink-0);
+  display:grid; place-items:center;
+}
+.act-badge img { width:100%; height:100%; object-fit:contain; display:block; }
+.act-badge svg { width:9px; height:9px; color:var(--fur-1); }
+
+.act-txt { min-width:0; display:flex; flex-direction:column; gap:1px; }
+.act-title { font-size:var(--t-13); font-weight:500; line-height:1.35; }
+/* No direction:rtl here. It was used to truncate long paths at the head and keep the
+   filename, and it silently reordered every other detail line: "15 words, 3 cues"
+   rendered as "words, 3 cues 15". Paths are shortened in JS instead. */
+.act-detail {
+  font-size:var(--t-11); color:var(--text-2); line-height:1.35;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.act-error { color:#FFB4AD; }
+
+.act-by { font-size:var(--t-11); color:var(--text-2); white-space:nowrap; }
+.act-ms { font-size:var(--t-11); color:var(--text-2); white-space:nowrap; }
+
+.act-state { display:grid; place-items:center; color:var(--good); }
+.act-row[data-ok="false"] .act-state { color:var(--rec); }
+
+/* the view itself scrolls, and the empty state is centred in it */
+.view[data-view="activity"] .empty { height:100%; }
