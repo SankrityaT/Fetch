@@ -835,6 +835,8 @@ ipcMain.handle('chat-engines', async () => {
   const d = await require('./ui/agent-connect').detect()
   return d.clients.filter(c => c.installed && (c.id === 'claude' || c.id === 'codex'))
 })
+// What each installed CLI can run, for the model picker (ui/models.js).
+ipcMain.handle('chat-models', (e, installed) => require('./ui/models').catalogue(installed))
 
 // The activity log. Read by the Activity view; written from the bridge and from
 // every job that finishes here.
