@@ -390,10 +390,29 @@ async function transcribe(srcArg, opts, onProgress, jobId) {
     const txtPath = sidecarOut(srcArg, '.txt'), srtPath = sidecarOut(srcArg, '.srt')
     fs.writeFileSync(txtPath, j.text || '')
 
-    const cues = buildCues(words, await speechRegions(wav, j.durationSeconds || 0, jobId))
+    const dur = j.durationSeconds || 0
+    const speech = await speechRegions(wav, dur, jobId)
+    const cues = buildCues(words, speech)
     fs.writeFileSync(srtPath, cuesToSrt(cues))
 
-    return { file: txtPath, srt: srtPath, cues, words: words.length, text: j.text || '',
+    // Keep the word timings. They were computed and then thrown away, which cost
+    // nothing at the time and made beats, searching inside a recording, and any
+    // future "cut the bit where I fumbled" impossible without transcribing again.
+    // Start times only: the end times are padded and unreliable, and storing them
+    // would invite someone to trust them.
+    const wordsPath = sidecarOut(srcArg, '.words.json')
+    try {
+      fs.writeFileSync(wordsPath, JSON.stringify({
+        dur, speech,
+        words: words.filter(w => String(w.word || '').trim())
+                    .map(w => ({ w: String(w.word).trim(), t: Math.round(w.startTime * 1000) / 1000 })),
+      }))
+    } catch (e) { console.error('word timings not saved:', e.message) }
+
+    const beats = buildBeats(words, speech, dur)
+
+    return { file: txtPath, srt: srtPath, cues, beats, wordsFile: wordsPath,
+             words: words.length, text: j.text || '',
              rtfx: j.rtfx ? Math.round(j.rtfx) : null }
   } finally {
     try { fs.unlinkSync(wav) } catch {}
@@ -438,8 +457,15 @@ function buildCues(words, speech, { maxWords = 8, maxDur = 3.4, minPause = 0.45 
   // A break belongs between two words only when the speaker actually stopped between
   // them. Comparing against word start times, never the padded end times, keeps a
   // long-sounding word from being mistaken for a pause.
+  // Only where the silence BEGINS. silencedetect is amplitude-based and marks a gap
+  // as ending once the waveform crosses the threshold, while the recogniser reports a
+  // word at the onset it heard, so the next word routinely starts before the silence
+  // is considered over. Measured here: a gap of [1.324, 2.857] against a word reported
+  // at 2.48. Requiring the silence to end first meant this never matched and every
+  // break fell through to the word-count limit, which is why captions were splitting
+  // mid-sentence instead of at the pauses they were rewritten to respect.
   const pauseBetween = (aStart, bStart) =>
-    sil.find(([x, y]) => y - x >= minPause && x >= aStart - 0.05 && y <= bStart + 0.15)
+    sil.find(([x, y]) => y - x >= minPause && x >= aStart - 0.05 && x <= bStart + 0.05)
 
   const groups = []
   let cur = null, prevStart = 0
@@ -484,6 +510,100 @@ function buildCues(words, speech, { maxWords = 8, maxDur = 3.4, minPause = 0.45 
     }
   }
   return cues.filter(c => c.end > c.start + 0.05)
+}
+
+// ── beats ────────────────────────────────────────────────────────────────────
+// Named spans across a recording, the thing you actually scrub by.
+//
+// Everyone else derives these from clicks and taps, because a simulator recording
+// has no audio to work with. Fetch transcribes on device, so a beat can be named
+// from what was said in it: "Now open the filter" rather than "Tap".
+//
+// The break rule is the one that made captions correct (see buildCues): a boundary
+// belongs between two words only where the speaker actually stopped, measured
+// against word START times, never the padded end times the recogniser reports. The
+// threshold is longer here than for captions, because a caption break is a breath
+// and a beat break is a change of subject.
+//
+// Beats tile: each one runs to the start of the next, and the last runs to the end
+// of the recording. A timeline with holes in it is harder to read than one with
+// slightly generous spans, and every point in the take belongs somewhere.
+function beatLabel(words, maxWords) {
+  const text = words.slice(0, maxWords).map(w => String(w.word || '').trim()).filter(Boolean).join(' ')
+  if (!text) return 'Untitled'
+  const trimmed = text.replace(/[.,;:!?]+$/, '').trim()
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
+}
+
+function buildBeats(words, speech, dur, { minPause = 0.9, maxWords = 6, maxDur = 25 } = {}) {
+  const clean = (words || []).filter(w => String(w.word || '').trim() && w.startTime != null)
+  if (!clean.length) return []
+
+  const sil = []
+  for (let i = 0; i + 1 < (speech || []).length; i++) sil.push([speech[i][1], speech[i + 1][0]])
+
+  // The test is only where the silence BEGINS, not where it ends.
+  //
+  // The two clocks disagree. silencedetect works on amplitude, so it marks a silence
+  // as ending once the waveform crosses the threshold, while the recogniser reports a
+  // word starting at the onset it heard. Measured on real speech here: a gap detected
+  // as [1.324, 2.857] sits against a following word reported at 2.48, so the word
+  // begins 0.38s before the silence is considered over. Requiring the silence to end
+  // before the next word means the condition never fires and every break falls
+  // through to the word-count limit instead.
+  //
+  // "Did the speaker stop between these two words" only needs the pause to start
+  // after the first one and before the second.
+  const pauseBetween = (aStart, bStart) =>
+    sil.find(([x, y]) => y - x >= minPause && x >= aStart - 0.05 && x <= bStart + 0.05)
+
+  const groups = []
+  let cur = null
+  for (const w of clean) {
+    if (!cur) { cur = { start: w.startTime, words: [w] }; continue }
+    const prev = cur.words[cur.words.length - 1]
+    // maxDur is a safety net for a monologue with no real pauses in it, not the
+    // normal path: without it one beat could span the whole recording.
+    if (pauseBetween(prev.startTime, w.startTime) || w.startTime - cur.start > maxDur) {
+      groups.push(cur)
+      cur = { start: w.startTime, words: [w] }
+    } else cur.words.push(w)
+  }
+  if (cur) groups.push(cur)
+
+  const total = dur || (clean[clean.length - 1].startTime + 2)
+  return groups.map((g, i) => ({
+    start: Math.max(0, Math.round(g.start * 1000) / 1000),
+    end: Math.round((i + 1 < groups.length ? groups[i + 1].start : total) * 1000) / 1000,
+    label: beatLabel(g.words, maxWords),
+  })).filter(b => b.end > b.start)
+}
+
+// No speech at all is a normal recording, not a failure: a silent UI walkthrough
+// still deserves a timeline. Fall back to where the pointer settled, which is the
+// same signal auto-zoom already uses.
+function beatsFromCursor(data, dur) {
+  if (!data || !Array.isArray(data.points) || data.points.length < 4) return []
+  const pts = data.points
+  const marks = []
+  let last = pts[0]
+  for (let i = 8; i < pts.length; i += 8) {
+    const p = pts[i]
+    const moved = Math.hypot(p[1] - last[1], p[2] - last[2])
+    if (moved > 90) {
+      const t = p[0] / 1000
+      if (!marks.length || t - marks[marks.length - 1] > 2.5) marks.push(t)
+      last = p
+    }
+  }
+  if (!marks.length) return []
+  if (marks[0] > 0.5) marks.unshift(0)
+  const total = dur || (pts[pts.length - 1][0] / 1000)
+  return marks.map((t, i) => ({
+    start: Math.round(t * 1000) / 1000,
+    end: Math.round((i + 1 < marks.length ? marks[i + 1] : total) * 1000) / 1000,
+    label: i === 0 ? 'Start' : `Moment ${i + 1}`,
+  })).filter(b => b.end > b.start)
 }
 
 // The recogniser's word timings drift, and a cue's end often runs well past the last
@@ -693,7 +813,7 @@ async function toGif(srcArg, opts, onProgress, jobId) {
 // save folder only ever holds what the person actually made: recordings and
 // exports. Finder hides dot-directories, so the Desktop stays clean.
 const SIDE_DIR = '.fetch'
-const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov']
+const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json']
 
 const sideStem = p => path.basename(p).replace(/\.[^.]+$/, '')
 function sidecarPath(mediaPath, ext) {
@@ -1422,4 +1542,5 @@ module.exports = {
   thumbnail, waveform, applyEdit, listRecordings, importFile, forgetFile,
   probeMeta, readCues, writeCues, cancel, formatList, FFMPEG, flattenAudio,
   sidecarOut, sidecarIn, migrateSidecars,
+  speechRegions, buildBeats, beatsFromCursor, readCursor,
 }
