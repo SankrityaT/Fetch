@@ -7,7 +7,14 @@
 .chat {
   position:fixed; top:var(--titlebar); right:0; bottom:0; width:380px; z-index:40;
   display:flex; flex-direction:column; min-height:0;
-  background:var(--ink-1); border-left:var(--edge);
+  /* Sits over the app, so it is translucent and blurred: you keep a sense of the
+     recording behind it without the text ever fighting the video. This is the one
+     place in Fetch where blur is the right answer rather than decoration. */
+  background:color-mix(in srgb, var(--ink-1) 88%, transparent);
+  backdrop-filter:var(--blur-over);
+  -webkit-backdrop-filter:var(--blur-over);
+  border-left:var(--edge-soft);
+  box-shadow:var(--shadow-2);
 }
 .chat[hidden] { display:none; }
 #stage.with-chat { margin-right:380px; }
@@ -42,7 +49,8 @@
 .chat-me {
   align-self:flex-end; max-width:86%;
   background:var(--ink-3); color:var(--text-0);
-  padding:8px 12px; border-radius:var(--r-md) var(--r-md) 4px var(--r-md);
+  padding:9px 13px; border-radius:var(--r-md) var(--r-md) 5px var(--r-md);
+  box-shadow:var(--shadow-1);
 }
 .chat-them { color:var(--text-1); }
 .chat-err { color:#FFB4AD; font-size:var(--t-11); }
@@ -50,8 +58,8 @@
 /* a tool call is a fact, not speech, so it is set apart from both */
 .chat-tool {
   display:flex; align-items:center; gap:var(--s-2);
-  padding:6px 10px; border-radius:var(--r-sm);
-  background:var(--ink-2); border:var(--edge);
+  padding:7px 11px; border-radius:var(--r-md);
+  background:rgba(255,255,255,.035); border:var(--edge-soft);
   font-size:var(--t-11); color:var(--text-2);
 }
 .chat-tool-ico { display:grid; place-items:center; flex:none; width:14px; height:14px; }
