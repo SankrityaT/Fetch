@@ -60,6 +60,7 @@ const TITLES = {
   'edit.get': 'Read an edit',
   'edit.apply': 'Changed an edit',
   'edit.beats': 'Read the beats',
+  'edit.export': 'Exported a video',
 }
 
 const ops = {
@@ -168,10 +169,38 @@ const ops = {
     return summarise(doc)
   },
 
+  // Renders the recording's current edit, exactly what the editor's Export would.
+  // Reads the saved document rather than asking the window, so it works whether or
+  // not the clip is open, which is the point of doing it without the app.
+  async 'edit.export'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const FD = require('./fetchdoc')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    if (!doc.clips.length) {
+      // a recording nobody has edited has no clips yet; export all of it
+      doc.clips = [{ id: 'C1', start: 0, end: (meta && meta.duration) || doc.dur }]
+    }
+    const opts = FD.toExportOpts(doc, {
+      format: args.format || 'mp4',
+      quality: args.quality || 'balanced',
+      scale: args.resolution ? +args.resolution : undefined,
+    })
+    const r = await deps.exportDoc(args.path, opts)
+    const mb = r && r.file && require('fs').existsSync(r.file)
+      ? +(require('fs').statSync(r.file).size / 1e6).toFixed(1) : null
+    return { path: r && r.file, mb, seconds: +FD.outDuration(doc).toFixed(2) }
+  },
+
   async 'edit.beats'(args = {}) {
     if (!args.path) throw new Error('path is required')
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    // Same ids the timeline prints (B1, B2, ...). They were missing here, so an agent
+    // was told beats have ids and then handed `undefined`, while the person watching
+    // saw B2 on screen for the same span.
     return deps.proc.beatsFor(args.path, meta && meta.duration)
+      .map((b, i) => ({ id: b.id || 'B' + (i + 1), ...b,
+        start: Math.round(b.start * 100) / 100, end: Math.round(b.end * 100) / 100 }))
   },
 
   async 'recordings.list'() {
