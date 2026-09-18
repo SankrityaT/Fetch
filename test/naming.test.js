@@ -9,8 +9,10 @@ const is = (name, got, want) => {
 
 is('app and title', smartName({ app: 'Linear', title: 'Issue 42 triage' }), 'Linear · Issue 42 triage')
 is('what was said beats the title', smartName({ app: 'Xcode', title: 'Fetch.xcodeproj', said: 'Open the filter panel' }), 'Xcode · Open the filter panel')
-is('browser suffix is dropped', smartName({ app: 'Google Chrome', title: 'Pull request 12 - Google Chrome' }), 'Google Chrome · Pull request 12')
-is('an em-dash suffix too', smartName({ app: 'Arc', title: 'Dashboard — Arc' }), 'Arc · Dashboard')
+is('a browser tab is named after the page', smartName({ app: 'Google Chrome', title: 'Pull request 12 - Google Chrome' }), 'Pull request 12')
+is('a browser tab keeps what was said', smartName({ app: 'Arc', title: 'Linear', said: 'Triage issue 42' }), 'Linear · Triage issue 42')
+is('a browser with no title still names the browser', smartName({ app: 'Safari', title: '' }), 'Safari')
+is('an em-dash suffix too', smartName({ app: 'Arc', title: 'Dashboard — Arc' }), 'Dashboard')
 is('title that just repeats the app', smartName({ app: 'Xcode', title: 'Xcode' }), 'Xcode')
 is('title that starts with the app', smartName({ app: 'Figma', title: 'Figma Onboarding flow' }), 'Figma · Onboarding flow')
 is('slashes cannot make a path', smartName({ app: 'Terminal', title: '~/code/fetch: npm test' }), 'Terminal · ~ code fetch npm test')
