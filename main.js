@@ -247,8 +247,7 @@ app.whenReady().then(() => {
   ipcMain.handle('agents-connect', (e, id) => agentConnect.connect(id))
 
   // Auto-answer getDisplayMedia with the user's chosen source (or the primary screen)
-  let chosenSourceId = null
-  let chosenWindow = null          // { id, name } from the ScreenCaptureKit list
+  // (chosenSourceId and chosenWindow live at module scope: the halo needs them too)
   ipcMain.on('select-source', (e, id) => { chosenSourceId = id; chosenWindow = null })
   ipcMain.on('select-window', (e, win) => { chosenWindow = win; chosenSourceId = null })
 
@@ -350,15 +349,36 @@ if (cam) setInterval(() => {
 // ---------- recording border ----------
 // A click-through frame so you can see which display is being captured.
 // setContentProtection keeps it out of the capture itself.
+// What the next or current take records. Set by the renderer's setup; read by the
+// capture handler and by the halo, which has to outline exactly this.
+let chosenSourceId = null
+let chosenWindow = null          // { id, name } from the ScreenCaptureKit list
 let border = null
+// The halo says what is being recorded, so it has to sit on exactly that: the chosen
+// display, or the chosen window, following it as it moves. It used to be drawn around
+// the primary display for every take, so a window take outlined the whole screen and a
+// second display's take outlined the wrong one: the halo and the recording disagreed.
+let borderFollow = null
 function showBorder(on) {
-  if (!on) { if (border && !border.isDestroyed()) border.destroy(); border = null; return }
+  if (!on) {
+    if (borderFollow) { try { borderFollow.kill() } catch {} borderFollow = null }
+    if (border && !border.isDestroyed()) border.destroy()
+    border = null
+    return
+  }
   if (border && !border.isDestroyed()) return
-  const d = screen.getPrimaryDisplay().bounds
+
+  const PAD = 5                                     // the halo sits just outside a window
+  let start = screen.getPrimaryDisplay().bounds
+  if (!chosenWindow && chosenSourceId) {
+    const did = String(chosenSourceId).split(':')[1]
+    const d = screen.getAllDisplays().find(x => String(x.id) === did)
+    if (d) start = d.bounds
+  }
   border = new BrowserWindow({
-    x: d.x, y: d.y, width: d.width, height: d.height,
+    x: start.x, y: start.y, width: start.width, height: start.height,
     frame: false, transparent: true, hasShadow: false, resizable: false, movable: false,
-    focusable: false, skipTaskbar: true, enableLargerThanScreen: true,
+    focusable: false, skipTaskbar: true, enableLargerThanScreen: true, show: !chosenWindow,
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   })
   border.setIgnoreMouseEvents(true, { forward: true })
@@ -366,6 +386,26 @@ function showBorder(on) {
   border.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   border.setContentProtection(true)          // excluded from the recording
   border.loadFile('border.html')
+  if (process.env.FETCH_DEBUG_HALO) console.log('halo target', JSON.stringify({ window: chosenWindow, source: chosenSourceId, start }))
+
+  if (chosenWindow) {
+    const bin = winListBin()
+    if (!fs.existsSync(bin)) { border.show(); return }
+    borderFollow = require('child_process').spawn(bin, ['--follow', String(chosenWindow.id)])
+    let buf = ''
+    borderFollow.stdout.on('data', d => {
+      buf += d
+      const lines = buf.split('\n'); buf = lines.pop()
+      const b = (() => { try { return JSON.parse(lines[lines.length - 1] || 'null') } catch { return undefined } })()
+      if (b === undefined || !border || border.isDestroyed()) return
+      // minimised, on another Space, or closed: nothing on screen to outline
+      if (!b || !b.onScreen) { border.hide(); return }
+      border.setBounds({ x: b.x - PAD, y: b.y - PAD, width: b.width + PAD * 2, height: b.height + PAD * 2 })
+      if (process.env.FETCH_DEBUG_HALO) console.log('halo', JSON.stringify(border.getBounds()), 'window', JSON.stringify(b))
+      if (!border.isVisible()) border.showInactive()
+    })
+    borderFollow.on('error', () => { if (border && !border.isDestroyed()) border.show() })
+  }
 }
 
 // ---------- recording toolbar ----------
@@ -693,6 +733,11 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
   const args = ['--out', out, '--fps', String(opts.fps || 60)]
   if (opts.windowId) args.push('--window', String(opts.windowId))
   else if (opts.displayId) args.push('--display', String(opts.displayId))
+  // The halo outlines what the recorder is actually given, not what was last picked
+  // in setup, so the two cannot disagree.
+  if (opts.windowId) { chosenWindow = { id: opts.windowId, name: (chosenWindow && chosenWindow.name) || '' }; chosenSourceId = null }
+  else if (opts.displayId) { chosenSourceId = `screen:${opts.displayId}:0`; chosenWindow = null }
+  else { chosenSourceId = null; chosenWindow = null }
 
   // A display capture sees everything on screen, so the never-record list has to be
   // applied here as well as at the bridge. Refusing window targets alone would leave a
