@@ -13,7 +13,7 @@
 // Two rules make the rest work:
 //
 //   1. Every object an agent can name gets a short stable id: C1 for clips, Z1 for
-//      zooms, T1 texts, S1 subtitles, B1 beats. Ids come from a per-document counter
+//      zooms, T1 texts, S1 subtitles, B1 beats, M1 marks. Ids come from a per-document counter
 //      and are never reused, so "trim C2" keeps meaning the same thing after C1 is
 //      deleted, and history entries stay truthful forever.
 //
@@ -23,7 +23,7 @@
 //
 // Pure: no Electron, no filesystem, no DOM. processor.js does the IO.
 
-const KINDS = { clips: 'C', zooms: 'Z', texts: 'T', cues: 'S', beats: 'B' }
+const KINDS = { clips: 'C', zooms: 'Z', texts: 'T', cues: 'S', beats: 'B', marks: 'M' }
 
 const r3 = n => Math.round(n * 1000) / 1000
 
@@ -33,6 +33,8 @@ function emptyDoc(src, dur) {
     src: src || null,
     dur: r3(dur || 0),
     clips: [], zooms: [], texts: [], cues: [], beats: [],
+    // redactions, spotlights and numbered steps drawn onto the frame for a stretch
+    marks: [],
     look: {
       zoomAmt: 1.7, bdInset: 0.06, bdRadius: 14, burnCaps: true,
       denoise: false, loudnorm: false, gain: 0, fadeIn: 0, fadeOut: 0,
@@ -41,7 +43,7 @@ function emptyDoc(src, dur) {
     capStyle: { font: 'Helvetica', scale: 1, colour: '#FFFFFF', position: 'bottom', boxed: true },
     camera: null, audioTrack: null,
     backdrop: null, backdropFile: null, outAspect: null, autoZoom: false,
-    nextId: { C: 1, Z: 1, T: 1, S: 1, B: 1 },
+    nextId: { C: 1, Z: 1, T: 1, S: 1, B: 1, M: 1 },
   }
 }
 
@@ -207,6 +209,7 @@ function toExportOpts(doc, extra = {}) {
     autoZoom: !!doc.autoZoom,
     autoZoomOpts: { zoom: L.zoomAmt },
     zooms: (doc.zooms || []).map(z => ({ start: z.start, end: z.end, scale: z.scale, x: z.x, y: z.y })),
+    marks: (doc.marks || []).map(m => ({ kind: m.kind, start: m.start, end: m.end, x: m.x, y: m.y, w: m.w, h: m.h, n: m.n })),
     backdrop: doc.backdrop || null,
     backdropAspect: doc.outAspect || null,
     inset: L.bdInset,
@@ -223,7 +226,36 @@ function toExportOpts(doc, extra = {}) {
   }
 }
 
+/**
+ * Apply a change onto an existing document, keeping everything the change does not
+ * mention.
+ *
+ * apply_edit used to replace the whole document with whatever it was sent. An agent
+ * reads a summary, adds one zoom and sends it back, and the summary never carried the
+ * crop, the caption font, the backdrop or the camera, so all of them were reset to
+ * defaults. Adding a zoom wiped your crop. Now a field that is absent is kept.
+ *
+ * Lists (clips, zooms, texts, marks, cues, beats) are replaced as a whole when
+ * present, because the list IS the edit: sending three zooms means there are three.
+ * Settings objects (look, capStyle, crop, camera) are merged, so sending
+ * { look: { denoise: true } } turns denoise on without resetting gain or fades.
+ */
+const LISTS = ['clips', 'zooms', 'texts', 'marks', 'cues', 'beats']
+const OBJECTS = ['look', 'capStyle', 'camera', 'audioTrack']
+
+function mergeDoc(current, patch) {
+  const out = JSON.parse(JSON.stringify(current || {}))
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (v === undefined) continue
+    if (LISTS.includes(k)) out[k] = Array.isArray(v) ? v : out[k]
+    else if (OBJECTS.includes(k) && v && typeof v === 'object' && !Array.isArray(v)) {
+      out[k] = { ...(out[k] || {}), ...v }
+    } else out[k] = v          // crop, cropAR, backdrop, outAspect, autoZoom: null is a real value
+  }
+  return out
+}
+
 module.exports = {
   KINDS, emptyDoc, mintId, ensureIds, normalize, fromLegacy,
-  clipsFromTrim, trimFromClips, toExportOpts, outDuration, byId,
+  clipsFromTrim, trimFromClips, toExportOpts, outDuration, byId, mergeDoc,
 }

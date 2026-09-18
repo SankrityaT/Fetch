@@ -9,6 +9,7 @@ const ed = {
   cuts: [], cutMode: false,
   beats: [],          // named spans from the transcript, see processor.buildBeats
   zooms: [],          // explicit zooms by id (Z1, Z2): {id, start, end, scale, x, y}
+  marks: [],          // redactions, spotlights, steps by id (M1): {id, kind, start, end, x, y, w, h}
   audioTrack: null,   // {file, name, volume, offset, replace, peaks}
   cam: null,          // camera take: {file, x, y, size, ...} when one was recorded
   tab: 'trim',
@@ -46,6 +47,7 @@ const EDITOR_HTML = `
     </div>
     <div class="tl-beats" id="tlBeats" hidden></div>
     <div class="tl-zooms" id="tlZooms" hidden></div>
+    <div class="tl-marks" id="tlMarks" hidden></div>
     <div class="tl-wrap" id="tlWrap">
       <div class="tl-lanes">
         <div class="tl-lane tl-lane-video" id="laneVideo">
@@ -857,6 +859,8 @@ function wireEditor() {
     doc.cues = (ed.cues || []).map(c => ({ ...c }))
     doc.beats = (ed.beats || []).map((b, i) => ({ ...b, id: b.id || 'B' + (i + 1) }))
     doc.zooms = (ed.zooms || []).map(z => ({ ...z, id: z.id || FD.mintId(doc, 'zooms') }))
+    doc.marks = (ed.marks || []).map(m => ({ ...m, id: m.id || FD.mintId(doc, 'marks') }))
+    doc.backdropFile = ed.backdropFile || null
     doc.crop = ed.crop; doc.cropAR = ed.cropAR
     doc.capStyle = ed.capStyle
     doc.camera = ed.cam || null
@@ -891,6 +895,23 @@ function wireEditor() {
     ed.cues = (doc.cues || []).map(x => ({ ...x }))
     ed.beats = (doc.beats || []).map(x => ({ ...x }))
     ed.zooms = (doc.zooms || []).map(x => ({ ...x }))
+    ed.marks = (doc.marks || []).map(x => ({ ...x }))
+    // These used to be read from the document and never applied, so an agent setting a
+    // backdrop or moving the camera bubble changed a file the editor then ignored.
+    ed.backdrop = doc.backdrop || null
+    ed.backdropFile = doc.backdropFile || null
+    ed.outAspect = doc.outAspect != null ? doc.outAspect : null
+    ed.audioTrack = doc.audioTrack || null
+    // A camera can only be positioned if one was recorded. Accepting a camera object
+    // for a take without one would draw a bubble with nothing in it.
+    if (ed.cam && doc.camera) {
+      const c = doc.camera
+      ed.cam = { ...ed.cam,
+        on: c.on !== false,
+        x: c.x != null ? Math.max(0, Math.min(1, +c.x)) : ed.cam.x,
+        y: c.y != null ? Math.max(0, Math.min(1, +c.y)) : ed.cam.y,
+        size: c.size != null ? Math.max(0.1, Math.min(0.45, +c.size)) : ed.cam.size }
+    }
     ed.crop = doc.crop; ed.cropAR = doc.cropAR || 'free'
     ed.capStyle = { ...ed.capStyle, ...(doc.capStyle || {}) }
     ed.autoZoom = !!doc.autoZoom
@@ -903,7 +924,8 @@ function wireEditor() {
     const chk = (id, v) => { const n = $(id); if (n) n.checked = !!v }
     chk('burnCaps', L.burnCaps); chk('denoise', L.denoise); chk('loudnorm', L.loudnorm)
 
-    paintTrim(); renderCuts(); renderTexts(); renderCues(); renderBeats(); renderZooms()
+    paintTrim(); renderCuts(); renderTexts(); renderCues(); renderBeats(); renderZooms(); renderMarks()
+    try { paintBackdrop(); paintCam(); paintCrop() } catch {}
     paintCaption(); highlightBeat(); layoutTimeline()
   }
 
@@ -912,7 +934,13 @@ function wireEditor() {
   // sees what changed.
   window.fetchDoc = {
     get: () => docFromEd(),
-    apply: doc => { docToEd(FD.normalize(doc, ed.src, ed.dur)); return window.fetchDoc.get() },
+    // A partial update: anything the agent did not send is kept. Replacing the whole
+    // document here is what let "add a zoom" wipe the crop, the caption font and the
+    // backdrop, none of which the agent had been shown.
+    apply: patch => {
+      docToEd(FD.normalize(FD.mergeDoc(docFromEd(), patch), ed.src, ed.dur))
+      return window.fetchDoc.get()
+    },
     src: () => ed.src || null,
   }
 
@@ -976,6 +1004,12 @@ const seek = t => {
 // Clicking a named span is the fastest way back to a moment you remember by what was
 // said in it, which is the reason the labels exist at all.
 document.addEventListener('click', e => {
+  const mk = e.target.closest('#tlMarks .tl-mark')
+  if (mk && ed.src) {
+    const m = ed.marks.find(x => x.id === mk.dataset.id)
+    if (m) seek(m.start)
+    return
+  }
   const z = e.target.closest('#tlZooms .tl-zoom')
   if (z && ed.src) {
     const zoom = ed.zooms.find(x => x.id === z.dataset.id)
@@ -1101,6 +1135,26 @@ async function upgradeName() {
   } catch (e) { console.error('rename after transcribe failed:', e.message) }
 }
 
+// Marks as their own track. A redaction in particular must be visible before export:
+// it is the one edit where missing it means something private ships.
+const MARK_LABEL = { redact: 'Redact', spotlight: 'Spotlight', step: 'Step' }
+function renderMarks() {
+  const host = $('tlMarks')
+  if (!host) return
+  if (!ed.marks.length) { host.hidden = true; host.innerHTML = ''; return }
+  host.hidden = false
+  host.innerHTML = ed.marks.map(m => {
+    const left = (m.start / ed.dur) * 100
+    const width = Math.max(0.6, ((m.end - m.start) / ed.dur) * 100)
+    const what = m.kind === 'step' ? 'Step ' + (m.n || '') : (MARK_LABEL[m.kind] || m.kind)
+    return '<button class="tl-mark" data-kind="' + escHtml(m.kind) + '" data-id="' + escHtml(m.id) + '" ' +
+      'style="left:' + left + '%;width:' + width + '%" title="' + escHtml(m.id + ' ' + what) + '">' +
+      '<span class="tl-mark-id mono">' + escHtml(m.id) + '</span>' +
+      '<span class="tl-mark-kind">' + escHtml(what) + '</span>' +
+    '</button>'
+  }).join('')
+}
+
 // Which beat the playhead is inside. Called from seek and from the playback loop,
 // so the strip tracks without its own timer.
 function highlightBeat() {
@@ -1134,7 +1188,7 @@ function layoutTimeline() {
   paintTrim(); paintPlayhead()
 }
 window.addEventListener('resize', () => {
-  if (ed.src && $('tlWrap')) { drawWave(); drawExtraWave(); layoutTimeline(); renderBeats(); renderZooms(); paintBackdrop(); paintCaption(); paintCam() }
+  if (ed.src && $('tlWrap')) { drawWave(); drawExtraWave(); layoutTimeline(); renderBeats(); renderZooms(); renderMarks(); paintBackdrop(); paintCaption(); paintCam() }
 })
 
 function drawWave() {

@@ -1076,26 +1076,92 @@ function zoomExpr(moments, disp, zMax, trimStart) {
 // settled. Same easing and the same expression builder as auto-zoom, so the two look
 // identical on screen. Coordinates are 0..1 fractions of the frame, which is what an
 // agent can reason about, rather than screen pixels it cannot see.
-function explicitZoomFilter(zooms, meta, trimStart = 0) {
+function explicitZoomFilter(zooms, meta, clock) {
   const list = (zooms || []).filter(z => z && z.end > z.start)
   if (!list.length) return null
   const ease = 0.45
   const moments = list.map(z => {
-    const e = Math.min(ease, (z.end - z.start) / 2)
+    const s0 = clock(z.start), s1 = clock(z.end)
+    const e = Math.min(ease, Math.max(0, (s1 - s0) / 2))
     return {
-      inStart: z.start, inEnd: z.start + e,
-      outStart: z.end - e, outEnd: z.end,
+      inStart: s0, inEnd: s0 + e,
+      outStart: s1 - e, outEnd: s1,
       x: z.x != null ? z.x : 0.5, y: z.y != null ? z.y : 0.5,
       scale: Math.max(1.05, Math.min(4, z.scale || 1.8)),
     }
   }).sort((a, b) => a.inStart - b.inStart)
   const unit = { x: 0, y: 0, width: 1, height: 1 }
-  const { z, fx, fy } = zoomExpr(moments, unit, 1.8, trimStart)
+  const { z, fx, fy } = zoomExpr(moments, unit, 1.8, 0)   // already on the output clock
   const w = meta.width || 1920, h = meta.height || 1080
   const fps = Math.round(meta.fps || 30)
   const x = `(iw-iw/zoom)*(${fx})`
   const y = `(ih-ih/zoom)*(${fy})`
   return { filter: `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${fps}`, moments: moments.length }
+}
+
+// Source time to output time. The video filters run after cuts are concatenated, so
+// the output clock is contiguous across the kept ranges: a moment 3s after a 2s cut
+// sits 2s earlier in the output than in the source. Subtracting only the trim start,
+// which is what the zoom code did, put every zoom after a cut late by the length of
+// the cut. A time inside a cut does not exist in the output and snaps to where the
+// next kept range begins.
+function outClock(cuts, start, end) {
+  const keep = (cuts && cuts.length) ? keepRanges(cuts, start, end) : [[start, end]]
+  return t => {
+    let acc = 0
+    for (const [a, b] of keep) {
+      if (t < a) return acc
+      if (t <= b) return acc + (t - a)
+      acc += b - a
+    }
+    return acc
+  }
+}
+
+// ── marks ────────────────────────────────────────────────────────────────────
+// Things drawn onto the frame for a stretch of time: a redaction, a spotlight or a
+// numbered step. Rendered before any zoom, so they belong to the content rather than
+// the screen: a redaction stays over the sensitive text wherever a zoom moves it.
+//
+// Coordinates are 0..1 fractions of the frame (x, y is the top-left corner, w, h the
+// size), the same convention zooms use, because that is what an agent can reason about.
+//
+// A redaction destroys what is under it. It is not a blur that could be reversed: the
+// region is scaled down to a few pixels and back up, so the original detail is not in
+// the output at all.
+const STEP_GOLD = '0xF0A93C'     // steps are an intent, and red is reserved for recording
+
+function markFilters(marks, clock, font, tag = 'mk') {
+  const out = []
+  const f = n => Math.max(0, Math.min(1, +n || 0)).toFixed(4)
+  ;(marks || []).forEach((m, i) => {
+    if (!m || !(m.end > m.start)) return
+    const a = clock(m.start).toFixed(3), b = clock(m.end).toFixed(3)
+    if (!(+b > +a)) return                  // wholly inside a cut
+    const on = `enable='between(t,${a},${b})'`
+    const X = f(m.x), Y = f(m.y), W = f(m.w || 0.2), H = f(m.h || 0.1)
+    const crop = `crop=w='max(2,iw*${W})':h='max(2,ih*${H})':x='iw*${X}':y='ih*${Y}'`
+    const L = `${tag}${i}`
+
+    if (m.kind === 'redact') {
+      // down to roughly 12px across and back, nearest-neighbour both ways
+      out.push(`split[${L}a][${L}b];[${L}b]${crop},` +
+        `scale='max(1,iw/24)':'max(1,ih/24)':flags=neighbor,` +
+        `scale='iw*24':'ih*24':flags=neighbor[${L}c];` +
+        `[${L}a][${L}c]overlay=x='main_w*${X}':y='main_h*${Y}':${on}`)
+    } else if (m.kind === 'spotlight') {
+      // everything else steps back; the region keeps its original pixels
+      out.push(`split[${L}a][${L}b];[${L}a]${crop}[${L}r];` +
+        `[${L}b]drawbox=x=0:y=0:w=iw:h=ih:color=black@0.55:t=fill:${on}[${L}d];` +
+        `[${L}d][${L}r]overlay=x='main_w*${X}':y='main_h*${Y}':${on}`)
+    } else if (m.kind === 'step') {
+      const n = String(m.n || i + 1).replace(/[^0-9A-Za-z]/g, '').slice(0, 3) || String(i + 1)
+      out.push(`drawtext=text='${n}':` + (font ? `fontfile='${filterPath(font)}':` : '') +
+        `fontsize='h*0.062':fontcolor=0x231703:box=1:boxcolor=${STEP_GOLD}@1:boxborderw='h*0.02':` +
+        `x='w*${X}':y='h*${Y}':${on}`)
+    }
+  })
+  return out
 }
 
 function autoZoomFilter(srcArg, meta, opts = {}, trimStart = 0) {
@@ -1335,8 +1401,15 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     // zoom someone asked for by name is a deliberate edit that supersedes the guess.
     // Auto-zoom only runs when switched on and nothing explicit was asked for. Both
     // read the clock of the trimmed output.
+    // one clock for everything placed in time, so marks and zooms agree with each
+    // other and with the cuts
+    const clock = outClock(opts.cuts, start, end || dur)
+
+    // marks first: a redaction must cover the content wherever a zoom then moves it
+    for (const mf of markFilters(opts.marks, clock, FONT)) vf.push(mf)
+
     let zoomInfo = null
-    if (opts.zooms && opts.zooms.length) zoomInfo = explicitZoomFilter(opts.zooms, meta, start)
+    if (opts.zooms && opts.zooms.length) zoomInfo = explicitZoomFilter(opts.zooms, meta, clock)
     else if (opts.autoZoom) zoomInfo = autoZoomFilter(srcArg, meta, opts.autoZoomOpts || {}, start)
     if (zoomInfo) vf.push(zoomInfo.filter)
 
@@ -1516,7 +1589,13 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     if (!cutGraph && start > 0) args.push('-ss', String(start))
     args.push('-i', src)
     if (extra) args.push('-i', extra.file)
-    if (!cutGraph && outDur > 0) args.push('-t', String(outDur))
+    // Bound the output on every path. The backdrop is a generated colour source with no
+    // end, and its overlays carry no shortest, so once the video runs out nothing stops
+    // it except this. The cut path had no bound at all, which is why an export with both
+    // a cut and a backdrop ran forever. It went unnoticed because the same combination
+    // used to crash first on an -af error, which masked the hang behind it.
+    const bound = cutGraph ? cutDur : outDur
+    if (bound > 0) args.push('-t', bound.toFixed(3))
 
     if (fmt.gif) {
       // one-pass palette chain, appended after any crop/scale/text the user set
@@ -1544,10 +1623,14 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
         (vf.length ? `${srcLabel}${vf.join(',')}[vin];` : `${srcLabel}null[vin];`)
       for (const extra of geo.inputs || []) args.push('-i', extra)
       const post = overlayFilters.length ? `;[vout]${overlayFilters.join(',')}[vfinal]` : ''
-      const audioPart = extraGraph ? ';' + extraGraph : ''
+      // Cut audio is a graph output, so its filters have to live in the graph too:
+      // ffmpeg refuses an -af on a stream fed from a complex filtergraph.
+      const cutAudio = cutGraph && meta.hasAudio && !extraGraph
+        ? ';' + (af.length ? `[cuta]${af.join(',')}[aout]` : `[cuta]anull[aout]`) : ''
+      const audioPart = (extraGraph ? ';' + extraGraph : '') + cutAudio
       args.push('-filter_complex', camPrefix() + pre + geo.chain + post + audioPart, '-map', post ? '[vfinal]' : '[vout]')
       if (extraMap) args.push('-map', extraMap)
-      else if (meta.hasAudio) args.push('-map', cutGraph ? '[cuta]' : '0:a?')
+      else if (meta.hasAudio) args.push('-map', cutGraph ? '[aout]' : '0:a?')
     } else if (extraGraph) {
       const chain = [vf.length ? `${VSRC}${vf.join(',')}[vout]` : `${VSRC}null[vout]`, extraGraph]
       args.push('-filter_complex', camPrefix() + chain.join(';'), '-map', '[vout]', '-map', extraMap)
@@ -1559,7 +1642,12 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     } else {
       if (fmt.video && vf.length) args.push('-vf', vf.join(','))
     }
-    if (af.length && !fmt.gif && !extraGraph) args.push('-af', af.join(','))
+    // Only when the audio is a plain input stream. On any cut path it is a graph output
+    // that already carries these filters, and applying them a second time as -af is
+    // not merely redundant: ffmpeg rejects it, which made every export containing a
+    // cut fail, since loudness normalisation is on by default.
+    const audioFromGraph = cutGraph && meta.hasAudio
+    if (af.length && !fmt.gif && !extraGraph && !audioFromGraph) args.push('-af', af.join(','))
     args.push(...fmt.args(opts.quality))
     if (fmt.video && !fmt.gif && !meta.hasAudio) args.push('-an')
     args.push(dest)
@@ -1612,4 +1700,5 @@ module.exports = {
   sidecarOut, sidecarIn, migrateSidecars,
   speechRegions, buildBeats, beatsFromCursor, readCursor,
   readDoc, writeDoc, beatsFor,
+  fontList: () => Object.keys(FONT_FILES),
 }
