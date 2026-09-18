@@ -7,6 +7,7 @@ const ed = {
   capStyle: { font: 'Helvetica', scale: 1, colour: '#FFFFFF', position: 'bottom', boxed: true },
   crop: null, cropAR: 'free',
   cuts: [], cutMode: false,
+  beats: [],          // named spans from the transcript, see processor.buildBeats
   audioTrack: null,   // {file, name, volume, offset, replace, peaks}
   cam: null,          // camera take: {file, x, y, size, ...} when one was recorded
   tab: 'trim',
@@ -42,6 +43,7 @@ const EDITOR_HTML = `
       <button class="btn btn-sm" id="addAudio">${ico('plus', 'icon-sm')} Add audio</button>
       <button class="btn btn-sm btn-ghost" id="tlFit" data-tip="Reset zoom">${ico('arrows-out-simple', 'icon-sm')}</button>
     </div>
+    <div class="tl-beats" id="tlBeats" hidden></div>
     <div class="tl-wrap" id="tlWrap">
       <div class="tl-lanes">
         <div class="tl-lane tl-lane-video" id="laneVideo">
@@ -343,6 +345,7 @@ async function openInEditor(src) {
   ed.dur = ed.meta.duration || v.duration || 0
   ed.in = 0; ed.out = ed.dur; ed.cur = 0
   paintTrim(); drawWave(); layoutTimeline(); paintTime(); paintPlayhead(); paintBackdrop()
+  loadBeats()
 
   loadCamTake(src)
   ed.cues = await ipcRenderer.invoke('read-cues', src)
@@ -383,7 +386,7 @@ function wireEditor() {
     if (ed.cur > ed.out) { v.pause(); seek(ed.in) }
     const inCut = ed.cuts.find(([a, b]) => ed.cur >= a && ed.cur < b - 0.05)
     if (inCut) seek(inCut[1] + 0.02)          // playback jumps removed sections
-    paintPlayhead(); paintTime(); highlightCue(); paintCaption(); syncCam()
+    paintPlayhead(); paintTime(); highlightCue(); paintCaption(); syncCam(); highlightBeat()
   }
 
   // trim
@@ -500,6 +503,7 @@ function wireEditor() {
     $('trProg').hidden = true; $('doTranscribe').disabled = false
     if (r) {
       ed.cues = r.cues || []; renderCues(); paintCaption(); dragCaption()
+        ed.beats = r.beats || []; renderBeats(); highlightBeat()
       if ($('burnCaps') && ed.cues.length) $('burnCaps').checked = true
       toast(`${r.words} words${r.rtfx ? ` · ${r.rtfx}x realtime` : ''}`, 'ok')
     }
@@ -693,8 +697,17 @@ const seek = t => {
   ed.cur = v.currentTime
   paintPlayhead(); paintTime()
   highlightCue(); paintCaption()      // the caption must follow the playhead, not just playback
-  syncCam()
+  syncCam(); highlightBeat()
 }
+
+// Clicking a named span is the fastest way back to a moment you remember by what was
+// said in it, which is the reason the labels exist at all.
+document.addEventListener('click', e => {
+  const hit = e.target.closest('#tlBeats .tl-beat')
+  if (!hit || !ed.src) return
+  const beat = ed.beats[+hit.dataset.i]
+  if (beat) seek(beat.start)
+})
 
 function paintTime() {
   $('edTime').textContent = `${fmtTime(ed.cur)} / ${fmtTime(ed.dur)}`
@@ -746,6 +759,52 @@ function paintTrim() {
   $('tlRange').textContent = `${fmtTime(ed.in)} to ${fmtTime(ed.out)}`
   renderCuts()
 }
+// ── beats ────────────────────────────────────────────────────────────────────
+// The named spans a recording is actually scrubbed by, taken from what was said
+// in it. A raw take and a cut one render the same strip, so the timeline reads
+// the same before and after editing.
+//
+// Widths come from the same t -> t/ed.dur * w mapping the lanes use, so a beat
+// sits exactly above the frames it covers.
+function renderBeats() {
+  const host = $('tlBeats')
+  if (!host) return
+  if (!ed.beats.length) { host.hidden = true; host.innerHTML = ''; return }
+  host.hidden = false
+  host.innerHTML = ed.beats.map((b, i) => {
+    const left = (b.start / ed.dur) * 100
+    const width = ((b.end - b.start) / ed.dur) * 100
+    return '<button class="tl-beat" data-i="' + i + '" style="left:' + left + '%;width:' + width + '%" ' +
+      'title="' + escHtml(b.label) + '">' +
+      '<span class="tl-beat-id mono">' + (b.id || 'B' + (i + 1)) + '</span>' +
+      '<span class="tl-beat-label">' + escHtml(b.label) + '</span>' +
+    '</button>'
+  }).join('')
+}
+
+// Which beat the playhead is inside. Called from seek and from the playback loop,
+// so the strip tracks without its own timer.
+function highlightBeat() {
+  const host = $('tlBeats')
+  if (!host || !ed.beats.length) return
+  let active = -1
+  for (let i = 0; i < ed.beats.length; i++) {
+    if (ed.cur >= ed.beats[i].start && ed.cur < ed.beats[i].end) { active = i; break }
+  }
+  host.querySelectorAll('.tl-beat').forEach((n, i) => {
+    n.dataset.active = String(i === active)
+  })
+}
+
+// Load beats for the open clip. Cheap: reads the persisted word timings rather
+// than transcribing again, and falls back to pointer dwell for a silent take.
+async function loadBeats() {
+  try {
+    ed.beats = await ipcRenderer.invoke('beats-for', ed.src, ed.dur) || []
+  } catch { ed.beats = [] }
+  renderBeats(); highlightBeat()
+}
+
 function layoutTimeline() {
   const w = $('tlWrap').clientWidth
   const ticks = $('tlTicks'); ticks.innerHTML = ''
@@ -756,7 +815,7 @@ function layoutTimeline() {
   paintTrim(); paintPlayhead()
 }
 window.addEventListener('resize', () => {
-  if (ed.src && $('tlWrap')) { drawWave(); drawExtraWave(); layoutTimeline(); paintBackdrop(); paintCaption(); paintCam() }
+  if (ed.src && $('tlWrap')) { drawWave(); drawExtraWave(); layoutTimeline(); renderBeats(); paintBackdrop(); paintCaption(); paintCam() }
 })
 
 function drawWave() {

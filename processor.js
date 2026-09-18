@@ -1536,6 +1536,36 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
   }
 }
 
+// ── the edit document ────────────────────────────────────────────────────────
+// One file per recording holding everything about its edit. See ui/fetchdoc.js
+// for why it exists and what the ids mean.
+const fetchdoc = require('./ui/fetchdoc')
+
+function readDoc(src, dur) {
+  let raw = null
+  try { raw = JSON.parse(fs.readFileSync(sidecarIn(src, '.fetchdoc.json'), 'utf8')) } catch {}
+  return fetchdoc.normalize(raw, src, dur)
+}
+
+function writeDoc(src, doc) {
+  const out = fetchdoc.normalize(doc, src, doc && doc.dur)
+  fs.writeFileSync(sidecarOut(src, '.fetchdoc.json'), JSON.stringify(out, null, 2))
+  return out
+}
+
+// Beats for a recording, preferring speech and falling back to the pointer. Reads
+// the persisted word timings rather than transcribing again.
+function beatsFor(src, dur) {
+  try {
+    const w = JSON.parse(fs.readFileSync(sidecarIn(src, '.words.json'), 'utf8'))
+    const words = (w.words || []).map(x => ({ word: x.w, startTime: x.t, endTime: x.t }))
+    const beats = buildBeats(words, w.speech || [], dur || w.dur)
+    if (beats.length) return beats
+  } catch {}
+  try { return beatsFromCursor(readCursor(src), dur) } catch {}
+  return []
+}
+
 module.exports = {
   backdropList, filmstrip,
   toMp4, convert, removeSilence, enhanceAudio, trim, transcribe, burnCaptions, toGif,
@@ -1543,4 +1573,5 @@ module.exports = {
   probeMeta, readCues, writeCues, cancel, formatList, FFMPEG, flattenAudio,
   sidecarOut, sidecarIn, migrateSidecars,
   speechRegions, buildBeats, beatsFromCursor, readCursor,
+  readDoc, writeDoc, beatsFor,
 }
