@@ -73,16 +73,27 @@ body { display:flex; flex-direction:column; }
 /* ── library ─────────────────────────────────────────────────────────── */
 .view[data-view="library"] { padding:var(--s-6); }
 .lib-head { display:flex; align-items:center; gap:var(--s-3); margin-bottom:var(--s-4); }
-.lib-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(268px,1fr)); gap:var(--s-4); }
+/* Masonry, not a grid of equal boxes, because the takes are not equal shapes.
+   Every tile used to be forced to 16:10 and cropped to fill, which threw away the
+   one thing you scan a video library for: a vertical take and a wide one looked
+   identical until you read the label. CSS columns give real aspect ratios with no
+   layout script. */
+.lib-grid { columns:290px 4; column-gap:var(--s-4); }
 
-.clip { background:var(--ink-1); border:var(--edge); border-radius:var(--r-lg); box-shadow:var(--sheen);
-  overflow:visible; transition:border-color var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in); }
+.clip { background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-lg);
+  box-shadow:var(--shadow-1), var(--sheen);
+  break-inside:avoid; margin-bottom:var(--s-4);
+  overflow:visible; transition:box-shadow var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in); }
 .clip:hover { z-index:5; }                    /* tooltips sit above neighbouring cards */
 .clip .clip-shot { border-radius:var(--r-lg) var(--r-lg) 0 0; }
-.clip:hover { border-color:var(--ink-4); transform:translateY(-2px); }
-.clip-shot { position:relative; aspect-ratio:16/10; background:var(--ink-0); cursor:pointer; display:block;
+.clip:hover { box-shadow:var(--shadow-2), var(--sheen); transform:translateY(-2px); }
+.clip-shot { position:relative; background:var(--ink-0); cursor:pointer; display:block;
   width:100%; border:0; padding:0; overflow:hidden; }
-.clip-shot img { width:100%; height:100%; object-fit:cover; display:block; }
+/* height comes from the poster, so the tile is the shape of the take */
+.clip-shot img { width:100%; height:auto; display:block; }
+/* a take with no poster yet has nothing to give it height, so it falls back to the
+   old ratio rather than collapsing to a sliver */
+.clip-shot:not(:has(img)) { aspect-ratio:16/10; }
 .clip-shot .ph { position:absolute; inset:0; display:grid; place-items:center; color:var(--ink-4); }
 .clip-play { position:absolute; inset:0; display:grid; place-items:center; opacity:0;
   background:linear-gradient(transparent,rgba(11,10,9,.6)); transition:opacity var(--dur-1) var(--ease-in); }
