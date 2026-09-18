@@ -210,11 +210,64 @@
   async function refreshEngines() {
     try { state.engines = await ipcRenderer.invoke('chat-engines') || [] } catch { state.engines = [] }
     paintEngine()
+    if (window.__paintHeroEngine) window.__paintHeroEngine()
+  }
+
+  // The hero composer on the Record screen is the same conversation as the pane, not
+  // a second one. Typing there opens the pane and sends, so a question asked from the
+  // front door and a follow-up asked in the sidebar are one thread.
+  function wireHero() {
+    const form = document.getElementById('heroAsk')
+    const field = document.getElementById('heroInput')
+    const send = document.getElementById('heroSend')
+    const chips = document.getElementById('heroChips')
+    if (!form || !field) return
+
+    const grow = () => { field.style.height = 'auto'; field.style.height = Math.min(field.scrollHeight, 140) + 'px' }
+    const sync = () => { send.disabled = !field.value.trim() }
+
+    const ask = text => {
+      if (!text.trim()) return
+      toggle(true)
+      input.value = text
+      field.value = ''; grow(); sync()
+      submit()
+    }
+
+    field.addEventListener('input', () => { grow(); sync() })
+    field.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(field.value) }
+    })
+    form.onsubmit = e => { e.preventDefault(); ask(field.value) }
+
+    chips.addEventListener('click', e => {
+      const chip = e.target.closest('[data-ask]')
+      if (chip) ask(chip.dataset.ask)
+    })
+
+    // mirror the engine pill so the front door says which plan this runs on
+    const pill = document.getElementById('heroEngine')
+    if (pill) {
+      pill.onclick = () => { cycleEngine(); paintHeroEngine() }
+      window.__paintHeroEngine = paintHeroEngine
+      paintHeroEngine()
+    }
+  }
+
+  function paintHeroEngine() {
+    const pill = document.getElementById('heroEngine')
+    if (!pill) return
+    const e = state.engines.find(x => x.id === state.engine) || state.engines[0]
+    pill.innerHTML = e
+      ? `<img src="./assets/agents/${MARK[e.id]}.svg" alt="" onerror="this.remove()"><span>${esc(e.label)}</span>` +
+        (state.engines.length > 1 ? ico('caret-down', 'icon-sm') : '')
+      : `<span class="chat-engine-none">No agent connected</span>`
   }
 
   function init() {
     if (document.getElementById('chatPane')) return
     build()
+    wireHero()
     refreshEngines()
     document.addEventListener('keydown', e => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') { e.preventDefault(); toggle() }

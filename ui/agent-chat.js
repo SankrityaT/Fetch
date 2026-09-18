@@ -34,6 +34,14 @@ const ALLOWED = [
 
 let current = null          // the one running turn, if any
 
+// The conversation this pane is in. Without it every message was a stranger: each
+// send spawned a fresh CLI that had never heard of the last one, so "now transcribe
+// it" had no idea what "it" was. Claude Code reports a session_id on every result and
+// takes --resume; Codex has its own resume. One id per engine, since they are
+// separate conversations on separate services.
+const sessions = { claude: null, codex: null }
+const newConversation = () => { sessions.claude = null; sessions.codex = null }
+
 function mcpConfigPath() {
   const p = path.join(os.tmpdir(), 'fetch-mcp-chat.json')
   fs.writeFileSync(p, JSON.stringify({
@@ -47,6 +55,7 @@ function argsFor(engine, prompt, model) {
     // Codex streams JSONL from `exec --json`. Its MCP servers come from the user's
     // own config, which the Connect screen already wrote.
     const a = ['exec', '--json']
+    if (sessions.codex) a.push('resume', sessions.codex)
     if (model) a.push('--model', model)
     a.push(prompt)
     return a
@@ -57,6 +66,9 @@ function argsFor(engine, prompt, model) {
     '--mcp-config', mcpConfigPath(),
     '--allowedTools', ALLOWED.join(','),
   ]
+  // Carry the thread. Without this each turn starts from nothing and a follow-up
+  // like "now caption that one" refers to something the agent never saw.
+  if (sessions.claude) a.push('--resume', sessions.claude)
   if (model) a.push('--model', model)
   return a
 }
@@ -150,6 +162,12 @@ function translate(m, onEvent, started) {
     return
   }
 
+  // Both report their session on the final frame, which is what makes the next turn
+  // a continuation rather than a stranger.
+  if (m.type === 'result' && m.session_id) sessions.claude = m.session_id
+  if (m.type === 'session.created' && m.session_id) sessions.codex = m.session_id
+  if (m.type === 'thread.started' && m.thread_id) sessions.codex = m.thread_id
+
   // Codex
   if (m.type === 'item.completed' && m.item) {
     const it = m.item
@@ -187,4 +205,4 @@ function summarise(content) {
 const cancel = () => { if (current) { try { current.kill('SIGTERM') } catch {} } }
 const busy = () => !!current
 
-module.exports = { send, cancel, busy, ALLOWED }
+module.exports = { send, cancel, busy, newConversation, ALLOWED }
