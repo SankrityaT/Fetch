@@ -288,7 +288,7 @@
     var savedPrefs = readPrefs()
     var state = {
       step: 0,
-      camera: typeof savedPrefs.camera === 'boolean' ? savedPrefs.camera : true,
+      camera: typeof savedPrefs.camera === 'boolean' ? savedPrefs.camera : false,
       mic: typeof savedPrefs.mic === 'boolean' ? savedPrefs.mic : true,
       systemAudio: typeof savedPrefs.systemAudio === 'boolean' ? savedPrefs.systemAudio : true,
       countdown: typeof savedPrefs.countdown === 'number' ? savedPrefs.countdown : 3,

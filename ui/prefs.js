@@ -11,7 +11,7 @@
 
   const DEFAULT_PREFS = {
     saveDir: null,           // null means "use Desktop", resolved in main
-    camera: true,
+    camera: false,
     mic: true,
     systemAudio: true,
     countdown: 3,            // 0, 3 or 5 seconds
