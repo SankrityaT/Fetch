@@ -37,7 +37,12 @@ let server = null
 let deps = {}                  // { getWindow, toRenderer, proc, isRecording }
 
 // One take at a time, matching the recorder's own mutex.
-let pendingTake = null         // { resolve, reject, timer }
+// A take an agent started goes through two waits, each resolved once: `starting`
+// until capture begins (after the countdown), `stopping` until the file is written.
+// It used to be one wait that resolved only when the take finished, under a 30 second
+// "did not start" timer that was never cleared on start, so any agent take longer
+// than 30 seconds reported an error to the agent while it was still recording.
+let pendingTake = null         // { phase: 'starting'|'recording'|'stopping', resolve, reject, timer }
 
 function socketPath() {
   const dir = app ? app.getPath('userData') : require('os').tmpdir()
@@ -89,7 +94,7 @@ const ops = {
 
   // Starts a take through the renderer so every visible affordance still happens.
   // Resolves only when the file exists, which is what a caller actually needs.
-  async 'record.start'(args = {}) {
+  async 'record.start'(args = {}, ctx) {
     if (deps.isRecording()) throw new Error('already recording')
     if (pendingTake) throw new Error('a take is already being awaited')
 
@@ -99,15 +104,19 @@ const ops = {
     // Access check before anything starts. This is the enforcement point: the rule
     // lives here rather than in the MCP tool description, because a description is
     // prose and prose is a suggestion.
-    await enforceAccess(args)
+    await enforceAccess(args, ctx)
 
     await applySetup(win, args)
+    // In the background unless the person asked to watch (a person-only setting).
+    const quiet = !(deps.getPrefs && deps.getPrefs().agentTakesVisible)
+    if (deps.setQuiet) deps.setQuiet(quiet)
+    await win.webContents.executeJavaScript(`window.__quietTake = ${quiet}`)
     deps.toRenderer('start')
 
     // The renderer counts down before it captures, so allow for that plus a margin.
     return await new Promise((resolve, reject) => {
       pendingTake = {
-        resolve, reject,
+        phase: 'starting', resolve, reject,
         timer: setTimeout(() => {
           pendingTake = null
           reject(new Error('the recording did not start in time'))
@@ -118,10 +127,20 @@ const ops = {
 
   async 'record.stop'() {
     if (!deps.isRecording()) throw new Error('not recording')
+    // Returns the finished file. A take started by a person has no waiter, so one is
+    // made here; either way stop answers with the path once it is on disk.
+    const done = new Promise((resolve, reject) => {
+      if (pendingTake) clearTimeout(pendingTake.timer)
+      pendingTake = {
+        phase: 'stopping', resolve, reject,
+        timer: setTimeout(() => {
+          pendingTake = null
+          reject(new Error('the recording did not finish saving in time'))
+        }, 120000),
+      }
+    })
     deps.toRenderer('stop')
-    // The take resolves through take-finished, which record.start is already waiting
-    // on. Callers that started the take get the path there; this just acknowledges.
-    return { stopping: true }
+    return await done
   },
 
   async 'record.pause'() {
@@ -166,7 +185,11 @@ const ops = {
     if (!args.path) throw new Error('path is required')
     const doc = await inEditor(args.path, 'window.fetchDoc.get()')
     deps.proc.writeDoc(args.path, doc)
-    return summarise(doc)
+    const out = summarise(doc)
+    // The words themselves only on request: a long transcript is thousands of tokens,
+    // but correcting what the recogniser misheard needs them.
+    if (args.include_cues) out.captions.cues = (doc.cues || []).map(c => ({ id: c.id, start: c.start, end: c.end, text: c.text }))
+    return out
   },
 
   async 'edit.apply'(args = {}) {
@@ -207,8 +230,13 @@ const ops = {
   async frame(args = {}) {
     if (!args.path) throw new Error('path is required')
     if (!fs.existsSync(args.path)) throw new Error('no such file')
-    const r = await deps.proc.frameAt(args.path, args.at)
-    return { image: r.file, at: r.at, source_width: r.width, source_height: r.height }
+    let crop = null
+    if (args.cropped) {
+      const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+      crop = deps.proc.readDoc(args.path, meta && meta.duration).crop || null
+    }
+    const r = await deps.proc.frameAt(args.path, args.at, 1280, crop)
+    return { image: r.file, at: r.at, source_width: r.width, source_height: r.height, cropped: !!crop }
   },
 
   async 'edit.silence'(args = {}) {
@@ -311,7 +339,7 @@ const ops = {
 // Refuse the take if the policy says so, with a reason the agent can relay verbatim.
 // Window targets are resolved to their owning app first, since the policy is written in
 // terms of apps and the caller only gives us an id.
-async function enforceAccess(args) {
+async function enforceAccess(args, ctx) {
   const prefs = deps.getPrefs ? deps.getPrefs() : {}
   const p = {
     mode: prefs.recordAccess,
@@ -330,6 +358,42 @@ async function enforceAccess(args) {
     { by: 'agent', kind: args.window != null ? 'window' : 'display', app }, p)
 
   if (!verdict.allow) throw new Error(`Fetch refused to record: ${verdict.reason}`)
+
+  // 'Ask' means a person approves every agent take. decide() said so all along, but
+  // nothing asked: needsApproval was returned and dropped, so on the default setting
+  // agents recorded without anyone saying yes. The question is a native dialog on
+  // Fetch's own window, which an agent cannot answer, and saying nothing is a no.
+  if (verdict.needsApproval) {
+    const key = args.window != null ? 'app:' + (app || '') : 'display'
+    if (sessionAllowed.has(key)) return
+    const who = (ctx && ctx.client) || 'An agent'
+    const what = args.window != null ? `a ${app || 'window'} window` : 'your whole screen'
+    const answer = await askPerson(`${who} wants to record ${what}.`,
+      (args.window != null
+        ? 'Only that window is captured, in the background, even while you work in front of it.'
+        : 'Apps on your never-record list are left out of the frame.') +
+      ' The menu bar icon turns red while it records.',
+      args.window != null ? `Allow ${app || 'this app'} until Fetch quits` : null)
+    if (answer === 'no') throw new Error('Fetch refused to record: the person at the Mac said no')
+    if (answer === 'session') sessionAllowed.add(key)
+  }
+}
+
+// Approvals given with "until Fetch quits". In memory only, so a restart asks again.
+const sessionAllowed = new Set()
+
+// A free-standing alert rather than a sheet on Fetch's window: the question needs an
+// answer, but it should not drag the whole app in front of what the person is doing.
+async function askPerson(message, detail, sessionLabel) {
+  const { dialog } = require('electron')
+  const buttons = ['Allow this take', ...(sessionLabel ? [sessionLabel] : []), 'Don\'t allow']
+  const no = buttons.length - 1
+  const r = await dialog.showMessageBox({
+    type: 'question', message, detail, buttons, defaultId: no, cancelId: no, noLink: true,
+  })
+  if (r.response === 0) return 'once'
+  if (sessionLabel && r.response === 1) return 'session'
+  return 'no'
 }
 
 // Open `path` in the editor if it is not already the clip on screen, then run `expr`
@@ -385,9 +449,11 @@ function summarise(doc) {
     // the values each setting accepts, so an agent never has to guess a font name
     options: {
       fonts: (deps.proc.fontList ? deps.proc.fontList() : ['Helvetica']),
-      backdrops: [null, 'dusk', 'ember', 'mint', 'violet', 'slate', 'ink'],
+      // from the exporter's own list, so a new backdrop (blur, an image someone dropped
+      // in) is offered to agents the moment it exists, not when this line is edited
+      backdrops: [null, ...deps.proc.backdropList().map(b => b.id)],
       captionPositions: ['top', 'middle', 'bottom'],
-      markKinds: ['redact', 'spotlight', 'step'],
+      markKinds: ['redact', 'blur', 'spotlight', 'step'],
       aspects: [null, 16 / 9, 9 / 16, 1, 4 / 5],
       cropAR: ['free', '16:9', '9:16', '1:1', '4:5'],
     },
@@ -485,8 +551,14 @@ function start(d) {
   // A take can finish because an agent asked for it or because someone pressed the
   // button. Either way the waiter is resolved once and cleared.
   if (ipcMain) {
+    ipcMain.on('rec-state', (e, state) => {
+      if (state !== 'recording' || !pendingTake || pendingTake.phase !== 'starting') return
+      clearTimeout(pendingTake.timer)
+      const p = pendingTake; pendingTake = null
+      p.resolve({ recording: true, started_at: new Date().toISOString() })
+    })
     ipcMain.on('take-finished', (e, info) => {
-      if (!pendingTake) return
+      if (!pendingTake || pendingTake.phase !== 'stopping') return
       clearTimeout(pendingTake.timer)
       const p = pendingTake; pendingTake = null
       p.resolve({ path: info && info.file, mb: info && info.mb })

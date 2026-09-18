@@ -58,6 +58,8 @@ is('agent cannot change telemetry',
   /only be changed by a person/.test(throws(() => p.checkSettingsPatch({ telemetry: true }))), true)
 is('a refused key sinks the whole patch, nothing half applied',
   /recordAccess/.test(throws(() => p.checkSettingsPatch({ camera: false, recordAccess: 'always' }))), true)
+is('agent cannot make its own takes invisible or visible',
+  /only be changed by a person/.test(throws(() => p.checkSettingsPatch({ agentTakesVisible: true }))), true)
 is('unknown keys are refused', /not a setting/.test(throws(() => p.checkSettingsPatch({ theme: 'light' }))), true)
 is('countdown only takes 0, 3 or 5', /countdown/.test(throws(() => p.checkSettingsPatch({ countdown: 4 }))), true)
 is('booleans are not coerced from strings', /true or false/.test(throws(() => p.checkSettingsPatch({ mic: 'no' }))), true)

@@ -102,7 +102,7 @@ function windowsToExclude(windows, policy = {}) {
 // every check above. Telemetry is here because sharing anything is a person's call.
 const AGENT_PREFS = ['saveDir', 'camera', 'mic', 'systemAudio', 'countdown',
   'openEditorAfter', 'keepOriginal', 'quickRecord', 'autoConvertMp4', 'autoUpdate']
-const HUMAN_ONLY_PREFS = ['recordAccess', 'neverRecord', 'allowedRecordApps', 'telemetry']
+const HUMAN_ONLY_PREFS = ['recordAccess', 'neverRecord', 'allowedRecordApps', 'telemetry', 'agentTakesVisible']
 
 // A settings patch from an agent, checked and coerced. Throws on the first problem
 // and refuses the patch as a whole, so nothing is half applied. `dirExists` is passed

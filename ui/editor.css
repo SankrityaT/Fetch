@@ -154,6 +154,12 @@
 .bd-violet { background:linear-gradient(135deg,#A78BFA,#3B1D6E); }
 .bd-slate  { background:linear-gradient(135deg,#64748B,#0F172A); }
 .bd-ink    { background:linear-gradient(135deg,#2A2320,#0A0908); }
+/* the recording itself, blurred: the swatch suggests a soft screenshot */
+.bd-blur   { background:radial-gradient(circle at 28% 30%,#9FB7C9 0,transparent 55%),
+                        radial-gradient(circle at 72% 72%,rgba(240,169,60,.7) 0,transparent 50%),#3A332D;
+             filter:saturate(1.1); }
+.bd-fill { position:absolute; inset:-6%; width:112%; height:112%; object-fit:cover;
+           filter:blur(22px) brightness(.9) saturate(1.15); z-index:0; pointer-events:none; }
 
 /* live caption preview, positioned over the video exactly where burn-in puts it */
 .cap-overlay { position:absolute; display:none; pointer-events:none;
@@ -438,3 +444,6 @@ video.motion, img.motion { display:block; }
 .tl-mark[data-kind="redact"] { background:rgba(251,191,36,.14); border-color:rgba(251,191,36,.45); color:#FDE68A; }
 .tl-mark-id { font-size:9.5px; font-weight:600; }
 .tl-mark-kind { font-size:9.5px; opacity:.85; white-space:nowrap; }
+/* the blurred fill sits under everything else in the frame */
+.stage-frame > .bd-fill ~ * { position:relative; z-index:1; }
+.stage-frame > .bd-fill ~ .cap-overlay, .stage-frame > .bd-fill ~ .cam-bubble { position:absolute; z-index:2; }

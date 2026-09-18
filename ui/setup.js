@@ -532,7 +532,9 @@ function applySetup() {
 function paintHeroReady() {
   $('heroReady').hidden = false
   $('setupBtn').textContent = 'Change setup'
-  document.querySelector('.hero-cta').hidden = true
+  // .hero-cta went when the front door became a composer; this line outlived it and
+  // threw on every setup change, which also failed every agent record_start
+  const cta = document.querySelector('.hero-cta'); if (cta) cta.hidden = true
   $('sourceName').textContent = setup.mode === 'window'
     ? (setup.window ? `${setup.window.app}${setup.window.title ? ' · ' + setup.window.title : ''}` : 'A window')
     : (setup.source ? setup.source.name : 'Entire screen')
@@ -548,9 +550,13 @@ function paintHeroReady() {
 
 const pushBubble = () => {
   try {
-    fs.writeFileSync(path.join(os.homedir(), '.cambubble.json'),
-      JSON.stringify({ size: setup.camSize, zoom: setup.camZoom,
-                       anchor: setup.camAnchor, camera: setup.camId }))
+    // Merge, never replace: main writes record/out into the same file during a take,
+    // and overwriting it here would drop them mid-recording.
+    const f = path.join(os.homedir(), '.cambubble.json')
+    let j = {}
+    try { j = JSON.parse(fs.readFileSync(f, 'utf8')) } catch {}
+    Object.assign(j, { size: setup.camSize, zoom: setup.camZoom, anchor: setup.camAnchor, camera: setup.camId })
+    fs.writeFileSync(f, JSON.stringify(j))
   } catch (e) {
     // the only channel to the native bubble: if this fails, size and position
     // changes silently do nothing at all

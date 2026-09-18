@@ -231,8 +231,12 @@
             <button class="btn btn-sm" type="submit" id="neverAddBtn" disabled>Add</button>
           </form>
 
-          <p class="acc-seen">${ico('eye', 'icon-sm')}<span>You always see a take in progress: the red
-            border, the floating controls and Biscuit in the menu bar. <kbd>Shift</kbd><kbd>&#8984;</kbd><kbd>R</kbd>
+          ${row('rowAgentVisible', 'eye', 'Show agent recordings on screen',
+            'Off: an agent records in the background and nothing appears over your work. ' +
+            'On: the red border and floating controls show, as for your own takes.',
+            'agentVisibleToggle', !!p.agentTakesVisible)}
+          <p class="acc-seen">${ico('circle-fill', 'icon-sm')}<span>Either way the menu bar icon turns red while
+            anything records, every take is in Activity, and <kbd>Shift</kbd><kbd>&#8984;</kbd><kbd>R</kbd>
             stops one an agent started, the same as your own.</span></p>
         </div>
 
@@ -255,6 +259,7 @@
       }
     }
     bindToggle('quickRecordToggle', 'quickRecord', 'quickRow')
+    bindToggle('agentVisibleToggle', 'agentTakesVisible', 'rowAgentVisible')
     bindToggle('defCam', 'camera', 'rowCam')
     bindToggle('defMic', 'mic', 'rowMic')
     bindToggle('defSys', 'systemAudio', 'rowSys')

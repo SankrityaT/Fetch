@@ -468,56 +468,74 @@ function regionIndex(regions, t) {
   return best
 }
 
+// Where the speaker actually stopped: word index -> the pause before it. Each pause
+// makes at most one break, before the first word heard after it. Shared by captions
+// and beats so the two can never disagree about where a sentence ends.
+//
+// The two clocks disagree. silencedetect works on amplitude and marks a silence as
+// ending once the waveform crosses the threshold; the recogniser reports a word at the
+// onset it heard, measured here about 0.38s before that. So "after the pause" means
+// starting no earlier than half a second before its detected end. Asking instead
+// whether a pause began between each pair of words let one pause qualify on both
+// sides of a soft last word ("how hard it IS"), which then stood alone as a caption
+// and a beat, or led the next sentence ("OFF. That is the").
+function pauseBreaks(clean, speech, minPause) {
+  const EARLY = 0.5
+  const out = new Map()
+  for (let i = 0; i + 1 < (speech || []).length; i++) {
+    const x = speech[i][1], y = speech[i + 1][0]
+    if (y - x < minPause) continue
+    const k = clean.findIndex(w => w.startTime >= y - EARLY)
+    if (k > 0 && !out.has(k)) out.set(k, [x, y])
+  }
+  return out
+}
+
 function buildCues(words, speech, { maxWords = 8, maxDur = 3.4, minPause = 0.45 } = {}) {
   const plain = () => groupWords(words).map(l => ({ start: l.start, end: l.end, text: l.words.join(' ') }))
   const clean = words.filter(w => (w.word || '').trim())
   if (!speech || speech.length < 2 || !clean.length) return plain()
 
-  // the quiet spans between phrases
-  const sil = []
-  for (let i = 0; i + 1 < speech.length; i++) sil.push([speech[i][1], speech[i + 1][0]])
-  // A break belongs between two words only when the speaker actually stopped between
-  // them. Comparing against word start times, never the padded end times, keeps a
-  // long-sounding word from being mistaken for a pause.
-  // Only where the silence BEGINS. silencedetect is amplitude-based and marks a gap
-  // as ending once the waveform crosses the threshold, while the recogniser reports a
-  // word at the onset it heard, so the next word routinely starts before the silence
-  // is considered over. Measured here: a gap of [1.324, 2.857] against a word reported
-  // at 2.48. Requiring the silence to end first meant this never matched and every
-  // break fell through to the word-count limit, which is why captions were splitting
-  // mid-sentence instead of at the pauses they were rewritten to respect.
-  const pauseBetween = (aStart, bStart) =>
-    sil.find(([x, y]) => y - x >= minPause && x >= aStart - 0.05 && x <= bStart + 0.05)
+  const breaks = pauseBreaks(clean, speech, minPause)
 
   const groups = []
   let cur = null, prevStart = 0
-  for (const w of clean) {
+  clean.forEach((w, i) => {
     const word = (w.word || '').trim()
-    if (!cur) { cur = { start: w.startTime, end: w.endTime, words: [word] }; prevStart = w.startTime; continue }
-    const gap = pauseBetween(prevStart, w.startTime)
+    if (!cur) { cur = { first: i, start: w.startTime, end: w.endTime, words: [word], starts: [w.startTime] }; prevStart = w.startTime; return }
+    const gap = breaks.get(i)
     const full = cur.words.length >= maxWords || (w.endTime - cur.start) > maxDur
     if (gap || full) {
-      if (gap) cur.end = Math.min(cur.end, gap[0])       // stop when the talking stopped
+      // stop when the talking stopped, but never before the last word has been said
+      if (gap) cur.end = Math.min(cur.end, Math.max(gap[0], prevStart + 0.35))
       groups.push(cur)
-      cur = { start: w.startTime, end: w.endTime, words: [word] }
+      cur = { first: i, start: w.startTime, end: w.endTime, words: [word], starts: [w.startTime] }
     } else {
-      cur.end = w.endTime; cur.words.push(word)
+      cur.end = w.endTime; cur.words.push(word); cur.starts.push(w.startTime)
     }
     prevStart = w.startTime
-  }
+  })
   if (cur) groups.push(cur)
 
   // A phrase cut purely by length can leave a stray word stranded on its own line.
   // If no real pause separates it, fold it back into the line it belongs to.
   for (let i = groups.length - 2; i >= 0; i--) {
     const a = groups[i], b = groups[i + 1]
-    const noPause = !pauseBetween(a.start, b.start) && b.start - a.end < 0.3
+    const noPause = !breaks.has(b.first) && b.start - a.end < 0.3
     // Only if folding it back does not make the line show words long before they are
     // said. Staying in sync matters more than avoiding a short line.
     if (noPause && b.words.length <= 2 && a.words.length + b.words.length <= maxWords + 2 &&
         b.start - a.start <= 2.0) {
-      a.words.push(...b.words); a.end = b.end
+      a.words.push(...b.words); a.starts.push(...b.starts); a.end = b.end
       groups.splice(i + 1, 1)
+    } else if (noPause && b.words.length === 1 && a.words.length >= 4) {
+      // Folding would show the word too early. Carry one across instead, so the
+      // stray is never alone: "exactly where you" / "left off." rather than a line
+      // that is just "off."
+      b.words.unshift(a.words.pop())
+      b.start = a.starts.pop()
+      b.starts.unshift(b.start)
+      a.end = Math.min(a.end, b.start)
     }
   }
 
@@ -561,36 +579,19 @@ function buildBeats(words, speech, dur, { minPause = 0.9, maxWords = 6, maxDur =
   const clean = (words || []).filter(w => String(w.word || '').trim() && w.startTime != null)
   if (!clean.length) return []
 
-  const sil = []
-  for (let i = 0; i + 1 < (speech || []).length; i++) sil.push([speech[i][1], speech[i + 1][0]])
-
-  // The test is only where the silence BEGINS, not where it ends.
-  //
-  // The two clocks disagree. silencedetect works on amplitude, so it marks a silence
-  // as ending once the waveform crosses the threshold, while the recogniser reports a
-  // word starting at the onset it heard. Measured on real speech here: a gap detected
-  // as [1.324, 2.857] sits against a following word reported at 2.48, so the word
-  // begins 0.38s before the silence is considered over. Requiring the silence to end
-  // before the next word means the condition never fires and every break falls
-  // through to the word-count limit instead.
-  //
-  // "Did the speaker stop between these two words" only needs the pause to start
-  // after the first one and before the second.
-  const pauseBetween = (aStart, bStart) =>
-    sil.find(([x, y]) => y - x >= minPause && x >= aStart - 0.05 && x <= bStart + 0.05)
+  const breaks = pauseBreaks(clean, speech, minPause)
 
   const groups = []
   let cur = null
-  for (const w of clean) {
-    if (!cur) { cur = { start: w.startTime, words: [w] }; continue }
-    const prev = cur.words[cur.words.length - 1]
+  clean.forEach((w, i) => {
+    if (!cur) { cur = { start: w.startTime, words: [w] }; return }
     // maxDur is a safety net for a monologue with no real pauses in it, not the
     // normal path: without it one beat could span the whole recording.
-    if (pauseBetween(prev.startTime, w.startTime) || w.startTime - cur.start > maxDur) {
+    if (breaks.has(i) || w.startTime - cur.start > maxDur) {
       groups.push(cur)
       cur = { start: w.startTime, words: [w] }
     } else cur.words.push(w)
-  }
+  })
   if (cur) groups.push(cur)
 
   const total = dur || (clean[clean.length - 1].startTime + 2)
@@ -896,13 +897,15 @@ async function thumbnail(srcArg, atSec, onProgress, jobId) {
 // images uses this to place a zoom, a redaction or a step by what is on screen, so
 // it goes to a temp dir and is capped at 1280 wide: enough to read UI text, and far
 // fewer image tokens than a Retina frame.
-async function frameAt(srcArg, atSec, maxW = 1280) {
+async function frameAt(srcArg, atSec, maxW = 1280, crop = null) {
   const { src, meta, done } = await ensureSeekable(srcArg)
   try {
     const at = Math.min(Math.max(0, +atSec || 0), Math.max(0, (meta.duration || 1) - 0.05))
     const dest = path.join(os.tmpdir(), `fetch-frame-${path.parse(srcArg).name}-${at.toFixed(2)}.jpg`)
-    await run(FFMPEG, ['-y', '-ss', String(at), '-i', src, '-frames:v', '1',
-      '-vf', `scale='min(${maxW},iw)':-2`, '-q:v', '4', dest])
+    const c = crop && crop.w > 0 && crop.h > 0 ? crop : null
+    const vf = (c ? `crop=w='2*floor(iw*${c.w}/2)':h='2*floor(ih*${c.h}/2)':x='iw*${c.x}':y='ih*${c.y}',` : '') +
+      `scale='min(${maxW},iw)':-2`
+    await run(FFMPEG, ['-y', '-ss', String(at), '-i', src, '-frames:v', '1', '-vf', vf, '-q:v', '4', dest])
     if (!fs.existsSync(dest)) throw new Error('could not grab a frame at that time')
     return { file: dest, at: +at.toFixed(2), width: meta.width, height: meta.height }
   } finally { done() }
@@ -1108,7 +1111,11 @@ function zoomExpr(moments, disp, zMax, trimStart) {
 // settled. Same easing and the same expression builder as auto-zoom, so the two look
 // identical on screen. Coordinates are 0..1 fractions of the frame, which is what an
 // agent can reason about, rather than screen pixels it cannot see.
-function explicitZoomFilter(zooms, meta, clock) {
+// The rate zoom output runs at: 60 for a 60fps source, otherwise 30. A variable-rate
+// take reports its average (44 here), which is not a rate anything should play at.
+const zoomFps = meta => ((meta.fps || 30) >= 45 ? 60 : 30)
+
+function explicitZoomFilter(zooms, meta, clock, frame) {
   const list = (zooms || []).filter(z => z && z.end > z.start)
   if (!list.length) return null
   const ease = 0.45
@@ -1124,10 +1131,15 @@ function explicitZoomFilter(zooms, meta, clock) {
   }).sort((a, b) => a.inStart - b.inStart)
   const unit = { x: 0, y: 0, width: 1, height: 1 }
   const { z, fx, fy } = zoomExpr(moments, unit, 1.8, 0)   // already on the output clock
-  const w = meta.width || 1920, h = meta.height || 1080
-  const fps = Math.round(meta.fps || 30)
-  const x = `(iw-iw/zoom)*(${fx})`
-  const y = `(ih-ih/zoom)*(${fy})`
+  // The size of the frame this filter receives, which after a crop is not the source
+  // size. Using the source size stretched every cropped recording that had a zoom.
+  const w = (frame && frame.w) || meta.width || 1920, h = (frame && frame.h) || meta.height || 1080
+  const fps = zoomFps(meta)
+  // x,y is the point to centre on, as an agent reading a frame would mean it, held
+  // centred at every step of the ease and clamped only where the frame edge forces it.
+  // It used to be a pan fraction, which put a 2x zoom aimed at 0.85 centred on 0.675.
+  const x = `max(0,min(iw-iw/zoom,iw*(${fx})-iw/zoom/2))`
+  const y = `max(0,min(ih-ih/zoom,ih*(${fy})-ih/zoom/2))`
   return { filter: `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${fps}`, moments: moments.length }
 }
 
@@ -1181,6 +1193,12 @@ function markFilters(marks, clock, font, tag = 'mk') {
         `scale='max(1,iw/24)':'max(1,ih/24)':flags=neighbor,` +
         `scale='iw*24':'ih*24':flags=neighbor[${L}c];` +
         `[${L}a][${L}c]overlay=x='main_w*${X}':y='main_h*${Y}':${on}`)
+    } else if (m.kind === 'blur') {
+      // Gaussian, for softening something distracting. Not for secrets: a blur can
+      // be partly undone, which is what redact is for.
+      const sigma = Math.max(4, Math.min(60, +m.strength || 18))
+      out.push(`split[${L}a][${L}b];[${L}b]${crop},gblur=sigma=${sigma}:steps=3[${L}c];` +
+        `[${L}a][${L}c]overlay=x='main_w*${X}':y='main_h*${Y}':${on}`)
     } else if (m.kind === 'spotlight') {
       // everything else steps back; the region keeps its original pixels
       out.push(`split[${L}a][${L}b];[${L}a]${crop}[${L}r];` +
@@ -1196,15 +1214,15 @@ function markFilters(marks, clock, font, tag = 'mk') {
   return out
 }
 
-function autoZoomFilter(srcArg, meta, opts = {}, trimStart = 0) {
+function autoZoomFilter(srcArg, meta, opts = {}, trimStart = 0, frame) {
   const data = readCursor(srcArg)
   if (!data || !data.display) return null
   const moments = zoomMoments(data, opts)
   if (!moments.length) return null
   const zMax = opts.zoom ?? 1.7
   const { z, fx, fy } = zoomExpr(moments, data.display, zMax, trimStart)
-  const w = meta.width || 1920, h = meta.height || 1080
-  const fps = Math.round(meta.fps || 30)
+  const w = (frame && frame.w) || meta.width || 1920, h = (frame && frame.h) || meta.height || 1080
+  const fps = zoomFps(meta)
   // zoompan positions the crop by its top-left corner
   const x = `(iw-iw/zoom)*(${fx})`
   const y = `(ih-ih/zoom)*(${fy})`
@@ -1221,6 +1239,9 @@ const BACKDROPS = {
   violet:  { label: 'Violet',  c0: '0xA78BFA', c1: '0x3B1D6E' },
   slate:   { label: 'Slate',   c0: '0x64748B', c1: '0x0F172A' },
   ink:     { label: 'Ink',     c0: '0x2A2320', c1: '0x0A0908' },
+  // The recording itself, filling the frame and Gaussian blurred, behind the framed
+  // copy. Always matches the content, so it suits any product's colours.
+  blur:    { label: 'Blur',    video: true },
 }
 // Drop any image into assets/backdrops and it shows up as a backdrop. This is
 // how generated artwork gets in without touching code.
@@ -1309,7 +1330,15 @@ function backdropChain(vLabel, srcW, srcH, opts) {
 
   const parts = []
   const inputs = []
-  if (imageBd) {
+  let vidSrc = vLabel
+  if (!imageBd && bd.video) {
+    // one decode, two uses: the sharp framed copy and the blurred fill behind it
+    const sigma = Math.max(12, Math.round(outH * 0.03))
+    parts.push(`[${vLabel}]split[bdsharp][bdfill]`)
+    parts.push(`[bdfill]scale=${outW}:${outH}:force_original_aspect_ratio=increase,crop=${outW}:${outH},` +
+               `gblur=sigma=${sigma}:steps=2,eq=brightness=-0.07:saturation=1.15,format=rgba[bg]`)
+    vidSrc = 'bdsharp'
+  } else if (imageBd) {
     // fill the frame without distorting: cover, then centre-crop
     inputs.push(imageBd.file)
     parts.push(`[1:v]scale=${outW}:${outH}:force_original_aspect_ratio=increase,` +
@@ -1319,7 +1348,7 @@ function backdropChain(vLabel, srcW, srcH, opts) {
                `format=rgba[bg]`)
   }
   // the video, inset and rounded
-  parts.push(`[${vLabel}]scale=${vidW}:${vidH}:flags=lanczos,format=rgba,` +
+  parts.push(`[${vidSrc}]scale=${vidW}:${vidH}:flags=lanczos,format=rgba,` +
              `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${roundedAlpha(vidW, vidH, radius)}'[vid]`)
   // Shadow needs a margin around it, otherwise boxblur is clipped by its own
   // canvas and leaves a hard edge along the bottom.
@@ -1441,9 +1470,19 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     for (const mf of markFilters(opts.marks, clock, FONT)) vf.push(mf)
 
     let zoomInfo = null
-    if (opts.zooms && opts.zooms.length) zoomInfo = explicitZoomFilter(opts.zooms, meta, clock)
-    else if (opts.autoZoom) zoomInfo = autoZoomFilter(srcArg, meta, opts.autoZoomOpts || {}, start)
-    if (zoomInfo) vf.push(zoomInfo.filter)
+    const even = n => 2 * Math.floor(n / 2)
+    const frame = c ? { w: even((meta.width || 1920) * c.w), h: even((meta.height || 1080) * c.h) } : null
+    if (opts.zooms && opts.zooms.length) zoomInfo = explicitZoomFilter(opts.zooms, meta, clock, frame)
+    else if (opts.autoZoom) zoomInfo = autoZoomFilter(srcArg, meta, opts.autoZoomOpts || {}, start, frame)
+    if (zoomInfo) {
+      // ScreenCaptureKit writes a frame only when the screen changes, so a native take
+      // is variable frame rate, with gaps of seconds on a still screen. zoompan emits
+      // each input frame at the next constant slot, so every gap was squeezed out and
+      // the picture ran ahead of the audio, the captions and the marks (seven seconds
+      // by the half-minute on a real take). Constant rate first, then zoom.
+      vf.push(`fps=${zoomFps(meta)}`)
+      vf.push(zoomInfo.filter)
+    }
 
     if (opts.scale === 1080 || opts.scale === 720) vf.push(`scale=-2:${opts.scale}:flags=lanczos`)
 
@@ -1731,7 +1770,7 @@ module.exports = {
   thumbnail, waveform, applyEdit, listRecordings, importFile, forgetFile,
   probeMeta, readCues, writeCues, cancel, formatList, FFMPEG, flattenAudio,
   sidecarOut, sidecarIn, migrateSidecars,
-  speechRegions, buildBeats, beatsFromCursor, readCursor,
+  speechRegions, buildBeats, buildCues, beatsFromCursor, readCursor,
   readDoc, writeDoc, beatsFor,
   fontList: () => Object.keys(FONT_FILES),
 }

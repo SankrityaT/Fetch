@@ -56,6 +56,7 @@ const DEFAULT_PREFS = {
   recordAccess: 'ask',
   neverRecord: null,       // null means "use the seeded list"
   allowedRecordApps: [],
+  agentTakesVisible: false, // an agent's take runs in the background unless this is on
 }
 let prefsCache = null
 function loadPrefs() {
@@ -226,6 +227,7 @@ app.whenReady().then(() => {
         throw new Error('unknown op ' + op)
       },
     }),
+    setQuiet: on => { quietTake = !!on },
     setPrefs: patch => {
       writePrefs(patch)
       if (control && !control.isDestroyed()) control.webContents.send('prefs-changed', patch)
@@ -430,6 +432,11 @@ function setupTray() {
 }
 function toRenderer(action) { if (control && !control.isDestroyed()) control.webContents.send('hotkey', action) }
 
+// An agent's take runs in the background: no border around the display, no floating
+// controls, and the Fetch window is neither hidden nor pulled back to the front
+// afterwards. The menu bar icon still turns red, macOS shows its own recording
+// indicator, and every take is in Activity. Set by the bridge for the take it starts.
+let quietTake = false
 ipcMain.on('rec-state', (e, state) => {
   if (state === 'paused') camPause(true)
   if (state === 'recording' && recState === 'paused') camPause(false)
@@ -437,6 +444,10 @@ ipcMain.on('rec-state', (e, state) => {
   updater.setRecState(state)
   if (tray) { tray.setImage(trayIcon(state === 'recording')); tray.setContextMenu(trayMenu()) }
   const live = state === 'recording' || state === 'paused'
+  if (quietTake) {
+    if (!live) quietTake = false
+    return
+  }
   showBorder(live)
   showHud(live)
   if (live && control && !control.isDestroyed()) control.hide()   // get the app out of the shot
@@ -575,7 +586,11 @@ async function parkCamTake(file) {
         display: { w: d.bounds.width, h: d.bounds.height },
       }))
     } else {
+      // Say so. A missing face video discovered in the editor, minutes later, looks
+      // like the editor lost it.
       console.error('the camera take was empty, so this recording has no face video')
+      if (control && !control.isDestroyed()) control.webContents.executeJavaScript(
+        `toast('The camera did not record this take. The screen recording is fine.', 'bad', 9000)`).catch(() => {})
     }
   } catch (err) { console.error('cam take failed: ' + err.message) }
   if (take.killWhenDone) { take.killWhenDone = false; stopBubble() }

@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
     let session = AVCaptureSession()
     let movieOut = AVCaptureMovieFileOutput()
     var lastRecord = false
+    var retries = 0
     var camStartPath = ""
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -137,10 +138,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
             switchCamera(to: cam)
         }
         if let rec = j["record"] as? Bool, rec != lastRecord {
-            lastRecord = rec
             if rec {
+                // Launched cold at the moment recording starts, the first ticks arrive
+                // before the camera session is configured and running. Recording then
+                // failed once and was never retried, so the take had no face video.
+                // Leave lastRecord alone until the session can actually record, and
+                // this tick simply comes round again.
+                guard sessionReady() else { return }
+                lastRecord = true
                 if let out = j["out"] as? String, !out.isEmpty { startFileRecording(to: out) }
             } else {
+                lastRecord = false
                 if movieOut.isRecording { movieOut.stopRecording() }
             }
         }
@@ -170,6 +178,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
         NSLog("camera switched: \(device.localizedName)")
     }
 
+    func sessionReady() -> Bool {
+        return session.isRunning && session.outputs.contains(movieOut)
+            && movieOut.connections.contains(where: { $0.isActive && $0.isEnabled })
+    }
+
     func startFileRecording(to path: String) {
         guard !movieOut.isRecording else { return }
         let url = URL(fileURLWithPath: path)
@@ -193,13 +206,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
                  "\"x\":\(Int(f.origin.x)),\"y\":\(Int(top))," +
                  "\"screenW\":\(Int(sf.width)),\"screenH\":\(Int(sf.height))}"
         try? js.write(toFile: camStartPath, atomically: true, encoding: .utf8)
+        retries = 0
         NSLog("cam recording started: \(fileURL.path)")
     }
 
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL,
                     from connections: [AVCaptureConnection], error: Error?) {
-        if let e = error { NSLog("cam recording error: \(e.localizedDescription)") }
-        else { NSLog("cam recording finished: \(outputFileURL.path)") }
+        if let e = error {
+            NSLog("cam recording error: \(e.localizedDescription)")
+            // a start that failed outright leaves nothing on disk; let the next tick try
+            // again while the app still wants a recording
+            if !FileManager.default.fileExists(atPath: outputFileURL.path), retries < 3 {
+                retries += 1
+                lastRecord = false
+            }
+        } else { NSLog("cam recording finished: \(outputFileURL.path)") }
     }
 
     func startCamera(in view: BubbleView) {
