@@ -120,15 +120,35 @@ function build() {
     'apply_edit',
     {
       description:
-        'Change the edit of a recording. Pass the whole edit back with your changes: ' +
-        'clips [{id,start,end}] are the kept pieces in order, so trimming or cutting is ' +
-        'changing these; zooms [{id,start,end,scale,x,y}] zoom the frame, where x and y ' +
-        'are 0 to 1 fractions of the frame (0.5,0.5 is the centre) and scale is how far, ' +
-        'e.g. 1.8; texts [{id,text,start,end,fx,fy}] are overlays. Omit id on anything new ' +
-        'and one is assigned. Returns the edit as it now stands.',
+        'Change the edit of a recording. Send only what you are changing: anything you ' +
+        'leave out is kept, so adding a zoom never touches the crop or the captions. ' +
+        'Read get_edit first; its `options` lists the allowed values. ' +
+        'All positions and sizes are 0 to 1 fractions of the frame; all times are ' +
+        'seconds in the original recording.\n' +
+        'LISTS (sending one replaces that whole list; omit id on new items):\n' +
+        '- clips [{id,start,end}]: the kept pieces in order. Trimming or cutting is ' +
+        'changing these.\n' +
+        '- zooms [{id,start,end,scale,x,y}]: scale e.g. 1.8; x,y the point to zoom to.\n' +
+        '- marks [{id,kind,start,end,x,y,w,h,n}]: kind is redact (destroys the region, ' +
+        'for anything private), spotlight (darkens everything else) or step (a numbered ' +
+        'badge; n is the number). x,y is the top-left corner.\n' +
+        '- texts [{id,text,start,end,fx,fy,sizeFrac,color,box,font,align}]: overlays. ' +
+        'fx,fy is the centre; sizeFrac is text height as a fraction of the frame, e.g. 0.06; ' +
+        'start and end null for the whole clip.\n' +
+        'SETTINGS (merged, so send only the fields you change):\n' +
+        '- look {denoise, loudnorm, gain (dB, -10 to 10), fadeIn, fadeOut (seconds), ' +
+        'burnCaps (burn captions into the video), zoomAmt (auto-zoom depth), bdInset, bdRadius}\n' +
+        '- capStyle {font, scale, colour (#RRGGBB), position (top|middle|bottom), boxed}\n' +
+        '- camera {on, x, y, size}: only if a camera was recorded; x,y the bubble centre, ' +
+        'size 0.1 to 0.45.\n' +
+        '- crop {x,y,w,h} or null to remove it; cropAR sets the crop shape.\n' +
+        '- backdrop: a name from options.backdrops, or null. outAspect: output shape, e.g. ' +
+        '0.5625 for vertical, or null.\n' +
+        '- autoZoom: true to zoom automatically on where the pointer settled.\n' +
+        'Returns the full edit as it now stands.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
-        doc: z.record(z.string(), z.any()).describe('The edit, as returned by get_edit, with changes.'),
+        doc: z.record(z.string(), z.any()).describe('Only the parts of the edit you are changing.'),
       }),
     },
     async args => text(await drive('edit.apply', args, { timeoutMs: 60000 })))

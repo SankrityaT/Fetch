@@ -102,5 +102,23 @@ is('a corrupt array is dropped, not fatal', d.normalize({ clips: 'nope' }, '/a.m
   is('byId misses cleanly', d.byId(doc, 'Z9'), null)
 }
 
+// ---- partial updates keep what they do not mention ----
+{
+  const mine = d.normalize({ clips:[{id:'C1',start:0,end:6}], crop:{x:.1,y:.1,w:.8,h:.8},
+    capStyle:{font:'Georgia',colour:'#FFD9A0'}, backdrop:'ink', look:{denoise:true,gain:4} }, '/x', 6)
+  const after = d.normalize(d.mergeDoc(mine, { zooms:[{start:1,end:3,scale:2,x:.5,y:.5}] }), '/x', 6)
+  is('adding a zoom keeps the crop', after.crop, { x:.1, y:.1, w:.8, h:.8 })
+  is('adding a zoom keeps the caption font', after.capStyle.font, 'Georgia')
+  is('adding a zoom keeps the backdrop', after.backdrop, 'ink')
+  is('adding a zoom keeps look', [after.look.denoise, after.look.gain], [true, 4])
+  is('and the zoom is there', after.zooms.length, 1)
+
+  const tweak = d.mergeDoc(mine, { look: { gain: -2 } })
+  is('a look change merges, not replaces', [tweak.look.gain, tweak.look.denoise], [-2, true])
+  is('a list replaces as a whole', d.mergeDoc(mine, { clips: [] }).clips, [])
+  is('crop can be cleared explicitly', d.mergeDoc(mine, { crop: null }).crop, null)
+  is('undefined is ignored', d.mergeDoc(mine, { crop: undefined }).crop, { x:.1, y:.1, w:.8, h:.8 })
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

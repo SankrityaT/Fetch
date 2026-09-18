@@ -289,20 +289,46 @@ async function inEditor(path, expr) {
   return win.webContents.executeJavaScript(expr)
 }
 
-// What an agent needs back: every object by id with its timing, and nothing else.
-// The full document carries caption styling and slider values an agent rarely needs
-// and would spend context reading.
+// Everything an agent can change, and what values are allowed. The earlier version
+// returned clips, zooms, texts and beats only, which had two costs: an agent could not
+// see or reach the crop, the caption style, the backdrop, the camera or the audio
+// settings at all, and a document sent back after reading it was missing them. Every
+// setting a person has in the editor window is here, because an agent that cannot
+// read a setting cannot be trusted to leave it alone.
 function summarise(doc) {
   const r = n => Math.round(n * 100) / 100
+  const cam = doc.camera
   return {
     duration: r(doc.dur || 0),
     output: r((doc.clips || []).reduce((n, c) => n + (c.end - c.start), 0)),
+
     clips: (doc.clips || []).map(c => ({ id: c.id, start: r(c.start), end: r(c.end) })),
     zooms: (doc.zooms || []).map(z => ({ id: z.id, start: r(z.start), end: r(z.end), scale: z.scale, x: z.x, y: z.y })),
-    texts: (doc.texts || []).map(t => ({ id: t.id, text: t.text, start: t.start, end: t.end })),
-    captions: (doc.cues || []).length,
+    marks: (doc.marks || []).map(m => ({ id: m.id, kind: m.kind, start: r(m.start), end: r(m.end), x: m.x, y: m.y, w: m.w, h: m.h, n: m.n })),
+    texts: (doc.texts || []).map(t => ({
+      id: t.id, text: t.text, start: t.start, end: t.end,
+      fx: t.fx, fy: t.fy, sizeFrac: t.sizeFrac, color: t.color, box: t.box, font: t.font || 'Helvetica', align: t.align || 'center',
+    })),
     beats: (doc.beats || []).map(b => ({ id: b.id, start: r(b.start), end: r(b.end), label: b.label })),
+    captions: { count: (doc.cues || []).length, style: doc.capStyle },
+
+    crop: doc.crop, cropAR: doc.cropAR,
+    backdrop: doc.backdrop, outAspect: doc.outAspect,
+    autoZoom: !!doc.autoZoom,
+    camera: cam ? { recorded: true, on: cam.on !== false, x: cam.x, y: cam.y, size: cam.size } : { recorded: false },
+    audioTrack: doc.audioTrack ? { name: doc.audioTrack.name, volume: doc.audioTrack.volume,
+      offset: doc.audioTrack.offset, replace: !!doc.audioTrack.replace } : null,
     look: doc.look,
+
+    // the values each setting accepts, so an agent never has to guess a font name
+    options: {
+      fonts: (deps.proc.fontList ? deps.proc.fontList() : ['Helvetica']),
+      backdrops: [null, 'dusk', 'ember', 'mint', 'violet', 'slate', 'ink'],
+      captionPositions: ['top', 'middle', 'bottom'],
+      markKinds: ['redact', 'spotlight', 'step'],
+      aspects: [null, 16 / 9, 9 / 16, 1, 4 / 5],
+      cropAR: ['free', '16:9', '9:16', '1:1', '4:5'],
+    },
   }
 }
 
