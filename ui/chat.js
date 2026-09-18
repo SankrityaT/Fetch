@@ -73,8 +73,9 @@
       </div>
 
       <form class="chat-composer" id="chatForm">
+        <div class="chat-mention" id="chatMention" hidden></div>
         <div class="chat-ctx" id="chatCtx" hidden></div>
-        <textarea id="chatInput" rows="1" placeholder="Ask for a recording, a transcript, anything Fetch can do"></textarea>
+        <textarea id="chatInput" rows="1" placeholder="Ask anything, or type @ to point at a recording"></textarea>
         <div class="chat-foot">
           <button type="button" class="chat-engine" id="chatEngine"></button>
           <span class="chat-hint" data-tip="Only Fetch's own tools. No shell, no files, no network.">Fetch's tools only</span>
@@ -95,13 +96,112 @@
     pane.querySelectorAll('.chat-eg').forEach(b => {
       b.onclick = () => { input.value = b.textContent; grow(); input.focus(); sync() }
     })
-    input.addEventListener('input', () => { grow(); sync() })
+    input.addEventListener('input', () => { grow(); sync(); updateMention() })
     // Enter sends, Shift+Enter is a newline: this is a chat box, not a document.
     input.addEventListener('keydown', e => {
+      const pop = pane.querySelector('#chatMention')
+      if (!pop.hidden && mentionList.length) {
+        if (e.key === 'ArrowDown') { e.preventDefault(); mentionPick = (mentionPick + 1) % mentionList.length; updateMention(); return }
+        if (e.key === 'ArrowUp') { e.preventDefault(); mentionPick = (mentionPick - 1 + mentionList.length) % mentionList.length; updateMention(); return }
+        if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); takeMention(mentionPick); return }
+        if (e.key === 'Escape') { e.preventDefault(); pop.hidden = true; return }
+      }
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() }
+    })
+    pane.querySelector('#chatMention').addEventListener('mousedown', e => {
+      const row = e.target.closest('.chat-mention-row')
+      if (row) { e.preventDefault(); takeMention(+row.dataset.i) }
+    })
+    pane.querySelector('#chatCtx').addEventListener('click', e => {
+      const x = e.target.closest('[data-untag]')
+      if (x) { tags.splice(+x.dataset.untag, 1); paintTags() }
     })
     enginePill.onclick = cycleEngine
     pane.querySelector('#chatMic').onclick = micToggle
+  }
+
+  // ── @ mentions ─────────────────────────────────────────────────────────
+  // Point at a recording instead of describing it. "Caption @demo-take" is exact;
+  // "caption the one from this morning" makes the agent guess, and a wrong guess on a
+  // recording is an edit to the wrong file.
+  //
+  // Rows follow the shape that makes this usable when twenty takes have similar
+  // names: the match is bolded, and the second line carries the one fact that
+  // disambiguates. Kind is shown as a glyph, not a thumbnail, because at this size
+  // kind resolves faster than a 20px picture.
+  let tags = []                        // [{ name, path }] riding along with the message
+  let mentionList = [], mentionPick = 0, mentionAt = -1
+
+  async function recordingsForMention() {
+    try { return await ipcRenderer.invoke('list-recordings') || [] } catch { return [] }
+  }
+
+  function mentionQuery() {
+    const v = input.value, caret = input.selectionStart
+    const before = v.slice(0, caret)
+    const m = /(^|\s)@([^\s@]*)$/.exec(before)
+    if (!m) return null
+    return { q: m[2].toLowerCase(), at: caret - m[2].length - 1 }
+  }
+
+  const agoText = t => {
+    if (!t) return ''
+    const d = (Date.now() - t) / 1000
+    if (d < 3600) return Math.max(1, Math.round(d / 60)) + 'm ago'
+    if (d < 86400) return Math.round(d / 3600) + 'h ago'
+    return Math.round(d / 86400) + 'd ago'
+  }
+
+  function boldMatch(name, q) {
+    const i = q ? name.toLowerCase().indexOf(q) : -1
+    if (i < 0) return esc(name)
+    return esc(name.slice(0, i)) + '<strong>' + esc(name.slice(i, i + q.length)) + '</strong>' + esc(name.slice(i + q.length))
+  }
+
+  async function updateMention() {
+    const hit = mentionQuery()
+    const pop = pane.querySelector('#chatMention')
+    if (!hit) { pop.hidden = true; mentionAt = -1; return }
+    mentionAt = hit.at
+    const all = await recordingsForMention()
+    mentionList = all
+      .filter(r => !hit.q || String(r.name).toLowerCase().includes(hit.q))
+      .slice(0, 7)
+    if (!mentionList.length) { pop.hidden = true; return }
+    mentionPick = Math.min(mentionPick, mentionList.length - 1)
+    pop.innerHTML = mentionList.map((r, i) =>
+      '<button type="button" class="chat-mention-row" data-i="' + i + '" data-on="' + (i === mentionPick) + '">' +
+        ico(r.srt ? 'closed-captioning' : 'film-strip', 'icon-sm') +
+        '<span class="chat-mention-txt">' +
+          '<span class="chat-mention-name">' + boldMatch(r.name, hit.q) + '</span>' +
+          '<span class="chat-mention-sub">Recording' +
+            (r.mb ? ' · ' + r.mb + ' MB' : '') + (r.mtime ? ' · ' + agoText(r.mtime) : '') +
+            (r.srt ? ' · transcribed' : '') + '</span>' +
+        '</span>' +
+      '</button>').join('')
+    pop.hidden = false
+  }
+
+  function takeMention(i) {
+    const r = mentionList[i]
+    if (!r || mentionAt < 0) return
+    const v = input.value, caret = input.selectionStart
+    input.value = (v.slice(0, mentionAt) + v.slice(caret)).replace(/\s{2,}/g, ' ')
+    input.selectionStart = input.selectionEnd = mentionAt
+    if (!tags.some(t => t.path === r.path)) tags.push({ name: r.name, path: r.path })
+    pane.querySelector('#chatMention').hidden = true
+    mentionAt = -1
+    paintTags(); grow(); sync(); input.focus()
+  }
+
+  function paintTags() {
+    const host = pane.querySelector('#chatCtx')
+    host.hidden = !tags.length
+    host.innerHTML = tags.map((t, i) =>
+      '<span class="chat-tag">' + ico('film-strip', 'icon-sm') +
+        '<span>' + esc(t.name) + '</span>' +
+        '<button type="button" data-untag="' + i + '" aria-label="Remove">' + ico('x', 'icon-sm') + '</button>' +
+      '</span>').join('')
   }
 
   // ── dictation ──────────────────────────────────────────────────────────
@@ -207,9 +307,24 @@
     sendBtn.classList.add('working')
 
     const ctx = window.ed && window.ed.src ? window.ed.src : null
-    const prompt = ctx
-      ? `${text}\n\n(The recording currently open in Fetch is ${ctx})`
-      : text
+    let prompt = text
+    // Tagged recordings travel as exact paths, so the agent acts on the file that was
+    // pointed at rather than one it guessed from a description.
+    if (tags.length) {
+      prompt += '\n\nRecordings the user tagged:\n' +
+        tags.map(t => `- ${t.name}: ${t.path}`).join('\n')
+    }
+    if (ctx && !tags.some(t => t.path === ctx)) {
+      prompt += `\n\n(The recording currently open in Fetch is ${ctx})`
+    }
+    // the chips were for this message; the conversation remembers them from here
+    const sentTags = tags.slice()
+    tags = []; paintTags()
+    if (sentTags.length) {
+      const last = list.lastElementChild
+      if (last) last.insertAdjacentHTML('beforeend',
+        '<div class="chat-me-tags">' + sentTags.map(t => '<span>@' + esc(t.name) + '</span>').join('') + '</div>')
+    }
 
     ipcRenderer.send('chat-send', { engine: state.engine, prompt })
   }
@@ -240,6 +355,11 @@
 
   ipcRenderer.on('chat-event', (e, ev) => {
     if (!pane) return
+    // Anything arriving means a conversation is under way, so the introduction goes,
+    // whoever started the turn. Removing it only on submit left it sitting above a
+    // reply that arrived from a turn begun elsewhere.
+    const intro = list.querySelector('.chat-intro')
+    if (intro) intro.remove()
     if (ev.kind === 'text') add(md(ev.text), 'chat-msg chat-them')
     else if (ev.kind === 'tool') toolRow(ev)
     else if (ev.kind === 'result') toolDone(ev)
