@@ -67,6 +67,17 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
 - Activity: every action on the machine, attributed. No vendor mark means a person.
 - Settings: Recording access (never-record list), Connect, voiceover account.
 
+**The take folder**
+- Each take gets its own folder, `~/Movies/Fetch/<Take>/` unless the save folder is
+  changed. The deliverable sits on top as `<Take>.mp4` (or `.gif`, `.webm`...) and every
+  export overwrites it; the raw take and working versions (dead-air cuts, cleaned audio)
+  live in `Original/`, sidecars hidden in `.fetch/` as before. Nothing lands on the Desktop.
+- One rename (`processor.renameTake`) moves the folder, the raw take, its working
+  versions, the deliverable and every sidecar together, "Name 2" when taken. The
+  Library, the editor and `rename_recording` all use it.
+- Delete trashes the whole folder. Takes from before this stay loose on the Desktop
+  and keep working, with `-edit` exports beside them.
+
 **The edit document** (`ui/fetchdoc.js`)
 - One canonical description of an edit, written to `.fetch/<stem>.fetchdoc.json`.
 - Clips, not trim plus cuts, are the model, so pieces can be named.
@@ -91,8 +102,8 @@ arrows, loupes, "lift one row", multi-device frames, reading the project's sourc
 ## Strategic principles
 
 1. **Local is the product, not a feature.** No upload, and no key or token for anything
-   core. Recordings are files on the Desktop. Say this plainly wherever an agent touches
-   the machine. The single exception is principle 8.
+   core. Recordings are files in `~/Movies/Fetch`, one folder per take. Say this plainly
+   wherever an agent touches the machine. The single exception is principle 8.
 2. **The competition cannot record a real machine.** Clueso drives a cloud browser, web
    apps only, and wants your staging login. a competitor drives the iOS Simulator.
    HyperFrames renders its own HTML. Fetch records any real window: native apps,
@@ -131,7 +142,7 @@ gold on a warm near-black. If a surface could belong to Loom, it is wrong.
 
 Plain, short, a little warm. Never cutesy-baby, never corporate.
 
-- Good: "Nothing recorded yet." / "Saved to Desktop." / "Never records 1Password."
+- Good: "Nothing recorded yet." / "Saved to your Fetch folder." / "Never records 1Password."
 - Bad: "Woof! Biscuit couldn't find any videos! :(" / "Operation completed successfully."
 
 Errors say what happened and what to do, in one line, without blame.

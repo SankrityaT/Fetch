@@ -185,7 +185,7 @@ const ops = {
     if (!args.path) throw new Error('path is required')
     const doc = await inEditor(args.path, 'window.fetchDoc.get()')
     deps.proc.writeDoc(args.path, doc)
-    const out = summarise(doc)
+    const out = summarise(doc, args.path)
     // The words themselves only on request: a long transcript is thousands of tokens,
     // but correcting what the recogniser misheard needs them.
     if (args.include_cues) out.captions.cues = (doc.cues || []).map(c => ({ id: c.id, start: c.start, end: c.end, text: c.text }))
@@ -197,7 +197,7 @@ const ops = {
     if (!args.doc || typeof args.doc !== 'object') throw new Error('doc is required')
     const doc = await inEditor(args.path, `window.fetchDoc.apply(${JSON.stringify(args.doc)})`)
     deps.proc.writeDoc(args.path, doc)
-    return summarise(doc)
+    return summarise(doc, args.path)
   },
 
   // Renders the recording's current edit, exactly what the editor's Export would.
@@ -277,11 +277,24 @@ const ops = {
     if (!args.path) throw new Error('path is required')
     if (!fs.existsSync(args.path)) throw new Error('no such recording')
     const { shell } = require('electron')
+    const refresh = () => {
+      const win = deps.getWindow()
+      if (win && !win.isDestroyed()) win.webContents.executeJavaScript('refreshLibrary()').catch(() => {})
+    }
+    // A take folder goes as a whole when given its raw take or its deliverable. A
+    // working version (-cut, -audio, ...) inside it goes on its own.
+    const take = deps.proc.takeDir(args.path)
+    const stem = path.parse(args.path).name
+    const working = take && stem !== path.basename(take) && /-(edit|cut|audio|trim|captions|converted|gif)$/.test(stem)
+    if (take && !working) {
+      await shell.trashItem(take)
+      refresh()
+      return { trashed: take, folder: true, recoverable: true }
+    }
     const side = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
       .map(e => deps.proc.sidecarIn(args.path, e)).filter(f => f !== args.path && fs.existsSync(f))
     for (const f of [args.path, ...side]) await shell.trashItem(f)
-    const win = deps.getWindow()
-    if (win && !win.isDestroyed()) win.webContents.executeJavaScript('refreshLibrary()').catch(() => {})
+    refresh()
     return { trashed: args.path, with_sidecars: side.length, recoverable: true }
   },
 
@@ -292,13 +305,16 @@ const ops = {
     if (!stem) throw new Error('name is empty once cleaned')
     const win = deps.getWindow()
     if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
+    if (!fs.existsSync(args.path)) throw new Error('no such recording')
+    // through the renderer's renameTake, so the Library and an open editor follow it
     const next = await win.webContents.executeJavaScript(`(async () => {
-      const out = renameFileWithSidecars(${JSON.stringify(args.path)}, ${JSON.stringify(stem)})
-      await ensureListed(out)
+      const out = await renameTake(${JSON.stringify(args.path)}, ${JSON.stringify(stem)})
       refreshLibrary()
       return out
     })()`)
-    return { path: next, name: stem }
+    // the name it actually got, which is "Name 2" when "Name" was taken
+    const take = deps.proc.takeDir(next)
+    return { path: next, name: take ? path.basename(take) : path.parse(next).name, ...(take ? { folder: take } : {}) }
   },
 
   async 'edit.beats'(args = {}) {
@@ -316,7 +332,42 @@ const ops = {
     // Through the app, never through processor directly: listRecordings falls back to
     // a different, empty library index outside Electron and ignores the saveDir pref.
     const list = deps.proc.listRecordings()
-    return list.map(c => ({ path: c.path, name: c.name, mb: c.mb, kind: c.kind, srt: c.srt }))
+    // One entry per take, grouped exactly as the Library groups them (groupTakes in
+    // ui/app.js), so an agent that counts them says the number the person sees. A
+    // flat file list read "13 recordings" beside a Library of 8 takes. path is the raw
+    // take to edit; the deliverable an export wrote and any working versions (a
+    // dead-air cut, cleaned audio) ride along on it.
+    const DERIVED = /-(edit|cut|audio|trim|captions|converted|gif)$/
+    const groups = new Map()
+    for (const c of list) {
+      const stem = path.parse(c.path).name
+      const key = c.take ? 'take:' + c.take : stem.replace(DERIVED, '')
+      if (!groups.has(key)) groups.set(key, { take: c.take || null, original: null, deliverable: null, copy: null, versions: [] })
+      const g = groups.get(key)
+      if (c.copy) g.copy = c                  // autoConvertMp4's unedited MP4, not an export
+      else if (c.deliverable && !g.deliverable) g.deliverable = c
+      else if (c.deliverable || DERIVED.test(stem)) g.versions.push(c)
+      else if (!g.original || c.mtime > g.original.mtime) {
+        if (g.original) g.versions.push(g.original)
+        g.original = c
+      } else g.versions.push(c)
+    }
+    const takes = []
+    for (const g of groups.values()) {
+      // an export whose raw take was deleted is still a take in the Library
+      const o = g.original || g.deliverable || g.versions[0] || g.copy
+      if (!o) continue
+      const versions = g.versions.filter(v => v !== o).map(v => v.path)
+      takes.push({ mtime: o.mtime, entry: {
+        name: g.take ? path.basename(g.take) : path.parse(o.path).name,
+        path: o.path, mb: o.mb, kind: o.kind, srt: o.srt,
+        ...(g.take ? { take: g.take } : {}),
+        ...(g.deliverable && g.deliverable !== o ? { deliverable: g.deliverable.path } : {}),
+        ...(g.copy && g.copy !== o ? { copy: g.copy.path } : {}),
+        ...(versions.length ? { versions } : {}),
+      } })
+    }
+    return takes.sort((a, b) => b.mtime - a.mtime).map(t => t.entry)
   },
 
   async probe(args = {}) {
@@ -421,7 +472,26 @@ async function inEditor(path, expr) {
 // settings at all, and a document sent back after reading it was missing them. Every
 // setting a person has in the editor window is here, because an agent that cannot
 // read a setting cannot be trusted to leave it alone.
-function summarise(doc) {
+// What auto-zoom has to work with. Fetch sees the real pointer only: input a driver
+// injects into a page (Playwright's page.mouse, anything over CDP) never moves it, so
+// such a take records no clicks and a still pointer, and auto-zoom silently does
+// nothing. Saying so lets the agent place zooms itself instead of exporting a flat video.
+function pointerSummary(path, doc) {
+  const data = path && deps.proc.readCursor ? deps.proc.readCursor(path) : null
+  if (!data) return { recorded: false, clicks: 0, autoZoomSpots: 0 }
+  const clips = doc.clips || []
+  const clock = t => t
+  clock.kept = t => !clips.length || clips.some(c => t >= c.start && t <= c.end)
+  let spots = 0
+  try { spots = deps.proc.zoomMoments(data, { clock, crop: doc.crop }).length } catch {}
+  const out = { recorded: true, clicks: (data.clicks || []).length, autoZoomSpots: spots }
+  if (!spots) out.note = 'No clicks or pointer pauses in the picture, so auto-zoom has nothing to zoom on. ' +
+    'Input from Playwright or another driver that does not move the real pointer is not seen. ' +
+    'Place zooms with the zooms list instead.'
+  return out
+}
+
+function summarise(doc, path) {
   const r = n => Math.round(n * 100) / 100
   const cam = doc.camera
   return {
@@ -445,6 +515,7 @@ function summarise(doc) {
     audioTrack: doc.audioTrack ? { name: doc.audioTrack.name, volume: doc.audioTrack.volume,
       offset: doc.audioTrack.offset, replace: !!doc.audioTrack.replace } : null,
     look: doc.look,
+    pointer: pointerSummary(path, doc),
 
     // the values each setting accepts, so an agent never has to guess a font name
     options: {
@@ -528,7 +599,7 @@ function logOp(op, ctx, t0, args, result, error) {
   if (op === 'record.start' && result) detail = result.path
   else if (op === 'transcribe' && result) detail = `${result.words} words, ${result.cues} cues`
   else if (op === 'windows.list' && result) detail = `${result.length} windows`
-  else if (op === 'recordings.list' && result) detail = `${result.length} recordings`
+  else if (op === 'recordings.list' && result) detail = `${result.length} take${result.length === 1 ? '' : 's'}`
   else if (op === 'probe' && args && args.path) detail = args.path
   else if (op === 'edit.silence' && result) detail = `${result.removed_percent}% removed, ${result.path}`
   else if (op === 'frame' && result) detail = `${result.at}s`

@@ -26,6 +26,26 @@ const FONT_FILES = Object.fromEntries(Object.entries({
   'Impact':      '/Library/Fonts/Impact.ttf',
 }).filter(([, f]) => fs.existsSync(f)))
 
+// New York is a variable font whose default is its largest display cut, where
+// hyphens, dashes and crossbars are hairlines that vanish at video sizes. drawtext
+// cannot set an optical size, so hand it a static copy cut for the size drawn, as
+// CoreText does in the editor. Steps of 4px keep the cache small.
+// Text layers are drawn bold on the editor's stage, so the export finds the bold cut
+// too: a face of a .ttc, a "<Name> Bold.ttf" beside it, or wght 700 of a variable font.
+// A font with none of those (Impact) stays as it is.
+const OPTICAL = new Set(['New York'])
+function textFace(name, px) {
+  const file = (name && FONT_FILES[name]) || FONT
+  if (!file) return FONT
+  try {
+    const fi = require('./fontinstance')
+    if (/\.ttc$/i.test(file)) return fi.collectionFace(file, 'Bold')
+    const sibling = file.replace(/\.ttf$/i, ' Bold.ttf')
+    if (sibling !== file && fs.existsSync(sibling)) return sibling
+    return fi.staticInstance(file, OPTICAL.has(name) ? { wght: 700, opsz: Math.max(12, Math.round(px / 4) * 4) } : { wght: 700 })
+  } catch (e) { console.error('font instance failed:', e.message); return file }
+}
+
 let _desktop
 function app_desktop() {
   if (!_desktop) {
@@ -184,7 +204,11 @@ const MEDIA_EXT = new RegExp(VIDEO_EXT.source.slice(0, -1) + '|' + AUDIO_EXT.sou
 async function toMp4(srcArg, onProgress, jobId) {
   const { src, meta, done } = await ensureSeekable(srcArg, jobId)
   try {
-    let dest = srcArg.replace(/\.(webm|mkv)$/i, '.mp4')
+    // a take folder gets its deliverable, not a -converted copy beside the raw take,
+    // unless an export is already there: an unedited copy must never replace it
+    const deliverable = deliverablePath(srcArg, 'mp4')
+    let dest = deliverable && !fs.existsSync(deliverable) ? deliverable
+      : srcArg.replace(/\.(webm|mkv)$/i, '.mp4')
     if (dest === srcArg) dest = outName(srcArg, 'converted', 'mp4')
     // A native take is already H.264, so re-encoding it only loses quality: the
     // first version of this halved the bitrate of a perfectly good file. Copy the
@@ -194,6 +218,7 @@ async function toMp4(srcArg, onProgress, jobId) {
     const args = ['-y', '-fflags', '+genpts', '-i', src, ...video]
     args.push(...(meta.hasAudio ? AUDIO_OUT : ['-an']), ...FAST_START, dest)
     await run(FFMPEG, args, timeWatcher(onProgress, meta.duration), jobId)
+    if (dest === deliverable) noteCopy(dest)
     return { file: dest, duration: +meta.duration.toFixed(1) }
   } finally { done() }
 }
@@ -223,8 +248,9 @@ async function convert(srcArg, opts, onProgress, jobId) {
   try {
     if (!fmt.video && !meta.hasAudio) throw new Error('this file has no audio track to extract')
     let dest = outName(srcArg, fmt.video ? 'converted' : 'audio', fmt.ext)
-    // converting a webm to mp4 keeps the plain name when nothing would collide
-    const plain = srcArg.replace(/\.[^.]+$/, '.' + fmt.ext)
+    // Converting keeps the plain name when nothing would collide: the deliverable for a
+    // take folder, so a GIF lands on top; never over an export that is already there.
+    const plain = deliverablePath(srcArg, fmt.ext) || srcArg.replace(/\.[^.]+$/, '.' + fmt.ext)
     if (plain !== srcArg && !fs.existsSync(plain)) dest = plain
 
     const args = ['-y', '-fflags', '+genpts', '-i', src]
@@ -371,6 +397,10 @@ function findTranscriber() {
 
 async function transcribe(srcArg, opts, onProgress, jobId) {
   const bin = findTranscriber()
+  // Checked up front: otherwise ffmpeg's own "Output file does not contain any
+  // stream" is what reaches the person or the agent
+  if (!srcArg || !fs.existsSync(srcArg)) throw new Error(`No recording at ${srcArg}. It may have been renamed or deleted.`)
+  if (!(await probeMeta(srcArg)).hasAudio) throw new Error('This take has no audio, so there is nothing to transcribe.')
   const locale = (opts && opts.locale) || 'en'
   const wav = path.join(os.tmpdir(), `qr-${Date.now()}.wav`)
   const jsonPath = path.join(os.tmpdir(), `qr-tr-${Date.now()}.json`)
@@ -769,22 +799,10 @@ function cuesToAss(cues, W, H, o = {}) {
 }
 
 // The coordinate space a dragged caption was placed in: the composited frame when
-// there is a backdrop, the video itself otherwise. Mirrors backdropChain's geometry.
-function captionCanvas(framed, srcW, srcH, croppedW, croppedH, outH, opts) {
-  if (framed) {
-    const inset = Math.min(0.22, Math.max(0.02, opts.inset ?? 0.08))
-    const target = opts.backdropAspect ? +opts.backdropAspect : null
-    if (!target) {
-      const pad = inset * Math.max(srcW, srcH)
-      let w = 2 * Math.round((srcW + pad * 2) / 2)
-      let h = 2 * Math.round((srcH + pad * 2) / 2)
-      const cap = opts.scale === 720 ? 1280 : 1920
-      if (w > cap) { const k = cap / w; w = 2 * Math.round((w * k) / 2); h = 2 * Math.round((h * k) / 2) }
-      return { w, h }
-    }
-    const w = 2 * Math.round((opts.scale === 720 ? 1280 : 1920) / 2)
-    return { w, h: 2 * Math.round((w / target) / 2) }
-  }
+// there is a backdrop (framed is its backdropGeometry, the same numbers the
+// composite uses), the video itself otherwise.
+function captionCanvas(framed, croppedW, croppedH, outH, opts) {
+  if (framed) return { w: framed.outW, h: framed.outH }
   if (opts.backdropAspect) {
     const ar = +opts.backdropAspect
     const long = opts.scale === 720 ? 1280 : 1920
@@ -836,7 +854,7 @@ async function toGif(srcArg, opts, onProgress, jobId) {
 // save folder only ever holds what the person actually made: recordings and
 // exports. Finder hides dot-directories, so the Desktop stays clean.
 const SIDE_DIR = '.fetch'
-const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json']
+const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
 
 const sideStem = p => path.basename(p).replace(/\.[^.]+$/, '')
 function sidecarPath(mediaPath, ext) {
@@ -880,11 +898,220 @@ function migrateSidecars(dir) {
   return moved
 }
 
+// ---- takes: one folder per recording ------------------------------------
+// Each take gets a folder under the save root, with the finished video on top and
+// everything else one level down, so a take reads as one thing in Finder:
+//
+//   <root>/<Take>/<Take>.mp4           the deliverable, rewritten by every export
+//   <root>/<Take>/Original/<Take>.mov  the raw take, plus working versions (-cut, ...)
+//
+// Takes from before this sit loose on the Desktop and keep their -edit naming.
+const ORIGINAL = 'Original'
+const TAGGED = /-(edit|cut|audio|trim|captions|converted|gif)$/
+const DEFAULT_ROOT = path.join(os.homedir(), 'Movies', 'Fetch')
+let takesRoot = () => DEFAULT_ROOT
+// main owns the save folder preference, so it tells us where the root is
+function setTakesRoot(fn) { if (typeof fn === 'function') takesRoot = fn }
+
+const isDir = p => { try { return fs.statSync(p).isDirectory() } catch { return false } }
+const listDir = d => { try { return fs.readdirSync(d) } catch { return [] } }
+// The media in a folder, leaving out support files and half-written exports. A GIF
+// counts here, since it can be a take's deliverable, though nothing reads one back.
+const mediaIn = d => listDir(d).filter(f => (MEDIA_EXT.test(f) || /\.gif$/i.test(f)) && !f.startsWith('.') &&
+  !/\.(cam\.mov|vo\.mp3|mixed\.mov)$/i.test(f))
+
+// Every folder take folders live in: the save folder, and ~/Movies/Fetch as well once
+// someone picks another, so earlier takes stay in the Library
+function takeRoots() {
+  let root = null
+  try { root = takesRoot() } catch {}
+  return [...new Set([root, DEFAULT_ROOT].filter(Boolean).map(r => path.resolve(r)))]
+}
+// The take folder a file belongs to, or null for a loose file. A folder called
+// Original anywhere else on disk is not a take: Fetch leaves a .fetch folder beside
+// any file it thumbnails, so an imported Client/Original/interview.mov also needs its
+// name to match the folder's, or an export would rename the person's own folder.
+function takeDir(file) {
+  const dir = path.dirname(file)
+  let t = null
+  if (path.basename(dir) === ORIGINAL) t = path.dirname(dir)
+  else if (path.parse(file).name === path.basename(dir) && isDir(path.join(dir, ORIGINAL))) t = dir
+  if (!t) return null
+  if (takeRoots().includes(path.dirname(t))) return t
+  const named = path.parse(file).name.replace(TAGGED, '') === path.basename(t)
+  return named && isDir(path.join(t, ORIGINAL, SIDE_DIR)) ? t : null
+}
+// Where an export of this file goes: its take's deliverable, or null for a loose file
+function deliverablePath(file, ext) {
+  const t = takeDir(file)
+  return t ? path.join(t, `${path.basename(t)}.${ext}`) : null
+}
+// autoConvertMp4 puts an unedited MP4 of the take where the deliverable goes, and that
+// is not something the person exported, so the Library must not count it as one. A
+// note in the take's .fetch remembers exactly which file it wrote (size and mtime,
+// which a rename keeps); once an export rewrites the deliverable it no longer matches.
+const COPY_NOTE = 'copy.json'
+const fileSig = f => { const st = fs.statSync(f); return { size: st.size, mtime: Math.round(st.mtimeMs) } }
+function noteCopy(deliverable) {
+  try {
+    const dir = path.join(path.dirname(deliverable), SIDE_DIR)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, COPY_NOTE), JSON.stringify({ ext: path.extname(deliverable).slice(1), ...fileSig(deliverable) }))
+  } catch {}
+}
+function isCopy(deliverable) {
+  try {
+    const n = JSON.parse(fs.readFileSync(path.join(path.dirname(deliverable), SIDE_DIR, COPY_NOTE), 'utf8'))
+    const s = fileSig(deliverable)
+    return n.ext === path.extname(deliverable).slice(1) && n.size === s.size && n.mtime === s.mtime
+  } catch { return false }
+}
+// Where an edit's export lands: the deliverable, or a loose file's -edit copy. The
+// export modal names this before anyone clicks, so it has to be the same answer.
+function exportDest(file, ext) {
+  return deliverablePath(file, ext) || outName(file, 'edit', ext)
+}
+// never overwrite, suffix instead: "Demo.mp4" -> "Demo 2.mp4", folder "Demo" -> "Demo 2"
+function uniquePath(target, isFolder = false) {
+  if (!fs.existsSync(target)) return target
+  const dir = path.dirname(target)
+  const ext = isFolder ? '' : path.extname(target), base = path.basename(target, ext)
+  let n = 2, candidate
+  do { candidate = path.join(dir, `${base} ${n}${ext}`); n++ } while (fs.existsSync(candidate))
+  return candidate
+}
+
+// One file and its sidecars to a new stem, in the same folder. Appends [from, to]
+// for everything moved.
+function renameWithSidecars(from, stem, moves) {
+  let to = path.join(path.dirname(from), stem + path.extname(from))
+  if (to === from) return from
+  // a change of case only is the same file on a case-insensitive disk, not a clash
+  if (to.toLowerCase() !== from.toLowerCase()) to = uniquePath(to)
+  fs.renameSync(from, to)
+  moves.push([from, to])
+  for (const ext of SIDE_EXT) {
+    const side = sidecarIn(from, ext)
+    if (side === from || !fs.existsSync(side)) continue
+    const dest = sidecarPath(to, ext)
+    try { fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.renameSync(side, dest); moves.push([side, dest]) } catch {}
+  }
+  return to
+}
+
+// The camera sidecar and the edit document hold absolute paths (the camera take,
+// music). Point them at where the files are now, or an export after a rename quietly
+// loses the face.
+function repointSidecars(moves, fromDir, toDir) {
+  const pairs = [...moves]
+  if (fromDir && fromDir !== toDir) pairs.push([fromDir + path.sep, toDir + path.sep])
+  pairs.sort((a, b) => b[0].length - a[0].length)
+  const esc = s => JSON.stringify(s).slice(1, -1)
+  for (const [, to] of moves) {
+    if (!/\.(cam|fetchdoc)\.json$/i.test(to)) continue
+    try {
+      let txt = fs.readFileSync(to, 'utf8')
+      const before = txt
+      for (const [a, b] of pairs) txt = txt.split(esc(a)).join(esc(b))
+      if (txt !== before) fs.writeFileSync(to, txt)
+    } catch {}
+  }
+}
+
+// The import index holds paths, so it follows a rename. A loose file that no longer
+// starts with recording- is not found by the Desktop scan, so it joins the index.
+function syncIndex(moves, add) {
+  const map = new Map(moves)
+  const idx = readIndex()
+  const next = idx.map(f => map.get(f) || f)
+  if (add && !next.includes(add)) next.unshift(add)
+  if (JSON.stringify(next) !== JSON.stringify(idx)) writeIndex(next)
+}
+
+// Rename a take, the single way the Library, the editor and agents all do it. A take
+// folder moves as a whole: the folder, the raw take and its working versions in
+// Original/, the deliverable on top and every sidecar, so nothing is left behind under
+// the old name. A loose file is renamed in place with its sidecars. Returns the new
+// path of `file` and every [from, to] move, so callers can repoint what they hold.
+function renameTake(file, name) {
+  const stem = String(name || '').trim()
+  if (!stem || /[/:]/.test(stem) || stem.startsWith('.')) throw new Error('that name cannot be used for a file')
+  if (!fs.existsSync(file)) throw new Error('no such recording')
+  const moves = []
+  const t = takeDir(file)
+  if (!t) {
+    const to = renameWithSidecars(file, stem, moves)
+    syncIndex(moves, /^recording-/i.test(path.basename(to)) ? null : to)
+    repointSidecars(moves)
+    return { path: to, moves }
+  }
+
+  let dest = path.join(path.dirname(t), stem)
+  if (dest !== t && dest.toLowerCase() !== t.toLowerCase()) {
+    // A loose take from before take folders (Desktop, imported) can already hold the
+    // name, and two Library cards both reading "Demo" cannot be told apart, so a
+    // loose take's name counts as taken too, not only a folder's.
+    const loose = new Set(readIndex().filter(f => !takeDir(f) && fs.existsSync(f)).map(f => path.parse(f).name.toLowerCase()))
+    const base = dest
+    for (let n = 2; fs.existsSync(dest) || loose.has(path.basename(dest).toLowerCase()); n++) dest = `${base} ${n}`
+  }
+  const oldName = path.basename(t), newName = path.basename(dest)
+  // Files are named after their take, but the raw one can still carry its timestamp,
+  // so match on either stem. Working versions keep their suffix: "Demo-cut.mp4".
+  const own = path.parse(file).name.replace(TAGGED, '')
+  const stems = [...new Set([oldName, own])].sort((a, b) => b.length - a.length)
+  const renameIn = dir => {
+    for (const f of mediaIn(dir)) {
+      const s = path.parse(f).name
+      const hit = stems.find(p => s === p || s.startsWith(p + '-'))
+      if (hit != null) renameWithSidecars(path.join(dir, f), newName + s.slice(hit.length), moves)
+    }
+  }
+  renameIn(path.join(t, ORIGINAL))
+  renameIn(t)
+  if (dest !== t) {
+    fs.renameSync(t, dest)
+    const inTake = p => p.startsWith(t + path.sep) ? dest + p.slice(t.length) : p
+    for (const m of moves) m[1] = inTake(m[1])
+  }
+  repointSidecars(moves, t, dest)
+  syncIndex(moves, null)
+  const hit = moves.find(m => m[0] === file)
+  const out = hit ? hit[1] : (file.startsWith(t + path.sep) ? dest + file.slice(t.length) : file)
+  return { path: out, moves, folder: dest }
+}
+
 // ---- thumbnail grab -----------------------------------------------------
+// Mean brightness (0 to 255) of one frame, from a 32x18 grey copy; null if unreadable
+function frameLuma(src, at) {
+  return new Promise(res => {
+    const p = spawn(FFMPEG, ['-v', 'error', '-ss', String(at), '-i', src, '-frames:v', '1',
+      '-vf', 'scale=32:18,format=gray', '-f', 'rawvideo', '-'])
+    const bufs = []
+    p.stdout.on('data', b => bufs.push(b))
+    p.on('error', () => res(null))
+    p.on('close', () => {
+      const b = Buffer.concat(bufs)
+      if (!b.length) return res(null)
+      let s = 0
+      for (const v of b) s += v
+      res(s / b.length)
+    })
+  })
+}
 async function thumbnail(srcArg, atSec, onProgress, jobId) {
   const { src, meta, done } = await ensureSeekable(srcArg, jobId)
   try {
-    const at = Math.min(Math.max(0, atSec || 0), Math.max(0, (meta.duration || 1) - 0.1))
+    const last = Math.max(0, (meta.duration || 1) - 0.1)
+    let at = Math.min(Math.max(0, atSec || 0), last)
+    // A take can open on black (a window still drawing, a display waking), and an
+    // all-black poster reads as a broken card. Look further in until something shows.
+    if (meta.width && meta.duration > 2) {
+      for (const t of [at, meta.duration * 0.25, meta.duration * 0.5]) {
+        const l = await frameLuma(src, Math.min(t, last))
+        if (l == null || l > 10) { at = Math.min(t, last); break }
+      }
+    }
     const dest = sidecarOut(srcArg, '.png')
     await run(FFMPEG, ['-y', '-ss', String(at), '-i', src, '-frames:v', '1', '-q:v', '2', dest], null, jobId)
     if (!fs.existsSync(dest)) throw new Error('could not grab a frame at that time')
@@ -998,17 +1225,28 @@ function describe(full) {
   }
 }
 
-// anything Fetch recorded on the Desktop, plus whatever the user imported
-function listRecordings() {
+// Every take folder under the root, the loose takes Fetch left on the Desktop before
+// take folders, plus whatever the user imported. A take folder's files carry `take`
+// (its folder), and the files on top of it carry `deliverable` (plus `copy` for the
+// unedited MP4 autoConvertMp4 left there, which is not an export).
+function listRecordings(root = takesRoot()) {
   const out = new Map()
-  const dir = app_desktop()
-  let files = []
-  try { files = fs.readdirSync(dir) } catch {}
-  for (const f of files) {
-    if (!/^recording-/i.test(f) || !MEDIA_EXT.test(f)) continue
-    if (/\.cam\.mov$/i.test(f)) continue          // a camera take, not a clip
-    const full = path.join(dir, f)
-    try { out.set(full, describe(full)) } catch {}
+  const add = (full, extra) => { if (!out.has(full)) try { out.set(full, { ...describe(full), ...extra }) } catch {} }
+  for (const dir of new Set([app_desktop(), root])) {
+    for (const f of listDir(dir)) {
+      if (!/^recording-/i.test(f) || !MEDIA_EXT.test(f)) continue
+      if (/\.cam\.mov$/i.test(f)) continue          // a camera take, not a clip
+      add(path.join(dir, f))
+    }
+  }
+  for (const r of new Set([root, ...takeRoots()])) for (const d of listDir(r)) {
+    const t = path.join(r, d)
+    if (d.startsWith('.') || !isDir(path.join(t, ORIGINAL))) continue
+    for (const f of mediaIn(path.join(t, ORIGINAL))) add(path.join(t, ORIGINAL, f), { take: t })
+    for (const f of mediaIn(t)) {
+      const full = path.join(t, f)
+      add(full, { take: t, deliverable: true, ...(isCopy(full) ? { copy: true } : {}) })
+    }
   }
   for (const full of readIndex()) {
     if (out.has(full) || !fs.existsSync(full)) continue
@@ -1034,9 +1272,12 @@ function forgetFile(src) {
 }
 
 // ---- auto zoom from recorded cursor data -------------------------------
-// Recording writes <clip>.cursor.json at 20Hz. Clicks are grouped into moments,
-// and each moment becomes a smooth push in and back out, centred on the pointer.
-// Only valid for full-screen captures: a window recording has a different origin.
+// Recording writes <clip>.cursor.json: the pointer at 20Hz and every click, in ms on
+// the video clock, in screen points. Clicks are grouped into moments, and each
+// moment becomes a smooth push in and back out, centred on where it happened.
+// A native take also says what was recorded (kind, the display's bounds, and for a
+// window its bounds over time), which is what maps a screen point into the picture.
+// Older files have only the primary display, so they only map for display takes.
 function readCursor(srcArg) {
   const p = sidecarIn(srcArg, '.cursor.json')
   if (!fs.existsSync(p)) return null
@@ -1047,38 +1288,95 @@ function readCursor(srcArg) {
 const ramp = (t, a, b) => `(${t}-${a})/(${b}-${a})`
 const smooth = p => `(${p})*(${p})*(3-2*(${p}))`
 
+// Where a recorded screen point sits in the picture, as 0..1 of the frame the zoom
+// receives (after any crop), or null when it is not in the picture at all: on
+// another display, outside the recorded window, or cropped away.
+function cursorMapper(data, crop) {
+  const wins = data.kind === 'window' && Array.isArray(data.windowBounds) && data.windowBounds.length
+    ? data.windowBounds : null
+  const d = data.display
+  const c = crop && crop.w > 0 && crop.h > 0 ? crop : null
+  return (ms, x, y) => {
+    let b
+    if (wins) {
+      // the window's bounds at that moment: the last change at or before it
+      let w = wins[0]
+      for (const e of wins) { if (e[0] <= ms) w = e; else break }
+      // a sixth value of 0 means the window was off screen (another Space, minimised),
+      // so whatever the pointer did then was not over it
+      if (w[5] === 0) return null
+      b = { x: w[1], y: w[2], w: w[3], h: w[4] }
+    } else if (data.kind === 'window') {
+      return null                    // a window take with no bounds cannot be placed
+    } else if (d) {
+      b = { x: d.x, y: d.y, w: d.width, h: d.height }
+    }
+    if (!b || !(b.w > 0) || !(b.h > 0)) return null
+    let fx = (x - b.x) / b.w, fy = (y - b.y) / b.h
+    if (c) { fx = (fx - c.x) / c.w; fy = (fy - c.y) / c.h }
+    if (!(fx >= 0 && fx <= 1 && fy >= 0 && fy <= 1)) return null
+    return { x: fx, y: fy }
+  }
+}
+
+// Moments on the output clock, with x, y as 0..1 of the frame the zoom receives.
+// opts.clock maps source seconds to output seconds (see outClock), opts.crop is the
+// editor's crop.
 function zoomMoments(data, opts = {}) {
+  if (!data) return []
   const hold = opts.hold ?? 1.6          // seconds held at full zoom
   const ease = opts.ease ?? 0.45         // seconds to push in, and to pull back
-  const gap = opts.gap ?? 2.2            // clicks closer than this share one moment
-  const clicks = (data.clicks || []).map(([ms, x, y]) => ({ t: ms / 1000, x, y }))
+  const gap = opts.gap ?? 2.2            // clicks closer than this share one moment...
+  const near = opts.near ?? 0.25         // ...when they are also this close on screen
+  const clock = opts.clock || (t => t)
+  const kept = (opts.clock && opts.clock.kept) || (() => true)
+  const at = cursorMapper(data, opts.crop)
+  const place = ([ms, x, y]) => {
+    const t = ms / 1000
+    if (!kept(t)) return null            // trimmed away or inside a cut
+    const p = at(ms, x, y)
+    return p && { t: clock(t), x: p.x, y: p.y }
+  }
 
+  let events = (data.clicks || []).map(place).filter(Boolean)
   // fall back to dwell points if nothing was clicked: places the pointer rested
-  let events = clicks
   if (!events.length) {
-    const pts = (data.points || []).map(([ms, x, y]) => ({ t: ms / 1000, x, y }))
+    const pts = data.points || []
     for (let i = 8; i < pts.length - 8; i += 8) {
-      const a = pts[i - 8], b = pts[i], c = pts[i + 8]
-      const moved = Math.hypot(b.x - a.x, b.y - a.y)
-      const settled = Math.hypot(c.x - b.x, c.y - b.y)
-      if (moved > 90 && settled < 18) events.push(b)
+      const [, ax, ay] = pts[i - 8], [, bx, by] = pts[i], [, cx, cy] = pts[i + 8]
+      const moved = Math.hypot(bx - ax, by - ay)
+      const settled = Math.hypot(cx - bx, cy - by)
+      if (moved > 90 && settled < 18) events.push(place(pts[i]))
     }
+    events = events.filter(Boolean)
   }
   if (!events.length) return []
+  events.sort((a, b) => a.t - b.t)
 
-  const moments = []
+  // A run of clicks in one place is one moment that holds until the last of them. It
+  // used to slide the whole moment to the last click, so the zoom arrived late.
+  const groups = []
   for (const e of events) {
-    const last = moments[moments.length - 1]
-    if (last && e.t - last.t < gap) { last.t = e.t; continue }   // extend the current one
-    moments.push({ t: e.t, x: e.x, y: e.y })
+    const last = groups[groups.length - 1]
+    if (last && e.t - last.until < gap && Math.hypot(e.x - last.x, e.y - last.y) < near) { last.until = e.t; continue }
+    groups.push({ t: e.t, until: e.t, x: e.x, y: e.y })
   }
-  return moments.map(m => ({
-    inStart: Math.max(0, m.t - ease),
-    inEnd: m.t,
-    outStart: m.t + hold,
-    outEnd: m.t + hold + ease,
-    x: m.x, y: m.y,
+  const moments = groups.map(g => ({
+    inStart: Math.max(0, g.t - ease),
+    inEnd: g.t,
+    outStart: g.until + hold,
+    outEnd: g.until + hold + ease,
+    x: g.x, y: g.y,
   }))
+  // A click somewhere else before the last moment has let go: pull back in time for
+  // it rather than jumping the pan mid-zoom.
+  for (let i = 1; i < moments.length; i++) {
+    const p = moments[i - 1], n = moments[i]
+    if (p.outEnd <= n.inStart) continue
+    p.outEnd = Math.max(p.inEnd + 0.1, n.inStart)
+    p.outStart = Math.max(p.inEnd, p.outEnd - ease)
+  }
+  return moments
 }
 
 // nested if() chain: one branch per moment, 1.0 everywhere else
@@ -1129,18 +1427,23 @@ function explicitZoomFilter(zooms, meta, clock, frame) {
       scale: Math.max(1.05, Math.min(4, z.scale || 1.8)),
     }
   }).sort((a, b) => a.inStart - b.inStart)
-  const unit = { x: 0, y: 0, width: 1, height: 1 }
-  const { z, fx, fy } = zoomExpr(moments, unit, 1.8, 0)   // already on the output clock
-  // The size of the frame this filter receives, which after a crop is not the source
-  // size. Using the source size stretched every cropped recording that had a zoom.
+  const { z, fx, fy } = zoomExpr(moments, UNIT, 1.8, 0)   // already on the output clock
+  return { filter: zoompan(z, fx, fy, meta, frame), moments: moments.length }
+}
+
+const UNIT = { x: 0, y: 0, width: 1, height: 1 }
+
+// frame is the size zoompan outputs: the cropped frame, or the framed video's size
+// when a backdrop will shrink it anyway, so zoom never scales pixels it then throws
+// away. Using the source size stretched every cropped recording that had a zoom.
+function zoompan(z, fx, fy, meta, frame) {
   const w = (frame && frame.w) || meta.width || 1920, h = (frame && frame.h) || meta.height || 1080
-  const fps = zoomFps(meta)
-  // x,y is the point to centre on, as an agent reading a frame would mean it, held
-  // centred at every step of the ease and clamped only where the frame edge forces it.
-  // It used to be a pan fraction, which put a 2x zoom aimed at 0.85 centred on 0.675.
+  // fx,fy is the point to centre on, held centred at every step of the ease and
+  // clamped only where the frame edge forces it. It used to be a pan fraction, which
+  // put a 2x zoom aimed at 0.85 centred on 0.675.
   const x = `max(0,min(iw-iw/zoom,iw*(${fx})-iw/zoom/2))`
   const y = `max(0,min(ih-ih/zoom,ih*(${fy})-ih/zoom/2))`
-  return { filter: `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${fps}`, moments: moments.length }
+  return `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${zoomFps(meta)}`
 }
 
 // Source time to output time. The video filters run after cuts are concatenated, so
@@ -1151,7 +1454,7 @@ function explicitZoomFilter(zooms, meta, clock, frame) {
 // next kept range begins.
 function outClock(cuts, start, end) {
   const keep = (cuts && cuts.length) ? keepRanges(cuts, start, end) : [[start, end]]
-  return t => {
+  const clock = t => {
     let acc = 0
     for (const [a, b] of keep) {
       if (t < a) return acc
@@ -1160,6 +1463,10 @@ function outClock(cuts, start, end) {
     }
     return acc
   }
+  // Whether a source time survives into the output at all. A click inside a cut has
+  // to be dropped, not snapped: snapped, it zooms on something no longer on screen.
+  clock.kept = t => keep.some(([a, b]) => t >= a && t <= b)
+  return clock
 }
 
 // ── marks ────────────────────────────────────────────────────────────────────
@@ -1173,7 +1480,7 @@ function outClock(cuts, start, end) {
 // A redaction destroys what is under it. It is not a blur that could be reversed: the
 // region is scaled down to a few pixels and back up, so the original detail is not in
 // the output at all.
-const STEP_GOLD = '0xF0A93C'     // steps are an intent, and red is reserved for recording
+const STEP_GOLD = [240, 169, 60]   // #F0A93C: steps are an intent, and red is reserved for recording
 
 function markFilters(marks, clock, font, tag = 'mk') {
   const out = []
@@ -1206,27 +1513,36 @@ function markFilters(marks, clock, font, tag = 'mk') {
         `[${L}d][${L}r]overlay=x='main_w*${X}':y='main_h*${Y}':${on}`)
     } else if (m.kind === 'step') {
       const n = String(m.n || i + 1).replace(/[^0-9A-Za-z]/g, '').slice(0, 3) || String(i + 1)
-      out.push(`drawtext=text='${n}':` + (font ? `fontfile='${filterPath(font)}':` : '') +
-        `fontsize='h*0.062':fontcolor=0x231703:box=1:boxcolor=${STEP_GOLD}@1:boxborderw='h*0.02':` +
-        `x='w*${X}':y='h*${Y}':${on}`)
+      // A gold circle (a pill past one character) with the numeral centred in it.
+      // drawtext's own box is a tight square, and its boxborderw takes no expression,
+      // so a padding in terms of h silently became 0. The badge is painted instead:
+      // cut its patch out, colour an antialiased pill over it with geq, put it back.
+      // Sizes are fractions of the frame height, so it reads the same at any size.
+      const D = 0.096, Wd = (D + (n.length - 1) * 0.62 * 0.062).toFixed(4)
+      const bx = `min(iw*${X},iw-ow)`, by = `min(ih*${Y},ih-oh)`
+      const edge = `clip(H/2-hypot(max(0,abs(X+0.5-W/2)-(W-H)/2),Y+0.5-H/2)+0.5,0,1)`
+      const [r, g, b] = STEP_GOLD
+      out.push(`split[${L}a][${L}b];[${L}b]crop=w='ih*${Wd}':h='ih*${D}':x='${bx}':y='${by}',format=rgba,` +
+        `geq=r='lerp(r(X,Y),${r},${edge})':g='lerp(g(X,Y),${g},${edge})':b='lerp(b(X,Y),${b},${edge})':a=255[${L}c];` +
+        `[${L}a][${L}c]overlay=x='min(main_w*${X},main_w-overlay_w)':y='min(main_h*${Y},main_h-overlay_h)':${on},` +
+        `drawtext=text='${n}':` + (font ? `fontfile='${filterPath(font)}':` : '') +
+        `fontsize='h*0.062':fontcolor=0x231703:` +
+        `x='min(w*${X},w-h*${Wd})+h*${Wd}/2-tw/2':y='min(h*${Y},h-h*${D})+h*${D}/2-th/2':${on}`)
     }
   })
   return out
 }
 
-function autoZoomFilter(srcArg, meta, opts = {}, trimStart = 0, frame) {
-  const data = readCursor(srcArg)
-  if (!data || !data.display) return null
-  const moments = zoomMoments(data, opts)
+// clock is outClock for this export (a number is read as a trim start, for older
+// callers), crop the editor's crop. opts.cursor stands in for the sidecar.
+function autoZoomFilter(srcArg, meta, opts = {}, clock = 0, frame, crop) {
+  const data = opts.cursor || readCursor(srcArg)
+  if (!data || !(data.display || data.windowBounds)) return null
+  if (typeof clock === 'number') { const s = clock; clock = t => t - s; clock.kept = t => t >= s }
+  const moments = zoomMoments(data, { ...opts, clock, crop })
   if (!moments.length) return null
-  const zMax = opts.zoom ?? 1.7
-  const { z, fx, fy } = zoomExpr(moments, data.display, zMax, trimStart)
-  const w = (frame && frame.w) || meta.width || 1920, h = (frame && frame.h) || meta.height || 1080
-  const fps = zoomFps(meta)
-  // zoompan positions the crop by its top-left corner
-  const x = `(iw-iw/zoom)*(${fx})`
-  const y = `(ih-ih/zoom)*(${fy})`
-  return { filter: `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${fps}`, moments: moments.length }
+  const { z, fx, fy } = zoomExpr(moments, UNIT, opts.zoom ?? 1.7, 0)
+  return { filter: zoompan(z, fx, fy, meta, frame), moments: moments.length }
 }
 
 // ---- background: the framed look --------------------------------------
@@ -1290,11 +1606,11 @@ function roundedAlpha(w, h, r) {
   return `if(gt((${tl})+(${tr})+(${bl})+(${br}),0),0,255)`
 }
 
-// builds a filter_complex that frames [vin] over a backdrop, producing [vout]
-function backdropChain(vLabel, srcW, srcH, opts) {
-  const imageBd = String(opts.backdrop || '').startsWith('img:')
-    ? imageBackdrops().find(b => b.id === opts.backdrop) : null
-  const bd = BACKDROPS[opts.backdrop] || BACKDROPS.dusk
+// Where the framed video sits: the canvas, and the video's size and place on it.
+// srcW, srcH is the frame being framed, so after a crop it is the cropped size.
+// applyEdit reads this before building the graph, so a zoom can output straight at
+// the framed size.
+function backdropGeometry(srcW, srcH, opts) {
   const inset = Math.min(0.22, Math.max(0.02, opts.inset ?? 0.08))
 
   // "Auto" keeps the source shape and adds the same margin on every side. Forcing
@@ -1327,16 +1643,35 @@ function backdropChain(vLabel, srcW, srcH, opts) {
   const ox = Math.round((outW - vidW) / 2)
   const oy = Math.round((outH - vidH) / 2)
   const blur = Math.max(4, Math.round(vidH * 0.035))
+  return { outW, outH, vidW, vidH, radius, ox, oy, blur }
+}
+
+// A picture drawn once: a mask, a ring or a shadow. One frame is enough, because
+// overlay and alphamerge repeat the last frame of a secondary input for as long as
+// the main one runs. Drawing these with geq on every frame was most of the time a
+// framed export took.
+const still = (w, h, fmt, c = 'black') => `color=c=${c}:s=${w}x${h}:r=1:d=1,format=${fmt}`
+
+// builds a filter_complex that frames [vin] over a backdrop, producing [vout]
+function backdropChain(vLabel, srcW, srcH, opts) {
+  const imageBd = String(opts.backdrop || '').startsWith('img:')
+    ? imageBackdrops().find(b => b.id === opts.backdrop) : null
+  const bd = BACKDROPS[opts.backdrop] || BACKDROPS.dusk
+  const { outW, outH, vidW, vidH, radius, ox, oy, blur } = backdropGeometry(srcW, srcH, opts)
 
   const parts = []
   const inputs = []
   let vidSrc = vLabel
   if (!imageBd && bd.video) {
-    // one decode, two uses: the sharp framed copy and the blurred fill behind it
+    // One decode, two uses: the sharp framed copy and the blurred fill behind it.
+    // The fill is blurred at an eighth of the size and scaled back up: a blur this
+    // wide leaves no detail to lose, and it is 64 times fewer pixels to blur.
     const sigma = Math.max(12, Math.round(outH * 0.03))
+    const fw = 2 * Math.round(outW / 16), fh = 2 * Math.round(outH / 16)
     parts.push(`[${vLabel}]split[bdsharp][bdfill]`)
-    parts.push(`[bdfill]scale=${outW}:${outH}:force_original_aspect_ratio=increase,crop=${outW}:${outH},` +
-               `gblur=sigma=${sigma}:steps=2,eq=brightness=-0.07:saturation=1.15,format=rgba[bg]`)
+    parts.push(`[bdfill]scale=${fw}:${fh}:force_original_aspect_ratio=increase:flags=area,crop=${fw}:${fh},` +
+               `gblur=sigma=${(sigma * fw / outW).toFixed(2)}:steps=2,eq=brightness=-0.07:saturation=1.15,` +
+               `scale=${outW}:${outH}:flags=bicubic,setsar=1,format=yuv420p[bg]`)
     vidSrc = 'bdsharp'
   } else if (imageBd) {
     // fill the frame without distorting: cover, then centre-crop
@@ -1344,22 +1679,26 @@ function backdropChain(vLabel, srcW, srcH, opts) {
     parts.push(`[1:v]scale=${outW}:${outH}:force_original_aspect_ratio=increase,` +
                `crop=${outW}:${outH},format=rgba[bg]`)
   } else {
-    parts.push(`gradients=s=${outW}x${outH}:c0=${bd.c0}:c1=${bd.c1}:x0=0:y0=0:x1=${outW}:y1=${outH}:speed=0,` +
-               `format=rgba[bg]`)
+    // A still gradient, so draw it once and repeat that frame at the output rate. The
+    // generator ran every frame, at its default 25fps, so a 60fps take came out at 25.
+    const fps = opts.fps || 30
+    parts.push(`gradients=s=${outW}x${outH}:c0=${bd.c0}:c1=${bd.c1}:x0=0:y0=0:x1=${outW}:y1=${outH}:speed=0:r=${fps},` +
+               `trim=end_frame=1,loop=loop=-1:size=1,format=yuv420p[bg]`)
   }
-  // the video, inset and rounded
-  parts.push(`[${vidSrc}]scale=${vidW}:${vidH}:flags=lanczos,format=rgba,` +
-             `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${roundedAlpha(vidW, vidH, radius)}'[vid]`)
+  // the video, inset and rounded: a static corner mask merged in as alpha
+  parts.push(`${still(vidW, vidH, 'gray')},geq=lum='${roundedAlpha(vidW, vidH, radius)}'[vmask]`)
+  parts.push(`[${vidSrc}]scale=${vidW}:${vidH}:flags=lanczos,format=yuva420p[vsq]`)
+  parts.push(`[vsq][vmask]alphamerge[vid]`)
   // Shadow needs a margin around it, otherwise boxblur is clipped by its own
   // canvas and leaves a hard edge along the bottom.
   const pad = blur * 2
   const shW = vidW + pad * 2, shH = vidH + pad * 2
-  parts.push(`color=c=black@0:s=${shW}x${shH},format=rgba,` +
+  parts.push(`${still(shW, shH, 'rgba', 'black@0')},` +
              `geq=r=0:g=0:b=0:a='if(between(X,${pad},${pad + vidW})*between(Y,${pad},${pad + vidH}),` +
              `0.6*${roundedAlpha(vidW, vidH, radius).replace(/X/g, `(X-${pad})`).replace(/Y/g, `(Y-${pad})`)}/255*255,0)',` +
              `boxblur=${blur}:2[sh]`)
   parts.push(`[bg][sh]overlay=${ox - pad}:${oy - pad + Math.round(blur * 0.9)}[bgs]`)
-  parts.push(`[bgs][vid]overlay=${ox}:${oy}:format=auto,format=yuv420p[vout]`)
+  parts.push(`[bgs][vid]overlay=${ox}:${oy}:format=auto,format=yuv420p,setsar=1[vout]`)
   return { chain: parts.join(';'), outW, outH, inputs }
 }
 
@@ -1424,16 +1763,21 @@ function camChain(cam, srcW, srcH, baseSeek) {
   const seek = Math.max(0, raw)
   const delay = Math.max(0, -raw)
   if (seek > 0.001) bits.push(`trim=start=${seek.toFixed(3)}`, 'setpts=PTS-STARTPTS')
-  bits.push(`scale=${S}:${S}:force_original_aspect_ratio=increase`, `crop=${S}:${S}`, 'format=rgba')
-  // circular cut with a white rim, matching the bubble on screen
-  bits.push(`geq=r='if(gt(${H},${RI}),255,r(X,Y))':g='if(gt(${H},${RI}),255,g(X,Y))':` +
-            `b='if(gt(${H},${RI}),255,b(X,Y))':a='255*lt(${H},${RO})'`)
-  // after geq, so the held frames stay fully transparent instead of being filled in
-  if (delay > 0.001) bits.push(`tpad=start_duration=${delay.toFixed(3)}:start_mode=add:color=#00000000`)
-  return { pre: `${bits.join(',')}[cam];[0:v][cam]overlay=${x}:${y}:eof_action=pass:format=auto[csrc]` }
+  bits.push(`scale=${S}:${S}:force_original_aspect_ratio=increase`, `crop=${S}:${S}`, 'format=yuv420p')
+  // circular cut with a white rim, matching the bubble on screen: a ring laid over
+  // it and a circle merged in as alpha, both drawn once rather than every frame
+  const rim = `${still(S, S, 'rgba', 'white')},geq=r=255:g=255:b=255:a='255*gt(${H},${RI})'[camring]`
+  const disc = `${still(S, S, 'gray')},geq=lum='255*lt(${H},${RO})'[cammask]`
+  // after the mask, so the held frames stay fully transparent instead of being filled in
+  const hold = delay > 0.001 ? `,tpad=start_duration=${delay.toFixed(3)}:start_mode=add:color=#00000000` : ''
+  return { pre: `${bits.join(',')}[camsq];${rim};${disc};` +
+    `[camsq][camring]overlay=0:0,format=yuva420p[camr];[camr][cammask]alphamerge${hold}[cam];` +
+    `[0:v][cam]overlay=${x}:${y}:eof_action=pass:format=auto[csrc]` }
 }
 
 async function applyEdit(srcArg, opts, onProgress, jobId) {
+  // Say so plainly: a missing file used to surface as whichever check failed first
+  if (!srcArg || !fs.existsSync(srcArg)) throw new Error(`No recording at ${srcArg}. It may have been renamed or deleted.`)
   const { src, meta, done } = await ensureSeekable(srcArg, jobId)
   const tmpFiles = []
   try {
@@ -1472,8 +1816,20 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     let zoomInfo = null
     const even = n => 2 * Math.floor(n / 2)
     const frame = c ? { w: even((meta.width || 1920) * c.w), h: even((meta.height || 1080) * c.h) } : null
-    if (opts.zooms && opts.zooms.length) zoomInfo = explicitZoomFilter(opts.zooms, meta, clock, frame)
-    else if (opts.autoZoom) zoomInfo = autoZoomFilter(srcArg, meta, opts.autoZoomOpts || {}, start, frame)
+    // With a backdrop the video ends up at the framed size, and its geometry follows
+    // the cropped frame (it used to follow the source, which squashed any crop).
+    const bdGeo = opts.backdrop && fmtEarly.video && !fmtEarly.gif
+      ? backdropGeometry(frame ? frame.w : srcW, frame ? frame.h : srcH, {
+          inset: opts.inset, radius: opts.radius, scale: opts.scale,
+          outWidth: opts.scale === 720 ? 1280 : 1920,
+          outAspect: opts.backdropAspect || null,   // null keeps the source shape
+        })
+      : null
+    // so zoom outputs straight at that size rather than scaling up to the source
+    // size only for the backdrop to scale it down again
+    const zoomTo = bdGeo ? { w: bdGeo.vidW, h: bdGeo.vidH } : frame
+    if (opts.zooms && opts.zooms.length) zoomInfo = explicitZoomFilter(opts.zooms, meta, clock, zoomTo)
+    else if (opts.autoZoom) zoomInfo = autoZoomFilter(srcArg, meta, opts.autoZoomOpts || {}, clock, zoomTo, c)
     if (zoomInfo) {
       // ScreenCaptureKit writes a frame only when the screen changes, so a native take
       // is variable frame rate, with gaps of seconds on a still screen. zoompan emits
@@ -1484,7 +1840,8 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
       vf.push(zoomInfo.filter)
     }
 
-    if (opts.scale === 1080 || opts.scale === 720) vf.push(`scale=-2:${opts.scale}:flags=lanczos`)
+    // framed, the backdrop sets the final size itself
+    if ((opts.scale === 1080 || opts.scale === 720) && !bdGeo) vf.push(`scale=-2:${opts.scale}:flags=lanczos`)
 
     // A chosen output shape has to work with or without a backdrop. Without one,
     // fit the video inside the shape and pad the remainder.
@@ -1511,20 +1868,26 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
       const tf = path.join(os.tmpdir(), `qr-text-${Date.now()}-${i}.txt`)
       fs.writeFileSync(tf, String(t.text))
       tmpFiles.push(tf)
-      const face = (t.font && FONT_FILES[t.font]) || FONT
+      const px = Math.max(10, Math.round((t.sizeFrac || 0.05) * (framed ? (opts.scale === 720 ? 720 : 1080) : outH)))
+      const face = textFace(t.font, px)
       const parts = [
         `textfile='${filterPath(tf)}'`,
         'expansion=none',        // user text is literal: '%' must not strftime-expand
         face ? `fontfile='${filterPath(face)}'` : null,
         t.align && t.align !== 'center' ? `text_align=${t.align === 'left' ? 'L' : 'R'}` : null,
-        `fontsize=${Math.max(10, Math.round((t.sizeFrac || 0.05) * (framed ? (opts.scale === 720 ? 720 : 1080) : outH)))}`,
+        `fontsize=${px}`,
         `fontcolor=${t.color || 'white'}`,
         t.align === 'left' ? `x=main_w*${(+t.fx || 0.5).toFixed(4)}`
           : t.align === 'right' ? `x=main_w*${(+t.fx || 0.5).toFixed(4)}-text_w`
           : `x=main_w*${(+t.fx || 0.5).toFixed(4)}-text_w/2`,
         `y=main_h*${(+t.fy || 0.5).toFixed(4)}-text_h/2`,
+        // measure by the font's line, not the glyphs, so the box and the centre do not
+        // shift with ascenders and descenders ("ace" and "Weekly" sit alike, as in CSS)
+        'y_align=font',
       ].filter(Boolean)
-      if (t.box) parts.push('box=1', 'boxcolor=black@0.45', 'boxborderw=14')
+      // the stage pads a boxed layer .2em .45em inside a 1.2em line (editor.css);
+      // drawtext's line is 1em, so the top and bottom take the other .1em
+      if (t.box) parts.push('box=1', 'boxcolor=black@0.45', `boxborderw=${Math.round(px * 0.3)}|${Math.round(px * 0.45)}`)
       // layer times are absolute in the source; the output clock restarts at the trim point
       if (t.start != null && t.end != null && t.end > t.start) {
         parts.push(`enable='between(t,${Math.max(0, t.start - start).toFixed(2)},${Math.max(0, t.end - start).toFixed(2)})'`)
@@ -1532,9 +1895,11 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
       target.push('drawtext=' + parts.join(':'))
     }
 
-    if (opts.captions) {
-      const srtSrc = sidecarIn(srcArg, '.srt')
-      if (!fs.existsSync(srtSrc)) throw new Error('no captions yet, run Transcribe first')
+    // Captions on means "burn them if there are any". Every new edit starts with it
+    // on, so throwing here made a take with nothing to transcribe (no mic, no system
+    // audio) impossible to export until someone found the toggle.
+    const srtSrc = opts.captions ? sidecarIn(srcArg, '.srt') : null
+    if (srtSrc && fs.existsSync(srtSrc)) {
       const cs = opts.captionStyle || {}
       let srtUse = srtSrc
       let cues = null
@@ -1554,7 +1919,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
         srtUse = tmp
       }
       if (cs.fx != null && cs.fy != null) {
-        const cv = captionCanvas(framed, srcW, srcH, croppedW, croppedH, outH, opts)
+        const cv = captionCanvas(framed && bdGeo, croppedW, croppedH, outH, opts)
         const ap = path.join(os.tmpdir(), `qr-sub-${Date.now()}.ass`)
         fs.writeFileSync(ap, cuesToAss(cues || readCues(srcArg), cv.w, cv.h, cs))
         tmpFiles.push(ap)
@@ -1654,7 +2019,16 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
 
     const camPrefix = () => camG ? camG.pre + ';' : ''
 
-    const dest = outName(srcArg, 'edit', fmt.ext)
+    // A take folder's export is its deliverable, rewritten each time; a loose file on
+    // the Desktop keeps its -edit copy beside it.
+    const deliverable = deliverablePath(srcArg, fmt.ext)
+    const dest = exportDest(srcArg, fmt.ext)
+    // The deliverable is encoded beside itself and swapped in once finished: ffmpeg
+    // cannot read and write one file, and a cancelled or failed re-export must not
+    // destroy the last good one.
+    const out = deliverable
+      ? path.join(path.dirname(dest), `.${path.parse(dest).name}.partial.${fmt.ext}`) : dest
+    if (out !== dest) tmpFiles.push(out)
     const args = ['-y']
     // with cuts the trim happens inside the graph, so do not also seek the input
     if (!cutGraph && start > 0) args.push('-ss', String(start))
@@ -1684,8 +2058,8 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
       else if (meta.hasAudio) args.push('-map', '[aout]')
     } else if (opts.backdrop && fmt.video && !fmt.gif) {
       // framed look: everything above feeds [vin], then the backdrop composites it
-      const geo = backdropChain('vin', meta.width || 1920, meta.height || 1080, {
-        backdrop: opts.backdrop, inset: opts.inset, radius: opts.radius,
+      const geo = backdropChain('vin', frame ? frame.w : srcW, frame ? frame.h : srcH, {
+        backdrop: opts.backdrop, inset: opts.inset, radius: opts.radius, scale: opts.scale, fps: zoomFps(meta),
         outWidth: opts.scale === 720 ? 1280 : 1920,
         outAspect: opts.backdropAspect || null,   // null keeps the source shape
       })
@@ -1721,9 +2095,10 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     if (af.length && !fmt.gif && !extraGraph && !audioFromGraph) args.push('-af', af.join(','))
     args.push(...fmt.args(opts.quality))
     if (fmt.video && !fmt.gif && !meta.hasAudio) args.push('-an')
-    args.push(dest)
+    args.push(out)
 
     await run(FFMPEG, args, timeWatcher(onProgress, cutDur || span), jobId)
+    if (out !== dest) fs.renameSync(out, dest)
     return { file: dest, duration: +((cutDur || span) || await probeDuration(dest)).toFixed(1),
              cuts: cuts.length,
              format: fmt.ext, mb: +(fs.statSync(dest).size / 1e6).toFixed(1) }
@@ -1770,7 +2145,9 @@ module.exports = {
   thumbnail, waveform, applyEdit, listRecordings, importFile, forgetFile,
   probeMeta, readCues, writeCues, cancel, formatList, FFMPEG, flattenAudio,
   sidecarOut, sidecarIn, migrateSidecars,
+  setTakesRoot, takeDir, deliverablePath, exportDest, renameTake,
   speechRegions, buildBeats, buildCues, beatsFromCursor, readCursor,
+  zoomMoments, zoomExpr, autoZoomFilter, explicitZoomFilter, outClock, backdropGeometry,
   readDoc, writeDoc, beatsFor,
   fontList: () => Object.keys(FONT_FILES),
 }

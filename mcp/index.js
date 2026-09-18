@@ -60,7 +60,9 @@ function build() {
     {
       description:
         'Stop the recording that is currently running. Returns the saved file path ' +
-        'and size once the file is written.',
+        'and size once the file is written. Each take gets its own folder, ' +
+        '~/Movies/Fetch/<Take>/ by default, and the path returned is the raw take in its ' +
+        'Original/ subfolder; pass that path to the editing tools.',
       inputSchema: z.object({}),
     },
     async () => text(await drive('record.stop', {}, { timeoutMs: 3 * 60 * 1000 })))
@@ -157,7 +159,11 @@ function build() {
         '- crop {x,y,w,h} or null to remove it; cropAR sets the crop shape.\n' +
         '- backdrop: a name from options.backdrops, or null. outAspect: output shape, e.g. ' +
         '0.5625 for vertical, or null.\n' +
-        '- autoZoom: true to zoom automatically on where the pointer settled.\n' +
+        '- autoZoom: true to zoom automatically on each click, or where the pointer settled ' +
+        'if nothing was clicked. Explicit zooms win over it. It follows the real pointer ' +
+        'only: clicks a driver injects into a page (Playwright page.mouse, anything over ' +
+        'CDP) are not seen. pointer.autoZoomSpots in the result says how many it found; ' +
+        'at 0, place zooms yourself.\n' +
         'Returns the full edit as it now stands.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
@@ -170,9 +176,12 @@ function build() {
     'export',
     {
       description:
-        'Render a recording with its current edit (trim, cuts, zooms, text, captions) to ' +
-        'a new file, and return its path. Runs in the background queue, one export at a ' +
-        'time, so it can take a while for a long recording.',
+        'Render a recording with its current edit (trim, cuts, zooms, text, captions) and ' +
+        'return the path of the result. For a take in its own folder the result is the ' +
+        'deliverable at the top of that folder, <Take>/<Take>.<format>, and exporting again ' +
+        'overwrites it. An older recording on the Desktop gets a -edit copy beside it. Runs ' +
+        'in the background queue, one export at a time, so it can take a while for a long ' +
+        'recording.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
         format: z.enum(['mp4', 'webm', 'gif', 'mov']).optional().describe('Defaults to mp4.'),
@@ -187,9 +196,11 @@ function build() {
     {
       description:
         'Rename a recording so it is easy to find later, for example after the product ' +
-        'and the flow it shows: "Linear · Triage an issue". Its transcript, beats, camera ' +
-        'take and edit move with it. Returns the new path, which replaces the old one in ' +
-        'any later call.',
+        'and the flow it shows: "Linear · Triage an issue". For a take in its own folder the ' +
+        'folder, the raw take, its working versions and the deliverable are all renamed ' +
+        'together; its transcript, beats, camera take and edit move with it. If the name is ' +
+        'taken it becomes "Name 2". Returns the new path and name, which replace the old ' +
+        'ones in any later call.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
         name: z.string().describe('The new name, without an extension.'),
@@ -273,7 +284,7 @@ function build() {
       inputSchema: z.object({
         settings: z.object({
           saveDir: z.string().nullable().optional()
-            .describe('Existing folder for new recordings, or null for the Desktop.'),
+            .describe('Existing folder that new take folders go in, or null for ~/Movies/Fetch.'),
           camera: z.boolean().optional(),
           mic: z.boolean().optional(),
           systemAudio: z.boolean().optional(),
@@ -294,6 +305,8 @@ function build() {
     {
       description:
         'Move a recording, and its transcript, camera take and edit, to the macOS Trash. ' +
+        'Given the raw take or the deliverable of a take folder, the whole folder goes; ' +
+        'given a working version (such as a dead-air cut), only that file does. ' +
         'Recoverable from the Trash with Put Back; nothing is permanently deleted.',
       inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
     },
@@ -313,7 +326,12 @@ function build() {
   server.registerTool(
     'list_recordings',
     {
-      description: 'List recordings Fetch knows about, newest first, with their file paths.',
+      description:
+        'List the takes in the Fetch Library, newest first, one entry per take (the same ' +
+        'count the Library shows). path is the raw take, the one to edit. A take folder ' +
+        'also has take (the folder), deliverable (the file export wrote, if any), copy ' +
+        '(an unedited MP4 made on stopping when Convert to MP4 is on; not an export) and ' +
+        'versions (working files such as a dead-air cut).',
       inputSchema: z.object({}),
     },
     async () => text(await drive('recordings.list')))
