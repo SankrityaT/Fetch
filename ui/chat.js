@@ -206,12 +206,22 @@
       setTimeout(() => img.classList.remove('face-swap'), 260)
     }
     if (holdMs) faceTimer = setTimeout(() => setFace('rest'), holdMs)
-    // back to rest: hand the Record screen's Biscuit back to idle, but only if this
-    // pane changed him, and never while he is asleep (he may be a video by then)
-    if (k === 'rest' && heroTouched) {
-      heroTouched = false
-      if (heroOn) hero.src = './assets/mascot/idle.png'
-    }
+    // A failure keeps its face in the pane until the next message, but the Record
+    // screen is the front door, so he only looks sorry there for a moment.
+    clearTimeout(heroTimer)
+    if (k === 'fail' && heroTouched) heroTimer = setTimeout(settleHero, 5000)
+    if (k === 'rest') settleHero()
+  }
+  // Nothing is happening once a turn is over, and on the Record screen that means he
+  // goes back to sleep (ui/idle.js), not to sitting awake. Only if this pane woke him.
+  let heroTimer = null
+  function settleHero() {
+    if (!heroTouched) return
+    heroTouched = false
+    const hero = document.getElementById('biscuit')
+    if (!hero || hero.dataset.sleeping === 'true') return
+    hero.src = './assets/mascot/idle.png'
+    if (window.Biscuit) window.Biscuit.nap()      // refuses while a take is running
   }
   let heroTouched = false
   const turn = { made: false }
