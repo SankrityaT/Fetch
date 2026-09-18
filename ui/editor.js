@@ -559,6 +559,7 @@ function wireEditor() {
     if (r) {
       ed.cues = r.cues || []; renderCues(); paintCaption(); dragCaption()
         ed.beats = r.beats || []; renderBeats(); highlightBeat()
+        upgradeName()
       if ($('burnCaps') && ed.cues.length) $('burnCaps').checked = true
       toast(`${r.words} words${r.rtfx ? ` · ${r.rtfx}x realtime` : ''}`, 'ok')
     }
@@ -1078,6 +1079,28 @@ function renderZooms() {
   }).join('')
 }
 
+// A take still called recording-<timestamp> is renamed from the first thing said in
+// it, once there is a transcript to read. Only names Fetch generated are touched; a
+// name someone typed is theirs.
+async function upgradeName() {
+  const naming = require('./ui/naming')
+  const stem = path.basename(ed.src, path.extname(ed.src))
+  if (!naming.isAutoName(stem) || !ed.beats.length) return
+  const next = naming.smartName({ said: ed.beats[0].label })
+  if (!next) return
+  try {
+    const renamed = renameFileWithSidecars(ed.src, next)
+    if (renamed === ed.src) return
+    await ensureListed(renamed)
+    ed.src = renamed
+    if (window.fetchDoc) window.fetchDoc.src = () => ed.src
+    const v = $('edVideo'); const t = v.currentTime
+    v.src = 'file://' + renamed; v.currentTime = t
+    refreshLibrary()
+    toast('Named it "' + next + '"', 'ok')
+  } catch (e) { console.error('rename after transcribe failed:', e.message) }
+}
+
 // Which beat the playhead is inside. Called from seek and from the playback loop,
 // so the strip tracks without its own timer.
 function highlightBeat() {
@@ -1538,7 +1561,15 @@ function loadCamTake(src) {
   const btn = $('camTabBtn')
   try {
     const j = JSON.parse(fs.readFileSync(sidecarIn(src, '.cam.json'), 'utf8'))
-    if (!j.file || !fs.existsSync(j.file)) throw new Error('no take')
+    // Find the camera take beside the recording, not at the absolute path written
+    // into the sidecar when it was made. That stored path goes stale the moment the
+    // recording is renamed: the files move together but the path inside the JSON does
+    // not, so every renamed take silently lost its camera. The stored path is kept only
+    // as a fallback for sidecars written before this.
+    const beside = sidecarIn(src, '.cam.mov')
+    const file = fs.existsSync(beside) ? beside : j.file
+    if (!file || !fs.existsSync(file)) throw new Error('no take')
+    j.file = file          // export reads ed.cam.file, so it must see the live path too
     // start it where it actually sat on screen, so the default export matches
     // what the person saw while recording
     const sw = j.screenW || (j.display && j.display.w) || 1

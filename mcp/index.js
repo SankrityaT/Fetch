@@ -150,6 +150,21 @@ function build() {
     async args => text(await drive('edit.export', args, { timeoutMs: 20 * 60 * 1000 })))
 
   server.registerTool(
+    'rename_recording',
+    {
+      description:
+        'Rename a recording so it is easy to find later, for example after the product ' +
+        'and the flow it shows: "Linear · Triage an issue". Its transcript, beats, camera ' +
+        'take and edit move with it. Returns the new path, which replaces the old one in ' +
+        'any later call.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        name: z.string().describe('The new name, without an extension.'),
+      }),
+    },
+    async args => text(await drive('recordings.rename', args)))
+
+  server.registerTool(
     'list_beats',
     {
       description:
