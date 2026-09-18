@@ -108,11 +108,12 @@ em.accent { font-family:var(--font-serif); font-style:italic; font-weight:400; l
 ::-webkit-scrollbar-thumb { background:var(--ink-3); border-radius:var(--r-pill); border:3px solid var(--ink-0); }
 ::-webkit-scrollbar-thumb:hover { background:var(--ink-4); }
 
-.icon, .icon-sm, .icon-lg, .icon-xl {
+.icon, .icon-xs, .icon-sm, .icon-lg, .icon-xl {
   flex:none; fill:currentColor; stroke:none;   /* size classes were missing fill → UA black */
   width:18px; height:18px;
 }
 .icon-sm { width:15px; height:15px; }
+.icon-xs { width:14px; height:14px; }   /* the floor: BRAND.md, Icons */
 .icon-lg { width:24px; height:24px; }
 .icon-xl { width:34px; height:34px; }
 

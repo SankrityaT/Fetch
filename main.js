@@ -793,6 +793,14 @@ ipcMain.on('chat-send', (e, payload) => {
   }
 })
 ipcMain.on('chat-cancel', () => agentChat.cancel())
+// A pasted image with no file behind it (a screenshot copied to the clipboard) gets
+// one in the temp dir, so from here on every attachment is just a path.
+ipcMain.handle('chat-attach-blob', (e, { bytes, type }) => {
+  const ext = /png/.test(type) ? 'png' : /jpe?g/.test(type) ? 'jpg' : /gif/.test(type) ? 'gif' : /webp/.test(type) ? 'webp' : 'png'
+  const out = path.join(os.tmpdir(), `fetch-paste-${Date.now()}.${ext}`)
+  fs.writeFileSync(out, Buffer.from(bytes))
+  return out
+})
 ipcMain.on('chat-new', () => agentChat.newConversation())
 
 // Dictation for the chat composer. Runs through the transcriber already bundled in

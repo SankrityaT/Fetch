@@ -47,6 +47,130 @@
 
   let pane, list, input, sendBtn, enginePill
 
+  // ── attachments ────────────────────────────────────────────────────────
+  // Paste or drop a file into either composer and it becomes a tile above the text,
+  // never its filename as text. Images reach the model as images (ui/agent-chat.js);
+  // recordings and other files travel as paths the Fetch tools can use. One list for
+  // both composers, since the hero hands its message to this pane's thread.
+  const { webUtils, clipboard } = require('electron')
+  const MAX_ATT = 8
+  const IMG_RE = /\.(png|jpe?g|gif|webp|heic|tiff?)$/i
+  const VID_RE = /\.(mov|mp4|m4v|webm|mkv)$/i
+  const kindOf = p => IMG_RE.test(p) ? 'image' : VID_RE.test(p) ? 'video' : 'file'
+  const fileUrl = p => 'file://' + encodeURI(p).replace(/#/g, '%23').replace(/\?/g, '%3F')
+  const baseName = p => String(p).split('/').pop()
+  let attach = []                // [{ path, kind, name }]
+  let heroSync = () => {}
+
+  function addAttachments(paths) {
+    let over = 0
+    for (const p of paths) {
+      if (!p || attach.some(a => a.path === p)) continue
+      if (attach.length >= MAX_ATT) { over++; continue }
+      attach.push({ path: p, kind: kindOf(p), name: baseName(p) })
+    }
+    if (over && window.toast) toast(`Up to ${MAX_ATT} attachments per message`, 'bad')
+    paintAttach()
+  }
+
+  function tileHtml(a, i) {
+    const x = `<button type="button" class="att-x" data-unattach="${i}" aria-label="Remove ${esc(a.name)}">${ico('x', 'icon-xs')}</button>`
+    if (a.kind === 'image') {
+      return `<div class="att att-img" title="${esc(a.name)}"><img src="${esc(fileUrl(a.path))}" alt="">${x}</div>`
+    }
+    if (a.kind === 'video') {
+      return `<div class="att att-img att-vid" title="${esc(a.name)}">
+        <video src="${esc(fileUrl(a.path))}#t=0.4" muted preload="metadata" playsinline></video>
+        <span class="att-badge">${ico('play-fill', 'icon-xs')}<span class="att-dur"></span></span>${x}</div>`
+    }
+    const ext = (a.name.match(/\.([a-z0-9]{1,5})$/i) || [, 'file'])[1]
+    return `<div class="att att-file" title="${esc(a.path)}">
+      <span class="att-ico">${ico('file-text', 'icon-sm')}</span>
+      <span class="att-meta"><span class="att-name">${esc(a.name)}</span><span class="att-ext">${esc(ext.toUpperCase())}</span></span>${x}</div>`
+  }
+
+  function paintAttach() {
+    for (const id of ['chatAtt', 'heroAtt']) {
+      const tray = document.getElementById(id)
+      if (!tray) continue
+      tray.hidden = !attach.length
+      tray.innerHTML = attach.map(tileHtml).join('')
+      tray.querySelectorAll('video').forEach(v => v.addEventListener('loadedmetadata', () => {
+        const d = v.duration, lab = v.parentElement.querySelector('.att-dur')
+        if (lab && isFinite(d)) lab.textContent = `${Math.floor(d / 60)}:${String(Math.round(d % 60)).padStart(2, '0')}`
+      }, { once: true }))
+    }
+    if (sendBtn) sync()
+    heroSync()
+  }
+
+  // Paths from a paste or a drop. Files from Finder have a path; an image copied to
+  // the clipboard (a screenshot) does not, so main writes it to the temp dir first.
+  async function pathsFrom(dt) {
+    const out = []
+    for (const f of Array.from((dt && dt.files) || [])) {
+      let p = ''
+      try { p = webUtils.getPathForFile(f) } catch {}
+      if (p) out.push(p)
+      else if (/^image\//.test(f.type)) {
+        const bytes = new Uint8Array(await f.arrayBuffer())
+        out.push(await ipcRenderer.invoke('chat-attach-blob', { bytes, type: f.type }))
+      }
+    }
+    return out
+  }
+
+  // Copying files in Finder puts their paths on the pasteboard, and Chromium pastes
+  // only the bare filename as text. Read the real paths, synchronously, so the paste
+  // can be stopped before that text lands.
+  function finderPaths() {
+    const out = []
+    try {
+      const plist = clipboard.read('NSFilenamesPboardType')
+      for (const m of String(plist || '').matchAll(/<string>([^<]+)<\/string>/g)) {
+        out.push(m[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'))
+      }
+    } catch {}
+    if (!out.length) try {
+      const url = clipboard.read('public.file-url')
+      if (url && url.startsWith('file://')) out.push(decodeURIComponent(new URL(url).pathname))
+    } catch {}
+    return out
+  }
+
+  function wireAttach(field, zone) {
+    field.addEventListener('paste', async e => {
+      const finder = finderPaths()
+      if (finder.length) { e.preventDefault(); addAttachments(finder); return }
+      const dt = e.clipboardData
+      if (dt && dt.files && dt.files.length) {
+        e.preventDefault()
+        addAttachments(await pathsFrom(dt))
+      }
+    })
+    zone.addEventListener('dragover', e => {
+      if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return
+      e.preventDefault()
+      zone.classList.add('is-drop')
+    })
+    zone.addEventListener('dragleave', e => { if (!zone.contains(e.relatedTarget)) zone.classList.remove('is-drop') })
+    zone.addEventListener('drop', async e => {
+      zone.classList.remove('is-drop')
+      if (!e.dataTransfer || !e.dataTransfer.files.length) return
+      e.preventDefault()
+      addAttachments(await pathsFrom(e.dataTransfer))
+      field.focus()
+    })
+    zone.addEventListener('click', e => {
+      const x = e.target.closest('[data-unattach]')
+      if (!x) return
+      e.preventDefault()
+      attach.splice(+x.dataset.unattach, 1)
+      paintAttach()
+      field.focus()
+    })
+  }
+
   // ── Biscuit's face follows the turn ──────────────────────────────────
   // The chat already knows everything that happens in a turn, so the dog in its
   // header says it at a glance: thinking while the agent reasons, the recording pose
@@ -122,6 +246,7 @@
       <form class="chat-composer" id="chatForm">
         <div class="chat-mention" id="chatMention" hidden></div>
         <div class="chat-ctx" id="chatCtx" hidden></div>
+        <div class="att-tray" id="chatAtt" hidden></div>
         <textarea id="chatInput" rows="1" placeholder="Ask anything, or type @ to point at a recording"></textarea>
         <div class="chat-foot">
           <button type="button" class="chat-engine" id="chatEngine"></button>
@@ -163,6 +288,7 @@
       const x = e.target.closest('[data-untag]')
       if (x) { tags.splice(+x.dataset.untag, 1); paintTags() }
     })
+    wireAttach(input, pane.querySelector('#chatForm'))
     enginePill.onclick = () => openPicker(enginePill)
     enginePill.setAttribute('aria-haspopup', 'dialog')
     pane.querySelector('#chatMic').onclick = micToggle
@@ -305,7 +431,7 @@
   function stopDictation() { if (rec && rec.state !== 'inactive') rec.stop() }
 
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px' }
-  const sync = () => { sendBtn.disabled = state.busy || !input.value.trim() }
+  const sync = () => { sendBtn.disabled = state.busy || (!input.value.trim() && !attach.length) }
 
   // One label for both pills: vendor mark, model, then effort in a quieter weight.
   // Before the catalogue arrives it falls back to the CLI name, so the pill is never
@@ -366,12 +492,22 @@
   }
 
   function submit() {
-    const text = input.value.trim()
-    if (!text || state.busy) return
+    const typed = input.value.trim()
+    if ((!typed && !attach.length) || state.busy) return
+    const text = typed || (attach.length === 1 ? 'Take a look at this.' : 'Take a look at these.')
     const intro = list.querySelector('.chat-intro')
     if (intro) intro.remove()
 
-    add(esc(text), 'chat-msg chat-me')
+    // what was attached rides on the message bubble, small, so the thread shows it
+    const sentAtt = attach.slice()
+    attach = []; paintAttach()
+    const thumbs = sentAtt.map(a => a.kind === 'file'
+      ? `<span class="chat-me-file">${ico('file-text', 'icon-xs')}${esc(a.name)}</span>`
+      : a.kind === 'video'
+        ? `<video src="${esc(fileUrl(a.path))}#t=0.4" muted preload="metadata" title="${esc(a.name)}"></video>`
+        : `<img src="${esc(fileUrl(a.path))}" alt="" title="${esc(a.name)}">`).join('')
+    add((sentAtt.length ? `<div class="chat-me-att">${thumbs}</div>` : '') + (typed ? esc(typed) : ''),
+      'chat-msg chat-me' + (typed ? '' : ' chat-me-only-att'))
     input.value = ''; grow()
     state.busy = true; sync()
     turn.made = false
@@ -399,7 +535,8 @@
     }
 
     const pick = state.pick && state.pick.engine === state.engine ? state.pick : {}
-    ipcRenderer.send('chat-send', { engine: state.engine, model: pick.model, effort: pick.effort, prompt })
+    ipcRenderer.send('chat-send', { engine: state.engine, model: pick.model, effort: pick.effort, prompt,
+      attachments: sentAtt.map(a => a.path) })
   }
 
   // One row per tool call, filled in when its result arrives. The row appears the
@@ -489,10 +626,11 @@
     if (!form || !field) return
 
     const grow = () => { field.style.height = 'auto'; field.style.height = Math.min(field.scrollHeight, 140) + 'px' }
-    const sync = () => { send.disabled = !field.value.trim() }
+    const sync = () => { send.disabled = !field.value.trim() && !attach.length }
+    heroSync = sync
 
     const ask = text => {
-      if (!text.trim()) return
+      if (!text.trim() && !attach.length) return
       toggle(true)
       input.value = text
       field.value = ''; grow(); sync()
@@ -503,6 +641,7 @@
     field.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(field.value) }
     })
+    wireAttach(field, form)
     form.onsubmit = e => { e.preventDefault(); ask(field.value) }
 
     chips.addEventListener('click', e => {
