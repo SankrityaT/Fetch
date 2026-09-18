@@ -1,5 +1,5 @@
 const { app, BrowserWindow, desktopCapturer, session, ipcMain, dialog, screen, shell,
-        globalShortcut, Tray, Menu, nativeImage } = require('electron')
+        globalShortcut, Tray, Menu, nativeImage, systemPreferences } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
@@ -12,6 +12,8 @@ let control, cam
 
 const updater = require('./ui/updater')
 const telemetry = require('./ui/telemetry')
+const agentBridge = require('./ui/agent-bridge')
+const jobQueue = require('./ui/job-queue')
 
 // ---------- preferences ----------
 // Persisted to <userData>/prefs.json. Loaded lazily and cached in memory;
@@ -176,6 +178,15 @@ app.whenReady().then(() => {
   telemetry.start(loadPrefs)
   sweepStaleTakes()
 
+  // The socket an MCP server talks to. Recording is driven through the renderer so
+  // an agent-run take still shows the border, the HUD and the mascot.
+  agentBridge.start({
+    getWindow: () => control,
+    toRenderer,
+    proc: require('./processor'),
+    isRecording: () => recState === 'recording' || recState === 'paused',
+  })
+
   // Auto-answer getDisplayMedia with the user's chosen source (or the primary screen)
   let chosenSourceId = null
   let chosenWindow = null          // { id, name } from the ScreenCaptureKit list
@@ -274,7 +285,10 @@ app.on('before-quit', () => {
 // holds the device, so reload the window until it comes back
 let camOk = false, camTry = 0
 ipcMain.on('cam-ok', () => { camOk = true })
-setInterval(() => {
+// Only arm this when the Electron camera fallback actually exists: it is created
+// solely under FETCH_ELECTRON_CAM=1, so in a normal build the timer woke every nine
+// seconds forever to do nothing.
+if (cam) setInterval(() => {
   if (!camOk && cam && !cam.isDestroyed()) {
     camTry++
     console.log('[main] camera not up, retrying with camera #' + camTry)
@@ -520,6 +534,29 @@ ipcMain.handle('save', async (e, buf) => {
   return file
 })
 
+// ---------- permission recovery ----------
+// macOS gives no way to re-prompt once screen recording has been refused: the only
+// route is the Privacy pane. Telling someone to "go to System Settings" and leaving
+// them to find it is where a first run dies, so open the exact pane for them.
+const PRIVACY_PANES = {
+  screen: 'Privacy_ScreenCapture',
+  mic: 'Privacy_Microphone',
+  camera: 'Privacy_Camera',
+}
+ipcMain.handle('open-privacy', (e, which) => {
+  const pane = PRIVACY_PANES[which] || PRIVACY_PANES.screen
+  return shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`)
+})
+
+// Screen Recording only takes effect on relaunch, so offer to do it rather than
+// letting someone grant it and wonder why nothing changed.
+ipcMain.handle('relaunch', () => { app.relaunch(); app.exit(0) })
+
+// Whether macOS will actually let us capture, asked of the system rather than guessed
+ipcMain.handle('screen-permission', () => {
+  try { return systemPreferences.getMediaAccessStatus('screen') } catch { return 'unknown' }
+})
+
 // ---------- native recorder ----------
 // ScreenCaptureKit in, AVAssetWriter out, via a bundled Swift helper. The Chromium
 // path stays as the fallback: it works everywhere, this needs macOS 13 (15 for the
@@ -670,7 +707,13 @@ ipcMain.handle('list-recordings', () => { tidySaveFolders(); return proc.listRec
 ipcMain.handle('probe', (e, src) => proc.probeMeta(src))
 ipcMain.handle('read-cues', (e, src) => proc.readCues(src))
 ipcMain.handle('write-cues', (e, src, cues) => proc.writeCues(src, cues))
-ipcMain.handle('cancel-job', (e, id) => proc.cancel(id))
+ipcMain.handle('cancel-job', (e, id) => {
+  // A job waiting in the queue has no child process to kill yet, so drop it from the
+  // lane; otherwise cancelling something tenth in line would wait for the nine ahead.
+  const dropped = jobQueue.dropIfQueued(id)
+  return proc.cancel(id) || dropped
+})
+ipcMain.handle('queue-stats', () => jobQueue.stats())
 ipcMain.handle('formats', () => proc.formatList())
 ipcMain.handle('backdrops', () => proc.backdropList())
 ipcMain.handle('has-cursor', (e, src) =>
@@ -693,7 +736,9 @@ let jobSeq = 0
 let jobsActive = 0   // reported to the updater, so it never installs mid-export
 
 ipcMain.handle('edit-job', async (e, payload) => {
-  const id = payload.jobId != null ? payload.jobId : ++jobSeq
+  // Namespace caller-supplied ids. processor.cancel() keys off this, so a renderer
+  // job and an agent job sharing a number would cancel each other.
+  const id = payload.jobId != null ? `ext:${payload.jobId}` : ++jobSeq
   const cid = payload.cid
   const wc = e.sender
   const send = (status, extra) => { if (!wc.isDestroyed()) wc.send('edit-job', { id, cid, status, ...extra }) }
@@ -703,7 +748,8 @@ ipcMain.handle('edit-job', async (e, payload) => {
   updater.setJobsActive(jobsActive)
   try {
     try {
-      send('running', { id })
+      send('queued', { id })
+      return await jobQueue.submit({ id, op: payload.op, onStart: () => send('running', { id }), run: async () => {
       const o = payload.opts || {}
       let result
       switch (payload.op) {
@@ -726,6 +772,7 @@ ipcMain.handle('edit-job', async (e, payload) => {
       }
       send('done', { result })
       return { ok: true, ...result }
+      } })
     } catch (err) {
       if (err && err.cancelled) { send('cancelled', {}); return { ok: false, cancelled: true } }
       send('error', { message: String(err.message || err) })
@@ -739,3 +786,4 @@ ipcMain.handle('edit-job', async (e, payload) => {
 
 
 app.on('window-all-closed', () => app.quit())
+app.on('before-quit', () => agentBridge.stop())

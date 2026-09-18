@@ -31,9 +31,12 @@ const IDLE_POLL_MS = 5000
 // Only the numeric major.minor.patch triple is compared; pre-release tags
 // are ignored, which is all the manifest feed or a GitHub tag needs.
 function parseSemver(v) {
-  const m = String(v == null ? '' : v).trim().replace(/^v/i, '').match(/^(\d+)\.(\d+)\.(\d+)/)
+  // Accept a two-part version too. Requiring three meant a bundle reading "1.0"
+  // parsed as 0.0.0, so every release looked newer than the app and it updated to
+  // itself forever.
+  const m = String(v == null ? '' : v).trim().replace(/^v/i, '').match(/^(\d+)\.(\d+)(?:\.(\d+))?/)
   if (!m) return [0, 0, 0]
-  return [+m[1], +m[2], +m[3]]
+  return [+m[1], +m[2], +(m[3] || 0)]
 }
 function semverCompare(a, b) {
   const pa = parseSemver(a), pb = parseSemver(b)

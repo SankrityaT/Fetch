@@ -1420,6 +1420,9 @@ async function doExport(pick) {
 
   const cid = 'x' + Date.now()
   jobs.set(cid, j => {
+    // exports run one at a time now, so say so rather than looking hung
+    if (j.status === 'queued') ov.progress(null, 'Waiting for other work to finish')
+    if (j.status === 'running') ov.progress(null, 'Encoding')
     if (j.status === 'progress' && j.pct != null) ov.progress(j.pct, 'Encoding')
     if (j.status === 'done') {
       jobs.delete(cid); ov.close(); $('doExport').disabled = false

@@ -62,15 +62,29 @@ $('nav').addEventListener('click', e => {
 
 // ── source preview on the hero card stays live ──────────────────────────
 const usableThumb = t => typeof t === 'string' && t.length > 512   // empty captures come back as a stub
-setInterval(async () => {
+// get-sources enumerates every screen and window, grabs a 1000x640 thumbnail of each
+// and base64s the lot over IPC: about 300ms of work. Running it every two seconds
+// cost roughly 15% of a core for as long as the app sat open, purely to keep one tile
+// fresh. Refresh when attention actually returns instead, and keep only a slow
+// heartbeat while the window is genuinely being looked at.
+let thumbBusy = false
+async function refreshSourceThumb() {
+  if (thumbBusy) return
   if (!setup.source || setup.mode !== 'screen') return
   if (document.querySelector('.view[data-view="record"]').hidden) return
   if (document.querySelector('.scrim')) return                      // the wizard is polling instead
+  if (document.visibilityState !== 'visible' || !document.hasFocus()) return
+  thumbBusy = true
   try {
     const fresh = (await ipcRenderer.invoke('get-sources')).find(x => x.id === setup.source.id)
     if (fresh && usableThumb(fresh.thumb)) { setup.source.thumb = fresh.thumb; $('sourceThumb').src = fresh.thumb }
-  } catch {}
-}, 2000)
+  } catch {} finally { thumbBusy = false }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refreshSourceThumb()
+})
+window.addEventListener('focus', refreshSourceThumb)
+setInterval(refreshSourceThumb, 20000)
 
 // With quick record on, the hero button is the record button. Anything else is a
 // lie about what pressing it does.
@@ -103,6 +117,44 @@ $('editSetup').onclick = () => openSetup()
 
 // ── recording ────────────────────────────────────────────────────────────
 let rec = null, stream = null, ticker = null, startedAt = 0, pausedFor = 0, pauseMark = 0
+
+// Screen recording refused is the one failure that cannot be retried in place:
+// macOS never asks twice, and the grant only takes effect on relaunch. A toast
+// saying "go to System Settings" is where a first run dies, so hand over the two
+// buttons that actually resolve it.
+function screenBlocked() {
+  mood('error')
+  const scrim = el('div', 'scrim')
+  scrim.innerHTML = `
+    <div class="modal" style="width:min(460px,92vw)">
+      <div class="modal-body" style="text-align:center;display:grid;gap:12px;justify-items:center">
+        <img class="biscuit" src="./assets/mascot/sad.png" alt="" style="width:96px;height:96px">
+        <h3 style="font-family:var(--font-display);font-size:var(--t-24);letter-spacing:-.03em">
+          macOS will not let Fetch see your screen</h3>
+        <p class="dim" style="font-size:var(--t-13);line-height:1.5">
+          Turn Fetch on under Screen &amp; System Audio Recording, then come back and relaunch.
+          macOS only applies it on a restart.</p>
+      </div>
+      <div class="modal-foot" style="gap:8px">
+        <button class="btn btn-sm btn-ghost" id="pbSetup">Run setup again</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-sm btn-ghost" data-close>Not now</button>
+        <button class="btn btn-sm" id="pbRelaunch">Relaunch</button>
+        <button class="btn btn-sm btn-primary" id="pbOpen">Open System Settings</button>
+      </div>
+    </div>`
+  document.body.appendChild(scrim)
+  const close = () => scrim.remove()
+  scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)
+  scrim.onclick = e => { if (e.target === scrim) close() }
+  scrim.querySelector('#pbOpen').onclick = () => ipcRenderer.invoke('open-privacy', 'screen')
+  scrim.querySelector('#pbRelaunch').onclick = () => ipcRenderer.invoke('relaunch')
+  scrim.querySelector('#pbSetup').onclick = () => {
+    close()
+    if (typeof window.startOnboarding === 'function') window.startOnboarding()
+  }
+}
+window.screenBlocked = screenBlocked
 
 async function buildStream() {
   let screenStream
@@ -197,6 +249,9 @@ async function countdown() {
 
 // Everything that happens once a take exists on disk, whichever recorder made it.
 function finishTake(file, mb) {
+  // Tell main a take landed. hotkey() is fire-and-forget, so without this an agent
+  // that asked for a recording has no way to learn where the file went.
+  try { ipcRenderer.send('take-finished', { file, mb: +mb }) } catch {}
   mood('done')
   refreshLibrary()
   const pf = window.prefs || {}
@@ -253,7 +308,11 @@ async function stopNative() {
   clearInterval(ticker); ticker = null
   $('start').disabled = false
   nativeTake = false
-  if (!r || !r.ok) { mood('error'); toast(r && r.error ? r.error : 'Nothing was captured', 'bad'); return }
+  if (!r || !r.ok) {
+    const why = r && r.error ? r.error : 'Nothing was captured'
+    try { ipcRenderer.send('take-failed', { error: why }) } catch {}
+    mood('error'); toast(why, 'bad'); return
+  }
   mood('working')
   const c = await ipcRenderer.invoke('native-commit', r.tmp)
   if (!c || !c.ok) {
@@ -313,7 +372,10 @@ async function startRecording() {
       clearInterval(ticker); ticker = null
       $('start').disabled = false
       const blob = new Blob(chunks, { type: 'video/webm' })
-      if (!blob.size) { mood('error'); toast('Nothing was captured', 'bad'); return }
+      if (!blob.size) {
+        try { ipcRenderer.send('take-failed', { error: 'Nothing was captured' }) } catch {}
+        mood('error'); toast('Nothing was captured', 'bad'); return
+      }
       mood('working')
       const file = await ipcRenderer.invoke('save', new Uint8Array(await blob.arrayBuffer()))
       mood('done')
@@ -336,7 +398,9 @@ async function startRecording() {
   } catch (e) {
     $('countdown').hidden = true
     $('start').disabled = false
-    mood('error'); toast(e.message, 'bad', 7000)
+    try { ipcRenderer.send('take-failed', { error: e.message }) } catch {}
+    if (/screen recording is blocked/i.test(e.message || '')) screenBlocked()
+    else { mood('error'); toast(e.message, 'bad', 7000) }
   }
 }
 

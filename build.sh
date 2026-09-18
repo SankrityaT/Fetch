@@ -4,6 +4,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ID="Developer ID Application: Sankritya Thakur (J94T84BVCP)"
+# One source of truth. A hardcoded "1.0" is not valid semver, parsed as 0.0.0, and
+# made every release look newer than the app itself: a permanent update loop.
+VERSION=$(node -p "require('./package.json').version")
 APP="dist/Fetch.app"
 DMG="dist/Fetch.dmg"
 
@@ -15,7 +18,7 @@ rm -rf /tmp/FetchBubble
 mkdir -p /tmp/FetchBubble/Fetch.app/Contents/{MacOS,Resources}
 cp /tmp/CamBubble.bin /tmp/FetchBubble/Fetch.app/Contents/MacOS/Fetch
 cp Fetch.icns /tmp/FetchBubble/Fetch.app/Contents/Resources/CamBubble.icns   # same art, one file
-cat > /tmp/FetchBubble/Fetch.app/Contents/Info.plist <<'EOF'
+cat > /tmp/FetchBubble/Fetch.app/Contents/Info.plist <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -24,8 +27,8 @@ cat > /tmp/FetchBubble/Fetch.app/Contents/Info.plist <<'EOF'
   <key>CFBundleExecutable</key><string>Fetch</string>
   <key>CFBundleIdentifier</key><string>com.sankritya.fetch.cambubble</string>
   <key>CFBundleIconFile</key><string>CamBubble</string>
-  <key>CFBundleVersion</key><string>1.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
@@ -44,6 +47,11 @@ cp -R ui "$APP/Contents/Resources/app/ui"
 cp -R assets "$APP/Contents/Resources/app/assets"
 mkdir -p "$APP/Contents/Resources/app/vendor"
 cp vendor/ffmpeg "$APP/Contents/Resources/app/vendor/ffmpeg"
+# The packaged app has no environment, so the metrics endpoint has to be written in.
+if [ -n "${FETCH_METRICS_URL:-}" ]; then
+  printf '{"url":"%s"}\n' "$FETCH_METRICS_URL" > "$APP/Contents/Resources/app/metrics.json"
+  echo "metrics endpoint baked in: $FETCH_METRICS_URL"
+fi
 cp Fetch.icns "$APP/Contents/Resources/Fetch.icns"
 cp -R /tmp/FetchBubble/Fetch.app "$APP/Contents/Resources/Fetch.app"
 swiftc -O WindowList.swift -o "$APP/Contents/Resources/WindowList"
@@ -56,8 +64,8 @@ P="$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Fetch" "$P"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.sankritya.fetch" "$P"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile Fetch" "$P"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion 1.0" "$P"
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0" "$P"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$P"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$P"
 /usr/libexec/PlistBuddy -c "Set :NSCameraUsageDescription Fetch shows your webcam in a floating circle." "$P" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'Fetch shows your webcam in a floating circle.'" "$P"
 /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription Fetch records your microphone while you record the screen." "$P" 2>/dev/null \

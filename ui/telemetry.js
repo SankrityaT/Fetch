@@ -13,14 +13,26 @@ const fs = require('fs')
 const path = require('path')
 const os = require('os')
 const https = require('https')
+const http = require('http')
 const crypto = require('crypto')
 
 let app
 try { ({ app } = require('electron')) } catch {}
 
-// Set FETCH_METRICS_URL at build time to point this somewhere. With no endpoint
-// configured the module does nothing at all, which is the right default for a fork.
-const ENDPOINT = process.env.FETCH_METRICS_URL || ''
+// Where to report to. In development this comes from the environment; in a packaged
+// app the environment is empty, so build.sh writes the value into metrics.json beside
+// this file. Reading only the env var meant a release could never report anything,
+// however carefully the build was run.
+// With neither set the module does nothing at all, which is the right default for a fork.
+function configuredEndpoint() {
+  if (process.env.FETCH_METRICS_URL) return process.env.FETCH_METRICS_URL
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'metrics.json'), 'utf8'))
+    if (j && typeof j.url === 'string') return j.url
+  } catch {}
+  return ''
+}
+const ENDPOINT = configuredEndpoint()
 const FIRST_PING_MS = 30 * 1000          // let launch finish before touching the network
 const EVERY_MS = 24 * 60 * 60 * 1000
 const TIMEOUT_MS = 5000
@@ -60,16 +72,34 @@ function send(event) {
     })
   } catch { return }
 
+  post(ENDPOINT, body, 1)
+}
+
+// Hosts routinely redirect between the apex and www, and a POST that ignores the
+// response would swallow that 308 and never reach the endpoint again. One hop is
+// enough to survive it; more than one and something is wrong anyway.
+function post(endpoint, body, hopsLeft) {
   try {
-    const u = new URL(ENDPOINT)
-    const req = https.request({
+    const u = new URL(endpoint)
+    // Pick the transport from the URL rather than always reaching for https: an
+    // http endpoint used to attempt a TLS handshake against a plain server and fail
+    // silently, which is indistinguishable from working.
+    const transport = u.protocol === 'http:' ? http : https
+    const req = transport.request({
       hostname: u.hostname,
-      port: u.port || 443,
+      port: u.port || (u.protocol === 'http:' ? 80 : 443),
       path: u.pathname + u.search,
       method: 'POST',
       timeout: TIMEOUT_MS,
       headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
-    }, res => res.resume())          // drain and forget, the response is of no interest
+    }, res => {
+      const loc = res.headers && res.headers.location
+      if (hopsLeft > 0 && res.statusCode >= 300 && res.statusCode < 400 && loc) {
+        res.resume()
+        return post(new URL(loc, endpoint).toString(), body, hopsLeft - 1)
+      }
+      res.resume()                   // drain and forget, the body is of no interest
+    })
     req.on('error', () => {})        // offline, blocked, endpoint down: all fine
     req.on('timeout', () => req.destroy())
     req.write(body)
