@@ -5,6 +5,9 @@
 #              grid, the source frame index burned in, a tone for sound
 #   offset.mov take.mov with its timestamps starting at 1.5 s
 #   cam.mov    a 640x480 camera take at 30 fps
+#   still.mov  a 6 s take whose screen never changes, with a tone: what a take looks
+#              like either side of a dead air cut, where the two sides are the same
+#              pixels a moment apart
 #   bars.mp4   SMPTE HD bars, BT.709, near-lossless
 #   bg.jpg     an image background
 set -e
@@ -19,6 +22,9 @@ select='lt(mod(n*7919\,97)\,60)+lt(n\,2)',setpts='PTS+(mod(N*37\,13)/13)*0.9/(60
   -video_track_timescale 60000 $TAG709 -c:a aac -b:a 128k "$OUT/take.mov"
 # the same take with its timestamps starting at 1.5 s, as an imported or remuxed file can
 ffmpeg $F -i "$OUT/take.mov" -c copy -output_ts_offset 1.5 "$OUT/offset.mov"
+ffmpeg $F -f lavfi -i "testsrc2=s=1440x900:r=30:d=6" -f lavfi -i "sine=f=440:d=6:sample_rate=48000" \
+  -filter_complex "[0:v]select='eq(n\,0)',loop=loop=-1:size=1:start=0,trim=duration=6,setpts=N/30/TB,format=yuv420p[v]" \
+  -map "[v]" -map 1:a -r 30 -c:v libx264 -crf 10 -preset fast $TAG709 -c:a aac -b:a 128k "$OUT/still.mov"
 ffmpeg $F -f lavfi -i "testsrc=s=640x480:r=30:d=14" -c:v libx264 -crf 16 -preset fast -pix_fmt yuv420p $TAG709 "$OUT/cam.mov"
 ffmpeg $F -f lavfi -i "smptehdbars=s=1920x1080:r=60:d=2" -pix_fmt yuv420p -c:v libx264 -crf 4 -preset fast $TAG709 "$OUT/bars.mp4"
 # an image background, larger than the output and another shape, so cover is tested

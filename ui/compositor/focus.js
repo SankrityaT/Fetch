@@ -113,7 +113,7 @@ function reach(s) {
  */
 function reframe(zooms, lifts, W, H) {
   if (!lifts.length) return zooms
-  return (zooms || []).map(z => {
+  const list = (zooms || []).map(z => {
     const scale = Math.max(1, +z.scale || 1)
     const vw = 1 / scale
     const view = { x: clamp((z.x != null ? z.x : 0.5) - vw / 2, 0, 1 - vw), y: clamp((z.y != null ? z.y : 0.5) - vw / 2, 0, 1 - vw), w: vw, h: vw }
@@ -142,6 +142,19 @@ function reframe(zooms, lifts, W, H) {
     }
     return z
   })
+  // A moment that hands over to the next one carries where the camera was when it did
+  // (`from`), and auto zoom's moments arrive with that already worked out
+  // (ui/compositor/prepare.js). Re-framing a moment moves the camera the one after it
+  // pans from, and nothing downstream rebuilds it: left alone, the pan started from a
+  // position that no longer existed and the window jumped on the handover frame.
+  for (let i = 1; i < list.length; i++) {
+    const p = list[i - 1], n = list[i]
+    if (!p.reframed || !n.from) continue
+    const px = p.x != null ? p.x : 0.5, py = p.y != null ? p.y : 0.5
+    const d = Math.hypot((n.x != null ? n.x : 0.5) - px, (n.y != null ? n.y : 0.5) - py)
+    list[i] = { ...n, from: { x: px, y: py, scale: p.scale, dip: Overlays.panDip(p.scale, n.scale, d) } }
+  }
+  return list
 }
 
 /**

@@ -6,9 +6,10 @@
 //
 // Every framebuffer stores its image top row first (row 0 is the top), so read back
 // bytes are already in file order and only the present pass flips. No pass reads the
-// previous frame: motion blur is analytic, film grain and dither are seeded by frame
-// index, the glow family comes off this frame's own bright pass, auto level is measured
-// once per take on the CPU, so any frame can be drawn alone.
+// previous frame: motion blur is analytic, film grain, the ground's tooth and the
+// dither are seeded by frame index (the first two through the film's own clock, which
+// is that index divided down), the glow family comes off this frame's own bright pass,
+// auto level is measured once per take on the CPU, so any frame can be drawn alone.
 'use strict'
 const Text = require('./text')
 const Marks = require('./marks')
@@ -252,13 +253,12 @@ uint hash(uint x){ x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68b
 // 1920x1080 does not, which is the other half of what makes an export read as a CSS
 // background rather than as a set. Three levels either side whatever the ground's own
 // luma is, which is the noise the classic blur fill has always carried (ffmpeg
-// noise=c0s=3) and about ten times the fifth of a level the film's own grain leaves on a
-// ground at either end of the range, where Paper, Mono print and Noir live: its midtone
-// weighting is right for a picture and backwards for the one surface a look picks the
-// luma of. Seeded by the frame index like the film and the dither, so it breathes with
-// them and any frame still draws alone. It is on the ground the eye sees and not on the
-// ground the edge floor reads (groundAt), because the floor is a distance between two
-// tones and three levels of tooth is not a tone.
+// noise=c0s=3), and under the film wherever a look has film: the roll is in front of
+// the whole frame, so the grain it leaves on the picture is the ceiling this scales to
+// (plan.js, spec.tooth). Seeded by the frame index like the film and the dither, so it
+// breathes with them and any frame still draws alone. It is on the ground the eye sees
+// and not on the ground the edge floor reads (groundAt), because the floor is a
+// distance between two tones and three levels of tooth is not a tone.
 //
 // Three levels of the export's own pixels. On a stage drawn at half the file's size,
 // four of those pixels are one, and averaging them halves the noise, so uTooth brings
@@ -462,9 +462,11 @@ void main(){
   if (uCam == 1) {
     vec2 clo = uCamRect.xy, chi = uCamRect.xy + uCamRect.zw, cc = (clo + chi) * 0.5;
     float sh = roundedBoxShadow(clo + vec2(0.0, uCamRect.z * 0.03), chi + vec2(0.0, uCamRect.z * 0.03), p, uCamRect.z * 0.045, uCamRound);
-    col *= 1.0 - 0.32 * clamp(sh, 0.0, 1.0);
+    col *= 1.0 - 0.32 * uTake.y * clamp(sh, 0.0, 1.0);
     float cd = sdRound(p - cc, uCamRect.zw * 0.5, uCamRound);
-    float ccov = clamp(0.5 - cd, 0.0, 1.0);
+    // the bubble is on the take, so it arrives, leaves and dips with it: left at full
+    // opacity it sat lit over bare ground on the boundary frame of a dip
+    float ccov = clamp(0.5 - cd, 0.0, 1.0) * uTake.x;
     if (ccov > 0.0) {
       vec2 uv = uCamUV.xy + ((p - clo) / uCamRect.zw) * uCamUV.zw;
       float lod = max(0.0, log2(float(textureSize(uCamTex, 0).x) * uCamUV.z / uCamRect.z));
@@ -663,9 +665,10 @@ void main(){
 const FS_FINAL = `#version 300 es
 precision highp float;
 uniform sampler2D uScene; uniform float uFade; uniform int uDither; uniform uint uFrame;
+uniform uint uGrainFrame;            // the film's own clock: the same draw for two output frames at 60 (plan.js, grainHold)
 uniform float uGrain, uCell; out vec4 o;
 uint hash(uint x){ x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
-float rnd(uvec2 p, uint salt){ return float(hash(p.x + hash(p.y + hash(uFrame * 7u + salt)))) / 4294967295.0; }
+float rnd(uvec2 p, uint salt, uint fr){ return float(hash(p.x + hash(p.y + hash(fr * 7u + salt)))) / 4294967295.0; }
 void main(){
   vec2 p = gl_FragCoord.xy; uvec2 ip = uvec2(p);
   vec3 c = texelFetch(uScene, ivec2(p), 0).rgb;
@@ -674,15 +677,35 @@ void main(){
     // drawn alone and out of order is the same frame. Its cell is sized on the export's
     // grid (uCell is already in the pixels this compositor draws), so a look grains the
     // same at 720p and at 4K. Triangular, and heaviest in the midtones as film is, so a
-    // black frame stays black and a white one stays clean.
+    // black frame stays black and a white one keeps its ends.
+    //
+    // Six tenths at the ends rather than a third (plan.js, GRAIN_ENDS). The subject of
+    // this product is a white app page sitting at the top of the range, and a weighting
+    // that took two thirds of the grain off it exempted the one surface every export is
+    // of: Mono print's plate measured a sixth of a level while the paper round it had
+    // two, which is the print being clean and the wall being gritty. The midtones still
+    // carry the most, which is what the weighting is for.
     uvec2 g = uvec2(floor(p / uCell));
     float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    c += (rnd(g, 5u) - rnd(g, 6u)) * uGrain * mix(0.35, 1.0, 4.0 * y * (1.0 - y));
+    c += (rnd(g, 5u, uGrainFrame) - rnd(g, 6u, uGrainFrame)) * uGrain * mix(0.6, 1.0, 4.0 * y * (1.0 - y));
   }
   c *= uFade;
-  if (uDither == 1) c += (rnd(ip, 3u) - rnd(ip, 4u)) / 255.0;
+  // The dither is the last step of writing the frame out, not part of the picture, so
+  // it stays on the output's own clock while the film runs on the film's.
+  if (uDither == 1) c += (rnd(ip, 3u, uFrame) - rnd(ip, 4u, uFrame)) / 255.0;
   o = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`
+
+// A cut dissolved: the same output frame drawn once per side of the cut and mixed
+// here, before the last pass, so the grain, the fade and the dither stay the last
+// things that touch a pixel and stay one per output frame. Neither side reads the
+// other's pixels: both are this frame's own plan at this frame's own time, and the
+// weight is a function of that time (plan.js, srcPair).
+const FS_DISSOLVE = `#version 300 es
+precision highp float;
+uniform sampler2D uA, uB; uniform float uMix; out vec4 o;
+void main(){ ivec2 p = ivec2(gl_FragCoord.xy);
+  o = vec4(mix(texelFetch(uA, p, 0).rgb, texelFetch(uB, p, 0).rgb, uMix), 1.0); }`
 
 // To the canvas, flipped (the canvas's row 0 is the bottom)
 const FS_PRESENT = `#version 300 es
@@ -953,7 +976,7 @@ class Compositor {
     this.prog = {}
     for (const [k, fs] of Object.entries({ nv12: FS_NV12, bg: FS_BG, mesh: FS_MESH, shrink: FS_SHRINK, gauss: FS_GAUSS,
       bokeh: FS_BOKEH, bright: FS_BRIGHT, frame: FS_FRAME, treat: FS_TREAT, final: FS_FINAL, present: FS_PRESENT, pack: FS_PACK,
-      clean: FS_CLEAN, copy: FS_COPY, focus: FS_FOCUS, ground: FS_GROUND })) this.prog[k] = this.program(fs)
+      clean: FS_CLEAN, copy: FS_COPY, focus: FS_FOCUS, ground: FS_GROUND, dissolve: FS_DISSOLVE })) this.prog[k] = this.program(fs)
     for (const [k, fs] of Object.entries({ blurmark: FS_BLURMARK, sprite: FS_SPRITE, frost: FS_FROST })) this.prog[k] = { ...this.program(fs, VS_QUAD), quad: true }
     this.vao = gl.createVertexArray()
     // pictures drawn with Canvas2D (text, badges, the cursor), by what they show
@@ -1227,11 +1250,23 @@ class Compositor {
    *   src.cropUV  where the crop sits in the content texture: [0, 0, 1, 1] when the
    *               source already cropped (ffmpeg), the crop's fractions for a <video>
    *   src.cam     draw the camera this frame; src.camUV its cover rect in its texture
-   *   n           frame index, seeds the dither
+   *   src.side    which side of a cut being dissolved the content slot is holding:
+   *               'a' stashes the frame and writes nothing to the output, 'b' mixes the
+   *               two and finishes it. A caller asking for 'a' must follow it with 'b'
+   *               in the same frame, or the output target still holds the frame before.
+   *               Only where fp.mix > 0; left out, the frame is drawn once from the
+   *               side the slot is holding, which is what a caller with no far side
+   *               wants: the near side alone beats the frame before.
+   *   n           frame index, seeds the dither and, through the film's own clock, the
+   *               grain and the ground's tooth
    */
   render(spec, fp, src = {}) {
     const { W, H } = this
     const k = W / spec.W
+    // The frame's own texture: one draw of grain and tooth lasts grainHold output
+    // frames, so an export at 60 fps renews it at the same rate one at 30 does. A
+    // function of this frame's index and nothing else, like the index itself.
+    const tn = Math.floor((src.n || 0) / (spec.grainHold || 1))
     const c = this.slots.content
     if (!c || !c.ready) return false
     const cropUV = src.cropUV || [0, 0, 1, 1]
@@ -1239,7 +1274,10 @@ class Compositor {
     const kind = spec.bg.kind === 'blur' ? 2 : spec.bg.kind === 'none' ? 0 : 1
     if (kind === 2) this.blurFill(spec, cropUV)
     // the recording with its marks drawn on it, when anything is (else the source itself)
-    const marked = fp.marks ? this.contentPass(spec, fp.marks, cropUV) : null
+    // the incoming side of a dissolve reads its own marks: it is playing inside the
+    // material the cut removed, where the output clock has nothing to say (plan.js)
+    const fm = src.side === 'b' && fp.marks2 ? fp.marks2 : fp.marks
+    const marked = fm ? this.contentPass(spec, fm, cropUV) : null
     const sh = spec.shadow
     // under a title card the framed take rises into place, or settles back
     const mv = fp.move || { k: 1, dy: 0, alpha: 1, shadow: 1 }
@@ -1263,13 +1301,20 @@ class Compositor {
       uV0: fp.view0, uV1: fp.view1, uTaps: fp.taps,
       uCam: cam ? 1 : 0,
       uVig: spec.treat ? spec.treat.vignette : 0,
-      uFrame: src.n || 0, uTooth: Math.min(1, k),
+      uFrame: tn, uTooth: Math.min(1, k) * (spec.tooth != null ? spec.tooth : 1),
     }
     if (cam) {
-      u.uCamRect = [spec.cam.x * k, spec.cam.y * k, spec.cam.d * k, spec.cam.d * k]
+      // The bubble rides the take: the same scale about the frame's own centre and the
+      // same drop, since it is a thing lying on the picture rather than beside it. Drawn
+      // in its landed place it stayed full size and full opacity while the take was
+      // still rising, and a dip left it lit over bare ground.
+      const ccx = r0.x + r0.w / 2, ccy = r0.y + r0.h / 2, cd = spec.cam.d * mv.k
+      const cx = ccx + (spec.cam.x + spec.cam.d / 2 - ccx) * mv.k - cd / 2
+      const cy = ccy + (spec.cam.y + spec.cam.d / 2 - ccy) * mv.k - cd / 2 + mv.dy
+      u.uCamRect = [cx * k, cy * k, cd * k, cd * k]
       u.uCamUV = src.camUV || [0, 0, 1, 1]
-      u.uCamRound = spec.cam.round * k
-      u.uCamRing = spec.cam.ring * k
+      u.uCamRound = spec.cam.round * mv.k * k
+      u.uCamRing = spec.cam.ring * mv.k * k
     }
     this.draw('frame', this.scene, u, { uBg: this.bg, uFill: this.fillA || this.dummy, uContent: marked ? marked.tex : c.rgba, uCamTex: cam ? this.slots.cam.rgba : this.dummy })
     if (spec.text) this.textPass(spec, fp)
@@ -1282,8 +1327,27 @@ class Compositor {
     // coarser than the file. Under a pixel its strength comes down with it, because a
     // cell smaller than a pixel is what the file's own grain becomes at this size.
     const cell = gr ? gr.cell * k : 1
-    this.draw('final', this.out, { uFade: fp.fade, uDither: spec.dither ? 1 : 0, uFrame: src.n || 0,
-      uGrain: gr ? gr.amp * Math.min(1, cell) : 0, uCell: Math.max(0.25, cell) }, { uScene: finished })
+    // A dissolve draws this frame twice, once per side of the cut, and the caller says
+    // which side the content slot is holding. The first is kept and the second mixes
+    // them; the last pass runs once, on the mixture.
+    //
+    // Only where the caller actually names a side. A caller with no far side to give
+    // (the stage while its second <video> is still seeking, a still whose far decode
+    // came back empty) asks for one plain draw inside the window as everywhere else:
+    // read from fp.mix alone this stashed the near side into sideA, wrote nothing to
+    // the output and left the frame before on screen for the whole dissolve.
+    const side = fp.mix > 0 && (src.side === 'a' || src.side === 'b') ? src.side : null
+    if (side === 'a') {
+      this.draw('copy', this.keep('sideA', W, H), { uUV: [0, 0, 1, 1], uDst: [0, 0, W, H], uLod: 0 }, { uSrc: finished })
+      return true
+    }
+    let last = finished
+    if (side === 'b') {
+      last = this.keep('sideB', W, H)
+      this.draw('dissolve', last, { uMix: fp.mix }, { uA: this.keep('sideA', W, H), uB: finished })
+    }
+    this.draw('final', this.out, { uFade: fp.fade, uDither: spec.dither ? 1 : 0, uFrame: src.n || 0, uGrainFrame: tn,
+      uGrain: gr ? gr.amp * Math.min(1, cell) : 0, uCell: Math.max(0.25, cell) }, { uScene: last })
     return true
   }
 

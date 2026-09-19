@@ -15,9 +15,11 @@ const display = { x: 0, y: 0, width: 1440, height: 900 }
 {
   // two clicks in one place share a moment that holds until the second
   const m = p.zoomMoments({ kind: 'display', display, clicks: [[2000, 720, 450], [2500, 730, 455], [8000, 144, 90]] })
-  is('clicks make moments', at(m), [{ t: 2, x: 0.5, y: 0.5 }, { t: 8, x: 0.1, y: 0.1 }])
+  // the moment frames the run, so it is centred on the run and not on its first click
+  is('clicks make moments', at(m), [{ t: 2, x: 0.503, y: 0.503 }, { t: 8, x: 0.1, y: 0.1 }])
   is('a run of clicks holds until the last one', r3(m[0].outStart), 4.1)
-  is('the zoom arrives before the click', r3(m[0].inStart), 1.55)
+  // the ramp is the distance: 0.43s for the default 1.7x, where a flat 0.45 used to be
+  is('the zoom arrives before the click', r3(m[0].inStart), 1.57)
 }
 
 {
@@ -31,14 +33,18 @@ const display = { x: 0, y: 0, width: 1440, height: 900 }
   // Two clicks 1.5s apart across the frame: stay zoomed and pan, never out and back in.
   // The expression is evaluated the way zoompan would, frame by frame.
   const m = p.zoomMoments({ kind: 'display', display, clicks: [[2530, 337, 353], [4030, 1103, 353]] })
-  is('the second moment pans in from the first', m[1].from && [r3(m[1].from.x), r3(m[1].inStart)], [r3(337 / 1440), 3.33])
+  // a pan right across the frame takes 0.98s, where every pan used to take 0.7
+  is('the second moment pans in from the first', m[1].from && [r3(m[1].from.x), r3(m[1].inStart)], [r3(337 / 1440), 3.053])
   is('the first hands over without pulling back', m[0].outStart === m[0].outEnd && m[0].outEnd === m[1].inStart, true)
   const { z, fx } = p.zoomExpr(m, { x: 0, y: 0, width: 1, height: 1 }, 1.7, 0)
-  const fn = e => new Function('in_time', 'IF', 'lt', 'between',
+  const fn = e => new Function('in_time', 'IF', 'lt', 'between', 'exp',
     `return ${e.replace(/\bif\(/g, 'IF(')}`)
-  const ev = (e, t) => fn(e)(t, (c, a, b) => (c ? a : b), (a, b) => (a < b ? 1 : 0), (x, a, b) => (x >= a && x <= b ? 1 : 0))
+  const ev = (e, t) => fn(e)(t, (c, a, b) => (c ? a : b), (a, b) => (a < b ? 1 : 0), (x, a, b) => (x >= a && x <= b ? 1 : 0), Math.exp)
   const ts = []; for (let t = 2.6; t <= 4.1; t += 1 / 60) ts.push(t)
-  is('the scale holds through the pan', Math.min(...ts.map(t => ev(z, t))) > 1.69, true)
+  // never out to the whole frame: a click across the frame is far enough that the camera
+  // eases back while it travels, the same dip an explicit pair of zooms gets
+  is('the scale never drops to the whole frame through the pan', Math.min(...ts.map(t => ev(z, t))) > 1.2, true)
+  is('...and the pan lands on the second zoom', r3(ev(z, m[1].inEnd)), 1.7)
   const xs = ts.map(t => ev(fx, t))
   is('the pan glides without going back', xs.every((x, i) => i === 0 || x >= xs[i - 1] - 1e-9) && r3(xs[xs.length - 1]) === r3(1103 / 1440), true)
   is('nothing is NaN at the handover', [m[0].outEnd, m[1].inEnd].every(t => isFinite(ev(z, t)) && isFinite(ev(fx, t))), true)

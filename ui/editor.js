@@ -2127,7 +2127,7 @@ var zoomLoop = false
 function paintZoom(t, pic) {
   const v = $('edVideo'), layer = document.querySelector('#stageFrame .ov-zoom')
   if (!v) return
-  const z = ed.tab === 'crop' ? { s: 1 } : ovLib().zoomView(ed.zooms, t)
+  const z = ed.tab === 'crop' ? { s: 1 } : ovLib().zoomView(ed.zooms, t, (ed.look && ed.look.motion || {}).zoomEase)
   const view = stageView(), c = ed.crop && ed.tab !== 'crop' ? ed.crop : null
   // the cropped frame in the picture's own fractions: the whole picture unless the Crop tab shows all of it
   const fr = c ? { x: (c.x - view.x) / view.w, y: (c.y - view.y) / view.h, w: c.w / view.w, h: c.h / view.h } : { x: 0, y: 0, w: 1, h: 1 }
@@ -2207,7 +2207,7 @@ function paintOverlays() {
       n.dataset.id = m.id; n.dataset.kind = m.kind; home.appendChild(n)
     }
     // a lift or spotlight rides a nearby zoom in the export, so it does here too
-    const on = focus ? ovLib().spotlightSpan(m, ed.zooms) : { a: m.start, b: m.end }
+    const on = focus ? ovLib().spotlightSpan(m, ed.zooms, (ed.look && ed.look.motion || {}).zoomEase) : { a: m.start, b: m.end }
     n.dataset.on = String(t >= on.a && t < on.b)
     if (focus) {
       // The export's own cutout (Overlays.focusShape) on the cropped frame, seen at the
@@ -2710,7 +2710,17 @@ function paintStageGL({ fresh = false, upload = false, t = null } = {}) {
       camUV = a > 1 ? [(1 - 1 / a) / 2, 0, 1 / a, 1] : [0, (1 - a) / 2, 1, a]
       cam = true
     }
-    if (!comp.render(spec, fp, { cropUV: [c.x / s.w, c.y / s.h, c.w / s.w, c.h / s.h], cam, camUV, n: Math.round(tOut * spec.fps) })) return
+    const shared = { cropUV: [c.x / s.w, c.y / s.h, c.w / s.w, c.h / s.h], cam, camUV, n: Math.round(tOut * spec.fps) }
+    // no far side yet (the second <video> is still seeking): the near side is drawn on
+    // its own, which is one plain frame rather than a stashed side and a frozen stage
+    const xv = fp.mix > 0 ? stageCross(spec, fp) : null
+    if (!comp.render(spec, fp, { ...shared, ...(xv ? { side: 'a' } : {}) })) return
+    if (xv) {
+      comp.uploadImage('content', xv, xv.videoWidth, xv.videoHeight)
+      comp.render(spec, fp, { ...shared, side: 'b' })
+      // the slot holds the far side now, so the next paint uploads the near one again
+      stageGL.ready = false
+    }
     comp.present()
     if (frame.dataset.gl !== 'on') { frame.dataset.gl = 'on'; paintCam() }
     // the lasso's band rides the same geometry, so it follows a zoom, a title card
@@ -2722,6 +2732,44 @@ function paintStageGL({ fresh = false, upload = false, t = null } = {}) {
     stageGL = false
     off()
   }
+}
+
+/**
+ * The far side of a cut being dissolved, for the stage: a second <video> of the same
+ * take, seeked to the moment the plan asks for. Returns it when it is holding that
+ * frame, else null, having started the seek.
+ *
+ * A dissolve is the one thing in the plan that needs two source frames at once, and on
+ * the stage the second one has to be seeked for. Parked on a frame, which is where a
+ * cut is actually judged, the seek lands and the stage is the file. Playing, a seek
+ * cannot land inside a frame's worth of time, so the stage draws the near side alone
+ * for the fifth of a second the dissolve lasts and the cut looks hard; the file has the
+ * dissolve. That is the same approximation the stage already makes at every cut, where
+ * playback jumps the removed range on a timeupdate rather than on a frame.
+ */
+function stageCross(spec, fp) {
+  const v = $('edVideo')
+  if (!v || !(fp.mix > 0) || fp.s2 == null) return null
+  // one element for the window, not one per take: a fresh stage is made per take and
+  // would otherwise leave the last one's behind in the DOM
+  let b = stageGL.vb || document.getElementById('edVideoB')
+  if (!b) {
+    b = document.createElement('video')
+    b.id = 'edVideoB'
+    b.muted = true; b.playsInline = true; b.preload = 'auto'
+    b.style.cssText = 'position:absolute;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none'
+    b.addEventListener('seeked', () => paintStageGL())
+    v.parentNode.appendChild(b)
+  }
+  stageGL.vb = b
+  if (b.src !== v.src) { b.src = v.src; stageGL.vbWant = null }
+  if (b.readyState < 2) return null
+  // inside half a frame of what the plan asks for is the frame the file will hold
+  if (Math.abs(b.currentTime - fp.s2) > 0.5 / spec.fps) {
+    if (stageGL.vbWant !== fp.s2) { stageGL.vbWant = fp.s2; try { b.currentTime = fp.s2 } catch {} }
+    return null
+  }
+  return b
 }
 
 // One redraw per frame the <video> presents while it plays, and one after every seek

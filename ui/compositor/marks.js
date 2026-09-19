@@ -41,10 +41,12 @@ const seenIn = (zooms, a, b) => Math.max(1, ...(zooms || []).filter(z => z && Ma
  *   clock     source seconds to output seconds (Timeline.outClock)
  *   span      output length
  *   zooms     on the output clock; lifts may re-frame them (Focus.reframe)
+ *   ease      the look's motion.zoomEase, so a mark riding a zoom takes that zoom's
+ *             own ramp rather than the default one
  *   look      { dim, lift } from the look's focus section
  * Returns { redact, blur, focus, steps, zooms }.
  */
-function planMarks(marks, { W, H, px, clock, span, zooms, look = {} }) {
+function planMarks(marks, { W, H, px, clock, span, zooms, ease, look = {} }) {
   const on = (marks || []).filter(m => m && kinds.has(m.kind)).map(m => ({ ...m, a: clock(+m.start), b: clock(+m.end) }))
   const out = { redact: [], blur: [], focus: [], steps: [], zooms }
 
@@ -80,7 +82,7 @@ function planMarks(marks, { W, H, px, clock, span, zooms, look = {} }) {
   // Lifts and spotlights: shaped through the zoom they are seen in, and the zooms a
   // lift rides framed round it
   const focus = on.filter(m => m.kind === 'lift' || m.kind === 'spotlight')
-    .map(m => ({ m, tm: Overlays.focusTiming({ ...m, start: m.a, end: m.b }, zooms) }))
+    .map(m => ({ m, tm: Overlays.focusTiming({ ...m, start: m.a, end: m.b }, zooms, ease) }))
     .filter(f => f.tm && f.tm.b > f.tm.a + 0.2)
   const shapeOf = (f, zs) => Focus.shape(f.m, W, H, px * seenIn(zs, f.tm.a, f.tm.b), look)
   // a step badge on a lifted card rises with it, and the frame has to hold it too

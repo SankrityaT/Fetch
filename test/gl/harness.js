@@ -15,9 +15,16 @@
 //              auto level, the one field with a gain on it, which reaches 3 at its
 //              steepest with a contrast over the top
 //   stateless  a frame drawn again after others is identical: no frame depends on
-//              another, grain and aberration included
+//              another, grain and aberration included, and a moving sequence drawn in
+//              a shuffled order is the same pixels as the sequence drawn in order
 //   hold       an exported file's frames are the source frames the plan picks
 //              (sample and hold across a cut, on a variable-rate take off the 60 fps grid)
+//   cuts       what a transition does where two pieces meet, and how a take arrives:
+//              a dissolve at a dead air cut against the hard cut it is supposed to be
+//              invisible beside, and the dip, the push, the dissolve and the reveal
+//              frame by frame off the GPU, each landing on the frame the timeline names
+//   blur       the shutter is the travel: a moving frame smears, a held one is byte for
+//              byte the frame it was at any shutter angle
 //   sinks      each encoder (WebCodecs, VideoToolbox through ffmpeg, x264) keeps the
 //              bars' colours, and the canvas encoder one frame per slot
 //   audio      the sound (cuts, fades, an added track, a music bed) is as long as the
@@ -51,6 +58,19 @@ const is = (name, ok, detail) => {
   console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? '  ' + detail : ''}`)
 }
 const want = name => !only || only.split(',').includes(name)
+const range = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i)
+// A fixed shuffle rather than Math.random: a run of frames that fails in one order has
+// to fail again the next time it is asked for.
+const shuffle = (list, seed = 20250919) => {
+  const a = [...list]
+  let s = seed >>> 0
+  for (let i = a.length - 1; i > 0; i--) {
+    s = (Math.imul(s, 1103515245) + 12345) >>> 0
+    const j = s % (i + 1)
+    const t = a[i]; a[i] = a[j]; a[j] = t
+  }
+  return a
+}
 
 // Grey frames of a file by index, small, for comparing pictures (every frame decoded
 // once: a select expression with a hundred terms is past what ffmpeg's parser takes)
@@ -104,6 +124,21 @@ app.whenReady().then(async () => {
       'fade': { opts: { backdrop: 'dusk', inset: 0.08, fadeIn: 1, look }, n: 30 },
       'border': { opts: { backdrop: 'violet', inset: 0.1, radius: 28, look: { ...look, frame: { border: 3, borderColor: '#F0A93C' } } }, n: 60 },
       'cut': { opts: { backdrop: 'dusk', inset: 0.08, cuts: [[3, 7]], look }, n: 190 },
+      // The cut transitions, each on the boundary the timeline names (this take goes out
+      // at 30 fps and the cut removes 3 s to 7 s, so the boundary is output frame 90).
+      // A dissolve is two source frames in one output frame, which is why it is in
+      // parity as well: both sides have to come down both decode paths and agree.
+      'cut-dissolve': { opts: { backdrop: 'dusk', inset: 0.08, cuts: [[3, 7]], look: { ...look, motion: { cutTransition: 'crossfade' } } }, n: 90 },
+      'cut-dip': { opts: { backdrop: 'dusk', inset: 0.08, cuts: [[3, 7]], look: { ...look, motion: { cutTransition: 'dip' } } }, n: 89 },
+      'cut-push': { opts: { backdrop: 'dusk', inset: 0.08, cuts: [[3, 7]], look: { ...look, motion: { cutTransition: 'zoom' } } }, n: 93 },
+      // The take arriving: 0.1 s in, on its way up into its frame
+      'reveal': { opts: { backdrop: 'dusk', inset: 0.08, look }, n: 3 },
+      // And the camera bubble riding it. The bubble is a thing lying on the take, so it
+      // arrives with it and goes with it: drawn in its landed place it sat at full size
+      // and full opacity over a take that had not arrived, and a dip left it lit over
+      // bare ground on the one frame the take is not on screen (output frame 90 here).
+      'camera-reveal': { opts: { backdrop: 'mint', inset: 0.08, camera, look }, n: 3 },
+      'camera-dip': { opts: { backdrop: 'mint', inset: 0.08, camera, cuts: [[3, 7]], look: { ...look, motion: { cutTransition: 'dip' } } }, n: 90 },
       // M3: what is drawn on the take and over the frame (this take goes out at 30 fps,
       // so frame n is n / 30 seconds in)
       'marks': { opts: { backdrop: 'ink', inset: 0.06, look, marks: [
@@ -224,7 +259,9 @@ app.whenReady().then(async () => {
 
     if (want('parity')) {
       console.log('preview path equals export path, before encode')
-      for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'bokeh-ground', 'zoom-hold', 'camera', 'marks', 'lift', 'pointer', 'text', 'caption-plate', 'glow',
+      // zoom-glide is here now that the shutter is open by default: it is the one case
+      // that draws through the multi-tap blur, and preview and export have to agree on it
+      for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'bokeh-ground', 'zoom-hold', 'zoom-glide', 'cut-dissolve', 'reveal', 'camera', 'marks', 'lift', 'pointer', 'text', 'caption-plate', 'glow',
         'auto-level', 'auto-level-hard', 'treat-furniture', 'treat-all']) {
         const c = cases[name]
         const r = await call('parity', { ...base, ...c })
@@ -254,6 +291,33 @@ app.whenReady().then(async () => {
       // out of turn has to come back byte for byte
       const t = await call('stateless', { ...base, ...cases['treat-all'] }, [50, 260, 5])
       is('the whole treatment stack, grain and aberration on', t.max === 0, `max ${t.max}`)
+      // a dissolve draws the frame twice and mixes the two: still the frame's own time
+      // and nothing else, so it comes back byte for byte after other frames
+      const d = await call('stateless', { ...base, ...cases['cut-dissolve'] }, [30, 91, 200])
+      is('a frame in the middle of a dissolve', d.max === 0, `max ${d.max}`)
+
+      // A dissolve asked for with no far side to mix in. The near side alone is the
+      // frame, and it is the same frame whatever was drawn before it: reading the side
+      // off fp.mix alone, this stashed the near side, wrote nothing to the output and
+      // left whatever the target was holding on the stage for the whole window.
+      const one = await call('oneSided', { ...base, ...cases['cut-dissolve'], width: 640 }, 40)
+      is('a dissolve with no far side draws the near side, not the frame before',
+        one.same.max === 0 && one.stale.max > 0 && one.mixed.max > 0,
+        `the same frame twice ${one.same.max} LSB, against the frame before ${one.stale.max}, against the mixed frame ${one.mixed.max} at mix ${one.mix}`)
+
+      // A single frame redrawn is the smallest version of the claim. The whole of it is
+      // a sequence that moves: a zoom through its ramp, a dissolve through its window
+      // and the take arriving, each drawn in order and then drawn again in a shuffled
+      // order. Motion is solved from the output time alone, so the two runs are the same
+      // pixels, and that is what lets the export render out of order and the stage scrub
+      // into the middle of a move. A move that integrated anything would show here and
+      // nowhere else.
+      for (const [name, ns] of [['zoom-glide', range(32, 43)], ['cut-dissolve', range(86, 94)], ['reveal', range(0, 11)]]) {
+        const rs = await call('permute', { ...base, ...cases[name], width: 640 }, ns, shuffle(ns))
+        const worst = rs.reduce((m, q) => (q.max > m.max ? q : m), rs[0])
+        is(`${ns.length} moving frames of ${name}, drawn in a shuffled order`, rs.every(q => q.max === 0),
+          `max ${worst.max} LSB on frame ${worst.n}, order ${shuffle(ns).join(' ')}`)
+      }
     }
 
     if (want('hold')) {
@@ -291,6 +355,112 @@ app.whenReady().then(async () => {
         const dur = +spawnSync('/opt/homebrew/bin/ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', opts.dest]).stdout
         is(`${label}: length is the kept length`, Math.abs(dur - spec.span) < 0.05, `${dur} s, want ${spec.span.toFixed(3)}`)
       }
+    }
+
+    if (want('cuts')) {
+      console.log('what a transition does at a cut, and how the take arrives')
+      // A take whose screen never changes: both sides of a cut in it are the same
+      // pixels, which is a dead air cut with the question the round asked settled at
+      // the limit. It is also the one take where the only thing moving on the frame is
+      // the transition itself, so a progression can be read straight off the pixels.
+      const still = path.join(FIX, 'still.mov')
+      const smeta = await proc.probeMeta(still)
+      const sbase = { ffmpeg, src: still, meta: smeta, width: 640 }
+      const cutOpts = kind => ({ backdrop: 'dusk', inset: 0.08, cuts: [[2, 4]], look: { ...look, motion: { cutTransition: kind } } })
+      // the boundary is output frame 60: 2 s of the take kept, at 30 fps
+      const rs = await call('moved', { ...sbase, opts: cutOpts('none'), n: 60 },
+        [{ ...sbase, opts: cutOpts('crossfade'), n: 60 }, { ...sbase, opts: cutOpts('dip'), n: 60 }])
+      is('a dissolve at a dead air cut is the hard cut, to the bit', rs[0].max === 0, `max ${rs[0].max} LSB, mean ${rs[0].mean}`)
+      is('a dip at the same cut is a hole in it', rs[1].mean > 8, `max ${rs[1].max} LSB, mean ${rs[1].mean}`)
+      // and the same pair on a take whose screen does change, which is what a dissolve
+      // is for: the other end of the bracket, printed rather than gated
+      const mv = await call('moved', { ...base, opts: { backdrop: 'dusk', inset: 0.08, cuts: [[3, 7]], look }, n: 90, width: 640 },
+        [{ ...base, opts: cases['cut-dissolve'].opts, n: 90, width: 640 }])
+      console.log(`  (on a moving take the same dissolve moves max ${mv[0].max} LSB, mean ${mv[0].mean})`)
+
+      // The dip frame by frame, measured against the settled frame this take holds all
+      // the way through: how far the picture has gone, per frame. It is the take's own
+      // pixels that leave, so this is the transition and nothing else.
+      const dip = await call('march', { ...sbase, opts: cutOpts('dip'), n: 60 }, [56, 57, 58, 59, 60, 61, 62, 63, 64], 50)
+      const g = dip.map(d => d.diff)
+      const top = g.indexOf(Math.max(...g))
+      is('the dip is deepest on the cut, to the frame', dip[top].n === 60, dip.map(d => `${d.n}:${d.diff}`).join(' '))
+      is('and monotone into it and out of it',
+        g.slice(0, top + 1).every((v, i) => i === 0 || v >= g[i - 1]) && g.slice(top).every((v, i) => i === 0 || v <= g[top + i - 1]), true)
+      is('and it is over by the frames the plan names', g[0] === 0 && g[1] === 0 && g[g.length - 1] === 0 && g[g.length - 2] === 0,
+        `${g[0]} ${g[1]} into it, ${g[g.length - 2]} ${g[g.length - 1]} out`)
+
+      // The push, the same way. It lives entirely after the boundary, so on this take
+      // the first frame that differs from the settled one is the cut's own frame, it is
+      // the deepest, and it settles out without turning round. 0.35 s at 30 fps is ten
+      // frames, so frame 70 is the first one back at rest.
+      const push = await call('march', { ...sbase, opts: cutOpts('zoom'), n: 60 }, range(57, 72), 50)
+      const q = push.map(v => v.diff)
+      is('the push starts on the frame the cut lands on, and it is the deepest there',
+        q[0] === 0 && q[1] === 0 && q[2] === 0 && q[3] > 0 && push[q.indexOf(Math.max(...q))].n === 60,
+        push.map(v => `${v.n}:${v.diff}`).join(' '))
+      is('and it settles out without turning round', q.slice(3, 14).every((v, i) => i === 0 || v <= q[3 + i - 1]), true)
+      is('and it is landed by the frame the plan names', q[13] === 0 && q[14] === 0 && q[15] === 0,
+        `70: ${q[13]}, 71: ${q[14]}`)
+
+      // The dissolve, on the moving take, where it is a picture rather than nothing.
+      // Each frame of the window is drawn twice, once with the transition and once with
+      // the hard cut at the same output time, so what is measured is the dissolve alone
+      // and not the take's own movement. Before the boundary the hard cut is the
+      // outgoing side and the dissolve carries the incoming one at `mix`; after it the
+      // two swap. So the difference rises to the boundary frame, peaks there where the
+      // mix is exactly half, and falls away, and it is zero outside the window.
+      const hard = { backdrop: 'dusk', inset: 0.08, cuts: [[3, 7]], look }
+      const cross = []
+      for (const n of range(86, 94)) {
+        const rs2 = await call('moved', { ...base, opts: hard, n, width: 640 },
+          [{ ...base, opts: cases['cut-dissolve'].opts, n, width: 640 }])
+        cross.push({ n, mean: rs2[0].mean, max: rs2[0].max })
+      }
+      const cm = cross.map(v => v.mean)
+      const topN = cross[cm.indexOf(Math.max(...cm))].n
+      is('a dissolve crosses over on the frame the timeline names', topN === 90, cross.map(v => `${v.n}:${v.mean}`).join(' '))
+      is('and it rises into that frame and falls out of it',
+        cm.slice(0, 5).every((v, i) => i === 0 || v >= cm[i - 1]) && cm.slice(4).every((v, i) => i === 0 || v <= cm[4 + i - 1]), true)
+      is('and outside its window the frame is the hard cut, to the bit',
+        cm[0] === 0 && cm[1] === 0 && cm[cm.length - 1] === 0 && cm[cm.length - 2] === 0,
+        `${cm[0]} ${cm[1]} in, ${cm[cm.length - 2]} ${cm[cm.length - 1]} out`)
+
+      // The take arriving. Against the settled frame: the difference falls every frame
+      // and is gone on the first frame at or after the reveal's own length.
+      const rise = await call('march', { ...sbase, opts: { backdrop: 'dusk', inset: 0.08, look }, n: 0 },
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 20)
+      const d = rise.map(x => x.diff)
+      is('the take arrives without ever turning back',
+        d.every((v, i) => i === 0 || (d[i - 1] === 0 ? v === 0 : v < d[i - 1])) && d[0] > 40, d.join(' '))
+      // the reveal is 0.36 s and this take goes out at 30 fps, so frame 10 is still on
+      // its way and frame 11 is the first one at or after it
+      is('and has landed on the frame the plan names, 0.36 s in', d[10] > 0 && d[11] === 0 && d[12] === 0, `10: ${d[10]}, 11: ${d[11]}`)
+      const none = await call('moved', { ...sbase, opts: { backdrop: 'dusk', inset: 0.08, look }, n: 3 },
+        [{ ...sbase, opts: { backdrop: 'dusk', inset: 0.08, look: { ...look, motion: { reveal: 'none' } } }, n: 3 }])
+      is('reveal none is the hard frame it always was', none[0].max > 8, `max ${none[0].max} LSB`)
+    }
+
+    if (want('blur')) {
+      console.log('the smear is the travel, not a setting')
+      // treatment.motionBlur is the shutter angle and nothing else: what smears is the
+      // zoom's own velocity at that instant. So the same frame with the shutter shut
+      // says how much of the golden is the move, and a frame the zoom is holding on has
+      // to come back byte for byte whatever the shutter is, because a camera at rest
+      // exposes nothing but the frame it is on.
+      const shut = o => ({ ...o, look: { ...look, treatment: { ...look.treatment, motionBlur: 0 } } })
+      const wide = o => ({ ...o, look: { ...look, treatment: { ...look.treatment, motionBlur: 1 } } })
+      const mid = cases['zoom-glide'], held = cases['zoom-hold']
+      const rs = await call('moved', { ...base, ...mid, width: 640 },
+        [{ ...base, ...mid, opts: shut(mid.opts), width: 640 }, { ...base, ...mid, opts: wide(mid.opts), width: 640 }])
+      is('mid zoom, the shutter open against the same frame with it shut', rs[0].max > 40 && rs[0].mean > 1,
+        `max ${rs[0].max} LSB, mean ${rs[0].mean}, over 2 LSB ${rs[0].over2}%`)
+      is('and a 360 degree shutter smears further still', rs[1].max > 0 && rs[1].mean > rs[0].mean * 0.3,
+        `max ${rs[1].max} LSB, mean ${rs[1].mean}`)
+      const h = await call('moved', { ...base, ...held, width: 640 },
+        [{ ...base, ...held, opts: shut(held.opts), width: 640 }, { ...base, ...held, opts: wide(held.opts), width: 640 }])
+      is('a frame the zoom is holding on is the same frame at any shutter',
+        h[0].max === 0 && h[1].max === 0, `shut ${h[0].max} LSB, wide open ${h[1].max} LSB`)
     }
 
     if (want('sinks')) {
@@ -344,7 +514,12 @@ app.whenReady().then(async () => {
 
     if (want('classic')) {
       console.log('against the classic export')
-      const opts = { backdrop: 'dusk', inset: 0.08, shadow: 0.6, zooms: [{ start: 2, end: 7, scale: 1.8, x: 0.3, y: 0.35 }], fadeIn: 0.5, format: 'mp4', quality: 'high', captions: false }
+      // The shutter is pinned shut on this one. The classic renderer has no motion blur
+      // at all (no tblend, no minterpolate), so with the product's own 180 degrees open
+      // this compares a smeared glide against a sharp one and measures the compositor's
+      // extra rather than the geometry the two are supposed to agree on.
+      const opts = { backdrop: 'dusk', inset: 0.08, shadow: 0.6, look: { treatment: { motionBlur: 0 } },
+        zooms: [{ start: 2, end: 7, scale: 1.8, x: 0.3, y: 0.35 }], fadeIn: 0.5, format: 'mp4', quality: 'high', captions: false }
       const g = await host.exportEdit(take, { ...opts, dest: path.join(OUT, 'gl.mp4'), engine: 'gl' }, null, 'gl-test-a')
       const c = await host.exportEdit(take, { ...opts, dest: path.join(OUT, 'classic.mp4'), engine: 'classic' }, null, 'gl-test-b')
       is('engines as asked', g.engine === 'gl' && c.engine === 'classic', `${g.engine}, ${c.engine}`)

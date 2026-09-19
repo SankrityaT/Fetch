@@ -157,7 +157,9 @@ console.log('time across cuts')
   const mid = Plan.framePlan(s, 8)
   is('mid zoom is zoomed', r3(mid.view0[2]), 0.5)
   is('zoomView is the one curve', mid.view0, (() => { const z = O.zoomView(s.zooms, 8); return [z.x, z.y, z.w, z.h] })())
-  is('no motion blur by default', mid.taps, 1)
+  // the shutter is open by default now, but a held zoom is not moving, so it takes one
+  // sample and the frame is what it always was
+  is('a held zoom is one sample even with the shutter open', [s.motionBlur, mid.taps, mid.speed], [0.5, 1, 0])
 }
 
 console.log('motion blur scales with travel')
@@ -165,10 +167,29 @@ console.log('motion blur scales with travel')
   const s = Plan.prepare({ zooms: [{ start: 1, end: 5, scale: 2.4, x: 0.8, y: 0.2 }], look: { treatment: { motionBlur: 0.5 } } }, { ...meta, fps: 60 })
   const still = Plan.framePlan(s, 3)
   is('a held zoom is one sample', still.taps, 1)
-  const moving = Plan.framePlan(s, 1.2)
+  const moving = Plan.framePlan(s, 1.3)
   is('a glide takes several samples', moving.taps > 2, true)
   is('never more than 32', moving.taps <= 32, true)
   is('the samples span the shutter', moving.view0[2] > moving.view1[2], true)
+  // the smear is the zoom's own speed, not the dial: the shutter opens the same width
+  // at the start of the push, at its fastest and as it settles, and what comes out is
+  // the velocity of the curve at each
+  const zoom = O.zoomPlan(s.zooms)[0]
+  const ramp = zoom.inEnd - zoom.inStart
+  const speeds = [0, 0.15, 0.5, 0.9, 1].map(k => Plan.framePlan(s, zoom.inStart + ramp * k).speed)
+  is('at rest nothing smears', [speeds[0], speeds[4]], [0, 0])
+  is('fastest in the middle of the push', speeds[2] > speeds[1] && speeds[2] > speeds[3], true)
+  is('and the settle is quieter than the leave', speeds[3] < speeds[1], true)
+  const taps = [0.15, 0.5, 0.9].map(k => Plan.framePlan(s, zoom.inStart + ramp * k).taps)
+  is('the samples follow the speed', taps[1] > taps[0] && taps[1] > taps[2], true)
+  // the dial is the shutter angle alone: twice the angle, about twice the smear
+  const wide = Plan.prepare({ zooms: [{ start: 1, end: 5, scale: 2.4, x: 0.8, y: 0.2 }], look: { treatment: { motionBlur: 1 } } }, { ...meta, fps: 60 })
+  const t2 = zoom.inStart + ramp * 0.1
+  is('the dial is the shutter, not the speed', Plan.framePlan(wide, t2).speed, Plan.framePlan(s, t2).speed)
+  is('a wider shutter takes more of the travel', Plan.framePlan(wide, t2).taps > Plan.framePlan(s, t2).taps, true)
+  // the peak of a 2.4x push already asks for more than 32 and gets 32: the cap is what
+  // the bench and the shader's loop bound were measured against
+  is('and never more than 32', Plan.framePlan(wide, zoom.inStart + ramp * 0.3).taps, 32)
 }
 
 console.log('sample and hold')
@@ -207,6 +228,49 @@ console.log('the camera on its own clock')
   is('camera frames follow camTime', m.pick[180], Plan.holdIndex(cpts, T.camTime(cam, 3)))
   is('a camera that starts after the screen shows nothing yet',
     Plan.frameMap([0.5, 1], 3, n => T.camTime({ camStartedAt: 2000, screenStartedAt: 1000 }, n)).pick[0], -1)
+}
+
+console.log('a caption over live content, and the shade that used to travel with it')
+{
+  const Text = require('../ui/compositor/text')
+  const cues = [{ start: 1, end: 4, text: 'Every row shows the key and the tempo.' }]
+  const prepared = { captions: { cues: [], busy: [], words: null } }
+  // no box: the take is the whole output, which is the default look and the case that
+  // draws the plate rather than a band
+  const tp = Text.planText({ captions: true, captionStyle: {}, cues }, { clock: t => t, span: 10, W: 1920, H: 1080, box: null, prepared })
+  const at = Text.textAt(tp, 2)
+  const plate = at.frost[0]
+  is('it gets a plate', !!plate, true)
+  const inside = b => plate && b.x >= plate.x - plate.feather - 0.01 && b.y >= plate.y - plate.feather - 0.01 &&
+    b.x + b.w <= plate.x + plate.w + plate.feather + 0.01 && b.y + b.h <= plate.y + plate.h + plate.feather + 0.01
+  is('and nothing it draws reaches past it', at.items.every(i => inside(i.bounds)), true)
+  // and where there is no plate the cloud is still what separates the words from the
+  // picture, so it still has the room to draw one
+  const band = Text.planText({ captions: true, captionStyle: {}, cues }, { clock: t => t, span: 10, W: 1920, H: 1080,
+    box: { x: 100, y: 60, w: 1720, h: 800 }, prepared })
+  const bandAt = Text.textAt(band, 2)
+  is('a caption in the band keeps its cloud', [bandAt.frost.length, bandAt.items[0].bounds.h > at.items[0].bounds.h], [0, true])
+}
+
+console.log('the frame\'s own texture: the ground\'s tooth under the film, and the film\'s clock')
+{
+  // Both in levels of the finished frame: the tooth is uniform, three levels either
+  // side; the grain is triangular over its cell, and what it leaves on a page at the
+  // end of the range is the ceiling the tooth is held to (plan.js, GRAIN_ENDS).
+  const TOOTH = 6 / 219 * 255 / Math.sqrt(12)
+  const grainEnds = film => film * 0.055 * 255 / Math.sqrt(6) * 0.6
+  const spec = (film, fps = 30) => Plan.prepare({ backdrop: 'dusk', look: { grain: { film } } },
+    { width: 1920, height: 1080, duration: 10, fps })
+  is('no film, and the tooth is the ground\'s own three levels', spec(0).tooth, 1)
+  for (const film of [0.12, 0.2, 0.25, 0.3, 0.5, 1]) {
+    const t = spec(film).tooth
+    is(`film ${film}: the tooth never stands above the grain on the picture`,
+      r3(t * TOOTH) <= r3(Math.max(grainEnds(film), 0.3 * TOOTH)), true)
+  }
+  is('a light dial does not take the ground under the dither either', spec(0.02).tooth, 0.3)
+  is('and a heavy one leaves it where it was', spec(1).tooth, 1)
+  is('the film is exposed once per output frame at 30', spec(0.2, 30).grainHold, 1)
+  is('and twice as slowly at 60, so a look grains the same at both', spec(0.2, 60).grainHold, 2)
 }
 
 console.log('which engine')

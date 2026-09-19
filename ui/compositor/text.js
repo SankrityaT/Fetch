@@ -174,13 +174,25 @@ function captionItems(tp, t, measure, out) {
       }
     })
     // room for the widest blur the shade draws (three sigma of 0.75 em, and its stroke),
-    // or the canvas edge cuts it into a visible box
-    const margin = px * 2.7
+    // or the canvas edge cuts it into a visible box. A plated caption draws no cloud, so
+    // it needs room for the drop alone, and at 0.45 em its whole raster fits inside the
+    // plate's own bounds and feather: the shade cannot reach past its plate by
+    // construction rather than by measurement.
+    const margin = frosted ? px * 0.45 : px * 2.7
     const bounds = { x: L.x - B.lw / 2 - margin, y: B.top - margin, w: B.lw + margin * 2, h: B.h + margin * 2 }
     const text = B.lines.map(l => l.map(w => w.text).join(' '))
-    const key = `cap|${font}|${fill}|${inkText}|${g.wide}|${text.join('\n')}`
+    const key = `cap|${font}|${fill}|${inkText}|${frosted ? 'plate' : g.wide}|${text.join('\n')}`
     const lines = B.lines.map((_, li) => ({ text: text[li], x: L.x, y: B.top + li * B.lineH + B.lineH / 2 }))
-    // the shade: the glyphs' own dark cloud, wide then close, and a drop under them
+    // The shade: the glyphs' own dark cloud, wide then close, and a drop under them.
+    // Where the words have a plate the cloud is not drawn at all. Its job is to separate
+    // the words from whatever is under them, and the plate of pass 11 does that with a
+    // corner and a two pixel feather; the cloud does it with an airbrush that reaches
+    // about 1.2 em past the glyphs, which is 65 px at 1080. On the default look, where
+    // the caption sits straight on the product, that cloud took the filter strip of the
+    // app being demonstrated down 49 levels, and it went wherever the words went: the
+    // dodge moved the phrase off the list rows and the smudge came with it, so one live
+    // row was traded for another. The plate does not travel past its own bounds, and the
+    // drop under the glyphs is all the separation the words need on top of it.
     out.items.push({
       key: key + '|shade', bounds, op: sop, z: 0,
       paint(ctx) {
@@ -191,7 +203,7 @@ function captionItems(tp, t, measure, out) {
           for (const l of lines) { const y = baseline(ctx, l.y); ctx.strokeText(l.text, l.x, y + px * dy); ctx.fillText(l.text, l.x, y + px * dy) }
           ctx.restore()
         }
-        if (!inkText) { cloud(g.wide, 0.34, 0.75, 0.06); cloud(g.near, 0.1, 0.24, 0.04) }
+        if (!inkText && !frosted) { cloud(g.wide, 0.34, 0.75, 0.06); cloud(g.near, 0.1, 0.24, 0.04) }
         ctx.save(); ctx.filter = `blur(${(px * 0.07).toFixed(2)}px)`; ctx.fillStyle = rgba('#000000', inkText ? 0.15 : 0.62)
         for (const l of lines) ctx.fillText(l.text, l.x, baseline(ctx, l.y) + px * 0.05)
         ctx.restore()

@@ -1,13 +1,17 @@
 // Export speed on a real take, compositor against the classic renderer. Electron:
 //
-//   FETCH_GL_TESTS=1 npx electron test/gl/bench.js [take.mov] [--full] [--sinks] [--treat]
+//   FETCH_GL_TESTS=1 npx electron test/gl/bench.js [take.mov] [--full] [--sinks] [--treat] [--cuts] [--shut]
 //
 // Defaults to the Songscription tour. Exports go to /tmp/fetch-gl/bench, never over the
 // take's own deliverable. The compositor draws what it can of the take's edit (marks,
 // text, captions and the drawn cursor are M3), and the classic renderer is timed on
 // that same subset, so the two are comparable; --full also times the classic export of
 // the whole edit, --sinks the other encoders, --treat the same export with every
-// treatment field on. Gate: the compositor at least 1.0x real time.
+// treatment field on, --cuts the same export cut the way dead air removal cuts, hard
+// and then dissolved, which is what a transition costs, and --shut the same export with
+// the shutter closed, which is what the travel blur costs: the two runs differ by the
+// samples the zooms ask for and by nothing else. Gate: the compositor at least
+// 1.0x real time.
 const { app } = require('electron')
 const path = require('path')
 const fs = require('fs')
@@ -55,6 +59,27 @@ app.whenReady().then(async () => {
         tintAmount: 0.2, haze: 0.15, blur: 0.25, bokeh: 0.4, bloom: 0.4, halation: 0.3, aberration: 0.3, vignette: 0.3 },
         grain: { film: 0.4 } }).look
       await time('gl-treatment', { ...subset, look: heavy }, 'gl')
+    }
+    if (args.includes('--shut')) {
+      // The shutter is open by default now, and it opens widest where the picture is
+      // moving fastest, which is the one place a cost could hide. The same export with
+      // it closed takes one sample a frame, so the difference in draw is the blur.
+      const Look = require('../../ui/look')
+      await time('gl-shutter-shut', { ...subset, look: Look.merge(subset.look, { treatment: { motionBlur: 0 } }).look }, 'gl')
+    }
+    if (args.includes('--cuts')) {
+      // a take cut the way dead air removal cuts it: a piece out every two seconds.
+      // Hard, then dissolved, so the difference is the second decode and the frames
+      // drawn twice and nothing else.
+      const cuts = []
+      for (let t = 1.4; t + 0.7 < meta.duration - 1; t += 2) cuts.push([t, t + 0.6])
+      const cut = { ...subset, cuts }
+      console.log(`  (${cuts.length} cuts, ${(cuts.length * 0.6).toFixed(1)} s removed)`)
+      await time('gl-cuts-hard', cut, 'gl')
+      const Look = require('../../ui/look')
+      for (const kind of ['crossfade', 'dip', 'zoom']) {
+        await time('gl-cuts-' + kind, { ...cut, look: Look.merge(subset.look, { motion: { cutTransition: kind } }).look }, 'gl')
+      }
     }
     if (args.includes('--sinks')) {
       await time('gl-vt', { ...subset, sink: 'vt' }, 'gl')

@@ -128,7 +128,16 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
       if (data && (data.display || data.windowBounds)) {
         const zo = opts.autoZoomOpts || {}
         const moments = proc.zoomMoments(data, { ...zo, clock: Timeline.outClock(opts.cuts, start, end || dur), crop })
-        tasks.autoZooms = Promise.resolve(moments.map(q => ({ start: q.inStart, end: q.outEnd, scale: zo.zoom != null ? zo.zoom : 1.7, x: q.x, y: q.y })))
+        // Whole, not flattened to start and end. zoomMoments had already decided inEnd,
+        // outStart, the scale the click's own spread asks for and the pan; handing over
+        // two of those and letting Overlays.zoomPlan re-derive the rest from a second
+        // copy of the constants is how auto zoom and explicit zoom drift apart.
+        // A moment carries where the camera was when the one before it handed over
+        // (`from`), and a lift re-framing a moment rebuilds that for the next one
+        // (Focus.reframe): nothing downstream of here would.
+        tasks.autoZooms = Promise.resolve(moments.map(q => ({
+          start: q.inStart, end: q.outEnd, inEnd: q.inEnd, outStart: q.outStart,
+          scale: q.scale, x: q.x, y: q.y, ...(q.from ? { from: q.from } : {}) })))
       }
     }
 

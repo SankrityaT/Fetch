@@ -264,7 +264,7 @@ function build() {
         'SETTINGS (merged, so send only the fields you change):\n' +
         '- look: how the video looks, by section, e.g. {preset: \'studio\'} or ' +
         '{frame: {aspect: \'16:9\', padding: 0.08}, background: {kind: \'gradient\', gradient: \'ink\'}, ' +
-        'captions: {font, scale, colour, position, highlight}, motion: {fadeIn, fadeOut, zoomDepth}, ' +
+        'captions: {font, scale, colour, position, highlight}, motion: {fadeIn, fadeOut, zoomDepth, zoomEase, reveal, cutTransition}, ' +
         'cursor: {show, hideSystem}}. Every field, range and default: get_look_schema; whole looks: ' +
         'list_looks and apply_look. A field left out is kept, null resets it, {preset} starts from that look. ' +
         'Output keeps the take\'s shape unless frame.aspect is set, and a chosen shape is filled by the ' +

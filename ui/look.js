@@ -421,7 +421,7 @@ function toClassic(look) {
       ...(c.fx != null && c.fy != null ? { fx: c.fx, fy: c.fy } : {}) },
     fadeIn: L.motion.fadeIn,
     fadeOut: L.motion.fadeOut,
-    autoZoomOpts: { zoom: L.motion.zoomDepth },
+    autoZoomOpts: { zoom: L.motion.zoomDepth, curve: L.motion.zoomEase },
     hideMacCursor: hide === 'hide' ? true : hide === 'keep' ? false : null,
     cursor: !!L.cursor.show,
     chrome: L.frame.chrome,

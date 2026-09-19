@@ -78,6 +78,14 @@ const EDGE_BLEED = 64 / 255
 // own note below). At 1 the frame's furthest corner keeps a third of its light and the
 // take's own corners about seven tenths, which is a lens and not a tunnel.
 const VIG_REACH = 2.4
+// The two numbers the ground's tooth and the film's grain are held together by, both in
+// levels of the finished frame. TOOTH_SIGMA is what the frame pass's own tooth measures
+// (three levels either side, uniform, so 6 * 255 / 219 wide); GRAIN_ENDS is how much of
+// the film's midtone weighting survives at the ends of the range (gl.js, the final
+// pass). Kept here because the tooth is scaled against the grain and the two have to be
+// read off the same arithmetic.
+const TOOTH_SIGMA = 6 / 219 / Math.sqrt(12)
+const GRAIN_ENDS = 0.6
 // Warm ink over a light ground, a warm light over a dark one (BRAND --ink-1, --text-0).
 // Never #000 or #fff: every neutral here is warmed toward the fur hue.
 const EDGE_INK = '#1A1714', EDGE_LIT = '#FBFAF8'
@@ -325,7 +333,7 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const px = g.vidH / (ch * inner.h)
   const drawn = markList(opts.marks, P && P.marks)
   const F = L('focus'), Cu = L('cursor')
-  const pm = Marks.planMarks(drawn, { W: cw, H: ch, px, clock, span, zooms, look: { dim: F.dim, lift: F.lift } })
+  const pm = Marks.planMarks(drawn, { W: cw, H: ch, px, clock, span, zooms, ease: L('motion').zoomEase, look: { dim: F.dim, lift: F.lift } })
   const erase = P && P.erase ? Marks.planErase(P.erase.spans, P.erase.plates,
     { src: { w: srcW, h: srcH }, crop: { x: cx, y: cy }, content: { w: cw, h: ch }, clock, end, span }) : []
   // an empty track is the look's cursor switched off, whatever the take has
@@ -334,6 +342,13 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const pointer = points ? Marks.planPointer(points, { W: cw, H: ch, clock, crop: c, scale: P && P.pointer ? P.pointer.scale : null,
     span, px, zooms: pm.zooms, size: Cu.size, ripple: Cu.ripple }) : null
   const marks = { ...pm, erase, pointer }
+  // What the edit hides, on the source clock, for the one transition that shows the
+  // material a cut removed (cutPoints). The marks themselves are on the output clock by
+  // now, and the removed material has no time there at all.
+  const hidden = [
+    ...(opts.marks || []).filter(m => m && (m.kind === 'redact' || m.kind === 'blur') && +m.end > +m.start).map(m => [+m.start, +m.end]),
+    ...((P && P.erase && P.erase.spans) || []).map(q => [+q.a, +q.b]),
+  ]
   // Treatment: the grade and the lens over the finished frame, as plain numbers in
   // export pixels. Null while the look asks for none of it, so the pass is skipped and
   // a default look draws what it drew before treatment existed.
@@ -423,18 +438,198 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     // round that is a line round the video.
     edge: bg.kind === 'none' ? null : { floor: EDGE_FLOOR, px: Math.max(1, g.outH * 1.25 / 1080), ...edgeEnd(bg) },
     border: borderPx > 0 ? { px: borderPx, color: rgb(L('frame').borderColor || '#FFFFFF') } : null,
-    bg, zooms: pm.zooms, cam, marks,
+    bg, zooms: pm.zooms, ease: L('motion').zoomEase, cam, marks,
+    cut: cutPoints(keep, L('motion').cutTransition, fps, hidden),
+    // The take can only arrive in something. Where the look puts nothing behind it the
+    // take is the whole output, so there is nowhere to rise from and dimming the picture
+    // instead would be a fade from black, which is motion.fadeIn and the person's call.
+    reveal: L('motion').reveal === 'none' || bg.kind === 'none' ? null : { in: REVEAL_IN, out: REVEAL_OUT },
     text: text.phrases.length || text.cards.length || text.labels.length ? text : null,
-    motionBlur: clamp(num(T.motionBlur, 0), 0, 1),
+    // the schema's own default: 0.5 is a 180 degree shutter, the film standard
+    motionBlur: clamp(num(T.motionBlur, 0.5), 0, 1),
     treat,
     // Film grain: its strength, and a cell sized on the output so a look grains the
     // same at 720p and at 4K. 0.055 at full is a little over three times the still
     // grain the classic blur ground carries (noise=c0s=3), which is what a moving
     // grain needs to read at all without eating the text under it.
     grain: film > 0 ? { amp: film * 0.055, cell: Math.max(1, g.outH * 1.4 / 1080) } : null,
+    // and the ground's own tooth under it. A roll of film is in front of the whole
+    // frame, so where a look has grain the film is what the frame's texture is, and the
+    // ground's tooth cannot stand above what that grain leaves on the picture: a wall
+    // three times grainier than the plate hanging on it is a mat, not a surface, and it
+    // is exactly backwards on the two looks whose identity is the grain. Measured at the
+    // end of the range, because the picture in a screen recording is an app page and
+    // that is where the film's own midtone weighting leaves least. Where a look asks for
+    // no film there is nothing in front of anything: the tooth is all the ground has and
+    // it keeps its three levels, and a recording of a screen is not given grain nobody
+    // asked for. Never under a third either, which is what keeps it clear of the dither.
+    tooth: film > 0 ? clamp(film * 0.055 * GRAIN_ENDS / Math.sqrt(6) / TOOTH_SIGMA, 0.3, 1) : 1,
+    // How many output frames one draw of that texture lasts. Both are seeded by the
+    // frame index, which is what lets any frame draw alone, and at 60 fps that meant a
+    // completely new field of grain sixty times a second: the same look boiling twice
+    // as fast at 60 as at 30, and noise no frame can predict from the one before it,
+    // which is the first thing an encoder spends nothing on. At CRF 23 a fifth of what
+    // was drawn arrived in the file. So the roll is exposed at the take's own rate up
+    // to 30 a second and no faster, and a frame's seed is still its own index and
+    // nothing else. 30 rather than a projector's 24 because it divides both output
+    // rates: at 60 every draw lasts exactly two frames, at 30 it lasts one, and the
+    // grain of a 30 fps export is what it always was.
+    grainHold: Math.max(1, Math.round(fps / 30)),
     fadeIn: Math.max(0, num(opts.fadeIn, 0)), fadeOut: Math.max(0, num(opts.fadeOut, 0)),
     dither: L('grain').dither !== false,
   }
+}
+
+// ── arriving, leaving, and meeting at a cut ─────────────────────────────
+//
+// Everything here is a function of output time. A transition is not a filter over two
+// rendered frames and never reads the frame before: a dissolve is two source times and
+// a weight, all three solved from t, which is what lets the export render out of order
+// and the stage scrub straight to a frame in the middle of one.
+//
+// The curve is the same quintic the zoom rides (Overlays.easeS), with no warp, because
+// a cut is symmetric in a way a zoom is not: unwarped, the weight is exactly 0.5 at the
+// instant the timeline names, so the dissolve crosses over on the cut and the dip is at
+// its darkest there. Called with p in [0, 1] only; outside it the polynomial is not a
+// curve, and cutAt is what keeps p inside.
+const S = Overlays.easeS, dS = Overlays.easeSVel
+
+// The take arriving and leaving: a third of a second up into its frame, a little less
+// back out. 10 px at 1080 and three and a half percent, which is the distance a card
+// already travels (Text.frameMove) rather than a second opinion about it.
+const REVEAL_IN = 0.36, REVEAL_OUT = 0.32, REVEAL_K = 0.035, REVEAL_PX = 10
+// A cut transition, in seconds: half the window either side of the boundary for the
+// dissolve and the dip, and the whole of the push, which lives after the cut alone.
+const CUT_HALF = 0.1, PUSH_AFTER = 0.35, PUSH_AMOUNT = 0.06
+
+/**
+ * Where the cuts land on the output clock and how long each transition may be there.
+ *   t  the boundary, the output time the piece after the cut starts at
+ *   d  half the window (crossfade, dip) or the whole of it (zoom), whole frames
+ *   a  the take time the outgoing piece ends at, b the one the incoming piece starts at
+ *
+ * A dissolve is made of the frames the cut removed: the outgoing side runs on past its
+ * end into the gap and the incoming side starts inside it, so no output time is added
+ * and nothing the viewer already saw is shown twice. That caps it at the gap, and at
+ * half of either piece, so a cut with nothing behind it simply stays hard. Under two
+ * frames it is dropped: a transition the eye reads as a glitch is worse than the cut.
+ *
+ * And at whatever the edit starts hiding inside that gap (`hidden`, source seconds: a
+ * redaction, a blur, the Mac's pointer lifted out). Each side reads its marks from its
+ * own side of the cut (framePlan), which covers everything already hidden where the cut
+ * falls; what no instant of the output clock can speak for is a mark that begins inside
+ * the removed material, and the window stops short of those.
+ */
+function cutRoom(hidden, a, b) {
+  let room = Infinity
+  for (const [h0, h1] of hidden || []) {
+    // the outgoing side plays on from a, so nothing may begin hiding inside its reach
+    if (h0 >= a && h0 <= b) room = Math.min(room, h0 - a)
+    // and the incoming side starts before b, so nothing may stop hiding inside its reach
+    if (h1 >= a && h1 <= b) room = Math.min(room, b - h1)
+  }
+  return room
+}
+function cutPoints(keep, kind, fps, hidden) {
+  if (!kind || kind === 'none' || !keep || keep.length < 2) return null
+  const points = []
+  let acc = 0
+  for (let i = 0; i + 1 < keep.length; i++) {
+    acc += keep[i][1] - keep[i][0]
+    const gap = keep[i + 1][0] - keep[i][1]
+    const lenA = keep[i][1] - keep[i][0], lenB = keep[i + 1][1] - keep[i + 1][0]
+    const want = kind === 'zoom' ? Math.min(PUSH_AFTER, lenB)
+      : Math.min(CUT_HALF, lenA / 2, lenB / 2, kind === 'crossfade' ? Math.min(gap, cutRoom(hidden, keep[i][1], keep[i + 1][0])) : Infinity)
+    const f = Math.floor(want * fps + 1e-6)
+    if (f < 2) continue
+    points.push({ t: acc, d: f / fps, a: keep[i][1], b: keep[i + 1][0] })
+  }
+  return points.length ? { kind, points } : null
+}
+
+// The cut t is inside, with its progress through the window: 0 to 1 across the whole
+// window, so p is 0.5 exactly on the boundary for the two symmetric kinds.
+function cutAt(spec, t, kind) {
+  const c = spec.cut
+  if (!c || (kind && c.kind !== kind)) return null
+  for (const b of c.points) {
+    if (c.kind === 'zoom') { if (t >= b.t && t < b.t + b.d) return { b, p: (t - b.t) / b.d } }
+    else if (t > b.t - b.d && t < b.t + b.d) return { b, p: (t - b.t + b.d) / (2 * b.d) }
+  }
+  return null
+}
+
+/**
+ * The take's time at output time t, and the other side of a dissolve: { s, s2, mix }.
+ * Both sides move forward at the take's own rate, so a dissolve is two clips playing,
+ * not two frozen frames. Away from a dissolve s2 is null and mix 0.
+ */
+function srcPair(spec, t) {
+  const c = cutAt(spec, t, 'crossfade')
+  if (!c) return { s: srcAt(spec.keep, t), s2: null, mix: 0 }
+  const dt = t - c.b.t
+  // before the boundary the outgoing side is what srcAt already says; after it, that
+  // same piece carried on into the gap
+  return { s: c.b.a + dt, s2: c.b.b + dt, mix: S(c.p) }
+}
+
+// The cut's push, as a magnification and its rate: the piece after a cut lands a little
+// tight and settles back out. Never under 1, so the window never asks for more picture
+// than the frame has, which is the one way a transition could put black at an edge.
+function pushAt(spec, t) {
+  const c = cutAt(spec, t, 'zoom')
+  if (!c) return [1, 0]
+  return [1 + PUSH_AMOUNT * (1 - S(c.p)), -PUSH_AMOUNT * dS(c.p) / c.b.d]
+}
+
+// How wide the shutter may open at t. A push lands the piece after a cut tight, so the
+// view jumps on the boundary, and an exposure straddling it would smear the cut itself:
+// thirty-two taps of a six percent zoom on the first frame of the new piece. A shutter
+// cannot see both sides of an edit, so it is held to the side its own frame is on. The
+// other transitions leave the view continuous and this never touches them.
+// Held to just inside the frame's own side of it, not up to it: cutAt reads the
+// boundary itself as already pushed, so an exposure ending exactly there put the whole
+// six percent jump on the last frame before the cut. Only the frames whose own time
+// lands on or after the boundary are pushed, and a boundary is rarely on a frame.
+const CUT_EPS = 1e-6
+function shutterHalf(spec, t, half) {
+  if (!spec.cut || spec.cut.kind !== 'zoom') return half
+  for (const b of spec.cut.points) if (Math.abs(t - b.t) < half) return Math.max(0, Math.abs(t - b.t) - CUT_EPS)
+  return half
+}
+
+/**
+ * How the take sits at output time t: { k, dy, alpha, shadow }, as the frame pass takes
+ * it. A title card's landing where there is one (Text.frameMove), the look's own open
+ * and close where there is not, and a cut's dip over the top. The card wins because it
+ * is the reason the take is moving at all; the two are never added.
+ */
+function takeMove(spec, t) {
+  const mv = Text.frameMove(spec.text, t, spec.H)
+  const rv = spec.reveal, tp = spec.text
+  if (rv && !(tp && tp.reveal) && t < rv.in) {
+    const e = S(clamp(t / rv.in, 0, 1))
+    mv.k *= 1 - REVEAL_K * (1 - e)
+    mv.dy += REVEAL_PX * spec.H / 1080 * (1 - e)
+    // opaque well before it lands: what arrives is a take settling, not a take fading in
+    mv.alpha *= S(clamp(t / (rv.in * 0.6), 0, 1))
+    mv.shadow *= e
+  }
+  if (rv && !(tp && tp.close) && t > spec.span - rv.out) {
+    const e = S(clamp((t - (spec.span - rv.out)) / rv.out, 0, 1))
+    mv.k *= 1 - REVEAL_K * e
+    mv.dy += REVEAL_PX * spec.H / 1080 * e
+    mv.alpha *= 1 - S(clamp((t - (spec.span - rv.out * 0.6)) / (rv.out * 0.6), 0, 1))
+    mv.shadow *= 1 - e
+  }
+  const dip = cutAt(spec, t, 'dip')
+  if (dip) {
+    // down through the look's own ground and back, darkest on the boundary itself, so
+    // the frame the cut jumps on is the one frame the take is not on screen
+    const level = 1 - S(1 - Math.abs(2 * dip.p - 1))
+    mv.alpha *= level; mv.shadow *= level
+  }
+  return mv
 }
 
 // The take's time output time t shows. Ranges are half open here: the frame at the
@@ -450,10 +645,43 @@ function srcAt(keep, t) {
   return t
 }
 
-// What a zoom shows at output time t, as fractions of the cropped frame
+// What a zoom shows at output time t, as fractions of the cropped frame, with the cut's
+// push over it. The push tightens the window about its own centre, so what it asks for
+// is always inside what the zoom already showed and no clamp is needed.
 function viewAt(spec, t) {
-  const z = Overlays.zoomView(spec.zooms, t)
-  return [z.x, z.y, z.w, z.h]
+  const z = Overlays.zoomView(spec.zooms, t, spec.ease)
+  const [m] = pushAt(spec, t)
+  if (m === 1) return [z.x, z.y, z.w, z.h]
+  const w = z.w / m, h = z.h / m
+  return [z.x + (z.w - w) / 2, z.y + (z.h - h) / 2, w, h]
+}
+
+// How fast a pixel of content is travelling on the output at time t, in output pixels
+// per second. The analytic derivative of the same window, not a difference between two
+// frames: the rule is that a frame draws from its own time alone, and this is what the
+// shutter reads. Same four corners travel() walks, to first order in the rates.
+function travelRate(spec, t) {
+  const v = Overlays.zoomWindow(spec.zooms, t, spec.ease)
+  const [m, dm] = pushAt(spec, t)
+  // only the rates and the window's size are read below, so the push is chained into
+  // those alone: where its centre sits does not change how fast anything is moving
+  let { w: vw, h: vh, dx: vdx, dy: vdy, dw: vdw, dh: vdh } = v
+  if (m !== 1) {
+    // the same tightening viewAt applies, differentiated: a push settling out moves the
+    // picture, so the shutter has to see it as travel like any other
+    const w2 = vw / m, h2 = vh / m
+    const dw2 = (vdw * m - vw * dm) / (m * m), dh2 = (vdh * m - vh * dm) / (m * m)
+    vdx += (vdw - dw2) / 2; vdy += (vdh - dh2) / 2
+    vw = w2; vh = h2; vdw = dw2; vdh = dh2
+  }
+  if (!(vw > 0)) return 0
+  const { w, h } = spec.rect
+  let most = 0
+  for (const u of [0, 1]) for (const c of [0, 1]) {
+    const dx = (vdx + u * vdw) / vw * w, dy = (vdy + c * vdh) / vh * h
+    most = Math.max(most, Math.hypot(dx, dy))
+  }
+  return most
 }
 
 // How far a pixel of content travels on the output between two views
@@ -470,26 +698,49 @@ function travel(spec, a, b) {
 }
 
 /**
- * One output frame, at output time t (seconds): { t, s, view0, view1, taps, fade, camT }.
- * s is the take's own time the frame shows. view0 and view1 bound the zoom's travel
- * across the shutter; taps is how many samples blur it, scaled with how far a pixel
- * moves so a fast glide never shows separate ghost copies of text.
+ * One output frame, at output time t (seconds): { t, s, s2, mix, view0, view1, taps,
+ * speed, fade, camT }. s is the take's own time the frame shows; through a dissolve s2
+ * is the other side's and mix is how much of it there is, 0 on one side of the cut and
+ * 1 on the other. view0 and view1 bound the zoom's travel across the shutter; taps is
+ * how many samples blur it, scaled with how far a pixel moves so a fast glide never
+ * shows separate ghost copies of text.
  */
 function framePlan(spec, t) {
-  const s = srcAt(spec.keep, t)
+  const { s, s2, mix } = srcPair(spec, t)
   let view0 = viewAt(spec, t), view1 = view0, taps = 1
-  if (spec.motionBlur > 0 && spec.zooms.length) {
-    // motionBlur 1 is a 360 degree shutter, 0.5 the film standard 180
-    const half = spec.motionBlur / spec.fps / 2
+  // What smears is the zoom's own speed at this instant, which is the derivative of the
+  // ease. The dial is the shutter alone: motionBlur 1 is 360 degrees, 0.5 the film
+  // standard 180. So a fast pass smears, a settle does not, and neither asks for a dial
+  // to be turned up. Nothing at rest blurs, because the ease leaves and arrives with
+  // zero velocity, so every held frame stays byte for byte what it was. A cut's push
+  // moves the picture with no zoom in the edit at all, so it opens the shutter too.
+  const moving = spec.zooms.length > 0 || (spec.cut && spec.cut.kind === 'zoom')
+  const speed = moving ? travelRate(spec, t) : 0
+  if (spec.motionBlur > 0 && moving) {
+    const half = shutterHalf(spec, t, spec.motionBlur / spec.fps / 2)
     const a = viewAt(spec, t - half), b = viewAt(spec, t + half)
-    const px = travel(spec, a, b)
+    // the chord is exact for the two ends of the exposure, the rate is right through a
+    // turn in the middle of it; the longer of the two is what the samples have to cover
+    const px = Math.max(travel(spec, a, b), speed * 2 * half)
     if (px > 0.75) { view0 = a; view1 = b; taps = Math.max(2, Math.min(32, Math.ceil(px / 1.5))) }
   }
   const fi = spec.fadeIn > 0 ? clamp(t / spec.fadeIn, 0, 1) : 1
   const fo = spec.fadeOut > 0 ? clamp((spec.span - t) / spec.fadeOut, 0, 1) : 1
   const camT = spec.cam ? Timeline.camTime(spec.cam, s) : null
-  return { t, s, view0, view1, taps, fade: fi * fo, camT,
-    marks: spec.marks ? Marks.at(spec.marks, t) : null, move: Text.frameMove(spec.text, t, spec.H) }
+  // Each side of a dissolve reads the marks at its own side of the cut. Both sides are
+  // playing inside the material the cut removed, and a mark is placed on the output
+  // clock, where that material has no time at all: a redaction keyed to output time has
+  // already ended on the boundary while the outgoing side runs on past it, so the frames
+  // of the dissolve showed the secret. The outgoing side takes the last instant before
+  // the cut and the incoming one the first instant after it, which is where their own
+  // source times went when the clock closed the gap. cutPoints keeps the window clear of
+  // anything the edit starts hiding inside the gap, which is the part no instant of the
+  // output clock can speak for.
+  const xd = mix > 0 ? cutAt(spec, t, 'crossfade') : null
+  const marks = spec.marks ? Marks.at(spec.marks, xd ? Math.min(t, xd.b.t - CUT_EPS) : t) : null
+  const marks2 = spec.marks && xd ? Marks.at(spec.marks, Math.max(t, xd.b.t)) : null
+  return { t, s, s2, mix, view0, view1, taps, speed, fade: fi * fo, camT,
+    marks, ...(marks2 ? { marks2 } : {}), move: takeMove(spec, t) }
 }
 
 // ── which source frames ─────────────────────────────────────────────────
@@ -543,11 +794,16 @@ function frameMap(pts, frames, timeOf, gap = 12, maxRuns = 64) {
 
 // The take's frames for a plan
 function screenFrames(spec, pts) {
-  return frameMap(pts, spec.frames, n => srcAt(spec.keep, n / spec.fps))
+  return frameMap(pts, spec.frames, n => srcPair(spec, n / spec.fps).s)
+}
+// And the other side of every dissolve: nothing at all except through a transition, so
+// the second decode is a few runs of a few frames each and stops after the last of them
+function crossFrames(spec, pts) {
+  return frameMap(pts, spec.frames, n => srcPair(spec, n / spec.fps).s2)
 }
 // The camera's frames: its own clock, which starts late and runs through pauses
 function cameraFrames(spec, pts) {
   return frameMap(pts, spec.frames, n => Timeline.camTime(spec.cam, srcAt(spec.keep, n / spec.fps)))
 }
 
-module.exports = { prepare, framePlan, srcAt, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, cameraFrames, rgb, markKey, edgeFor }
+module.exports = { prepare, framePlan, srcAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor }

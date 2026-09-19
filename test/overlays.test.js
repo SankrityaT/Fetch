@@ -172,10 +172,15 @@ is('nothing to draw is no script', O.contentScript({ W: 10, H: 10, marks: [] }),
   is('the lift shade expression is focusAt, at half size', lp.every(([X, Y]) => close(evalExpr(exL.shade, X * 0.5, Y * 0.5), O.focusAt(L, X, Y).shade)), true)
   is('the piece mask is focusAt, in its own crop', lp.every(([X, Y]) => close(evalExpr(exP.piece, X - 100, Y - 60), O.focusAt(L, X, Y).piece)), true)
 
-  // timing: in and out on the zoom's curve, and with a zoom on the same thing, as one move
+  // timing: in and out with the zoom, and for exactly as long as that zoom's own push,
+  // which is the distance it covers and not a constant any more
+  const ride = O.easeSpan(1, 1.8)
   const tm = O.focusTiming({ start: 35, end: 38.7 }, [{ start: 35, end: 38.4 }])
-  is('a spotlight with its zoom starts and ends with it', [tm.a, tm.b, tm.Tin, tm.Tout], [35, 38.4, O.ZOOM_EASE, O.ZOOM_EASE])
-  is('it eases on the zoom curve', [O.focusLevel(tm, 35), +O.focusLevel(tm, 35 + O.ZOOM_EASE / 2).toFixed(3), O.focusLevel(tm, 36.5), O.focusLevel(tm, 38.4)], [0, 0.5, 1, 0])
+  is('a spotlight with its zoom starts and ends with it', [tm.a, tm.b, tm.Tin, tm.Tout], [35, 38.4, ride, ride])
+  is('a deeper zoom gives it longer', O.focusTiming({ start: 35, end: 38.7 }, [{ start: 35, end: 38.4, scale: 3 }]).Tin > ride, true)
+  // the dim is a light coming up, not the camera travelling, so it stays on the curve
+  // the classic renderer's own masks draw (focusExprs), which is the shared smoothstep
+  is('it eases in and out', [O.focusLevel(tm, 35), +O.focusLevel(tm, 35 + tm.Tin / 2).toFixed(3), O.focusLevel(tm, 36.5), O.focusLevel(tm, 38.4)], [0, 0.5, 1, 0])
 }
 
 // ---- a corner radius read off the picture ----
@@ -224,10 +229,12 @@ is('a spotlight well before its zoom keeps its own time', O.spotlightSpan({ star
 is('a spotlight clear of any zoom is untouched', O.spotlightSpan({ start: 26, end: 28 }, zs), { a: 26, b: 28, Ta: null, Tb: null })
 // M7 then Z3: the dim lifted at 31.0 and the push came at 31.2, two moves with a hitch
 // between. The dim now lifts during the push.
-is('a spotlight ending as a zoom begins hands off to it', O.spotlightSpan({ start: 29.3, end: 31 }, zs), { a: 29.3, b: 31.65, Ta: null, Tb: 0.45 })
+const ride45 = O.easeSpan(1, 1.8)     // the default zoom's own push, 0.454 s
+is('a spotlight ending as a zoom begins hands off to it', O.spotlightSpan({ start: 29.3, end: 31 }, zs),
+  { a: 29.3, b: 31.2 + ride45, Ta: null, Tb: ride45 })
 {
   const s = O.spotlightSpan({ start: 16.1, end: 18 }, [{ start: 9, end: 15.8 }])
-  is('and one starting as a zoom ends lands with the pull', [+s.a.toFixed(2), s.b, s.Ta, s.Tb], [15.35, 18, 0.45, null])
+  is('and one starting as a zoom ends lands with the pull', [+s.a.toFixed(2), s.b, s.Ta, s.Tb], [+(15.8 - ride45).toFixed(2), 18, ride45, null])
 }
 is('a zoom a second later is its own beat', O.spotlightSpan({ start: 29.3, end: 31 }, [{ start: 32.2, end: 34 }]).b, 31)
 is('an edge never moves in to leave a sliver', O.spotlightSpan({ start: 5, end: 8 }, [{ start: 7.5, end: 12 }]).a, 5)

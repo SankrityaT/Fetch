@@ -1607,9 +1607,19 @@ function cursorEraseFilters(spans, plates, clock, meta, crop, content, span) {
   return out
 }
 
-// smoothstep, written the way ffmpeg's expression parser wants it
+// The zoom's ease, written the way ffmpeg's expression parser wants it. What the curve
+// is and why is in ui/overlays.js; this is the same S(g(p)) spelled a second time, in
+// the one dialect that cannot call a function, so the editor's stage and the export
+// make the same move. Both forms are written with as few occurrences of p as they have
+// (g is factored, S is Horner), because every occurrence is another copy of the ramp.
 const ramp = (t, a, b) => `(${t}-${a})/(${b}-${a})`
 const smooth = p => `(${p})*(${p})*(3-2*(${p}))`
+const easeBias = kind => (Overlays.EASES[kind] || Overlays.EASES[Overlays.ZOOM_EASE_DEFAULT]).bias
+const easeExpr = (p, kind) => {
+  const c = easeBias(kind).toFixed(3)
+  const u = `((${p})*(1+${c}*(1-(${p}))))`
+  return `${u}*${u}*${u}*(10+${u}*(6*${u}-15))`
+}
 
 // Where a recorded screen point sits in the picture, as 0..1 of the frame the zoom
 // receives (after any crop), or null when it is not in the picture at all: on
@@ -1648,7 +1658,8 @@ function cursorMapper(data, crop) {
 function zoomMoments(data, opts = {}) {
   if (!data) return []
   const hold = opts.hold ?? 1.6          // seconds held at full zoom
-  const ease = opts.ease ?? 0.45         // seconds to push in, and to pull back
+  const curve = opts.curve || Overlays.ZOOM_EASE_DEFAULT   // motion.zoomEase
+  const depth = opts.zoom ?? 1.7         // motion.zoomDepth: the deepest a moment goes
   const gap = opts.gap ?? 2.2            // clicks closer than this share one moment...
   const near = opts.near ?? 0.25         // ...when they are also this close on screen
   const clock = opts.clock || (t => t)
@@ -1678,37 +1689,53 @@ function zoomMoments(data, opts = {}) {
 
   // A run of clicks in one place is one moment that holds until the last of them. It
   // used to slide the whole moment to the last click, so the zoom arrived late.
+  // A run of clicks also says how wide the thing under them is, and that is what the
+  // moment frames: a run across a toolbar spans a third of the picture and pulls back,
+  // a run on one field spans nothing and takes the dial's full depth
+  // (Overlays.fitScale, the 70 percent fit ui/targets.js frames a named box with).
   const groups = []
   for (const e of events) {
     const last = groups[groups.length - 1]
-    if (last && e.t - last.until < gap && Math.hypot(e.x - last.x, e.y - last.y) < near) { last.until = e.t; continue }
-    groups.push({ t: e.t, until: e.t, x: e.x, y: e.y })
+    if (last && e.t - last.until < gap && Math.hypot(e.x - last.x, e.y - last.y) < near) {
+      last.until = e.t
+      last.x0 = Math.min(last.x0, e.x); last.x1 = Math.max(last.x1, e.x)
+      last.y0 = Math.min(last.y0, e.y); last.y1 = Math.max(last.y1, e.y)
+      last.x = (last.x0 + last.x1) / 2; last.y = (last.y0 + last.y1) / 2
+      continue
+    }
+    groups.push({ t: e.t, until: e.t, x: e.x, y: e.y, x0: e.x, x1: e.x, y0: e.y, y1: e.y })
   }
-  const moments = groups.map(g => ({
-    inStart: Math.max(0, g.t - ease),
-    inEnd: g.t,
-    outStart: g.until + hold,
-    outEnd: g.until + hold + ease,
-    x: g.x, y: g.y,
-  }))
+  // A deeper moment takes longer to push in and to pull back: one ramp length for every
+  // zoom was the whole of why a deep one snapped (Overlays.easeSpan).
+  const moments = groups.map(g => {
+    const scale = Overlays.fitScale(Math.max(g.x1 - g.x0, g.y1 - g.y0), depth)
+    const ease = Overlays.easeSpan(1, scale, curve)
+    return { inStart: Math.max(0, g.t - ease), inEnd: g.t,
+      outStart: g.until + hold, outEnd: g.until + hold + ease, x: g.x, y: g.y, scale }
+  })
   // A click somewhere else before the last moment has let go, or so soon after that
   // the frame would sit at 1x for under `settle`: stay in and pan across to it. Pulling
   // all the way out and pushing straight back in reads as a bounce, not an edit. The
   // pan ends on the click, as the cursor's glide does, and waits for the last click of
   // the run it leaves unless that would make it a snap.
-  const settle = opts.settle ?? 0.8, pan = opts.pan ?? 0.7
+  const settle = opts.settle ?? Overlays.ZOOM_SETTLE
   for (let i = 1; i < moments.length; i++) {
     const p = moments[i - 1], n = moments[i]
     if (p.outEnd + settle <= n.inStart) continue
+    const d = Math.hypot(n.x - p.x, n.y - p.y)
+    const pan = opts.pan ?? Overlays.panSpan(d * Math.min(p.scale, n.scale), curve)
     n.inStart = Math.max(p.inEnd, Math.min(groups[i - 1].until, n.inEnd - 0.3), n.inEnd - pan)
     p.outStart = p.outEnd = n.inStart
-    n.from = { x: p.x, y: p.y }
+    n.from = { x: p.x, y: p.y, scale: p.scale, dip: Overlays.panDip(p.scale, n.scale, d) }
   }
   return moments
 }
 
 // nested if() chain: one branch per moment, 1.0 everywhere else
-function zoomExpr(moments, disp, zMax, trimStart) {
+// The scale is carried in the log, z = exp(ln(scale) * E), for the reason
+// Overlays.sampleMoment gives: what the eye reads is ds/s, and interpolating the scale
+// itself spent most of a deep zoom's apparent speed in its first third.
+function zoomExpr(moments, disp, zMax, trimStart, curve) {
   const T = 'in_time'
   let z = '1', fx = '0.5', fy = '0.5'
   for (let i = moments.length - 1; i >= 0; i--) {
@@ -1716,14 +1743,15 @@ function zoomExpr(moments, disp, zMax, trimStart) {
     const a = (m.inStart - trimStart), b = (m.inEnd - trimStart)
     const c = (m.outStart - trimStart), d = (m.outEnd - trimStart)
     if (d <= 0) continue
-    const upP = smooth(ramp(T, a.toFixed(3), b.toFixed(3)))
-    const downP = smooth(ramp(T, d.toFixed(3), c.toFixed(3)))   // reversed: 0 at d, 1 at c
+    const upP = easeExpr(ramp(T, a.toFixed(3), b.toFixed(3)), curve)
+    const downP = easeExpr(ramp(T, d.toFixed(3), c.toFixed(3)), curve)   // reversed: 0 at d, 1 at c
     // a moment handing over to the next one (zoomMoments' pan) never pulls back
     const out = d - c > 0.001 ? `if(lt(${T},${c.toFixed(3)}),1,${downP})` : '1'
     const inWindow = `between(${T},${a.toFixed(3)},${d.toFixed(3)})`
     // Per-moment scale lets an explicit zoom say how far it goes. Auto-zoom moments
     // carry none and fall back to the single global amount exactly as before.
     const zm = m.scale != null ? m.scale : zMax
+    const lz = Math.log(zm).toFixed(5)
     const cx = Math.min(1, Math.max(0, (m.x - disp.x) / disp.width)).toFixed(4)
     const cy = Math.min(1, Math.max(0, (m.y - disp.y) / disp.height)).toFixed(4)
     const f = m.from
@@ -1731,18 +1759,21 @@ function zoomExpr(moments, disp, zMax, trimStart) {
       // arriving from another moment: already zoomed, so the in-ease is a pan on the
       // same curve, the focus and any change of scale moving together
       const fz = f.scale != null ? f.scale : zm
+      const lf = Math.log(fz).toFixed(5)
       const px = Math.min(1, Math.max(0, (f.x - disp.x) / disp.width)).toFixed(4)
       const py = Math.min(1, Math.max(0, (f.y - disp.y) / disp.height)).toFixed(4)
       const lerp = (from, to) => `if(lt(${T},${b.toFixed(3)}),${from}+(${to}-${from})*${upP},${to})`
-      // a far pan eases back while it travels (Overlays.zoomPlan), on a parabola of the same progress
-      const dip = f.dip > 0.001 ? `-${(4 * f.dip).toFixed(3)}*${upP}*(1-${upP})` : ''
-      z = `if(${inWindow},if(lt(${T},${b.toFixed(3)}),${fz.toFixed(3)}+${(zm - fz).toFixed(3)}*${upP}${dip},1+${(zm - 1).toFixed(3)}*(${out})),${z})`
+      // a far pan eases back while it travels (Overlays.panDip), octaves off the scale
+      // on a parabola of the same progress
+      const dip = f.dip > 0.001 ? `-${(4 * f.dip).toFixed(5)}*${upP}*(1-${upP})` : ''
+      const pan = `exp(${lf}+${(Math.log(zm) - Math.log(fz)).toFixed(5)}*${upP}${dip})`
+      z = `if(${inWindow},if(lt(${T},${b.toFixed(3)}),${pan},exp(${lz}*(${out}))),${z})`
       fx = `if(${inWindow},${lerp(px, cx)},${fx})`
       fy = `if(${inWindow},${lerp(py, cy)},${fy})`
       continue
     }
     const amount = `if(lt(${T},${b.toFixed(3)}),${upP},${out})`
-    z = `if(${inWindow},1+${(zm - 1).toFixed(3)}*(${amount}),${z})`
+    z = `if(${inWindow},exp(${lz}*(${amount})),${z})`
     fx = `if(${inWindow},${cx},${fx})`
     fy = `if(${inWindow},${cy},${fy})`
   }
@@ -1759,12 +1790,12 @@ function zoomExpr(moments, disp, zMax, trimStart) {
 // the export's frame rate lives with the rest of the edit's time (ui/timeline.js)
 const zoomFps = Timeline.outFps
 
-function explicitZoomFilter(zooms, meta, clock, frame) {
+function explicitZoomFilter(zooms, meta, clock, frame, curve) {
   const list = (zooms || []).filter(z => z && z.end > z.start)
   if (!list.length) return null
   // the plan the editor previews: same ease, and zooms close together pan across
-  const moments = Overlays.zoomPlan(list.map(z => ({ ...z, start: clock(z.start), end: clock(z.end) })))
-  const { z, fx, fy } = zoomExpr(moments, UNIT, 1.8, 0)   // already on the output clock
+  const moments = Overlays.zoomPlan(list.map(z => ({ ...z, start: clock(z.start), end: clock(z.end) })), curve)
+  const { z, fx, fy } = zoomExpr(moments, UNIT, 1.8, 0, curve)   // already on the output clock
   return { filter: zoompan(z, fx, fy, meta, frame), moments: moments.length }
 }
 
@@ -1878,7 +1909,7 @@ function focusFilters(marks, zooms, size, opts = {}) {
   let i = 0
   for (const m of marks || []) {
     if (!m || !Overlays.FOCUS_KINDS.includes(m.kind)) continue
-    const tm = Overlays.focusTiming(m, zooms)
+    const tm = Overlays.focusTiming(m, zooms, opts.curve)
     if (!tm) continue
     const a = Math.max(0, tm.a), b = Math.min(span, tm.b)
     if (!(b > a + 0.2)) continue
@@ -2152,7 +2183,7 @@ function autoZoomFilter(srcArg, meta, opts = {}, clock = 0, frame, crop) {
   if (typeof clock === 'number') { const s = clock; clock = t => t - s; clock.kept = t => t >= s }
   const moments = zoomMoments(data, { ...opts, clock, crop })
   if (!moments.length) return null
-  const { z, fx, fy } = zoomExpr(moments, UNIT, opts.zoom ?? 1.7, 0)
+  const { z, fx, fy } = zoomExpr(moments, UNIT, opts.zoom ?? 1.7, 0, opts.curve)
   return { filter: zoompan(z, fx, fy, meta, frame), moments: moments.length }
 }
 
@@ -2561,8 +2592,11 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     // output pixels per recorded pixel before any zoom, so an edge or a feather is
     // sized for the finished frame
     const pxOut = (bdGeo ? bdGeo.vidH : (opts.scale === 1080 || opts.scale === 720 ? opts.scale : content.h)) / content.h
-    for (const ff of focusFilters(onClock, zoomsOut, content, { px: pxOut, fps: zoomFps(meta), span: outSpan })) vf.push(ff)
-    const contentAss = Overlays.contentScript({ W: content.w, H: content.h, marks: onClock, zooms: zoomsOut, px: pxOut })
+    // the same ease the zooms themselves ride, so a lift or a spotlight on a zoom
+    // takes that zoom's own ramp and not the default one (Overlays.spotlightSpan)
+    const zoomCurve = (opts.autoZoomOpts || {}).curve
+    for (const ff of focusFilters(onClock, zoomsOut, content, { px: pxOut, fps: zoomFps(meta), span: outSpan, curve: zoomCurve })) vf.push(ff)
+    const contentAss = Overlays.contentScript({ W: content.w, H: content.h, marks: onClock, zooms: zoomsOut, px: pxOut, kind: zoomCurve })
     if (contentAss) {
       const ap = path.join(overlayFonts.dir, 'content.ass')
       fs.writeFileSync(ap, contentAss)
@@ -2618,7 +2652,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     // so zoom outputs straight at that size rather than scaling up to the source
     // size only for the backdrop to scale it down again
     const zoomTo = bdGeo ? { w: bdGeo.vidW, h: bdGeo.vidH } : frame
-    if (opts.zooms && opts.zooms.length) zoomInfo = explicitZoomFilter(opts.zooms, meta, clock, zoomTo)
+    if (opts.zooms && opts.zooms.length) zoomInfo = explicitZoomFilter(opts.zooms, meta, clock, zoomTo, (opts.autoZoomOpts || {}).curve)
     else if (opts.autoZoom) zoomInfo = autoZoomFilter(srcArg, meta, { ...(opts.autoZoomOpts || {}), pointer: opts.pointer }, clock, zoomTo, c)
     if (zoomInfo) {
       // ScreenCaptureKit writes a frame only when the screen changes, so a native take

@@ -120,7 +120,11 @@ does not draw yet are stored, hidden from the inspector, and named in `look_warn
 That flag has not caught up with M4: the Treatment and grain fields the compositor now
 draws still carry it, so the inspector hides them and `look_warnings` calls them undrawn
 while every MP4 export draws them. The flag has to become "the classic renderer cannot
-draw this", said only where that renderer is the one running.
+draw this", said only where that renderer is the one running. `motion.cutTransition` is
+the first field to go the other way on purpose: the compositor draws it, the classic
+renderer cuts hard, and it carries no flag, because a flag that hides a working control
+from the inspector costs more than the warning is worth. The GIF and still paths are
+where that shows.
 Output keeps the take's shape; a chosen shape is filled by the background, and with no
 background by a soft blur of the take, never black bars. Browser chrome is a setting:
 for a take whose agent reported the page's viewport, `frame.chrome: remove` crops to the
@@ -129,11 +133,31 @@ Look changes are undo steps like any other edit.
 
 **The compositor** (`ui/compositor/`, passes in `PASSES.md`). A WebGL2 renderer that
 draws the editor's stage and the export from one plan (`plan.js`), so the stage is the
-file's pixels: background, corners, shadow, zooms (with motion blur, `treatment.motionBlur`),
+file's pixels: background, corners, shadow, zooms (on the quintic ease `motion.zoomEase`
+names, with motion blur read off that ease's own velocity and the shutter at the film
+standard 180 degrees, `treatment.motionBlur`),
 fades, cuts, the camera bubble, and since M3 everything placed on the take: the Mac's
 pointer lifted out, redactions, blurs, spotlights, lifts, steps, the agent's cursor with
 its ripples and Biscuit's badge, captions with the spoken word and frosted glass, title
-cards, lower thirds and labels. Since M4 it draws the whole Treatment section as well:
+cards, lower thirds and labels. It draws what happens at a cut and at the two ends of a
+take, which nothing drew before: `motion.reveal` brings the take up into its frame over
+a third of a second and settles it back out at the end (only where the look puts
+something behind it, since a take that fills the frame has nowhere to arrive from), and
+`motion.cutTransition` is a cross dissolve made of the frames the cut removed, a dip
+through the look's own ground, or a push that lands the next piece tight and lets it
+settle. The default is a hard cut and stays one: dead air removal is the commonest cut
+in the product, its two sides are the same shot a moment apart, and there a dissolve is
+invisible and a dip only announces an edit meant not to be noticed
+(`.context/survey/motion-cuts.md`). A dissolve is the one thing in the product that
+shows material the edit took out, so it keeps what the edit hides: each of its two sides
+reads the marks from its own side of the boundary, and where something starts or stops
+being hidden inside the frames it would show, the window shortens or the cut stays hard
+(`.context/survey/motion-verify.md`). What the camera does between those cuts is held to
+the same rule as the cuts themselves: the ease-back in the middle of a long pan never
+pulls the window wider than the frame, the shutter never spans a cut, a lift or a
+spotlight riding a zoom takes that zoom's own ramp whichever ease the look names, and
+the camera bubble arrives, leaves and dips with the take it lies on rather than sitting
+lit over bare ground. Since M4 it draws the whole Treatment section as well:
 the take's own exposure evened out (its black and white points measured once per take by
 `levels.js` and held to the take, never to the background a look chose), brightness,
 contrast, saturation, a tint laid over with the luminance put back, haze, a softened
@@ -153,11 +177,19 @@ blur ground that holds near the take's own mean rather than pressed into a deep 
 and a warm hairline where neither is enough. That is what keeps the promise about black
 bars true on a light product: a 20 px gutter beside a white page reads as bleed, never
 as a bar. A blur redaction and an unframed caption are drawn shapes now, a plate with a
-corner and a hairline and a plate of the caption's own glass, rather than a smudge.
+corner and a hairline and a plate of the caption's own glass, rather than a smudge: the
+caption on a plate draws no blurred cloud of its glyphs at all, so nothing it puts on
+the product reaches past the plate's own bounds, and the words and what shades them move
+together when the caption dodges live content.
 The ground is a surface rather than one number across 1920x1080: it carries three levels
 of tooth whatever luma the look chose (and less of it on a stage drawn below the file's
 size, because that is what the file's own tooth becomes there) and the app's own two
-faint warm pools in the corners `tokens.css` puts them in. The grade's shoulder and toe
+faint warm pools in the corners `tokens.css` puts them in. Under a look with film grain
+the tooth stands down to what that grain leaves on the picture, because the roll is in
+front of the whole frame and a wall grainier than the plate hanging on it is a mat; and
+the grain itself is renewed at the take's own rate up to 30 times a second, so a look
+grains the same at 30 fps and at 60 the way its cell already makes it grain the same at
+720p and at 4K. The grade's shoulder and toe
 arrive carrying the slope the picture had rather than flat, so a contrast no longer
 compresses a white page's row separators into the page; the vignette dial is how many
 fall-offs rather than a share of one; and the take's hairline goes to the one warm end
@@ -167,8 +199,8 @@ It is the default renderer:
 every MP4 or MOV export runs
 it in a hidden window (`ui/render-host.js`, `render.html`), several times real time, with
 the sound rendered by ffmpeg alongside, and `preview_frame` draws with it too. GIF and
-WebM, auto zoom without explicit zooms, and a take the compositor cannot read go to the
-classic ffmpeg renderer. Activity and the MCP export result name the engine that drew each
+WebM and a take the compositor cannot read go to the classic ffmpeg renderer; auto zoom
+is drawn here too, from the moments `prepare.js` hands over whole. Activity and the MCP export result name the engine that drew each
 file (`gl` or `classic`, and why). What only the take's pixels say (a lift's element and
 its corners, a step's card corner, the Mac's pointer and clean patches, the cursor's rests,
 whether the bottom of the frame is any place for a caption at all: a toast arrived there,

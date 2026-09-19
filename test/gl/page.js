@@ -79,16 +79,20 @@ async function renderFrame(job) {
   const n = Math.min(spec.frames - 1, job.n)
   const i = map.pick[n]
   let cropUV = [0, 0, 1, 1]
-  if (job.path === 'video') {
-    const v = await video(job.src)
-    await seekFrame(v, pts, i)
-    c.uploadImage('content', v, v.videoWidth, v.videoHeight)
-    const s = spec.src
-    cropUV = [spec.crop.x / s.w, spec.crop.y / s.h, spec.crop.w / s.w, spec.crop.h / s.h]
-  } else {
-    const f = await nv12Frame(job.ffmpeg, job.src, i, spec)
-    c.uploadNV12('content', f.data, f.w, f.h, spec.src.h)
+  // one source frame by index into the content slot, through whichever path this is
+  const upload = async (idx) => {
+    if (job.path === 'video') {
+      const v = await video(job.src)
+      await seekFrame(v, pts, idx)
+      c.uploadImage('content', v, v.videoWidth, v.videoHeight)
+      const s = spec.src
+      cropUV = [spec.crop.x / s.w, spec.crop.y / s.h, spec.crop.w / s.w, spec.crop.h / s.h]
+    } else {
+      const f = await nv12Frame(job.ffmpeg, job.src, idx, spec)
+      c.uploadNV12('content', f.data, f.w, f.h, spec.src.h)
+    }
   }
+  await upload(i)
   let cam = false, camUV = [0, 0, 1, 1]
   if (spec.cam) {
     const cpts = await ptsOf(job.ffmpeg, spec.cam.file)
@@ -109,8 +113,19 @@ async function renderFrame(job) {
     }
   }
   const fp = Plan.framePlan(spec, n / spec.fps)
-  c.render(spec, fp, { n, cropUV, cam, camUV })
-  return { W: c.W, H: c.H, px: c.readRGBA(), i, taps: fp.taps }
+  // a frame inside a dissolve is drawn once per side, both sides through this path
+  const xi = fp.mix > 0 ? Plan.crossFrames(spec, pts).pick[n] : -1
+  // job.seed holds the frame index the ground's tooth, the film grain and the dither are
+  // seeded by, so a run of frames can be compared with only the move between them
+  const sn = job.seed != null ? job.seed : n
+  if (xi >= 0 && !job.oneSide) {
+    c.render(spec, fp, { n: sn, cropUV, cam, camUV, side: 'a' })
+    await upload(xi)
+    c.render(spec, fp, { n: sn, cropUV, cam, camUV, side: 'b' })
+  } else {
+    c.render(spec, fp, { n: sn, cropUV, cam, camUV })
+  }
+  return { W: c.W, H: c.H, px: c.readRGBA(), i, i2: xi, mix: +fp.mix.toFixed(4), taps: fp.taps }
 }
 
 // PNG in and out, through a 2D canvas
@@ -171,6 +186,64 @@ window.moved = async (job, variants) => {
     out.push(b.W !== a.W || b.H !== a.H ? { max: 255, mean: 255, over2: 100, size: `${b.W}x${b.H}` } : diff(ax, b.px, a.W))
   }
   return out
+}
+
+/**
+ * A run of frames of one plan, each drawn alone, measured against a reference frame:
+ * the mean absolute difference per channel, the frame's own mean luma, and what the
+ * plan said (mix, the two source picks). A still cannot say whether a move is monotone,
+ * and this is the cheapest thing that can.
+ */
+window.march = async (job, ns, refN) => {
+  const job2 = { ...job, seed: 0 }
+  const ref = Uint8Array.from((await renderFrame({ ...job2, n: refN, path: 'nv12' })).px)
+  const out = []
+  for (const n of ns) {
+    const a = await renderFrame({ ...job2, n, path: 'nv12' })
+    let sum = 0, lum = 0, k = 0
+    for (let p = 0; p < ref.length; p += 4) {
+      sum += Math.abs(a.px[p] - ref[p]) + Math.abs(a.px[p + 1] - ref[p + 1]) + Math.abs(a.px[p + 2] - ref[p + 2])
+      lum += 0.2126 * a.px[p] + 0.7152 * a.px[p + 1] + 0.0722 * a.px[p + 2]
+      k++
+    }
+    out.push({ n, diff: +(sum / (k * 3)).toFixed(3), luma: +(lum / k).toFixed(3), mix: a.mix, i: a.i, i2: a.i2 })
+  }
+  return out
+}
+
+/**
+ * A run of frames drawn in order, then the same frames drawn again in the order given.
+ * Motion is a function of the output time alone, so the two runs have to be the same
+ * pixels: it is what lets the export render out of order and the stage scrub straight
+ * to the middle of a move. `stateless` is one frame of this claim; this is a whole
+ * sequence of it, which is where a move that remembered anything would show.
+ * The seed is the frame's own index, as in an export, so the grain travels with it.
+ */
+window.permute = async (job, ns, order) => {
+  const first = new Map()
+  for (const n of ns) first.set(n, Uint8Array.from((await renderFrame({ ...job, n, path: 'nv12' })).px))
+  const out = []
+  for (const n of order) {
+    const a = await renderFrame({ ...job, n, path: 'nv12' })
+    out.push({ n, ...diff(first.get(n), a.px) })
+  }
+  return out
+}
+
+/**
+ * A frame inside a dissolve, drawn with no far side to mix in: the stage has none while
+ * its second <video> is still seeking, and a still has none when that decode comes back
+ * empty. It has to be the near side drawn alone. The compositor keeps its targets
+ * between frames, so what a draw that wrote nothing would hand back is the frame before,
+ * and this draws a different frame before it each time to say which of the two arrived.
+ */
+window.oneSided = async (job, before) => {
+  const prev = Uint8Array.from((await renderFrame({ ...job, n: before, path: 'nv12' })).px)
+  const a = Uint8Array.from((await renderFrame({ ...job, path: 'nv12', oneSide: true })).px)
+  await renderFrame({ ...job, n: before + 40, path: 'nv12' })
+  const b = (await renderFrame({ ...job, path: 'nv12', oneSide: true })).px
+  const both = await renderFrame({ ...job, path: 'nv12' })
+  return { same: diff(a, b), stale: diff(a, prev), mixed: diff(a, both.px), mix: both.mix }
 }
 
 // Write a frame to look at

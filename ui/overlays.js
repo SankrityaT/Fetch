@@ -11,9 +11,11 @@
 //            last, on the 1920x1080 composite, so a zoom never enlarges a caption and
 //            a title can sit on the backdrop.
 //
-// Two curves, one per kind of motion. Anything that travels from one rest to another
-// (the camera's zoom and pan, the agent's cursor, a spotlight riding a zoom) uses MOVE,
-// the smoothstep zoompan evaluates in processor.js, so they read as one move. Anything
+// Three curves. The camera's own move (a zoom, a pan, and the motion blur that reads
+// their velocity) rides the quintic ease below, which is C2 at both ends so nothing
+// arrives with a jolt. Anything else that travels from one rest to another (the agent's
+// cursor, a spotlight riding a zoom) uses MOVE, the smoothstep zoompan evaluates in
+// processor.js, so they read as one move. Anything
 // that appears or leaves (captions, titles, labels, badges) uses the app's own
 // cubic-bezier(.2,.8,.2,1) in and (.4,0,1,1) out. Both are baked into short events a
 // frame apart: libass animates \t linearly and \move only in straight lines.
@@ -43,10 +45,104 @@ function bezier(x1, y1, x2, y2) {
 const EASE_IN = bezier(0.2, 0.8, 0.2, 1)      // entering, the app's --ease-in
 const EASE_OUT = bezier(0.4, 0, 1, 1)         // leaving, the app's --ease-out
 const MOVE = p => (p <= 0 ? 0 : p >= 1 ? 1 : p * p * (3 - 2 * p))   // travelling, zoompan's smoothstep
-// how long a zoom takes to push in and to pull back (processor.js explicitZoomFilter)
-const ZOOM_EASE = 0.45
 // A small overshoot, for the one thing allowed to pop: a step badge landing
 const POP = p => { const c = 1.9, q = p - 1; return p >= 1 ? 1 : 1 + (c + 1) * q * q * q + c * q * q }
+
+// ── the zoom's own curve ────────────────────────────────────────────────────
+// The camera is not a badge, and smoothstep was never good enough for it. Its
+// velocity is zero at both ends, but its acceleration is not: 6 at rest and -6 at the
+// arrival, so the camera is shoved into motion and caught at the end. That step in
+// acceleration is the jolt, and it is what a zoom that "snaps" actually is.
+//
+// So the zoom rides a quintic, S(u) = u^3 (10 + u(6u - 15)): value, velocity and
+// acceleration all zero at both ends. The camera leans into the move and is let go of
+// rather than caught. S alone is symmetric, and a symmetric zoom spends as long
+// leaving as arriving, which is not how anyone frames a shot: the move is over early
+// and the last of it is a settle. So the progress is warped first, g(p) = p(1 + c(1-p)),
+// a monotone quadratic (c <= 1 keeps g' >= 0) that runs the clock ahead early and lets
+// it back late. Warping cannot break the ends, because S' and S'' are both zero there
+// whatever g does, so every one of these is still C2 at rest and at arrival.
+//
+// Both are polynomials with few terms, which matters: processor.js has to write this
+// same curve for ffmpeg's expression parser, one substitution per occurrence of p.
+const EASE_S = u => u * u * u * (10 + u * (6 * u - 15))
+const EASE_dS = u => { const v = u * (1 - u); return 30 * v * v }
+const EASE_ddS = u => 60 * u * (1 - u) * (1 - 2 * u)
+
+// The vocabulary. `bias` is the warp's c; `span` multiplies how long the move takes.
+// Nothing here overshoots. DESIGN.md gives bounce to Biscuit and to nothing else, and
+// a zoom that passes its target and comes back is the camera asking to be noticed
+// while the point of the shot is what is under it. The settle is bought with C2
+// continuity instead, which is the considered version of the same idea.
+const EASES = {
+  // 70 percent of the distance in half the time, then a long arrival. The default.
+  smooth: { bias: 0.45, span: 1 },
+  // 82 percent in half the time, and a shorter move: decisive, for a quick take.
+  snappy: { bias: 0.75, span: 0.72 },
+  // 57 percent in half the time, and half again as long: even, unhurried.
+  gentle: { bias: 0.15, span: 1.4 },
+  // 88 percent in half the time: arrives almost at once, then keeps easing, which is
+  // what a critically damped spring looks like without being one.
+  settle: { bias: 0.95, span: 1.3 },
+}
+const easeOf = kind => EASES[kind] || EASES.smooth
+
+// The ease at progress p, and its first and second derivatives with respect to p.
+// Functions of p alone: no frame is ever integrated from the one before it.
+function easeAt(p, kind) {
+  if (!(p > 0)) return 0
+  if (p >= 1) return 1
+  const c = easeOf(kind).bias
+  return EASE_S(p * (1 + c * (1 - p)))
+}
+function easeVel(p, kind) {
+  if (!(p > 0) || p >= 1) return 0
+  const c = easeOf(kind).bias
+  return EASE_dS(p * (1 + c * (1 - p))) * (1 + c * (1 - 2 * p))
+}
+function easeAcc(p, kind) {
+  if (!(p > 0) || p >= 1) return 0
+  const c = easeOf(kind).bias, g = p * (1 + c * (1 - p)), gd = 1 + c * (1 - 2 * p)
+  return EASE_ddS(g) * gd * gd + EASE_dS(g) * (-2 * c)
+}
+
+// How long a zoom takes to push in and to pull back. It used to be a flat 0.45 s, so a
+// 1.2x nudge and a 4x dive took exactly as long, and the dive was the one that snapped.
+// A move's length is its distance, and the distance a zoom covers is geometric: the
+// octaves between the two scales. At the default 1.7x this lands on 0.44 s, which is
+// where it always was, so the take nobody touches the dial on is unchanged in feel.
+const EASE_BASE = 0.2, EASE_OCT = 0.3, EASE_MIN = 0.18, EASE_MAX = 1.25
+// How long a lift or a spotlight takes on its own, when there is no zoom whose ramp it
+// can borrow. Riding one it takes that zoom's own, which is no longer a constant.
+const FOCUS_EASE = 0.45
+function easeSpan(from, to, kind) {
+  const a = Math.max(1, +from || 1), b = Math.max(1, +to || 1)
+  const oct = Math.abs(Math.log2(Math.max(b, a) / Math.min(b, a)))
+  const v = (EASE_BASE + EASE_OCT * oct) * easeOf(kind).span
+  return Math.max(EASE_MIN, Math.min(EASE_MAX, v))
+}
+
+// A pan is measured the same way, in views travelled rather than octaves: the old pair
+// of constants (0.7 near, 1.0 far) are where this line passes through.
+const PAN_BASE = 0.48, PAN_PER_VIEW = 0.55, PAN_MIN = 0.5, PAN_MAX = 1.15
+function panSpan(views, kind) {
+  const v = Math.max(0, +views || 0)
+  return Math.max(PAN_MIN, Math.min(PAN_MAX, (PAN_BASE + PAN_PER_VIEW * v) * easeOf(kind).span))
+}
+
+// A zoom frames what it is on, the way ui/targets.js boxZoom frames a box an agent
+// named: the thing spans about 70 percent of the view, near enough to read and far
+// enough off the edge to sit in something rather than fill it.
+const ZOOM_FIT = 0.7
+// motion.zoomDepth read as that fit rather than as a flat magnification: it is the
+// deepest a zoom is allowed to go, and 1.7 is the depth at which something two fifths
+// of the frame across (0.7 / 1.7 = 0.41) fills the view properly. Where the clicks say
+// how wide the thing under them is, that span picks the scale and the dial caps it, so
+// a zoom on one field pushes in and a zoom across a toolbar pulls back.
+function fitScale(span, depth) {
+  const d = Math.max(1.05, +depth || 1.7)
+  return span > 0.02 ? Math.max(1.05, Math.min(d, ZOOM_FIT / span)) : d
+}
 
 // ── ASS primitives ──────────────────────────────────────────────────────────
 const FONT = { caption: 'Fetch Caption', title: 'Fetch Title', sub: 'Fetch Subtitle', num: 'Fetch Rounded' }
@@ -1162,10 +1258,11 @@ const SPOT_HAND = 0.6
  * zoom's push and pull when an edge rides one (null otherwise). Shared with the
  * editor preview so both agree.
  */
-function spotlightSpan(m, zooms = []) {
+function spotlightSpan(m, zooms = [], kind) {
   let a = +m.start, b = +m.end, Ta = null, Tb = null
-  // riding a zoom, the dim takes exactly as long as the push and the pull
-  const zEase = z => Math.min(ZOOM_EASE, Math.max(0, (z.end - z.start) / 2))
+  // riding a zoom, the dim takes exactly as long as that zoom's own push and pull,
+  // which is its distance now and not a flat 0.45 s
+  const zEase = z => Math.min(easeSpan(1, zoomScale(z.scale), kind), Math.max(0, (z.end - z.start) / 2))
   const reach = (edge, inside) => Math.abs(edge) <= SPOT_SNAP || (inside && Math.abs(edge) <= SPOT_RIDE)
   let da = Infinity, db = Infinity, handIn = null, handOut = null
   for (const z of zooms || []) {
@@ -1269,10 +1366,10 @@ function focusDist(s, X, Y, dy = 0, grow = 1) {
  * in starting at a and the ease out ending at b. Riding a zoom it takes the zoom's own
  * push and pull; on its own, the zoom's length of ease.
  */
-function focusTiming(m, zooms = []) {
-  const { a, b, Ta, Tb } = spotlightSpan(m, zooms)
+function focusTiming(m, zooms = [], kind) {
+  const { a, b, Ta, Tb } = spotlightSpan(m, zooms, kind)
   if (!(b > a + 0.2)) return null
-  const T0 = Math.min(ZOOM_EASE, (b - a) / 3)
+  const T0 = Math.min(FOCUS_EASE, (b - a) / 3)
   const Tin = Math.min(Ta != null && Ta > 0.04 ? Ta : T0, (b - a) / 2)
   const Tout = Math.min(Tb != null && Tb > 0.04 ? Tb : T0, (b - a) - Tin)
   return { a, b, Tin, Tout }
@@ -1431,7 +1528,7 @@ function frameScript({ W, H, phrases, capStyle, texts, span, measure, box, frost
 
 // The content-space script: numbered steps, marks already on the output clock. Lifts
 // and spotlights change pixels, so processor.js draws them (focusFilters).
-function contentScript({ W, H, marks, zooms, px = null }) {
+function contentScript({ W, H, marks, zooms, px = null, kind }) {
   const evs = events()
   let k = 0
   for (const m of marks || []) {
@@ -1442,7 +1539,7 @@ function contentScript({ W, H, marks, zooms, px = null }) {
     if (m.kind !== 'step') continue
     // sized through the zoom it is mostly seen in, as a lift's edges are
     const seen = Math.max(1, ...(zooms || []).filter(z => z && Math.min(z.end, m.end) - Math.max(z.start, m.start) > 0.3).map(z => +z.scale || 1))
-    stepEvents(evs, { ...m, n, out: px > 0 ? px * seen : 0, ...stepOnLift(m, marks, zooms, W, H, px) }, W, H)
+    stepEvents(evs, { ...m, n, out: px > 0 ? px * seen : 0, ...stepOnLift(m, marks, zooms, W, H, px, kind) }, W, H)
   }
   return evs.list.length ? script(W, H, evs) : null
 }
@@ -1451,12 +1548,12 @@ function contentScript({ W, H, marks, zooms, px = null }) {
 // percent about its centre, which would slide the card's own label under a badge
 // left where the card was. Judged at the step's start, so one that pops in once the
 // lift is up lands on the raised card; the move is the same scale about the same centre.
-function stepOnLift(st, marks, zooms, W, H, px) {
+function stepOnLift(st, marks, zooms, W, H, px, kind) {
   const x = +st.x || 0, y = +st.y || 0, slack = 0.02
   for (const m of marks || []) {
     if (!m || m.kind !== 'lift' || !(+m.w > 0 && +m.h > 0)) continue
     if (x < m.x - slack || x > m.x + m.w + slack || y < m.y - slack || y > m.y + m.h + slack) continue
-    const tm = focusTiming(m, zooms)
+    const tm = focusTiming(m, zooms, kind)
     if (!tm || st.start < tm.a + tm.Tin / 2 || st.start >= tm.b) continue
     const seen = Math.max(1, ...(zooms || []).filter(z => z && Math.min(z.end, tm.b) - Math.max(z.start, tm.a) > 0.3).map(z => +z.scale || 1))
     const s = focusShape(m, W, H, { px: px || undefined, seen, radius: m.radius })
@@ -1467,71 +1564,139 @@ function stepOnLift(st, marks, zooms, W, H, px) {
 }
 
 /**
- * The window an explicit zoom shows at time t, as 0..1 of the frame: { s, x, y, w, h }.
- * Mirrors processor.js explicitZoomFilter and zoompan (same ease, same smoothstep,
- * the focus held centred and clamped at the frame edge), so the editor previews the
- * move the export makes. Overlapping zooms: the earliest one wins, as there.
+ * The window an explicit zoom shows at time t, as 0..1 of the frame, and how fast that
+ * window is moving: { s, x, y, w, h, ds, dx, dy, dw }. The rates are the analytic
+ * derivative of the same closed form, per second, not a difference between two frames:
+ * a frame has to draw from its own time alone, and the motion blur reads these.
+ *
+ * Mirrors processor.js explicitZoomFilter and zoompan (same ease, same curve, the focus
+ * held centred and clamped at the frame edge), so the editor previews the move the
+ * export makes. Overlapping zooms: the earliest one wins, as there.
  */
-function zoomView(zooms, t) {
-  for (const m of zoomPlan(zooms)) {
+function zoomWindow(zooms, t, kind) {
+  for (const m of zoomPlan(zooms, kind)) {
     if (t < m.inStart || t > m.outEnd) continue
-    let s, fx = m.x, fy = m.y
-    if (m.from && t < m.inEnd) {
-      // panning across from the zoom before: focus and scale move together
-      const q = MOVE((t - m.inStart) / (m.inEnd - m.inStart))
-      s = m.from.scale + (m.scale - m.from.scale) * q - (m.from.dip || 0) * 4 * q * (1 - q)
-      fx = m.from.x + (m.x - m.from.x) * q; fy = m.from.y + (m.y - m.from.y) * q
-    } else {
-      const p = t < m.inEnd ? (t - m.inStart) / (m.inEnd - m.inStart)
-        : t > m.outStart ? (m.outEnd - t) / (m.outEnd - m.outStart) : 1
-      s = 1 + (m.scale - 1) * MOVE(isFinite(p) ? p : 1)
+    const q = sampleMoment(m, t, kind)
+    const w = 1 / q.s, dw = -q.ds * w * w
+    // the focus held centred, and held inside the frame: at the edge the window stops
+    // travelling and only the zoom's own opening moves it
+    // the far edge first and the near one last, which is zoompan's own max(0, min(...)):
+    // with a window as wide as the frame 1 - w is zero or under, and the other order
+    // handed back a negative origin where ffmpeg clamps to 0
+    const hold = (f, df) => {
+      let c = f - w / 2, dc = df - dw / 2
+      if (c >= 1 - w) { c = 1 - w; dc = -dw }
+      if (c <= 0) return [0, 0]
+      return [c, dc]
     }
-    const w = 1 / s
-    return { s, x: Math.max(0, Math.min(1 - w, fx - w / 2)), y: Math.max(0, Math.min(1 - w, fy - w / 2)), w, h: w }
+    const [x, dx] = hold(q.fx, q.dfx), [y, dy] = hold(q.fy, q.dfy)
+    return { s: q.s, x, y, w, h: w, ds: q.ds, dx, dy, dw, dh: dw }
   }
-  return { s: 1, x: 0, y: 0, w: 1, h: 1 }
+  return { s: 1, x: 0, y: 0, w: 1, h: 1, ds: 0, dx: 0, dy: 0, dw: 0, dh: 0 }
+}
+
+// The window alone, which is what almost every caller wants
+function zoomView(zooms, t, kind) {
+  const v = zoomWindow(zooms, t, kind)
+  return { s: v.s, x: v.x, y: v.y, w: v.w, h: v.h }
+}
+
+// One moment at t: its scale and focus, and the rate of each.
+// Scale moves geometrically, s = scale^E, rather than s = 1 + (scale-1)E. What the eye
+// reads is the rate of magnification, ds/s, and interpolating the scale itself spent
+// most of a deep zoom's apparent speed in its first third: a 4x dive was already past
+// 2.5x when the curve said it was halfway. In the log the ease's shape is what arrives.
+function sampleMoment(m, t, kind) {
+  const lt = Math.log(m.scale)
+  if (m.from && t < m.inEnd) {
+    // panning across from the zoom before: focus and scale move together
+    const T = m.inEnd - m.inStart, u = T > 0 ? (t - m.inStart) / T : 1
+    const q = easeAt(u, kind), dq = T > 0 ? easeVel(u, kind) / T : 0
+    const lf = Math.log(m.from.scale), dip = m.from.dip || 0
+    const s = Math.exp(lf + (lt - lf) * q - dip * 4 * q * (1 - q))
+    const dl = (lt - lf) - dip * (4 - 8 * q)
+    return { s, ds: s * dl * dq,
+      fx: m.from.x + (m.x - m.from.x) * q, dfx: (m.x - m.from.x) * dq,
+      fy: m.from.y + (m.y - m.from.y) * q, dfy: (m.y - m.from.y) * dq }
+  }
+  let p = 1, dp = 0
+  if (t < m.inEnd) { const T = m.inEnd - m.inStart; if (T > 0) { p = (t - m.inStart) / T; dp = 1 / T } }
+  else if (t > m.outStart) { const T = m.outEnd - m.outStart; if (T > 0) { p = (m.outEnd - t) / T; dp = -1 / T } }
+  const s = Math.exp(lt * easeAt(p, kind))
+  return { s, ds: s * lt * easeVel(p, kind) * dp, fx: m.x, dfx: 0, fy: m.y, dfy: 0 }
 }
 
 // Explicit zooms as moves: { inStart, inEnd, outStart, outEnd, x, y, scale, from }.
 // Two zooms less than ZOOM_SETTLE apart do not pull out to the whole frame and push
 // straight back in, which reads as a bounce: the first holds, then the camera pans
-// across to the second over ZOOM_PAN, on the same curve, as auto-zoom does.
+// across to the second, on the same curve, as auto-zoom does.
 // processor.js explicitZoomFilter renders exactly this plan.
 // Two targets far apart (more than about half a view between them) are not joined by
 // a long diagonal slide across the page, which reads as busy: the camera eases back
-// while it travels (from.dip, taken off the scale at the middle of the move, on a
-// parabola so it still starts and lands on the one curve), over a little longer.
-const ZOOM_SETTLE = 0.8, ZOOM_PAN = 0.7, ZOOM_PAN_FAR = 1.0
-function zoomPlan(zooms) {
+// while it travels (from.dip, octaves taken off the scale at the middle of the move, on
+// a parabola so it still starts and lands on the one curve), over a little longer.
+const ZOOM_SETTLE = 0.8, ZOOM_PAN_FAR_AT = 0.6
+const ZOOM_EASE_DEFAULT = 'smooth'
+function zoomPlan(zooms, kind) {
   const list = (zooms || []).filter(z => z && z.end > z.start).slice().sort((a, b) => a.start - b.start)
+  // Auto zoom hands its moments over whole (ui/compositor/prepare.js), ramps and pans
+  // already decided by the same planner. Flattening them to start and end and
+  // re-deriving here threw inEnd, outStart and the pan away and rebuilt them from a
+  // second copy of the constants, which is how the two paths drift without saying so.
+  if (list.length && list.every(z => z.inEnd != null && z.outStart != null)) {
+    return list.map(z => ({ ...z, inStart: z.start, outEnd: z.end,
+      x: z.x != null ? z.x : 0.5, y: z.y != null ? z.y : 0.5, scale: zoomScale(z.scale) }))
+  }
   const plan = list.map(z => {
-    const e = Math.min(ZOOM_EASE, Math.max(0, (z.end - z.start) / 2))
+    const scale = zoomScale(z.scale)
+    const e = Math.min(easeSpan(1, scale, kind), Math.max(0, (z.end - z.start) / 2))
     return { inStart: z.start, inEnd: z.start + e, outStart: z.end - e, outEnd: z.end,
-      x: z.x != null ? z.x : 0.5, y: z.y != null ? z.y : 0.5, scale: Math.max(1.05, Math.min(4, z.scale || 1.8)) }
+      x: z.x != null ? z.x : 0.5, y: z.y != null ? z.y : 0.5, scale }
   })
   for (let i = 1; i < plan.length; i++) {
     const p = plan[i - 1], n = plan[i]
     if (n.inStart - p.outEnd >= ZOOM_SETTLE) continue
-    const at = Math.max(p.inEnd, Math.min(p.outEnd, n.inStart))
+    const lo = Math.min(p.scale, n.scale), d = Math.hypot(n.x - p.x, n.y - p.y)
+    const views = d * lo, span = panSpan(views, kind)
+    // the longer move starts earlier where the zoom before has the room
+    const early = Math.max(0, (span - panSpan(0, kind)) / 2)
+    const at = Math.max(p.inEnd, Math.min(p.outEnd, n.inStart) - early)
     // room for the pan and for the second zoom's own pull back
     if (n.outStart - at < 0.2) continue
-    const lo = Math.min(p.scale, n.scale), d = Math.hypot(n.x - p.x, n.y - p.y)
-    const far = d * lo > 0.6
-    // never all the way out: that would be the bounce this pan exists to avoid
-    const mid = far ? Math.max(1 + (lo - 1) * 0.3, Math.min(lo, 0.6 / d)) : null
-    const dip = far ? Math.max(0, (p.scale + n.scale) / 2 - mid) : 0
-    // the longer move starts earlier where the zoom before has the room
-    const start = far ? Math.max(p.inEnd, at - (ZOOM_PAN_FAR - ZOOM_PAN) / 2) : at
-    n.inStart = start
-    n.inEnd = start + Math.min(far ? ZOOM_PAN_FAR : ZOOM_PAN, n.outStart - start)
-    p.outStart = p.outEnd = start
-    n.from = { x: p.x, y: p.y, scale: p.scale, dip }
+    n.inStart = at
+    n.inEnd = at + Math.min(span, n.outStart - at)
+    p.outStart = p.outEnd = at
+    n.from = { x: p.x, y: p.y, scale: p.scale, dip: panDip(p.scale, n.scale, d) }
   }
   return plan
 }
+const zoomScale = v => Math.max(1.05, Math.min(4, +v || 1.8))
+
+// How far the camera eases back in the middle of a long pan, in octaves of scale, so a
+// far move reads as one travel rather than as a slide across the page. Zero for a near
+// one, and never all the way out: that would be the bounce this pan exists to avoid.
+function panDip(from, to, d) {
+  const lo = Math.min(from, to)
+  if (!(d * lo > ZOOM_PAN_FAR_AT)) return 0
+  const mid = Math.max(1 + (lo - 1) * 0.3, Math.min(lo, ZOOM_PAN_FAR_AT / d))
+  return Math.min(dipMax(from, to), Math.max(0, Math.log(Math.exp((Math.log(from) + Math.log(to)) / 2) / mid)))
+}
+
+// And never so far back that the camera asks for more picture than there is. The
+// travel is exp(lf + (lt - lf)q - 4 D q(1-q)), whose least value over the move is
+// lf - D(1 - (lt - lf)/(4D))^2, so it stays at or over 1x exactly while D is under
+// (sqrt(lf) + sqrt(lt))^2 / 4. Past that the window came out wider than the frame:
+// the compositor smeared the crop's edge rows, ffmpeg's zoompan clipped the zoom at 1
+// and the two showed different pictures at exactly the moment the frame ran out.
+function dipMax(from, to) {
+  const a = Math.sqrt(Math.max(0, Math.log(Math.max(1, from)))), b = Math.sqrt(Math.max(0, Math.log(Math.max(1, to))))
+  return (a + b) * (a + b) / 4
+}
 
 module.exports = {
-  bezier, EASE_IN, EASE_OUT, MOVE, ZOOM_EASE, POP, FONT, GOLD, zoomView, zoomPlan,
+  bezier, EASE_IN, EASE_OUT, MOVE, FOCUS_EASE, POP, FONT, GOLD, zoomView, zoomWindow, zoomPlan,
+  EASES, ZOOM_EASE_DEFAULT, easeAt, easeVel, easeAcc, easeSpan, panSpan, panDip, ZOOM_SETTLE, ZOOM_FIT, fitScale,
+  easeS: EASE_S, easeSVel: EASE_dS,
   alignWords, snapToSpeech, spokenWords, captionPhrases, phraseTimes, captionLayout, CAP_BAND, BAND_WRAP, backdropGeometry, titleParts, textStyle, titleCards,
   cardLanding, clearOfTitles, gutterInsets, windowCorner, frameScript, contentScript, captionFrost, spotlightSpan, roundRect, SPOT_DIM,
   FOCUS, FOCUS_KINDS, focusShape, focusTiming, focusLevel, focusAt, focusExprs, focusDist, cornerRadius, edgeFit, stepLabel, stepSize, stepSpot, stepCorner, stepGrid, spotFit,

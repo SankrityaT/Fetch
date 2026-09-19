@@ -117,7 +117,8 @@ const FIELDS = [
     doc: 'How far the take is blurred behind itself.', gpu: true, when: { 'background.kind': 'video-blur' } }),
 
   // ── treatment ──
-  f('treatment.motionBlur', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Motion blur', doc: 'Blur along a zoom\'s movement.', gpu: true }),
+  f('treatment.motionBlur', 'number', 0.5, { min: 0, max: 1, step: 0.05, label: 'Shutter',
+    doc: 'How long the shutter stays open, in frames: 0.5 is the film standard 180 degrees, 1 is 360, 0 closes it and nothing blurs. How far a zoom smears is its own speed at that instant, not this, so a fast pass smears and a settle does not.', gpu: true }),
   f('treatment.autoLevel', 'bool', false, { label: 'Auto level', doc: 'Evens the take\'s exposure.', gpu: true }),
   f('treatment.brightness', 'number', 0, { min: -1, max: 1, step: 0.05, label: 'Brightness', doc: 'Lighter or darker.', gpu: true }),
   f('treatment.contrast', 'number', 0, { min: -1, max: 1, step: 0.05, label: 'Contrast', doc: 'More or less contrast.', gpu: true }),
@@ -139,11 +140,15 @@ const FIELDS = [
 
   // ── motion ──
   f('motion.zoomDepth', 'number', 1.7, { min: 1.2, max: 2.4, step: 0.1, unit: 'x', label: 'Auto zoom depth',
-    doc: 'How far auto zoom pushes in on each click.' }),
-  f('motion.zoomEase', 'enum', 'smooth', { options: ['smooth', 'snappy', 'gentle'], label: 'Zoom easing', doc: 'The feel of a zoom\'s move.', gpu: true }),
+    doc: 'The deepest auto zoom pushes in. Where the clicks say how wide the thing under them is, the zoom frames that instead, so it spans about 70 percent of the view; 1.7 is the depth at which something two fifths of the picture across sits at that fit.' }),
+  f('motion.zoomEase', 'enum', 'smooth', { options: ['smooth', 'snappy', 'gentle', 'settle'], label: 'Zoom easing',
+    doc: 'How a zoom moves. All four leave rest and arrive at rest with no jolt and no overshoot; they differ in how long the move takes and how early it is over. smooth: seven tenths of the way in half the time, then a long arrival. snappy: eight tenths, and a shorter move. gentle: even and half again as long. settle: nearly there at once, then a slow last tenth.' }),
   f('motion.fadeIn', 'number', 0, { min: 0, max: 3, step: 0.1, unit: 's', label: 'Fade in', doc: 'Fade from black, picture and sound, at the start.' }),
   f('motion.fadeOut', 'number', 0, { min: 0, max: 3, step: 0.1, unit: 's', label: 'Fade out', doc: 'Fade to black at the end.' }),
-  f('motion.cutTransition', 'enum', 'none', { options: ['none', 'crossfade', 'zoom'], label: 'Cut transition', doc: 'How one clip meets the next.', gpu: true }),
+  f('motion.reveal', 'enum', 'rise', { options: ['none', 'rise'], label: 'Open and close',
+    doc: 'How the take arrives and leaves. rise brings it up into its frame over a third of a second and settles it back out. Only where something is behind it.' }),
+  f('motion.cutTransition', 'enum', 'none', { options: ['none', 'crossfade', 'dip', 'zoom'], label: 'Cut transition',
+    doc: 'Where a cut joins two pieces. none is a hard cut, and right for dead air: the two sides are the same shot a moment apart, so a dissolve is invisible there and a dip only announces the edit. crossfade dissolves, out of the frames the cut removed; dip takes the take through the ground and back; zoom lands the next piece tight and settles it out. A fifth of a second each; a GIF cuts hard.' }),
 
   // ── camera ──
   f('camera.shape', 'enum', 'circle', { options: ['circle', 'rounded'], label: 'Bubble shape', doc: 'The camera bubble\'s shape.', gpu: true }),

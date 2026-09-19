@@ -89,9 +89,14 @@ async function renderVideo(job, hooks = {}) {
   if (!pts.length) throw new Error('the recording has no video frames')
   const map = Plan.screenFrames(spec, pts)
   const size = decodeSize(spec)
-  const open = hw => new FfmpegSource(ffmpeg, decodeArgs(job.src, pts, map.runs, { crop: size.crop, scale: size.scale, hw }),
-    map, size.w, size.h, { onPid: pid })
-  let screen = open(true)
+  const open = (m, hw) => new FfmpegSource(ffmpeg, decodeArgs(job.src, pts, m.runs, { crop: size.crop, scale: size.scale, hw }),
+    m, size.w, size.h, { onPid: pid })
+  let screen = open(map, true)
+  // The other side of every dissolved cut: a second read of the same file, a few frames
+  // at each boundary and nothing in between (plan.crossFrames), so the whole cost of a
+  // crossfade is those frames decoded and those frames drawn twice.
+  const xmap = spec.cut && spec.cut.kind === 'crossfade' ? Plan.crossFrames(spec, pts) : null
+  let cross = xmap && xmap.runs.length ? open(xmap, true) : null
 
   let cam = null, camLines = 1080
   if (spec.cam) {
@@ -118,7 +123,8 @@ async function renderVideo(job, hooks = {}) {
   const sink = webcodecs
     ? await new WebCodecsSink(ffmpeg, job.out, comp.canvas, spec.W, spec.H, spec.fps, { quality: q, onPid: pid }).open()
     : new Nv12PipeSink(ffmpeg, encodeArgs(job.out, spec.W, spec.H, spec.fps, { quality: q, W4: comp.packed.w * 4, codec: job.sink === 'vt' ? 'vt' : 'x264' }), rb.bytes, { onPid: pid })
-  const stats = { frames: spec.frames, uploads: 0, camUploads: 0, decodeRetry: false, sink: webcodecs ? 'webcodecs' : job.sink === 'vt' ? 'vt' : 'x264' }
+  let stale = false
+  const stats = { frames: spec.frames, uploads: 0, camUploads: 0, dissolved: 0, decodeRetry: false, sink: webcodecs ? 'webcodecs' : job.sink === 'vt' ? 'vt' : 'x264' }
   // where the time goes, in ms over the whole export: waiting on the decode, uploading
   // and drawing, waiting on the readback and the encoder
   const ms = { decode: 0, draw: 0, encode: 0 }
@@ -138,17 +144,36 @@ async function renderVideo(job, hooks = {}) {
         // A decode that fails before its first frame gets one retry in software:
         // VideoToolbox refuses a few codecs and sizes
         if (n > 0 || stats.decodeRetry) throw e
-        stats.decodeRetry = true; screen.close(); screen = open(false); f = await screen.frameAt(n)
+        stats.decodeRetry = true; screen.close(); screen = open(map, false); f = await screen.frameAt(n)
+        // the far side of every dissolve reads the same file with the same decoder, so
+        // it comes back in software too rather than dying at the first crossfade
+        if (cross) { cross.close(); cross = open(xmap, false) }
       }
       let camOn = false, cf = null
       if (cam) cf = await cam.frameAt(n)
       const t2 = performance.now()
       ms.decode += t2 - t1
-      if (f && f.changed) { comp.uploadNV12('content', f.data, f.w, f.h, spec.src.h); stats.uploads++ }
+      // the slot holds the far side of the last dissolve, so this frame uploads again
+      // even where the take's own frame did not change
+      if (f && (f.changed || stale)) { comp.uploadNV12('content', f.data, f.w, f.h, spec.src.h); stats.uploads++; stale = false }
       if (cam) {
         if (cf) { if (cf.changed) { comp.uploadNV12('cam', cf.data, cf.w, cf.h, camLines); stats.camUploads++ } camOn = true }
       }
-      if (!comp.render(spec, fp, { n, cam: camOn })) throw new Error('no frame of the recording to draw')
+      let xf = null
+      if (cross && fp.mix > 0) {
+        try { xf = await cross.frameAt(n) } catch (e) {
+          // and its own one-shot fallback, since the first dissolve can be a long way
+          // into a take that opened and decoded happily up to here
+          if (stats.decodeRetry) throw e
+          stats.decodeRetry = true; cross.close(); cross = open(xmap, false); xf = await cross.frameAt(n)
+        }
+      }
+      if (!comp.render(spec, fp, { n, cam: camOn, side: xf ? 'a' : null })) throw new Error('no frame of the recording to draw')
+      if (xf) {
+        comp.uploadNV12('content', xf.data, xf.w, xf.h, spec.src.h); stats.uploads++; stale = true
+        comp.render(spec, fp, { n, cam: camOn, side: 'b' })
+        stats.dissolved++
+      }
       if (webcodecs) {
         comp.present()
         const t3 = performance.now()
@@ -172,7 +197,7 @@ async function renderVideo(job, hooks = {}) {
     sink.kill()
     throw e
   } finally {
-    screen.close(); if (cam) cam.close()
+    screen.close(); if (cross) cross.close(); if (cam) cam.close()
     if (rb) rb.destroy()
     comp.destroy()
   }
@@ -231,7 +256,21 @@ async function renderStills(job, hooks = {}) {
         if (cf) { comp.uploadNV12('cam', new Uint8Array(cf.data), cf.w, cf.h, cpts.size ? cpts.size[1] : 1080); cam = true }
       }
       const fp = Plan.framePlan(spec, n / spec.fps)
-      if (!comp.render(spec, fp, { n, cam })) throw new Error('no frame of the recording to draw')
+      // A still that lands inside a dissolve is that dissolve, or a preview of a cut
+      // would not be the frame the file holds. Its far side is decoded before either
+      // draw, and where that decode comes back with nothing the frame is drawn once
+      // from the near side alone (gl.js render, src.side): this Compositor is kept
+      // between the stills of one job, so a draw that writes nothing to the output
+      // would hand back the picture before it.
+      const xi = fp.mix > 0 ? Plan.crossFrames(spec, pts).pick[n] : -1
+      const xf = xi >= 0
+        ? await one(job.src, xi, decodeArgs(job.src, pts, [[xi, xi]], { crop: size.crop, scale: size.scale, hw: true, frames: 1 }), size.w, size.h)
+        : null
+      if (!comp.render(spec, fp, { n, cam, side: xf ? 'a' : null })) throw new Error('no frame of the recording to draw')
+      if (xf) {
+        comp.uploadNV12('content', new Uint8Array(xf.data), xf.w, xf.h, spec.src.h)
+        comp.render(spec, fp, { n, cam, side: 'b' })
+      }
       const px = comp.readRGBA()
       const cv = new OffscreenCanvas(comp.W, comp.H)
       cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer), comp.W, comp.H), 0, 0)
