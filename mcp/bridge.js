@@ -107,7 +107,14 @@ async function ensureConnected() {
       log('Fetch is not running, launching it')
       // -g keeps it from stealing focus; the app still gets to be the responsible
       // process for TCC, which is the reason we go through LaunchServices at all.
-      spawn('open', ['-g', '-b', BUNDLE_ID], { stdio: 'ignore', detached: true }).unref()
+      // From a source checkout, launch that checkout's Fetch. Going by bundle id there
+      // opened whichever Fetch.app LaunchServices knew, usually an older installed
+      // build, so an agent quietly drove a different version than the one in the repo.
+      const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
+      const electron = path.join(repo, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
+      const fromSource = !repo.includes('.app/Contents') && fs.existsSync(electron) && fs.existsSync(path.join(repo, 'main.js'))
+      if (fromSource) spawn(electron, [repo], { cwd: repo, stdio: 'ignore', detached: true }).unref()
+      else spawn('open', ['-g', '-b', BUNDLE_ID], { stdio: 'ignore', detached: true }).unref()
       const deadline = Date.now() + 25000
       while (Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 300))
