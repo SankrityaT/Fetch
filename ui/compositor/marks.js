@@ -61,10 +61,17 @@ function planMarks(marks, { W, H, px, clock, span, zooms, look = {} }) {
       out.redact.push({ a: m.a, b: m.b, x, y, w, h, cell: Math.max(4, Math.round(16 / px), Math.round(Math.min(w, h) / 3.5)) })
     } else if (m.kind === 'blur') {
       // Gaussian, for softening something distracting (redact is for secrets), through a
-      // round-cornered mask feathered over about 1 percent of the height, easing in and out
-      const F = Math.max(6, Math.round(H * 0.012))
+      // round-cornered mask, easing in and out.
+      //
+      // The mask used to feather over about 1 percent of the height, which at 1720 lines
+      // is twenty pixels, wider than the corner it was rounded with: magnified, the mark
+      // was a soft blob with no boundary anywhere, and a viewer reads that as a render
+      // that went wrong rather than as something deliberately hidden. It is a plate now:
+      // a crisp corner, feathered over about two finished pixels so it antialiases and
+      // no further, with its own hairline inside the edge.
+      const F = Math.max(1, 2 / (px || 1))
       const T = Math.min(0.35, (m.b - m.a) / 3)
-      out.blur.push({ a: m.a, b: m.b, x, y, w, h, r: Math.min(H * 0.014, w / 2, h / 2), feather: F,
+      out.blur.push({ a: m.a, b: m.b, x, y, w, h, r: Math.min(H * 0.014, w / 2, h / 2), feather: F, hair: Math.max(1, 1.5 / (px || 1)),
         sigma: clamp(+m.strength || 18, 4, 60),
         Tin: T < 0.04 || m.a <= 0.05 ? 0 : T, Tout: T < 0.04 || m.b >= span - 0.05 ? 0 : T })
     }

@@ -85,8 +85,21 @@ const meta = { width: 2884, height: 1780, duration: 46.9, fps: 26.3 }
   is('output is the classic canvas', [s.W, s.H], [g.outW, g.outH])
   is('the take sits where the classic export puts it', s.rect, { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH })
   is('corner radius', s.radius, g.radius)
+  // wider than the classic boxblur, because DESIGN's Elevation says wide rather than
+  // tight and the classic width was nine levels deep and gone inside 25 px, but capped
+  // against the margin the frame leaves so the pool resolves before the canvas ends
   is('the shadow hangs 0.9 blur low', s.shadow.dy, Math.round(g.blur * 0.9))
-  is('shadow sigma is boxblur power 2', r3(s.shadow.sigma), r3(Math.sqrt((4 * g.blur ** 2 + 4 * g.blur) / 6)))
+  {
+    const flat = Math.sqrt((4 * g.blur ** 2 + 4 * g.blur) / 6)
+    const margin = Math.min(g.ox, g.oy, g.outW - g.ox - g.vidW, g.outH - g.oy - g.vidH)
+    is('shadow sigma is the boxblur power 2 widened into the margin',
+      r3(s.shadow.sigma), r3(Math.max(flat, Math.min(2.25 * flat, (margin - Math.round(g.blur * 0.9)) / 1.7))))
+    // and the widening itself never puts the pool outside the gutter: a margin too
+    // small even for the flat shadow keeps the flat shadow, which is the one the
+    // classic renderer draws, rather than going tighter than either
+    is('the widening never puts the pool outside the gutter',
+      r3(s.shadow.sigma) === r3(flat) || s.shadow.sigma * 1.7 + s.shadow.dy <= margin + 0.001, true)
+  }
   is('dusk runs gold to brown', s.bg.c0.map(v => Math.round(v * 255)).concat(s.bg.c1.map(v => Math.round(v * 255))), [240, 169, 60, 122, 62, 18])
   is('a variable-rate take under 45 fps exports at 30', s.fps, 30)
   is('frame count is the output length at that rate', s.frames, Math.round(46.9 * 30))

@@ -12,6 +12,7 @@
 'use strict'
 const Text = require('./text')
 const Marks = require('./marks')
+const Plan = require('./plan')
 
 const VS = `#version 300 es
 void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
@@ -114,16 +115,33 @@ const bokehBlur = r => r / 6
 // The bright pass the whole glow family comes off, at a quarter of the frame. Bloom
 // reads the tight levels of its mip chain and halation the wide ones, so two effects
 // cost one blur rather than two, which is what keeps them affordable at 1080p60.
+// uThresh is the take's own white point (plan.js, measured by levels.js): a page white
+// is not a highlight, and a glow that reads it lays a warm collar over every glyph on
+// it. A take that fills the range has nothing above its own white and does not glow.
+//
+// Each texel judges its own 4x4 box of the frame and the results are averaged, rather
+// than the box being averaged and judged once. With the knee this close to white, a
+// mean is almost never over it: averaging first left the whole glow family reading
+// areas of flat white and nothing else, and at a preview's size nothing at all. The
+// cost is that a highlight narrower than the box lands differently at the two sizes
+// this compositor draws, because a stage half the export's width holds it as grey
+// already. A highlight wide enough to survive being minified reads the same at both,
+// which is every highlight anyone looks at.
 const FS_BRIGHT = `#version 300 es
 precision highp float;
-uniform sampler2D uSrc; uniform vec2 uRes; uniform float uLod, uThresh; out vec4 o;
+uniform sampler2D uSrc; uniform vec2 uMax; uniform float uThresh; out vec4 o;
 void main(){
-  vec3 c = textureLod(uSrc, gl_FragCoord.xy / uRes, uLod).rgb;
-  float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  // a soft knee, squared: the threshold is a slope, so a highlight drifting across it
-  // does not switch the glow on and off between frames
-  float w = max(0.0, y - uThresh) / max(1e-3, 1.0 - uThresh);
-  o = vec4(c * w * w, 1.0);
+  ivec2 b = ivec2(gl_FragCoord.xy) * 4, hi = ivec2(uMax);
+  vec3 acc = vec3(0.0);
+  for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {
+    vec3 c = texelFetch(uSrc, min(b + ivec2(i, j), hi), 0).rgb;
+    float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    // a soft knee, squared: the threshold is a slope, so a highlight drifting across it
+    // does not switch the glow on and off between frames
+    float w = max(0.0, y - uThresh) / max(1e-3, 1.0 - uThresh);
+    acc += c * w * w;
+  }
+  o = vec4(acc / 16.0, 1.0);
 }`
 
 // The blurred take behind itself, first step: the cropped frame shrunk to a few dozen
@@ -153,20 +171,38 @@ void main(){
 
 // The frame: background, the framed take's shadow, the take (cropped, zoomed, motion
 // blurred, its window margin trimmed) inside a rounded mask, a border, the camera.
+//
+// It writes a mask as well as a picture. Alpha here is not opacity, it is how much of
+// this pixel is the recording: 1 on the take and on the camera, 0 on the ground the
+// look chose, on its border, and wherever Fetch drew something of its own on the take
+// (the content pass carries that in its own alpha, uMarked). The treatment pass reads
+// it and holds the grade to the recording, which is the whole point of drawing it.
+//
+// It also keeps the take's edge to a floor (plan.js, EDGE_FLOOR): the outermost pixels
+// of the take stand off the ground just outside them by at least so much luma, met by
+// whichever of the three is available. A blur ground holds near the take's own mean
+// rather than being pressed to a deep field under a white page; the shadow is wide
+// enough to be felt where there is ground to cast on; and where neither gives the
+// floor, a warm hairline just inside the edge does.
 const FS_FRAME = `#version 300 es
 precision highp float;
 uniform vec2 uRes;
 uniform int uBgKind;                 // 0 none, 1 still, 2 blurred take
 uniform sampler2D uBg, uFill;
 uniform float uVig;                  // the treatment's vignette, which lands on the ground too
+uniform vec2 uFillBand;              // how far a blur ground may stand off the take's own mean: least, most
 uniform vec4 uRect; uniform float uRadius;
 uniform vec2 uTake;                  // the take's opacity and its shadow's (a title card's reveal)
 uniform vec4 uShadow;                // dy, sigma, alpha, on
 uniform vec4 uBorder; uniform float uBorderPx;
+uniform vec3 uEdge;                  // the edge floor in luma, the hairline's width, and which way it goes
+uniform vec3 uEdgeCol;               // the warm end that ground leaves open (plan.js edgeEnd)
 uniform sampler2D uContent; uniform vec2 uContentSize; uniform vec4 uCropUV, uInner;
+uniform int uMarked;                 // the content target carries a mask in its alpha
 uniform vec4 uV0, uV1; uniform int uTaps;
 uniform int uCam; uniform sampler2D uCamTex; uniform vec4 uCamRect, uCamUV; uniform float uCamRound, uCamRing;
 out vec4 o;
+const vec3 K = vec3(0.2126, 0.7152, 0.0722);
 
 vec4 erf4(vec4 x){ vec4 s = sign(x), a = abs(x); x = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a; x *= x; return s - s / (x * x); }
 float gaussian(float x, float sigma){ return exp(-(x * x) / (2.0 * sigma * sigma)) / (2.5066283 * sigma); }
@@ -203,11 +239,25 @@ vec3 bspline(sampler2D t, vec2 uv){
 
 // The blurred take pressed into a deep colour field: luma to 30 percent, chroma to 80
 // (the classic lutyuv), a cos^4 vignette on luma (ffmpeg's vignette at 0.4), a still grain.
+// Then held inside a band of the take's own mean at this point (uFillBand), because this
+// one ground is the take itself and is meant to read as bleed. The press is right for a
+// dark take and ruinous for a bright one: a 236 page pressed to 30 percent put a 51 fill
+// against it with no shadow, no corner and no transition, which is a black bar.
 vec3 fillAt(vec2 p){
   vec3 c = bspline(uFill, p / uRes);
   vec3 k = vec3(0.2126, 0.7152, 0.0722);
   float y = dot(c, k), cb = (c.b - y) / 1.8556, cr = (c.r - y) / 1.5748;
+  float ym = y;                      // the take's own colour here, before the press
   y *= 0.3; cb *= 0.8; cr *= 0.8;
+  // The band, as a lift on the pressed luma and nothing else. On the luma, so the
+  // classic chroma press stands: scaling the whole colour to hit a luma multiplied the
+  // gutter's chroma by the same factor and left it more saturated than the take it came
+  // from. Before the vignette and the grain, so both still land on it: forcing the
+  // finished ground to a number the blurred take alone decides divided them straight
+  // back out and left a smooth, toothless field. And it only ever lifts, and never
+  // under zero: a take too dark to stand a gutter under it has nothing to be lifted
+  // from, and a target below zero paints the one thing the output never draws.
+  if (uFillBand.y > 0.0) y = clamp(y, max(0.0, ym - uFillBand.y), max(y, ym - uFillBand.x));
   float dn = length(p - uRes * 0.5) / length(uRes * 0.5);
   float cv = cos(0.4 * dn); cv = cv * cv * cv * cv;
   float yc = (16.0 + 219.0 * y) * cv;
@@ -222,18 +272,40 @@ vec3 fillAt(vec2 p){
   return clamp(ground / max(mix(1.0, cv, uVig), 1e-3), 0.0, 1.0);
 }
 
-vec3 sampleView(vec2 local, vec4 v, float lod){
+// the take's colour and, in alpha, how much of that sample is the recording rather
+// than something Fetch drew on it: both taken through the same taps and the same mip
+// level, so a badge minified by a zoom masks exactly as much as it covers
+vec4 sampleView(vec2 local, vec4 v, float lod){
   vec2 q = uInner.xy + local * uInner.zw;          // the window's margin trimmed off
   vec2 f = v.xy + q * v.zw;                        // what the zoom shows
   // never past the crop's edge, at any mip level: a <video> holds the whole take, and
   // what the crop removed must not bleed in where the export's cropped decode has none
   vec2 h = 0.5 * exp2(lod) / uContentSize;
-  return textureLod(uContent, clamp(uCropUV.xy + f * uCropUV.zw, uCropUV.xy + h, uCropUV.xy + uCropUV.zw - h), lod).rgb;
+  return textureLod(uContent, clamp(uCropUV.xy + f * uCropUV.zw, uCropUV.xy + h, uCropUV.xy + uCropUV.zw - h), lod);
+}
+
+// How far a point is outside the framed take, in pixels: its own rounded corner, or
+// its plain rectangle when a look asked for no corner at all.
+float sdTake(vec2 q, vec2 lo, vec2 hi){
+  return uRadius > 0.0 ? sdRound(q - (lo + hi) * 0.5, uRect.zw * 0.5, uRadius)
+                       : max(max(lo.x - q.x, q.x - hi.x), max(lo.y - q.y, q.y - hi.y));
+}
+// The ground at any point: the background a look chose, or the take's own blur, with
+// the shadow at that point over it. Read a few pixels outside the take by the edge
+// floor, which is measured against the ground a viewer actually sees there.
+vec3 groundAt(vec2 q, vec2 lo, vec2 hi){
+  vec3 g = uBgKind == 1 ? texture(uBg, q / uRes).rgb : uBgKind == 2 ? fillAt(q) : vec3(0.0);
+  if (uShadow.w > 0.5) {
+    float sh = roundedBoxShadow(lo + vec2(0.0, uShadow.x), hi + vec2(0.0, uShadow.x), q, uShadow.y, uRadius);
+    g *= 1.0 - uShadow.z * uTake.y * clamp(sh, 0.0, 1.0);
+  }
+  return g;
 }
 
 void main(){
   vec2 p = gl_FragCoord.xy;
   vec3 col = vec3(0.0);
+  float mask = 0.0;                  // the ground is a colour the look chose: no grade
   if (uBgKind == 1) col = texelFetch(uBg, ivec2(p), 0).rgb;
   else if (uBgKind == 2) col = fillAt(p);
   vec2 lo = uRect.xy, hi = uRect.xy + uRect.zw;
@@ -241,21 +313,73 @@ void main(){
     float sh = roundedBoxShadow(lo + vec2(0.0, uShadow.x), hi + vec2(0.0, uShadow.x), p, uShadow.y, uRadius);
     col *= 1.0 - uShadow.z * uTake.y * clamp(sh, 0.0, 1.0);
   }
-  float d = uRadius > 0.0 ? sdRound(p - (lo + hi) * 0.5, uRect.zw * 0.5, uRadius)
-                          : max(max(lo.x - p.x, p.x - hi.x), max(lo.y - p.y, p.y - hi.y));
+  float d = sdTake(p, lo, hi);
   float cover = clamp(0.5 - d, 0.0, 1.0);
   if (cover > 0.0) {
     vec2 local = (p - lo) / uRect.zw;
     // explicit level: the zoom says exactly how far the take is minified, and the
     // sample sits in non-uniform flow where implicit derivatives are undefined
     float lod = max(0.0, log2(uContentSize.x * uCropUV.z * uInner.z * min(uV0.z, uV1.z) / uRect.z));
-    vec3 c = vec3(0.0);
+    vec4 c = vec4(0.0);
     for (int i = 0; i < 32; i++) { if (i >= uTaps) break;
       float s = uTaps == 1 ? 0.0 : float(i) / float(uTaps - 1);
       c += sampleView(local, mix(uV0, uV1, s), lod); }
     c /= float(uTaps);
-    if (uBorderPx > 0.0) c = mix(c, uBorder.rgb, clamp(d + uBorderPx + 0.5, 0.0, 1.0) * uBorder.a);
-    col = mix(col, c, cover * uTake.x);
+    // a take with nothing drawn on it is sampled straight from the source, whose alpha
+    // is whatever the decoder left there, so it is only trusted while a mark exists
+    float take = uMarked == 1 ? c.a : 1.0;
+    if (uBorderPx > 0.0) {
+      // the border is a colour the look chose too, so it leaves the grade alone
+      float bm = clamp(d + uBorderPx + 0.5, 0.0, 1.0) * uBorder.a;
+      c.rgb = mix(c.rgb, uBorder.rgb, bm); take *= 1.0 - bm;
+    }
+    // The edge floor, met by a hairline where the ground does not meet it alone. Only
+    // the outermost pixel or so of the take is ever asked, so what this costs (a second
+    // ground and a second shadow) is paid on a line and not on a frame.
+    if (uEdge.x > 0.0 && d > -uEdge.y - 1.0) {
+      // The ground the eye actually sees beside the take: two and a half pixels out
+      // along the edge's own normal, shadow and all. Not the ground under this pixel,
+      // because a shadow hangs low and at the top edge it has already moved away.
+      vec2 e = vec2(1.0, 0.0);
+      vec2 n = normalize(vec2(sdTake(p + e.xy, lo, hi) - sdTake(p - e.xy, lo, hi),
+                              sdTake(p + e.yx, lo, hi) - sdTake(p - e.yx, lo, hi)) + 1e-5);
+      float yg = dot(groundAt(p + n * (2.5 - d), lo, hi), K), yt = dot(c.rgb, K);
+      // The floor is a distance, not a direction. gap is how far the take's edge already
+      // stands toward the end the ground leaves open (plan.js edgeEnd picks that end
+      // once for the whole frame); what is left of the floor is what the line has to
+      // make up, and an edge standing clear the other way hands it back over a window
+      // rather than at a step, so nothing switches along the perimeter. Read as a signed
+      // target alone it fired on edges that were already far clear: a Paper page sixty
+      // levels above its own shadow was painted back down to exactly the floor, and a
+      // bright gradient corner beside a dark take edge went a hundred and twenty.
+      float gap = (yt - yg) * uEdge.z;
+      float want = yt + uEdge.z * max(0.0, uEdge.x - gap) * (1.0 - smoothstep(uEdge.x, 3.0 * uEdge.x, -gap));
+      // and only while the end's own luma is far enough from the take's to carry it.
+      // Within the floor of it the line cannot deliver the distance at any opacity, and
+      // its denominator passing through zero swung the full range across half a level
+      // of the take's own pixels, which is a solid rim in one decode path and none in
+      // the other.
+      float den = dot(uEdgeCol, K) - yt;
+      float a = clamp((want - yt) / (den + (den < 0.0 ? -1e-3 : 1e-3)), 0.0, 1.0)
+              * smoothstep(0.5 * uEdge.x, uEdge.x, abs(den));
+      // only where there is ground to stand off: a take that reaches the output's own
+      // edge has none there, and a line round that is a line round the video
+      float room = min(min(p.x, uRes.x - p.x), min(p.y, uRes.y - p.y));
+      a *= clamp(d + uEdge.y + 0.5, 0.0, 1.0) * clamp(room - uEdge.y - 1.5, 0.0, 1.0);
+      c.rgb = mix(c.rgb, uEdgeCol, a);
+      // and out of the grade's mask by its own share of the pixel, like the border and
+      // like anything else Fetch chose the colour of. Carving four times as fast took
+      // the take's outermost pixel and a quarter out of the grade altogether wherever
+      // the line reached a quarter opacity, so a monochrome look wore a ring of the
+      // product's own colour round a picture it had just finished draining.
+      take *= 1.0 - a;
+    }
+    col = mix(col, c.rgb, cover * uTake.x);
+    // The mask carries the antialias with it, so the treatment pass knows exactly how
+    // much of a rim pixel is the recording. What it does with that is the part that
+    // matters (FS_TREAT): grading the blend at this weight is not grading the
+    // recording's share of it.
+    mask = mix(mask, take, cover * uTake.x);
   }
   if (uCam == 1) {
     vec2 clo = uCamRect.xy, chi = uCamRect.xy + uCamRect.zw, cc = (clo + chi) * 0.5;
@@ -267,11 +391,16 @@ void main(){
       vec2 uv = uCamUV.xy + ((p - clo) / uCamRect.zw) * uCamUV.zw;
       float lod = max(0.0, log2(float(textureSize(uCamTex, 0).x) * uCamUV.z / uCamRect.z));
       vec3 c = textureLod(uCamTex, uv, lod).rgb;
-      if (uCamRing > 0.0) c = mix(c, vec3(0.984, 0.980, 0.973), clamp(cd + uCamRing + 0.5, 0.0, 1.0));
+      // the bubble is a recording as much as the take is, so the grade holds it; its
+      // ring is not, and auto level never reaches either (it is held to the take's rect,
+      // and those two numbers were measured off the screen's pixels, not the camera's)
+      float rm = uCamRing > 0.0 ? clamp(cd + uCamRing + 0.5, 0.0, 1.0) : 0.0;
+      if (rm > 0.0) c = mix(c, vec3(0.984, 0.980, 0.973), rm);
       col = mix(col, c, ccov);
+      mask = mix(mask, 1.0 - rm, ccov);
     }
   }
-  o = vec4(col, 1.0);
+  o = vec4(col, mask);
 }`
 
 // Treatment: the lens, the film and the grade over the finished frame (PASSES.md 13),
@@ -279,6 +408,18 @@ void main(){
 // frame, parts its channels towards the corners and spills its highlights; the film
 // adds halation to that spill; only then does the grade touch the picture, and the
 // vignette last so it matches the ground behind the frame.
+//
+// Where the line is drawn, and why. A lens and a roll of film are in front of the whole
+// frame, so blur, aberration, bloom, halation, the vignette (and grain and dither, in
+// the final pass) land on everything: the take, the ground, the badges, the words. The
+// grade is of the picture the camera took, so brightness, contrast, saturation, tint
+// and auto level are held to the recording by the mask the frame pass wrote. The ground
+// is already the colour the look asked for, and Fetch's own furniture is already the
+// colour Fetch chose; a grade over them takes a warm near-black to pure black, a paper
+// ground to pure white and every gold badge to grey. Haze goes with the lens: it is
+// light scattered on the way in, not a dial on the finished picture, and held to the
+// take it would lift the take grey against a clean ground and make its edge a break,
+// which is the same fault the ground's divided-out vignette exists to avoid.
 //
 // Every part is a uniform that is zero while its field is off, and render() skips the
 // whole pass when the look asks for none of it, so a look that does not use treatment
@@ -291,6 +432,7 @@ uniform float uSoftOn, uMeanLod, uAb;
 uniform vec3 uLevel;                 // the take's black point, its white point, how much
 uniform vec4 uLevelBox; uniform float uLevelRad;   // and where the take is, which is all it touches
 uniform vec3 uGrade;                 // brightness, contrast, saturation, as ffmpeg eq takes them
+uniform vec4 uShoulder, uToe;        // and the two ends of that line rolled in (plan.js rollOff)
 uniform vec4 uTint;                  // the colour, and how much of it
 uniform vec2 uAtmos;                 // haze, vignette
 uniform vec3 uGlowMix;               // bloom, halation, on
@@ -303,6 +445,40 @@ const vec3 HALO = vec3(1.0, 0.38, 0.20);
 // the softened frame is graded, rather than the grade blurred: everything after this is
 // per pixel and affine, so the two agree, and the frame is only blurred once
 vec3 sceneAt(vec2 p){ return uSoftOn > 0.5 ? texture(uSoft, p / uRes).rgb : textureLod(uScene, p / uRes, 0.0).rgb; }
+// The straight contrast line with its top rolled in. S is (knee, run, and the curve's
+// two terms), worked out once per plan by rollOff(): under the knee the line is the
+// line, over it a cubic arrives flat on 1.0, so the take's own white lands on white and
+// what sits a pixel under it stays a pixel under it. A run of 0 is a line that never
+// left the range, and this is then exactly the expression it always was.
+vec3 rollIn(vec3 g, vec4 S){
+  if (S.y <= 0.0) return g;
+  vec3 s = clamp((g - S.x) / S.y, 0.0, 1.0);
+  return mix(g, S.x + S.y * (s + S.z * s * s + S.w * s * s * s), step(vec3(S.x), g));
+}
+// and the same curve at the bottom, where a hairline on a dark page goes into black
+vec3 rollOut(vec3 g, vec4 T){ return T.y <= 0.0 ? g : 1.0 - rollIn(1.0 - g, T); }
+// The grade itself, as one function of a colour, because the take's antialiased edge
+// needs it of two: contrast about mid grey with both ends rolled in, then brightness,
+// then saturation, then the tint multiplied in with the luminance put back.
+vec3 gradeAt(vec3 c){
+  vec3 g = rollOut(rollIn((c - 0.5) * uGrade.y + 0.5 + uGrade.x, uShoulder), uToe);
+  float y = dot(g, K);
+  g = mix(vec3(y), g, uGrade.z);
+  if (uTint.w > 0.0) {
+    // the classic photo filter: the colour multiplied in and the luminance put back, so
+    // a tint colours the picture without darkening it
+    vec3 t = g * uTint.rgb;
+    t *= max(y, 0.0) / max(dot(t, K), 1e-4);
+    g = mix(g, t, uTint.w);
+  }
+  return g;
+}
+// How far a point is outside the take's own rect, corner and all: auto level's
+// authority, and the edge the grade has to know about to hand a rim pixel's ground back
+float takeDist(vec2 q){
+  return uLevelRad > 0.0 ? sdRound(q - (uLevelBox.xy + uLevelBox.zw * 0.5), uLevelBox.zw * 0.5, uLevelRad)
+    : max(max(uLevelBox.x - q.x, q.x - uLevelBox.x - uLevelBox.z), max(uLevelBox.y - q.y, q.y - uLevelBox.y - uLevelBox.w));
+}
 void main(){
   vec2 p = gl_FragCoord.xy;
   vec3 c;
@@ -328,29 +504,54 @@ void main(){
     vec3 wide = (g2 + g3 + g4) / 3.0;
     c += mix(vec3(dot(wide, K)), wide, 0.4) * HALO * uGlowMix.y;
   }
+  // How much of this pixel is the recording (FS_FRAME writes it into the scene's alpha):
+  // 1 on the take and the camera, 0 on the ground, the border, a step badge, the agent's
+  // cursor, a caption. Taken at full resolution even while the lens reads a softened
+  // copy, because it is geometry and not light: the grade stops exactly at the take.
+  float take = texelFetch(uScene, ivec2(p), 0).a;
   // auto level: one stretch for the whole take, measured once (compositor/levels.js).
   // It is held to the take's own rect, corner and all. The numbers come from the take's
   // pixels, and a black point of a quarter laid over the background would take the warm
   // near-black a look asked for down to pure black and a paper ground up to pure white.
   // The take's edge is already a hard edge, so nothing is feathered but its own corner.
+  // The rect stays its authority (it is what keeps the camera bubble out of numbers
+  // measured off the screen); the mask only takes away, where Fetch drew over the take.
+  float ld = takeDist(p);
   if (uLevel.z > 0.0) {
-    float ld = uLevelRad > 0.0 ? sdRound(p - (uLevelBox.xy + uLevelBox.zw * 0.5), uLevelBox.zw * 0.5, uLevelRad)
-      : max(max(uLevelBox.x - p.x, p.x - uLevelBox.x - uLevelBox.z), max(uLevelBox.y - p.y, p.y - uLevelBox.y - uLevelBox.w));
-    float m = clamp(0.5 - ld, 0.0, 1.0) * uLevel.z;
+    float m = min(clamp(0.5 - ld, 0.0, 1.0) * uLevel.z, take);
     if (m > 0.0) c = mix(c, clamp((c - uLevel.x) / max(0.05, uLevel.y - uLevel.x), 0.0, 1.0), m);
   }
-  // contrast about mid grey, then brightness, which is ffmpeg eq's own order and its
-  // dials: the classic renderer's only levels control (the spotlight's dim) is the
-  // same expression, so a look reads the same in both renderers
-  c = (c - 0.5) * uGrade.y + 0.5 + uGrade.x;
-  float y = dot(c, K);
-  c = mix(vec3(y), c, uGrade.z);
-  if (uTint.w > 0.0) {
-    // the classic photo filter: the colour multiplied in and the luminance put back, so
-    // a tint colours the picture without darkening it
-    vec3 t = c * uTint.rgb;
-    t *= max(y, 0.0) / max(dot(t, K), 1e-4);
-    c = mix(c, t, uTint.w);
+  // The grade, held to the recording by that same mask. Contrast about mid grey, then
+  // brightness, which is ffmpeg eq's own order and its dials: the classic renderer's
+  // only levels control (the spotlight's dim) is the same expression, so a look reads
+  // the same in both renderers. What the straight line would have pushed past the ends
+  // is rolled in rather than cut off, pinned to the take's own black and white points:
+  // eq clips, and a clip on a white app page is the product's own hairlines deleted.
+  if (take > 0.0) {
+    vec3 g = gradeAt(c);
+    // exactly the graded colour where the mask is whole, so a frame with nothing drawn
+    // over the take comes back byte for byte what it was before this mask existed
+    if (take >= 1.0) c = g;
+    else if (abs(ld) < 2.0) {
+      // The take's own antialiased edge, where the pixel is part recording and part
+      // ground. Grading the blend at the mask's weight is not the same as grading the
+      // recording's share of it: it leaves a quarter of the take's own colour ungraded
+      // and takes a quarter of the ground's warmth off, which came out as a closed
+      // coloured rim round a picture a black and white look had just drained. The grade
+      // is affine, so the whole pixel graded plus the ground's share handed back
+      // ungraded is exactly the recording's share graded and the ground left alone. The
+      // ground's colour is the one a couple of pixels outside the edge, along the edge's
+      // own normal, which is the same place the frame pass measured the edge floor at.
+      vec2 e = vec2(1.0, 0.0);
+      vec2 n = normalize(vec2(takeDist(p + e.xy) - takeDist(p - e.xy),
+                              takeDist(p + e.yx) - takeDist(p - e.yx)) + 1e-5);
+      vec3 gr = sceneAt(p + n * (2.5 - ld));
+      c = g + (1.0 - take) * (gr - gradeAt(gr));
+    }
+    // and anywhere else the mask is partial it is Fetch's own furniture over the take
+    // (a badge's antialiased outline, a glyph's), whose own colour is in this pixel and
+    // nowhere else to be read from
+    else c = mix(c, g, take);
   }
   if (uAtmos.x > 0.0) {
     // haze lifts the blacks toward the frame's own colour (its deepest mip level is the
@@ -470,6 +671,8 @@ void main(){
     }
     c = m / 16.0;
   }
+  // alpha is the recording's mask, as in FS_FRAME: a cleaned, redacted take is still
+  // all recording, and only the steps and the cursor drawn later take anything out of it
   o = vec4(c, 1.0);
 }`
 
@@ -486,17 +689,35 @@ uniform vec4 uDst; uniform vec2 uTarget;
 void main(){ vec2 c = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
   gl_Position = vec4((uDst.xy + c * uDst.zw) / uTarget * 2.0 - 1.0, 0.0, 1.0); }`
 
-// A blur mark laid back through a round-cornered mask feathered over its edge, easing in
-// and out: the blurred patch (uSrc, the box and its margin) at the mark's opacity
+// A blur mark laid back through a round-cornered mask, easing in and out: the blurred
+// patch (uSrc, the box and its margin) at the mark's opacity.
+//
+// It is a plate, with its own corner and its own hairline just inside it. A viewer has
+// to read a blur as something someone put there on purpose; a patch that fades out over
+// twenty pixels with no boundary anywhere reads as a render that went soft, which is
+// the fault the mark was drawn to avoid. The hairline follows the plate's own tone, a
+// warm light over a dark patch and warm ink over a light one, the same rule the take's
+// own edge floor uses.
 const FS_BLURMARK = `#version 300 es
 precision highp float;
-uniform sampler2D uSrc; uniform vec4 uDst, uBox; uniform float uR, uF, uOp; out vec4 o;
+uniform sampler2D uSrc; uniform vec4 uDst, uBox; uniform float uR, uF, uOp, uHair; out vec4 o;
+const vec3 K = vec3(0.2126, 0.7152, 0.0722);
+const vec3 INK = vec3(0.102, 0.090, 0.078), LIT = vec3(0.984, 0.980, 0.973);
 float sdRound(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r; }
 void main(){
   vec2 p = gl_FragCoord.xy;
   vec3 c = texture(uSrc, (p - uDst.xy) / uDst.zw).rgb;
   float d = sdRound(p - (uBox.xy + uBox.zw * 0.5), uBox.zw * 0.5, uR);
   float s = clamp(0.5 - d / uF, 0.0, 1.0); s = s * s * (3.0 - 2.0 * s);
+  if (uHair > 0.0) {
+    // The end drifts with the plate's tone rather than choosing between the two at mid
+    // grey. A per-pixel two-way gate is the seam the take's own edge rule refuses for
+    // the same reason: the step is 67 levels wide, the two decode paths differ by one,
+    // and a ring pixel either side of mid grey lands on opposite ends of it. Drifting,
+    // that same level moves the ring by less than one.
+    float ring = clamp(1.0 + d / uHair, 0.0, 1.0) * s;
+    c = mix(c, mix(LIT, INK, smoothstep(0.2, 0.8, dot(c, K))), 0.3 * ring);
+  }
   o = vec4(c, 1.0) * s * uOp;
 }`
 
@@ -579,7 +800,7 @@ void main(){
 // re-coloured (the word being spoken)
 const FS_SPRITE = `#version 300 es
 precision highp float;
-uniform sampler2D uTex, uTex2; uniform vec4 uDst, uUV; uniform float uOp, uMix;
+uniform sampler2D uTex, uTex2; uniform vec4 uDst, uUV; uniform float uOp, uMix, uCarve;
 uniform vec4 uTint; uniform vec3 uTintCol; out vec4 o;
 void main(){
   vec2 p = gl_FragCoord.xy, uv = uUV.xy + ((p - uDst.xy) / uDst.zw) * uUV.zw;
@@ -587,6 +808,16 @@ void main(){
   if (uMix > 0.0) c = mix(c, texture(uTex2, uv), uMix);
   if (uTint.z > 0.0 && p.x >= uTint.x && p.y >= uTint.y && p.x <= uTint.x + uTint.z && p.y <= uTint.y + uTint.w) c.rgb = uTintCol * c.a;
   o = c * uOp;
+  // The carve pass (Compositor.quad), alpha only: what a piece of Fetch's own furniture
+  // takes out of the recording's mask is the part of the pixel it actually covers, not
+  // the alpha of the shadow it casts or the shade it sits in. Carved by the whole of
+  // that alpha, a badge's drop shadow and a caption's blurred glyph cloud pulled the
+  // recording under them part way out of the grade, so a look that takes the colour out
+  // of a take left a soft coloured halo ninety pixels wide round every badge, the
+  // agent's cursor and every caption over the picture. The picture's own coverage is
+  // read back out of the sprite's opacity and put back after it, so a badge fading in
+  // carves the share it covers and not the share it is drawn at.
+  if (uCarve > 0.5) o = vec4(0.0, 0.0, 0.0, smoothstep(0.5, 0.95, c.a) * uOp);
 }`
 
 // A title card's ground over the finished frame: the frame itself blurred and half
@@ -607,16 +838,22 @@ void main(){
   } else o = vec4(scrim, 1.0) * sa * uOp;
 }`
 
-// Frosted glass under a caption: the blurred frame through a feathered rounded patch
+// The plate under a caption: the frame's own light, blurred, through a feathered
+// rounded patch at the words' own bounds, with a scrim mixed into it. The scrim is the
+// far end of the words' colour, so a light caption gets a dark plate and an ink one a
+// light plate: glass alone is the frame's own luma, and a white caption over a blurred
+// white page is still a white caption. It is a plate, not a shadow, which is the whole
+// difference between a shape someone put there and a smudge.
 const FS_FROST = `#version 300 es
 precision highp float;
-uniform sampler2D uBlur; uniform vec2 uRes; uniform vec4 uBox; uniform float uR, uF, uOp; out vec4 o;
+uniform sampler2D uBlur; uniform vec2 uRes; uniform vec4 uBox; uniform float uR, uF, uOp;
+uniform vec3 uScrim; uniform float uScrimA; out vec4 o;
 float sdRound(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r; }
 void main(){
   vec2 p = gl_FragCoord.xy;
   float d = sdRound(p - (uBox.xy + uBox.zw * 0.5), uBox.zw * 0.5, uR);
   float s = clamp(0.5 - d / (2.4 * uF), 0.0, 1.0); s = s * s * (3.0 - 2.0 * s);
-  o = vec4(texture(uBlur, p / uRes).rgb, 1.0) * s * uOp;
+  o = vec4(mix(texture(uBlur, p / uRes).rgb, uScrim, uScrimA), 1.0) * s * uOp;
 }`
 
 const mipsFor = (w, h) => Math.floor(Math.log2(Math.max(w, h))) + 1
@@ -649,6 +886,7 @@ class Compositor {
     this.slots = {}
     this.bgKey = null
     this.images = new Map()
+    this.imgLuma = new Map()
     this.dummy = this.texture(1, 1)
     this.resize(W, H)
   }
@@ -728,11 +966,24 @@ class Compositor {
     } else gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
 
-  // A quad over rect (target pixels) of dst, blended premultiplied over what is there
-  quad(name, dst, rect, uniforms = {}, textures = {}, blend = true) {
+  // A quad over rect (target pixels) of dst, blended premultiplied over what is there.
+  // Alpha in these targets is not opacity, it is the recording's mask (FS_FRAME), so
+  // the colour blends the usual way and the mask is left alone, unless this is a piece
+  // of Fetch's own furniture, which carves itself out of it by its own coverage.
+  quad(name, dst, rect, uniforms = {}, textures = {}, blend = true, carve = false) {
     const gl = this.gl
-    if (blend) { gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA) }
-    this.draw(name, dst, { ...uniforms, uDst: rect, uTarget: [dst.w, dst.h] }, textures)
+    const u = { ...uniforms, uDst: rect, uTarget: [dst.w, dst.h] }
+    if (blend) { gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE) }
+    this.draw(name, dst, { ...u, uCarve: 0 }, textures)
+    if (blend && carve) {
+      // The same picture again, alpha only. One source alpha cannot be both: the colour
+      // has to blend by the whole of it, shadow and shade included, and the mask has to
+      // be carved by the covered part alone.
+      gl.colorMask(false, false, false, true)
+      gl.blendFuncSeparate(gl.ZERO, gl.ZERO, gl.ZERO, gl.ONE_MINUS_SRC_ALPHA)
+      this.draw(name, dst, { ...u, uCarve: 1 }, textures)
+      gl.colorMask(true, true, true, true)
+    }
     if (blend) gl.disable(gl.BLEND)
   }
 
@@ -770,11 +1021,33 @@ class Compositor {
     s.ready = true
   }
 
+  // Which warm end the take's hairline goes to, and which way. plan.js picks it from
+  // the ground a look chose, once for the whole frame; a photo is the one ground it
+  // cannot read, so its mean comes off the decoded picture here, dimmed as the
+  // background draws it. The mean is of the picture itself, not of the target it was
+  // covered into, so the stage and the export pick the same end at any size.
+  edgeOf(spec) {
+    if (!spec.edge || spec.bg.kind !== 'image') return spec.edge
+    const y = this.imgLuma.get(spec.bg.file)
+    if (y == null) return spec.edge
+    return { ...spec.edge, ...Plan.edgeFor(y * (1 - 0.7 * (spec.bg.dim || 0)) > 0.5) }
+  }
+
   // An image background, decoded once and kept
   // (premult for a picture drawn over the take as a sprite, a clean patch)
   setImage(key, img, premult = false) {
     if (this.images.has(key)) return
     const w = img.width || img.naturalWidth, h = img.height || img.naturalHeight
+    // its mean luma, for edgeOf(): eight by eight rather than one pixel, so a photo
+    // with a bright corner and a dark body is not read as its corner
+    try {
+      const cv = canvas(8, 8), g2 = cv.getContext('2d', { willReadFrequently: true })
+      g2.drawImage(img, 0, 0, 8, 8)
+      const px = g2.getImageData(0, 0, 8, 8).data
+      let s = 0
+      for (let i = 0; i < px.length; i += 4) s += (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]) / 255
+      this.imgLuma.set(key, s / 64)
+    } catch {}
     const t = this.texture(w, h, 'rgba8', mipsFor(w, h))
     const gl = this.gl
     gl.bindTexture(gl.TEXTURE_2D, t.tex)
@@ -896,13 +1169,18 @@ class Compositor {
     const r = { w: r0.w * mv.k, h: r0.h * mv.k }
     r.x = r0.x + (r0.w - r.w) / 2; r.y = r0.y + (r0.h - r.h) / 2 + mv.dy
     const cam = spec.cam && src.cam && this.slots.cam && this.slots.cam.ready
+    const edge = this.edgeOf(spec)
     const u = {
       uRes: [W, H], uBgKind: kind,
       uRect: [r.x * k, r.y * k, r.w * k, r.h * k], uRadius: spec.radius * mv.k * k,
       uTake: [mv.alpha, mv.shadow],
       uShadow: sh ? [sh.dy * k, Math.max(0.5, sh.sigma * k), sh.alpha, 1] : [0, 1, 0, 0],
       uBorder: spec.border ? [...spec.border.color, 1] : [0, 0, 0, 0], uBorderPx: spec.border ? spec.border.px * k : 0,
+      uEdge: edge ? [edge.floor, edge.px * k, edge.sign] : [0, 0, 0],
+      uEdgeCol: edge ? edge.col : [0, 0, 0],
+      uFillBand: spec.bg.band || [0, 0],
       uContentSize: marked ? marked.size : [c.w, c.h], uCropUV: marked ? [0, 0, 1, 1] : cropUV,
+      uMarked: marked ? 1 : 0,
       uInner: [spec.inner.x, spec.inner.y, spec.inner.w, spec.inner.h],
       uV0: fp.view0, uV1: fp.view1, uTaps: fp.taps,
       uCam: cam ? 1 : 0,
@@ -937,9 +1215,9 @@ class Compositor {
     const { W, H } = this, k = W / spec.W, T = spec.treat
     const dst = this.keep('treat', W, H)
     const glowOn = T.bloom > 0 || T.halation > 0
-    // haze reads the frame's mean from the deepest level, the glow reads a level near
-    // its own size, and the softening shrinks off one too
-    if (T.blur > 0 || T.haze > 0 || glowOn) this.mip(this.scene)
+    // haze reads the frame's mean from the deepest level and the softening shrinks off
+    // one; the glow reads the frame's own pixels, so it wants no chain of its own here
+    if (T.blur > 0 || T.haze > 0) this.mip(this.scene)
     // The whole frame softened. The blur comes off mip levels at a reduced size
     // (blurred()), so its cost barely moves with how soft the look asks for; a full
     // resolution Gaussian this wide would not hold the bench at 1080p60.
@@ -950,6 +1228,7 @@ class Compositor {
       uLevel: T.level ? [T.level[0], T.level[1], takeAlpha] : [0, 1, 0],
       uLevelBox: takeBox, uLevelRad: takeRadius,
       uGrade: [T.bright, T.contrast, T.sat],
+      uShoulder: T.shoulder, uToe: T.toe,
       uTint: [...T.tint, T.tintAmount],
       uAtmos: [T.haze, T.vignette],
       uGlowMix: [T.bloom, T.halation, glow ? 1 : 0],
@@ -965,7 +1244,8 @@ class Compositor {
   glowPass(T) {
     const gw = Math.max(4, this.W >> 2), gh = Math.max(4, this.H >> 2)
     const a = this.keep('glowA', gw, gh, mipsFor(gw, gh)), b = this.keep('glowB', gw, gh)
-    this.draw('bright', a, { uRes: [gw, gh], uLod: 2, uThresh: T.glowThresh }, { uSrc: this.scene })
+    // its own 4x4 box of the frame per texel, thresholded before it is averaged
+    this.draw('bright', a, { uMax: [this.W - 1, this.H - 1], uThresh: T.glowThresh }, { uSrc: this.scene })
     // one small Gaussian before the chain, or every level carries the square edges the
     // level above it was minified into
     this.draw('gauss', b, { uDir: [1, 0], uSigma: 1.6 }, { uSrc: a })
@@ -1026,12 +1306,14 @@ class Compositor {
     return p
   }
   // A picture over dst at rect (target pixels), at an opacity, crossfading to its blurred
-  // copy by mix, one rectangle re-coloured by tint { x, y, w, h, colour }
-  sprite(dst, p, rect, op = 1, mix = 0, tint = null) {
+  // copy by mix, one rectangle re-coloured by tint { x, y, w, h, colour }. carve while
+  // the picture is Fetch's own rather than the recording's: a badge, the agent's cursor,
+  // a caption. It takes itself out of the grade's mask and keeps the colour it was drawn.
+  sprite(dst, p, rect, op = 1, mix = 0, tint = null, carve = false) {
     if (!p || !(op > 0.002)) return
     const u = { uUV: [0, 0, 1, 1], uOp: op, uMix: p.tex2 ? mix : 0, uTint: [0, 0, 0, 0], uTintCol: [1, 1, 1] }
-    if (tint) { u.uTint = [tint.x, tint.y, tint.w, tint.h]; u.uTintCol = require('./plan').rgb(tint.colour) }
-    this.quad('sprite', dst, rect, u, { uTex: p.tex, uTex2: p.tex2 || p.tex })
+    if (tint) { u.uTint = [tint.x, tint.y, tint.w, tint.h]; u.uTintCol = Plan.rgb(tint.colour) }
+    this.quad('sprite', dst, rect, u, { uTex: p.tex, uTex2: p.tex2 || p.tex }, true, carve)
   }
 
   /**
@@ -1069,7 +1351,7 @@ class Compositor {
         const x1 = Math.min(tw, Math.ceil((b.x + b.w) * sx + m)), y1 = Math.min(th, Math.ceil((b.y + b.h) * sy + m))
         const R = [x0, y0, x1 - x0, y1 - y0]
         const blur = this.blurred('blur' + i, A, R, s)
-        this.quad('blurmark', A, R, { uBox: S(b), uR: b.r * sx, uF: F, uOp: b.op }, { uSrc: blur })
+        this.quad('blurmark', A, R, { uBox: S(b), uR: b.r * sx, uF: F, uOp: b.op, uHair: (b.hair || 0) * sx }, { uSrc: blur })
       }
       this.mip(A)
     }
@@ -1101,7 +1383,9 @@ class Compositor {
   }
 
   // A numbered step: a gold disc in a thin white ring over a soft shadow, the number in
-  // rounded bold ink (overlays.js stepEvents), drawn once per size and scaled as it pops
+  // rounded bold ink (overlays.js stepEvents), drawn once per size and scaled as it pops.
+  // Carved out of the recording's mask: the gold is Fetch's, and a look that desaturates
+  // a take has no business turning its own numbered steps grey.
   stepSprite(dst, s, k) {
     const D = s.D * k, ring = s.ring * k
     const key = `step|${s.label}|${D.toFixed(2)}|${ring.toFixed(2)}`
@@ -1119,11 +1403,12 @@ class Compositor {
       return { canvas: cv, x: -c, y: -c, w: size, h: size }
     })
     const w = p.w * s.scale
-    this.sprite(dst, p, [s.cx * k - w / 2, s.cy * k - w / 2, w, w], s.op)
+    this.sprite(dst, p, [s.cx * k - w / 2, s.cy * k - w / 2, w, w], s.op, 0, null, true)
   }
 
   // The agent's cursor (pointer.js): a gold ripple on each click, the near-black arrow
-  // with its light edge and soft shadow, pressing on a click, the Biscuit tag and badge
+  // with its light edge and soft shadow, pressing on a click, the Biscuit tag and badge.
+  // Carved out of the mask like the steps: none of it was on the screen that was recorded.
   pointerSprites(dst, P, plan, sx, sy) {
     const k = sx, size = plan.size * k, u = plan.unit * k
     const bord = Math.max(0.8, 1.5 * plan.unit) * k
@@ -1140,7 +1425,7 @@ class Compositor {
         return { canvas: cv, x: -n / 2, y: -n / 2, w: n, h: n }
       })
       const sc = 0.3 + 0.7 * r.p, w = p.w * sc
-      this.sprite(dst, p, [r.x * sx - w / 2, r.y * sy - w / 2, w, w], (1 - r.p) * P.op)
+      this.sprite(dst, p, [r.x * sx - w / 2, r.y * sy - w / 2, w, w], (1 - r.p) * P.op, 0, null, true)
     }
     const arrow = this.pic(`arrow|${size.toFixed(2)}|${bord.toFixed(2)}`, () => {
       const m = Math.ceil(4 * ak + bord * 2), wd = Math.ceil(11 * ak + 2 * m), ht = Math.ceil(Pointer.ARROW_H * ak + 2 * m)
@@ -1154,7 +1439,7 @@ class Compositor {
     })
     const x = P.x * sx, y = P.y * sy
     const aw = arrow.w * P.press, ah = arrow.h * P.press
-    this.sprite(dst, arrow, [x + arrow.x * P.press, y + arrow.y * P.press, aw, ah], P.op)
+    this.sprite(dst, arrow, [x + arrow.x * P.press, y + arrow.y * P.press, aw, ah], P.op, 0, null, true)
     // the tag, tucked under the badge's edge
     if (P.tag && P.tag.op > 0.004) {
       const br = plan.br * k, tagH = plan.tagH * k, tagFs = plan.tagFs * k
@@ -1177,7 +1462,7 @@ class Compositor {
       })
       const bx = left ? Pointer.BADGE.cx * size - tagW : Pointer.BADGE.cx * size - tuck
       const by = Pointer.BADGE.cy * size - tagH / 2
-      this.sprite(dst, p, [x + bx + p.x, y + by + p.y, p.w, p.h], P.tag.op * P.op)
+      this.sprite(dst, p, [x + bx + p.x, y + by + p.y, p.w, p.h], P.tag.op * P.op, 0, null, true)
     }
     if (P.badge > 0.004) {
       const d = plan.d * k, img = this.imgEls.get('badge')
@@ -1189,12 +1474,20 @@ class Compositor {
         g.drawImage(img, n / 2 - d / 2, n / 2 - d / 2, d, d); g.restore()
         return { canvas: cv, x: -n / 2, y: -n / 2, w: n, h: n }
       })
-      if (p) this.sprite(dst, p, [x + Pointer.BADGE.cx * size + p.x, y + Pointer.BADGE.cy * size + p.y, p.w, p.h], P.badge * P.op)
+      if (p) this.sprite(dst, p, [x + Pointer.BADGE.cx * size + p.x, y + Pointer.BADGE.cy * size + p.y, p.w, p.h], P.badge * P.op, 0, null, true)
     }
   }
 
   // Over the finished frame: a title card's ground, the glass under captions, then every
-  // caption, title, lower third and label (text.js)
+  // caption, title, lower third and label (text.js). The words and the card's scrim are
+  // Fetch's own, so they carve themselves out of the grade's mask and keep the colour
+  // they were drawn at: Fetch does not speak in grey. The caption glass does not carve.
+  // It is the frame's own light through a feathered patch, so it belongs to whatever it
+  // is lying on, and a grade that stopped at its edge would put an ungraded rectangle
+  // over the take. A closing card's scrim carries a blurred copy of the frame under it
+  // and carves by the whole of its opacity rather than the scrim's share of it, which
+  // is a rounding in favour of the colour the card was drawn at: at three quarters scrim
+  // and a blur already half desaturated there is little of the picture left to grade.
   textPass(spec, fp) {
     const T = Text.textAt(spec.text, fp.t, this.measure)
     if (!T.items.length && !T.frost.length && !T.ground) return
@@ -1208,7 +1501,7 @@ class Compositor {
         blur = this.blurred('ground', this.scene, [0, 0, W, H], fh * 0.12 * (H / fh))
       }
       const gl = this.gl
-      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+      gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE_MINUS_SRC_ALPHA)
       this.draw('ground', this.scene, { uRes: [W, H], uBlurred: blur ? 1 : 0, uOp: T.ground.op }, { uBlur: blur || this.dummy })
       gl.disable(gl.BLEND)
       if (T.frost.length) this.mip(this.scene)
@@ -1218,15 +1511,22 @@ class Compositor {
       for (const f of T.frost) {
         const m = f.feather * 2.6 * k
         this.quad('frost', this.scene, [f.x * k - m, f.y * k - m, f.w * k + 2 * m, f.h * k + 2 * m],
-          { uRes: [W, H], uBox: [f.x * k, f.y * k, f.w * k, f.h * k], uR: f.r * k, uF: f.feather * k, uOp: f.op }, { uBlur: blur })
+          { uRes: [W, H], uBox: [f.x * k, f.y * k, f.w * k, f.h * k], uR: f.r * k, uF: f.feather * k, uOp: f.op,
+            uScrim: Plan.rgb(f.scrim || '#0A0908'), uScrimA: f.scrimA || 0 }, { uBlur: blur })
       }
     }
     for (const it of T.items) {
-      const p = this.pic(it.key + '|' + k.toFixed(4), () => Text.rasterItem(it, k, canvas))
+      // the raster carries its own place on the frame (rasterItem rounds the item's
+      // bounds to whole pixels and keeps the offset), so the place is part of its key:
+      // the same phrase at the same size sits in the band on one look and over the take
+      // on another, and a cache that knew only the words handed the second one the
+      // first one's position
+      const p = this.pic(`${it.key}|${k.toFixed(4)}|${Math.round(it.bounds.x * k)},${Math.round(it.bounds.y * k)}`,
+        () => Text.rasterItem(it, k, canvas))
       if (!p) continue
       const dx = (it.dx || 0) * k, dy = (it.dy || 0) * k
       const tint = it.tint ? { x: it.tint.x * k + dx, y: it.tint.y * k + dy, w: it.tint.w * k, h: it.tint.h * k, colour: it.tint.colour } : null
-      this.sprite(this.scene, p, [p.x + dx, p.y + dy, p.w, p.h], it.op, it.blurMax ? Math.min(1, (it.blur || 0) / it.blurMax) : 0, tint)
+      this.sprite(this.scene, p, [p.x + dx, p.y + dy, p.w, p.h], it.op, it.blurMax ? Math.min(1, (it.blur || 0) / it.blurMax) : 0, tint, true)
     }
   }
 
