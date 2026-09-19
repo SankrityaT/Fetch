@@ -2605,8 +2605,12 @@ var stageGL = null          // { comp, spec, key, clock, ready } once made; fals
 var stagePrep = { key: null, timer: null, data: null, v: 0 }
 
 function askPrepared(opts) {
+  // the look is in the key only by what prepare.js reads of it: auto level, whose two
+  // numbers it measures. Without it, turning Auto level on would leave the stage
+  // ungraded while the export, which prepares its own, drew the stretch.
+  const look = opts.look && opts.look.treatment ? [!!opts.look.treatment.autoLevel] : null
   const key = JSON.stringify([ed.src, opts.marks, opts.pointer, opts.hideMacCursor, opts.captions, opts.cues, opts.captionStyle,
-    opts.backdrop, opts.crop, opts.start, opts.end, opts.cuts, opts.zooms, opts.autoZoom])
+    opts.backdrop, opts.crop, opts.start, opts.end, opts.cuts, opts.zooms, opts.autoZoom, look])
   if (key === stagePrep.key) return
   stagePrep.key = key
   clearTimeout(stagePrep.timer)

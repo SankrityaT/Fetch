@@ -1,12 +1,13 @@
 // Export speed on a real take, compositor against the classic renderer. Electron:
 //
-//   FETCH_GL_TESTS=1 npx electron test/gl/bench.js [take.mov] [--full] [--sinks]
+//   FETCH_GL_TESTS=1 npx electron test/gl/bench.js [take.mov] [--full] [--sinks] [--treat]
 //
 // Defaults to the Songscription tour. Exports go to /tmp/fetch-gl/bench, never over the
 // take's own deliverable. The compositor draws what it can of the take's edit (marks,
 // text, captions and the drawn cursor are M3), and the classic renderer is timed on
 // that same subset, so the two are comparable; --full also times the classic export of
-// the whole edit, --sinks the other encoders. Gate: the compositor at least 1.0x real time.
+// the whole edit, --sinks the other encoders, --treat the same export with every
+// treatment field on. Gate: the compositor at least 1.0x real time.
 const { app } = require('electron')
 const path = require('path')
 const fs = require('fs')
@@ -45,6 +46,16 @@ app.whenReady().then(async () => {
     }
     await host.probe()                      // the window warm, as in the app
     const gl = await time('gl', subset, 'gl')
+    if (args.includes('--treat')) {
+      // the same export with every treatment field asking for something at once, which
+      // is what the pass costs at its worst: one extra full-screen shader, one wide
+      // blur and one bright pass with its mip chain, all at a reduced size
+      const Look = require('../../ui/look')
+      const heavy = Look.merge(subset.look, { treatment: { brightness: 0.05, contrast: 0.1, saturation: -0.2,
+        tintAmount: 0.2, haze: 0.15, blur: 0.25, bokeh: 0.4, bloom: 0.4, halation: 0.3, aberration: 0.3, vignette: 0.3 },
+        grain: { film: 0.4 } }).look
+      await time('gl-treatment', { ...subset, look: heavy }, 'gl')
+    }
     if (args.includes('--sinks')) {
       await time('gl-vt', { ...subset, sink: 'vt' }, 'gl')
       await time('gl-webcodecs', { ...subset, sink: 'webcodecs' }, 'gl')

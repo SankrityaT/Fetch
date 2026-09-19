@@ -4,11 +4,17 @@
 //   FETCH_GL_TESTS=1 npx electron test/gl/harness.js [--update] [--only=name]
 //
 // What it checks, against test/gl/fixtures.sh's takes:
-//   golden     one frame per pass (framed gradient with shadow, blur ground, image,
-//              zoom with motion blur, camera, fade, border) against test/gl/golden/*.png
+//   golden     one frame per pass against test/gl/golden/*.png: the frame and its
+//              grounds, what is drawn on the take, the text, each treatment effect on
+//              its own and the whole stack together, and one frame per built-in look
+//   presets    every field a built-in look declares moves a pixel: the same frame with
+//              that one field back at its default has to differ
 //   parity     the editor's path (a <video>) and the export's (ffmpeg NV12) draw the
-//              same frame to within 2 LSB before encode
-//   stateless  a frame drawn again after others is identical: no frame depends on another
+//              same frame before encode, treatment stack and all: 1 LSB everywhere but
+//              auto level, the one field with a gain on it, which reaches 3 at its
+//              steepest with a contrast over the top
+//   stateless  a frame drawn again after others is identical: no frame depends on
+//              another, grain and aberration included
 //   hold       an exported file's frames are the source frames the plan picks
 //              (sample and hold across a cut, on a variable-rate take off the 60 fps grid)
 //   sinks      each encoder (WebCodecs, VideoToolbox through ffmpeg, x264) keeps the
@@ -117,6 +123,51 @@ app.whenReady().then(async () => {
       'title': { opts: { backdrop: 'dusk', inset: 0.06, look, texts: [{ text: 'Fetch', subtitle: 'fetch.app', start: 0, end: 2.5, style: 'title' }] }, n: 36 },
       'lower-third': { opts: { backdrop: 'dusk', inset: 0.06, look, texts: [{ text: 'Library', subtitle: 'Three hundred songs', start: 7, end: 11, style: 'lower-third' },
         { text: 'New', start: 7, end: 11, fx: 0.7, fy: 0.3, style: 'label', box: true }] }, n: 270 },
+      // M4: the treatment pass and the grain, one or two fields each so a failure names
+      // the part that moved. Every other case leaves treatment at its defaults, which is
+      // what holds those goldens still while this pass exists.
+      'treat-grade': { opts: { backdrop: 'ink', inset: 0.06, look: { ...look, treatment: { motionBlur: 0.5, saturation: -1, contrast: 0.2, vignette: 0.35 } } }, n: 150 },
+      'treat-tint': { opts: { backdrop: 'dusk', inset: 0.06, look: { ...look, treatment: { motionBlur: 0.5, tint: '#F0A93C', tintAmount: 0.5, haze: 0.35, brightness: 0.06 } } }, n: 90 },
+      'treat-soft': { opts: { backdrop: 'slate', inset: 0.06, look: { ...look, treatment: { motionBlur: 0.5, blur: 0.4 } } }, n: 90 },
+      'grain': { opts: { backdrop: 'dusk', inset: 0.08, look: { ...look, grain: { film: 0.5, dither: false } } }, n: 60 },
+      // M4: the glow family off one bright pass, the aperture on the background, and
+      // the mesh. Same rule: one or two fields a case.
+      'glow': { opts: { backdrop: 'ink', inset: 0.06, look: { ...look, treatment: { motionBlur: 0.5, bloom: 0.5, halation: 0.45 } } }, n: 150 },
+      'aberration': { opts: { backdrop: 'slate', inset: 0.06, look: { ...look, treatment: { motionBlur: 0.5, aberration: 1 } } }, n: 150 },
+      'bokeh-photo': { opts: { backdrop: 'img:bg.jpg', inset: 0.07, look: { ...look, treatment: { motionBlur: 0.5, bokeh: 0.6 } } },
+        ctx: { imageFile: path.join(FIX, 'bg.jpg') }, n: 120 },
+      'bokeh-ground': { opts: { backdrop: 'blur', inset: 0.06, backdropAspect: 16 / 9, look: { ...look, treatment: { motionBlur: 0.5, bokeh: 0.7 } } }, n: 300 },
+      'mesh': { opts: { backdrop: 'violet', inset: 0.08, look: { ...look, background: { kind: 'mesh', mesh: 'violet' } } }, n: 90 },
+      // Auto level is the one branch of the treatment pass with no picture of its own:
+      // its two numbers are measured once per take by levels.js and reach the plan
+      // through prepare.js, so the case hands them over in that same shape.
+      'auto-level': { opts: { backdrop: 'ink', inset: 0.06, look: { ...look, treatment: { motionBlur: 0.5, autoLevel: true } } },
+        ctx: { prepared: { levels: { lo: 0.12, hi: 0.78 } } }, n: 150 },
+      // The steepest stretch levels.js can hand over (its black point caps at 64, its
+      // white point floors at 170: a gain of 2.4) with a contrast over the top. Auto
+      // level is the one field that multiplies whatever the two decode paths disagree
+      // about, so this case is in parity as well as in the goldens.
+      'auto-level-hard': { opts: { backdrop: 'ink', inset: 0.06, look: { ...look, treatment: { motionBlur: 0.5, autoLevel: true, contrast: 0.3 } } },
+        ctx: { prepared: { levels: { lo: 64 / 255, hi: 170 / 255 } } }, n: 150 },
+      // The whole Treatment section at once, dither included, which is the frame someone
+      // gets when they turn it all on. Every case above moves one part so a failure names
+      // it; this one is what parity and stateless are held to, because an effect that
+      // only misbehaves beside another would slip past all of them.
+      'treat-all': { opts: { backdrop: 'blur', inset: 0.06, backdropAspect: 16 / 9, look: { ...look,
+        treatment: { motionBlur: 0.5, brightness: 0.05, contrast: 0.12, saturation: -0.25, tint: '#F0A93C', tintAmount: 0.25,
+          haze: 0.15, blur: 0.15, bokeh: 0.5, bloom: 0.4, halation: 0.3, aberration: 0.5, vignette: 0.3 },
+        grain: { film: 0.4, dither: true } } }, n: 150 },
+    }
+
+    // Every built-in look, drawn end to end: the preset as the editor and the MCP
+    // surface hand it over (Look.toClassic for the classic options, the resolved look
+    // for the compositor), so a field a preset declares and no pass draws shows up here
+    // as a frame that does not change when the preset does.
+    const Look = require('../../ui/look')
+    const lookOpts = L => { const c = Look.toClassic(L)
+      return { backdrop: c.backdrop, backdropAspect: c.backdropAspect, inset: c.inset, radius: c.radius, shadow: c.shadow, captions: false, look: L } }
+    for (const pr of Look.list()) {
+      cases['preset-' + pr.name] = { opts: lookOpts(Look.merge(Look.defaults(), { preset: pr.name }).look), n: 150 }
     }
 
     if (want('golden')) {
@@ -128,9 +179,32 @@ app.whenReady().then(async () => {
       }
     }
 
+    if (want('presets')) {
+      console.log('every field a built-in look declares reaches a pixel')
+      const D = Look.defaults()
+      for (const pr of Look.list()) {
+        const paths = Object.entries(pr.look).flatMap(([sec, vals]) => Object.keys(vals).map(k => [sec, k]))
+        if (!paths.length) { is(`${pr.name} declares nothing and draws the take edge to edge`, true); continue }
+        const full = Look.merge(D, { preset: pr.name }).look
+        // A field a preset writes at its own default value pins that default: it cannot
+        // move a pixel by construction, and it is there so the preset keeps its look if
+        // the default ever changes. Named, not asked to draw anything.
+        const pinned = paths.filter(([sec, k]) => JSON.stringify(pr.look[sec][k]) === JSON.stringify(D[sec][k]))
+        const asks = paths.filter(x => !pinned.includes(x))
+        if (pinned.length) is(`${pr.name} pins ${pinned.length} default${pinned.length === 1 ? '' : 's'}`, true, pinned.map(x => x.join('.')).join(', '))
+        // and the rest, one at a time, against the same frame with that one field back
+        // at its default: a field a preset asks for and no pass draws fails here
+        const variants = asks.map(([sec, k]) => ({ ...base, opts: lookOpts(Look.merge(full, { [sec]: { [k]: D[sec][k] } }).look), n: 150, width: 640 }))
+        const rs = await call('moved', { ...base, opts: lookOpts(full), n: 150, width: 640 }, variants)
+        asks.forEach(([sec, k], i) => is(`${pr.name}: ${sec}.${k} reaches a pixel`, rs[i].max > 0,
+          `max ${rs[i].max} LSB${rs[i].size ? ', frame ' + rs[i].size : ''}`))
+      }
+    }
+
     if (want('parity')) {
       console.log('preview path equals export path, before encode')
-      for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'zoom-hold', 'camera', 'marks', 'lift', 'pointer', 'text']) {
+      for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'bokeh-ground', 'zoom-hold', 'camera', 'marks', 'lift', 'pointer', 'text', 'glow',
+        'auto-level', 'auto-level-hard', 'treat-all']) {
         const c = cases[name]
         const r = await call('parity', { ...base, ...c })
         // A crop's first and last rows can differ at a sharp colour edge: the <video>
@@ -146,6 +220,19 @@ app.whenReady().then(async () => {
       is('a frame drawn after others is the same frame', r.max === 0, `max ${r.max}`)
       const b = await call('stateless', { ...base, ...cases['blur-ground'] }, [20, 500])
       is('the blur ground too', b.max === 0, `max ${b.max}`)
+      // grain is seeded by the frame index alone, so a frame drawn out of order carries
+      // the same grain it would have carried drawn in order
+      const g = await call('stateless', { ...base, ...cases['grain'] }, [30, 120, 7])
+      is('film grain is the frame\'s own', g.max === 0, `max ${g.max}`)
+      // bloom and halation come off this frame's own bright pass, so they carry nothing
+      // from the frame before
+      const w = await call('stateless', { ...base, ...cases['glow'] }, [40, 300, 11])
+      is('the glow is this frame\'s own too', w.max === 0, `max ${w.max}`)
+      // and the whole stack together, grain and aberration on: grain is seeded by the
+      // frame index alone and aberration only re-samples this frame, so a frame drawn
+      // out of turn has to come back byte for byte
+      const t = await call('stateless', { ...base, ...cases['treat-all'] }, [50, 260, 5])
+      is('the whole treatment stack, grain and aberration on', t.max === 0, `max ${t.max}`)
     }
 
     if (want('hold')) {

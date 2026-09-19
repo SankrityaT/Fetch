@@ -107,7 +107,8 @@ console.log('the inspector and the agent docs')
 {
   const secs = L.sections()
   is('the inspector shows only what the renderer draws', secs.every(s => s.fields.every(x => !x.gpu && !x.hidden)), true)
-  is('and hides options only the new renderer draws', secs.find(s => s.id === 'background').fields[0].options.includes('mesh'), false)
+  is('and hides options only the new renderer draws', secs.find(s => s.id === 'frame').fields.find(x => x.path === 'frame.chrome').options.includes('clean'), false)
+  is('a mesh background is offered, now that the compositor draws it', secs.find(s => s.id === 'background').fields[0].options.includes('mesh'), true)
   const doc = L.describe()
   is('every field is described', S.FIELDS.filter(x => !x.hidden).every(x => doc.includes(x.path)), true)
   // about 4 characters a token: the whole schema stays under 2000 tokens

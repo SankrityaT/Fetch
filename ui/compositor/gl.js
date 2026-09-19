@@ -6,8 +6,9 @@
 //
 // Every framebuffer stores its image top row first (row 0 is the top), so read back
 // bytes are already in file order and only the present pass flips. No pass reads the
-// previous frame: motion blur is analytic, dither is seeded by frame index, so any
-// frame can be drawn alone.
+// previous frame: motion blur is analytic, film grain and dither are seeded by frame
+// index, the glow family comes off this frame's own bright pass, auto level is measured
+// once per take on the CPU, so any frame can be drawn alone.
 'use strict'
 const Text = require('./text')
 const Marks = require('./marks')
@@ -51,6 +52,80 @@ void main(){
   }
 }`
 
+// A mesh gradient: a handful of control points, each a place, a reach and a colour,
+// blended by normalised Gaussian weights. Mixed in sRGB like FS_BG's flat gradient, so
+// a mesh and the gradient of the same name are relatives. Drawn once per plan into the
+// background target, never per frame, and its banding is left to the final dither,
+// which is what the dither is for.
+const FS_MESH = `#version 300 es
+precision highp float;
+uniform vec2 uRes; uniform int uN; uniform vec3 uP[8]; uniform vec3 uC[8]; out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec3 acc = vec3(0.0); float wsum = 0.0;
+  for (int i = 0; i < 8; i++) { if (i >= uN) break;
+    vec2 d = uv - uP[i].xy;
+    float w = exp(-dot(d, d) / (2.0 * uP[i].z * uP[i].z));
+    acc += uC[i] * w; wsum += w;
+  }
+  o = vec4(acc / max(wsum, 1e-5), 1.0);
+}`
+
+// A background defocused through an aperture instead of a Gaussian: taps on four rings
+// of a hexagon, so a highlight opens into the aperture's own shape rather than into a
+// soft blob. The average is taken on a cube curve and undone after, or the bright part
+// of a highlight would average away instead of becoming a disc.
+//
+// Eighty-one taps cannot fill a disc twenty-odd texels across on their own: at the wide
+// end of the dial the outer ring's taps stand a quarter of the radius apart, and a photo
+// with detail at that scale came back as eighty-one copies of itself rather than as one
+// aperture. So the caller softens the source first by about that spacing (bokehBlur),
+// which is what makes the taps meet. The aperture's edge is then soft by roughly a
+// quarter of its radius, and that is the trade a gather this cheap makes.
+//
+// This runs on the background alone and at the size that background is already made at
+// (a quarter of the frame for an image, a sixty-fourth for the take's own ground), so
+// the taps cost nothing the bench can see. There is deliberately no whole-frame version:
+// a second full-resolution blur is the one thing that would not hold 1080p60.
+const FS_BOKEH = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc; uniform vec2 uRes; uniform float uR; out vec4 o;
+const float TAU = 6.2831853, SIXTH = 1.0471976, HALFSIXTH = 0.5235988;
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes, texel = 1.0 / uRes;
+  vec3 acc = pow(texture(uSrc, uv).rgb, vec3(3.0)); float n = 1.0;
+  for (int ring = 1; ring <= 4; ring++) {
+    float rr = float(ring) / 4.0; int taps = ring * 8;
+    for (int i = 0; i < 32; i++) { if (i >= taps) break;
+      float a = TAU * (float(i) + 0.5 * float(ring)) / float(taps);
+      // the hexagon's own edge at this angle, so the taps fill an aperture, not a circle
+      float hex = 0.8660254 / cos(mod(a, SIXTH) - HALFSIXTH);
+      acc += pow(texture(uSrc, uv + vec2(cos(a), sin(a)) * (rr * hex * uR) * texel).rgb, vec3(3.0)); n += 1.0;
+    }
+  }
+  o = vec4(clamp(pow(acc / n, vec3(1.0 / 3.0)), 0.0, 1.0), 1.0);
+}`
+// How far the source has to be softened before an aperture of radius r texels, in
+// sigma. The outer ring's taps stand a quarter of r apart, and a Gaussian of r/6 is
+// half again as wide as that gap: less and the taps show through the aperture as a dot
+// grid, more and its edge goes soft. Under half a texel there is nothing to fix.
+const bokehBlur = r => r / 6
+
+// The bright pass the whole glow family comes off, at a quarter of the frame. Bloom
+// reads the tight levels of its mip chain and halation the wide ones, so two effects
+// cost one blur rather than two, which is what keeps them affordable at 1080p60.
+const FS_BRIGHT = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc; uniform vec2 uRes; uniform float uLod, uThresh; out vec4 o;
+void main(){
+  vec3 c = textureLod(uSrc, gl_FragCoord.xy / uRes, uLod).rgb;
+  float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  // a soft knee, squared: the threshold is a slope, so a highlight drifting across it
+  // does not switch the glow on and off between frames
+  float w = max(0.0, y - uThresh) / max(1e-3, 1.0 - uThresh);
+  o = vec4(c * w * w, 1.0);
+}`
+
 // The blurred take behind itself, first step: the cropped frame shrunk to a few dozen
 // pixels, covering the output's shape, read from a mip level near that size.
 const FS_SHRINK = `#version 300 es
@@ -83,6 +158,7 @@ precision highp float;
 uniform vec2 uRes;
 uniform int uBgKind;                 // 0 none, 1 still, 2 blurred take
 uniform sampler2D uBg, uFill;
+uniform float uVig;                  // the treatment's vignette, which lands on the ground too
 uniform vec4 uRect; uniform float uRadius;
 uniform vec2 uTake;                  // the take's opacity and its shadow's (a title card's reveal)
 uniform vec4 uShadow;                // dy, sigma, alpha, on
@@ -137,7 +213,13 @@ vec3 fillAt(vec2 p){
   float yc = (16.0 + 219.0 * y) * cv;
   y = (yc - 16.0) / 219.0;
   y += (float(hash(uint(p.x) * 1973u + uint(p.y) * 9277u) & 255u) / 255.0 - 0.5) * 6.0 / 219.0;
-  return clamp(vec3(y + 1.5748 * cr, y - 0.187324 * cb - 0.468124 * cr, y + 1.8556 * cb), 0.0, 1.0);
+  vec3 ground = vec3(y + 1.5748 * cr, y - 0.187324 * cb - 0.468124 * cr, y + 1.8556 * cb);
+  // the treatment's vignette (uVig, FS_TREAT) multiplies this ground again, so its share
+  // is taken back out here and the ground keeps this one fall-off whatever the dial says.
+  // Without it the ground fell off twice as fast as the take and the take's edge became a
+  // break in it. A corner bright enough to pass 1 once divided clips, which only costs it
+  // the little the treatment is about to take off anyway.
+  return clamp(ground / max(mix(1.0, cv, uVig), 1e-3), 0.0, 1.0);
 }
 
 vec3 sampleView(vec2 local, vec4 v, float lod){
@@ -192,16 +274,133 @@ void main(){
   o = vec4(col, 1.0);
 }`
 
-// Last: the fade to and from black over the whole frame, then a triangular dither of
-// one 8-bit step seeded by frame, so a dark gradient does not band once encoded.
+// Treatment: the lens, the film and the grade over the finished frame (PASSES.md 13),
+// in that order, because that is the order light meets them. The lens softens the
+// frame, parts its channels towards the corners and spills its highlights; the film
+// adds halation to that spill; only then does the grade touch the picture, and the
+// vignette last so it matches the ground behind the frame.
+//
+// Every part is a uniform that is zero while its field is off, and render() skips the
+// whole pass when the look asks for none of it, so a look that does not use treatment
+// pays nothing and draws exactly what it drew before this existed.
+const FS_TREAT = `#version 300 es
+precision highp float;
+uniform sampler2D uScene, uSoft, uGlow;
+uniform vec2 uRes;
+uniform float uSoftOn, uMeanLod, uAb;
+uniform vec3 uLevel;                 // the take's black point, its white point, how much
+uniform vec4 uLevelBox; uniform float uLevelRad;   // and where the take is, which is all it touches
+uniform vec3 uGrade;                 // brightness, contrast, saturation, as ffmpeg eq takes them
+uniform vec4 uTint;                  // the colour, and how much of it
+uniform vec2 uAtmos;                 // haze, vignette
+uniform vec3 uGlowMix;               // bloom, halation, on
+out vec4 o;
+const vec3 K = vec3(0.2126, 0.7152, 0.0722);
+float sdRound(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r; }
+// the warm collar film wears round a highlight: the red layer bleeds furthest, so the
+// wide end of the glow is laid back red-orange rather than white
+const vec3 HALO = vec3(1.0, 0.38, 0.20);
+// the softened frame is graded, rather than the grade blurred: everything after this is
+// per pixel and affine, so the two agree, and the frame is only blurred once
+vec3 sceneAt(vec2 p){ return uSoftOn > 0.5 ? texture(uSoft, p / uRes).rgb : textureLod(uScene, p / uRes, 0.0).rgb; }
+void main(){
+  vec2 p = gl_FragCoord.xy;
+  vec3 c;
+  if (uAb > 0.0) {
+    // Chromatic aberration: the channels part radially, growing with the square of the
+    // distance from the centre, so the middle of the frame stays clean and the corners
+    // wear a fringe. uAb is that parting at the corners, in this compositor's pixels,
+    // and is usually under one of them.
+    vec2 d = (p - uRes * 0.5) / (0.5 * uRes);
+    vec2 off = (d / max(length(d), 1e-4)) * min(1.0, dot(d, d) * 0.5) * uAb;
+    c = vec3(sceneAt(p + off).r, sceneAt(p).g, sceneAt(p - off).b);
+  } else c = uSoftOn > 0.5 ? texture(uSoft, p / uRes).rgb : texelFetch(uScene, ivec2(p), 0).rgb;
+  if (uGlowMix.z > 0.5) {
+    // Bloom and halation off one bright pass and one mip chain (FS_BRIGHT): bloom is
+    // the tight end of the chain, the spill close to a highlight, halation the wide
+    // end, warm. Both sit before the grade because both happen to the light, in the
+    // lens and in the emulsion, not to the finished picture.
+    vec2 uv = p / uRes;
+    vec3 g0 = textureLod(uGlow, uv, 0.0).rgb, g1 = textureLod(uGlow, uv, 1.0).rgb;
+    vec3 g2 = textureLod(uGlow, uv, 2.0).rgb, g3 = textureLod(uGlow, uv, 3.0).rgb;
+    vec3 g4 = textureLod(uGlow, uv, 4.0).rgb;
+    c += (g0 + 0.8 * g1 + 0.55 * g2 + 0.3 * g3) * (uGlowMix.x * 0.38);
+    vec3 wide = (g2 + g3 + g4) / 3.0;
+    c += mix(vec3(dot(wide, K)), wide, 0.4) * HALO * uGlowMix.y;
+  }
+  // auto level: one stretch for the whole take, measured once (compositor/levels.js).
+  // It is held to the take's own rect, corner and all. The numbers come from the take's
+  // pixels, and a black point of a quarter laid over the background would take the warm
+  // near-black a look asked for down to pure black and a paper ground up to pure white.
+  // The take's edge is already a hard edge, so nothing is feathered but its own corner.
+  if (uLevel.z > 0.0) {
+    float ld = uLevelRad > 0.0 ? sdRound(p - (uLevelBox.xy + uLevelBox.zw * 0.5), uLevelBox.zw * 0.5, uLevelRad)
+      : max(max(uLevelBox.x - p.x, p.x - uLevelBox.x - uLevelBox.z), max(uLevelBox.y - p.y, p.y - uLevelBox.y - uLevelBox.w));
+    float m = clamp(0.5 - ld, 0.0, 1.0) * uLevel.z;
+    if (m > 0.0) c = mix(c, clamp((c - uLevel.x) / max(0.05, uLevel.y - uLevel.x), 0.0, 1.0), m);
+  }
+  // contrast about mid grey, then brightness, which is ffmpeg eq's own order and its
+  // dials: the classic renderer's only levels control (the spotlight's dim) is the
+  // same expression, so a look reads the same in both renderers
+  c = (c - 0.5) * uGrade.y + 0.5 + uGrade.x;
+  float y = dot(c, K);
+  c = mix(vec3(y), c, uGrade.z);
+  if (uTint.w > 0.0) {
+    // the classic photo filter: the colour multiplied in and the luminance put back, so
+    // a tint colours the picture without darkening it
+    vec3 t = c * uTint.rgb;
+    t *= max(y, 0.0) / max(dot(t, K), 1e-4);
+    c = mix(c, t, uTint.w);
+  }
+  if (uAtmos.x > 0.0) {
+    // haze lifts the blacks toward the frame's own colour (its deepest mip level is the
+    // frame's mean), half of it neutral so a near-black frame lifts grey and not a hue
+    // its own noise chose
+    vec3 mean = textureLod(uScene, vec2(0.5), uMeanLod).rgb;
+    vec3 hue = clamp(mix(vec3(1.0), mean / max(dot(mean, K), 1e-3), 0.6), 0.0, 2.0);
+    vec3 lift = clamp(uAtmos.x * 0.22 * hue, 0.0, 0.5);
+    c = lift + c * (1.0 - lift);
+  }
+  // Bokeh is not here: it is the background's own defocus given an aperture's shape
+  // (FS_BOKEH), drawn where that background is made, at a quarter of the frame for an
+  // image and a sixty-fourth for the take's own ground.
+  if (uAtmos.y > 0.0) {
+    // the blur ground's own vignette, cos^4 of 0.4 times the normalised distance
+    // (ffmpeg vignette=angle=0.4), in proportion to the dial: at 1 the frame falls off
+    // exactly as the ground behind it does. It scales the whole colour where fillAt
+    // scales luma alone, deliberately: over a finished frame a luma-only fall-off
+    // leaves the corners darker but no less saturated, which reads as a colour cast.
+    float dn = length(p - uRes * 0.5) / length(uRes * 0.5);
+    float cv = cos(0.4 * dn); cv *= cv; cv *= cv;
+    c *= mix(1.0, cv, uAtmos.y);
+  }
+  o = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`
+
+// Last: film grain, the fade to and from black over the whole frame, then a triangular
+// dither of one 8-bit step seeded by frame, so a dark gradient does not band once
+// encoded. Grain sits before the fade, or a frame fading to black would keep grain on
+// black.
 const FS_FINAL = `#version 300 es
 precision highp float;
-uniform sampler2D uScene; uniform float uFade; uniform int uDither; uniform uint uFrame; out vec4 o;
+uniform sampler2D uScene; uniform float uFade; uniform int uDither; uniform uint uFrame;
+uniform float uGrain, uCell; out vec4 o;
 uint hash(uint x){ x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
 float rnd(uvec2 p, uint salt){ return float(hash(p.x + hash(p.y + hash(uFrame * 7u + salt)))) / 4294967295.0; }
 void main(){
   vec2 p = gl_FragCoord.xy; uvec2 ip = uvec2(p);
-  vec3 c = texelFetch(uScene, ivec2(p), 0).rgb * uFade;
+  vec3 c = texelFetch(uScene, ivec2(p), 0).rgb;
+  if (uGrain > 0.0) {
+    // Film grain: its own salts, seeded by the frame index like the dither, so a frame
+    // drawn alone and out of order is the same frame. Its cell is sized on the export's
+    // grid (uCell is already in the pixels this compositor draws), so a look grains the
+    // same at 720p and at 4K. Triangular, and heaviest in the midtones as film is, so a
+    // black frame stays black and a white one stays clean.
+    uvec2 g = uvec2(floor(p / uCell));
+    float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c += (rnd(g, 5u) - rnd(g, 6u)) * uGrain * mix(0.35, 1.0, 4.0 * y * (1.0 - y));
+  }
+  c *= uFade;
   if (uDither == 1) c += (rnd(ip, 3u) - rnd(ip, 4u)) / 255.0;
   o = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`
@@ -437,8 +636,8 @@ class Compositor {
     if (!gl) throw new Error('WebGL2 is not available')
     this.gl = gl
     this.prog = {}
-    for (const [k, fs] of Object.entries({ nv12: FS_NV12, bg: FS_BG, shrink: FS_SHRINK, gauss: FS_GAUSS,
-      frame: FS_FRAME, final: FS_FINAL, present: FS_PRESENT, pack: FS_PACK,
+    for (const [k, fs] of Object.entries({ nv12: FS_NV12, bg: FS_BG, mesh: FS_MESH, shrink: FS_SHRINK, gauss: FS_GAUSS,
+      bokeh: FS_BOKEH, bright: FS_BRIGHT, frame: FS_FRAME, treat: FS_TREAT, final: FS_FINAL, present: FS_PRESENT, pack: FS_PACK,
       clean: FS_CLEAN, copy: FS_COPY, focus: FS_FOCUS, ground: FS_GROUND })) this.prog[k] = this.program(fs)
     for (const [k, fs] of Object.entries({ blurmark: FS_BLURMARK, sprite: FS_SPRITE, frost: FS_FROST })) this.prog[k] = { ...this.program(fs, VS_QUAD), quad: true }
     this.vao = gl.createVertexArray()
@@ -597,13 +796,19 @@ class Compositor {
       this.draw('bg', this.bg, { uRes: [W, H], uKind: 1, uC0: bg.c0, uC1: bg.c1 }, { uImg: null })
       return
     }
+    if (bg.kind === 'mesh') {
+      this.draw('mesh', this.bg, { uRes: [W, H], uN: bg.p.length / 3, uP: bg.p, uC: bg.c })
+      return
+    }
     if (bg.kind !== 'image') return
     const img = this.images.get(bg.file)
     if (!img) { this.draw('bg', this.bg, { uRes: [W, H], uKind: 1, uC0: [0.1, 0.09, 0.08], uC1: [0.1, 0.09, 0.08] }, { uImg: null }); return }
     // cover, then centre crop
     const ia = img.w / img.h, oa = W / H
     const uv = ia > oa ? [(1 - oa / ia) / 2, 0, oa / ia, 1] : [0, (1 - ia / oa) / 2, 1, ia / oa]
-    if (!(bg.blur > 0)) {
+    // bokeh defocuses a photo the image blur left sharp, so it is a floor on the amount
+    const amount = Math.max(bg.blur || 0, bg.bokeh || 0)
+    if (!(amount > 0)) {
       this.draw('bg', this.bg, { uRes: [W, H], uKind: 2, uImgUV: uv, uImgLod: Math.max(0, Math.log2(img.w * uv[2] / W)), uDim: bg.dim }, { uImg: img })
       return
     }
@@ -611,10 +816,26 @@ class Compositor {
     const qw = Math.max(2, W >> 2), qh = Math.max(2, H >> 2)
     const a = this.target(qw, qh), b = this.target(qw, qh)
     this.draw('bg', a, { uRes: [qw, qh], uKind: 2, uImgUV: uv, uImgLod: Math.max(0, Math.log2(img.w * uv[2] / qw)), uDim: bg.dim }, { uImg: img })
-    const sigma = Math.min(30, bg.blur * 0.045 * qh)
-    this.draw('gauss', b, { uDir: [1, 0], uSigma: sigma }, { uSrc: a })
-    this.draw('gauss', a, { uDir: [0, 1], uSigma: sigma }, { uSrc: b })
-    this.draw('bg', this.bg, { uRes: [W, H], uKind: 2, uImgUV: [0, 0, 1, 1], uImgLod: 0, uDim: 0 }, { uImg: a })
+    const sigma = Math.min(30, amount * 0.045 * qh)
+    let soft = a
+    if (bg.bokeh > 0) {
+      // the same spread, through an aperture: a disc of radius 2 sigma scatters about
+      // as far as a Gaussian of that sigma, so turning bokeh on changes the shape of
+      // the background's blur and not how far it reaches
+      const r = 2 * sigma, pre = bokehBlur(r)
+      // a photo still has detail at the spacing of the aperture's taps, so it is
+      // softened to that spacing first or every highlight comes back as a lattice
+      if (pre > 0.5) {
+        this.draw('gauss', b, { uDir: [1, 0], uSigma: pre }, { uSrc: a })
+        this.draw('gauss', a, { uDir: [0, 1], uSigma: pre }, { uSrc: b })
+      }
+      this.draw('bokeh', b, { uRes: [qw, qh], uR: r }, { uSrc: a })
+      soft = b
+    } else {
+      this.draw('gauss', b, { uDir: [1, 0], uSigma: sigma }, { uSrc: a })
+      this.draw('gauss', a, { uDir: [0, 1], uSigma: sigma }, { uSrc: b })
+    }
+    this.draw('bg', this.bg, { uRes: [W, H], uKind: 2, uImgUV: [0, 0, 1, 1], uImgLod: 0, uDim: 0 }, { uImg: soft })
     this.free(a); this.free(b)
   }
 
@@ -631,6 +852,20 @@ class Compositor {
     const sub = ca > oa ? [(1 - oa / ca) / 2, 0, oa / ca, 1] : [0, (1 - ca / oa) / 2, 1, ca / oa]
     const uv = [cropUV[0] + sub[0] * cropUV[2], cropUV[1] + sub[1] * cropUV[3], sub[2] * cropUV[2], sub[3] * cropUV[3]]
     const lod = Math.max(0, Math.log2(c.w * uv[2] / fw) + 0.5)
+    const bokeh = spec.bg.bokeh || 0
+    if (bokeh > 0) {
+      // the ground through an aperture rather than a Gaussian, over sixty by thirty-odd
+      // texels: the dial shapes the blur and widens it a little. The shrink is softened
+      // to the aperture's tap spacing first, as the photo backdrop's cover is.
+      const r = 2 * sigma * (0.7 + 0.6 * bokeh), pre = bokehBlur(r)
+      this.draw('shrink', this.fillB, { uUV: uv, uRes: [fw, fh], uLod: lod }, { uSrc: c.rgba })
+      if (pre > 0.5) {
+        this.draw('gauss', this.fillA, { uDir: [1, 0], uSigma: pre }, { uSrc: this.fillB })
+        this.draw('gauss', this.fillB, { uDir: [0, 1], uSigma: pre }, { uSrc: this.fillA })
+      }
+      this.draw('bokeh', this.fillA, { uRes: [fw, fh], uR: r }, { uSrc: this.fillB })
+      return
+    }
     this.draw('shrink', this.fillA, { uUV: uv, uRes: [fw, fh], uLod: lod }, { uSrc: c.rgba })
     this.draw('gauss', this.fillB, { uDir: [1, 0], uSigma: sigma }, { uSrc: this.fillA })
     this.draw('gauss', this.fillA, { uDir: [0, 1], uSigma: sigma }, { uSrc: this.fillB })
@@ -671,6 +906,7 @@ class Compositor {
       uInner: [spec.inner.x, spec.inner.y, spec.inner.w, spec.inner.h],
       uV0: fp.view0, uV1: fp.view1, uTaps: fp.taps,
       uCam: cam ? 1 : 0,
+      uVig: spec.treat ? spec.treat.vignette : 0,
     }
     if (cam) {
       u.uCamRect = [spec.cam.x * k, spec.cam.y * k, spec.cam.d * k, spec.cam.d * k]
@@ -680,8 +916,62 @@ class Compositor {
     }
     this.draw('frame', this.scene, u, { uBg: this.bg, uFill: this.fillA || this.dummy, uContent: marked ? marked.tex : c.rgba, uCamTex: cam ? this.slots.cam.rgba : this.dummy })
     if (spec.text) this.textPass(spec, fp)
-    this.draw('final', this.out, { uFade: fp.fade, uDither: spec.dither ? 1 : 0, uFrame: src.n || 0 }, { uScene: this.scene })
+    // auto level touches the take alone, so the treatment pass is told where it is: the
+    // same rect the frame pass drew it in, fading with it under a title card
+    const finished = spec.treat ? this.treatPass(spec, u.uRect, u.uRadius, mv.alpha) : this.scene
+    const gr = spec.grain
+    // The grain's cell is the export's grid scaled to what is being drawn, and below a
+    // pixel it is left there: clamping it up made the editor's stage three times
+    // coarser than the file. Under a pixel its strength comes down with it, because a
+    // cell smaller than a pixel is what the file's own grain becomes at this size.
+    const cell = gr ? gr.cell * k : 1
+    this.draw('final', this.out, { uFade: fp.fade, uDither: spec.dither ? 1 : 0, uFrame: src.n || 0,
+      uGrain: gr ? gr.amp * Math.min(1, cell) : 0, uCell: Math.max(0.25, cell) }, { uScene: finished })
     return true
+  }
+
+  // The grade and the lens over the finished frame (PASSES.md 13), into a target of its
+  // own: one shader for everything per pixel, and a blur first for what is wide. Called
+  // only while spec.treat says something shows. Returns what the final pass should read.
+  treatPass(spec, takeBox, takeRadius, takeAlpha) {
+    const { W, H } = this, k = W / spec.W, T = spec.treat
+    const dst = this.keep('treat', W, H)
+    const glowOn = T.bloom > 0 || T.halation > 0
+    // haze reads the frame's mean from the deepest level, the glow reads a level near
+    // its own size, and the softening shrinks off one too
+    if (T.blur > 0 || T.haze > 0 || glowOn) this.mip(this.scene)
+    // The whole frame softened. The blur comes off mip levels at a reduced size
+    // (blurred()), so its cost barely moves with how soft the look asks for; a full
+    // resolution Gaussian this wide would not hold the bench at 1080p60.
+    const soft = T.blur > 0 ? this.blurred('soft', this.scene, [0, 0, W, H], Math.max(0.3, T.blur * k)) : null
+    const glow = glowOn ? this.glowPass(T) : null
+    this.draw('treat', dst, {
+      uRes: [W, H], uSoftOn: soft ? 1 : 0, uMeanLod: mipsFor(W, H) - 1,
+      uLevel: T.level ? [T.level[0], T.level[1], takeAlpha] : [0, 1, 0],
+      uLevelBox: takeBox, uLevelRad: takeRadius,
+      uGrade: [T.bright, T.contrast, T.sat],
+      uTint: [...T.tint, T.tintAmount],
+      uAtmos: [T.haze, T.vignette],
+      uGlowMix: [T.bloom, T.halation, glow ? 1 : 0],
+      uAb: T.aberration * k,
+    }, { uScene: this.scene, uSoft: soft || this.dummy, uGlow: glow || this.dummy })
+    return dst
+  }
+
+  // The one bright pass the glow family comes off, and its mip chain: bloom reads the
+  // tight levels of it, halation the wide ones. Two effects, one blur. A quarter of the
+  // frame, which is where the blur ground and the caption glass work too, and the mip
+  // levels make the spread wider for nothing, which is what a wide glow needs to cost.
+  glowPass(T) {
+    const gw = Math.max(4, this.W >> 2), gh = Math.max(4, this.H >> 2)
+    const a = this.keep('glowA', gw, gh, mipsFor(gw, gh)), b = this.keep('glowB', gw, gh)
+    this.draw('bright', a, { uRes: [gw, gh], uLod: 2, uThresh: T.glowThresh }, { uSrc: this.scene })
+    // one small Gaussian before the chain, or every level carries the square edges the
+    // level above it was minified into
+    this.draw('gauss', b, { uDir: [1, 0], uSigma: 1.6 }, { uSrc: a })
+    this.draw('gauss', a, { uDir: [0, 1], uSigma: 1.6 }, { uSrc: b })
+    this.mip(a)
+    return a
   }
 
   // A target kept between frames by name, remade when its size changes

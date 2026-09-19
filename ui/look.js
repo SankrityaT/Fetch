@@ -352,7 +352,11 @@ function backdropId(look) {
   if (b.kind === 'image') return b.image || 'dusk'
   if (b.kind === 'solid') return 'color:' + b.color
   if (b.kind === 'gradient') return b.gradient
-  return 'dusk'      // mesh, until the new renderer draws it
+  // A mesh answers with its own palette's name: the compositor reads background.kind
+  // from the look and draws the control points, and the classic renderer, which has no
+  // mesh, draws the flat gradient of that name rather than something unrelated.
+  if (b.kind === 'mesh') return b.mesh || 'dusk'
+  return 'dusk'
 }
 
 // Only the v1 values present, as a patch: { look: { gain: 3 } } from an older agent
