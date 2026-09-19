@@ -630,3 +630,16 @@ video.motion, img.motion { display:block; }
 @media (prefers-reduced-motion: reduce) { .lk-caret, .lk-grad, .lk-thumb { transition:none; } }
 .lk-field .aspect-chips { display:grid; grid-template-columns:repeat(auto-fit, minmax(38px, 1fr)); gap:4px; }
 .lk-field .aspect-chips .chip { justify-content:center; padding:0 6px; }
+
+/* The stage drawn by the compositor (paintStageGL): the canvas is the picture, the
+   <video> and the camera's stay where they are, invisible, as what the caption, text
+   and mark layers and the handles are laid out against. The CSS backdrop, its blurred
+   fill and the video's shadow are the old imitation and step aside. */
+/* specific enough to stay absolute beside the blurred fill's sibling rule, which would
+   make it relative; its stacking follows the DOM, under the layers that come after it */
+.stage-frame > canvas.stage-gl { position:absolute; left:0; top:0; width:0; height:0; pointer-events:none; display:none; }
+.stage-frame[data-gl="on"] > canvas.stage-gl { display:block; }
+.stage-frame[data-gl="on"] { background:none !important; }
+.stage-frame[data-gl="on"] > #edVideo { opacity:0; }
+.stage-frame[data-gl="on"] > .bd-fill { display:none; }
+.stage-frame[data-gl="on"] > .cam-bubble { opacity:0; }

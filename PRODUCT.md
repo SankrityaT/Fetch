@@ -115,6 +115,18 @@ for a take whose agent reported the page's viewport, `frame.chrome: remove` crop
 page exactly. A framed take is never masked tighter than the window's own corner.
 Look changes are undo steps like any other edit.
 
+**The compositor** (`ui/compositor/`, passes in `PASSES.md`). A WebGL2 renderer that
+draws the editor's stage and the export from one plan (`plan.js`), so the stage is the
+file's pixels: background, corners, shadow, zooms (with motion blur, `treatment.motionBlur`),
+fades, cuts and the camera bubble. An export runs it in a hidden window
+(`ui/render-host.js`, `render.html`) when it draws everything the edit uses, several
+times real time, with the sound rendered by ffmpeg alongside; an edit with marks, text,
+burned captions or the drawn cursor still goes to the classic ffmpeg renderer until those
+move over (M3), and so does a take the compositor cannot read. Activity and the MCP
+export result name the engine that drew each file (`gl` or `classic`, and why).
+Sample and hold is exact: an output frame shows the last frame the take wrote at or
+before its moment, across cuts. `FETCH_ENGINE=classic|gl` forces one.
+
 **MCP tools** (`mcp/index.js`), 26: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `pointer`,
 `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
 `list_beats`, `get_edit`, `apply_edit`, `export`, `rename_recording`,
