@@ -9,13 +9,15 @@
 //   erase     where the Mac's pointer is in the pixels and the clean patches that
 //             cover it (processor.macCursorSpans, cursorPlates)
 //   pointer   the agent's track, its rests moved off the words they would cover
-//   captions  the words' timings and when the product put something where the
-//             captions sit (captionClutterTimes), so those phrases go to the top
+//   captions  the words' timings and when the bottom of the frame is no place for a
+//             caption (captionClutterTimes: the product put a toast where they sit, or
+//             its own content is there and the top is clear), so those phrases go up
 //   autoZooms auto zoom's moments (processor.zoomMoments), when the edit has no zooms
 //             of its own, on the output clock
 //   levels    the take's black and white points (levels.js), while the look asks for
-//             auto level or for a glow: treatment stretches every frame between the
-//             same two, and the bright pass reads what is above the white one
+//             auto level, for a glow, or for the one grade the pair moves: treatment
+//             stretches every frame between the same two, the bright pass reads what is
+//             above the white one, and the grade's shoulder and toe are pinned to both
 //
 // Times stay on the source clock except `busy`, which is on the output clock of the
 // edit it was judged for. Each part is cached on what it depends on, so moving a zoom
@@ -131,13 +133,22 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
     }
 
     // Auto level's two constants, measured once for the whole take: every frame is
-    // stretched between them, so they cannot come from the frame being drawn. A look
-    // that glows wants the white one as well, and asks for it without asking for auto
-    // level: the bright pass reads what is above the take's own white, in the same
-    // pixels levels.js measured, and with nothing measured it has to assume the take
-    // fills the range and read nothing at all.
+    // stretched between them, so they cannot come from the frame being drawn. Two other
+    // parts of the treatment want the same pair without asking for auto level. The
+    // bright pass reads what is above the take's own white, in the same pixels levels.js
+    // measured, and with nothing measured it has to assume the take fills the range and
+    // read nothing at all. And the grade's shoulder and toe are pinned to those two
+    // ends, but only where being pinned changes the curve, which is narrower than it
+    // sounds: the run is the longer of the take's own empty end and the length that
+    // makes the curve arrive carrying 1 / gain of the line's slope, and with a contrast
+    // and no brightness the slope wins at both ends for every pair levels.js can return
+    // (its white is never under 170 and its black never over 64). So the shoulder moves
+    // only for a contrast pulled down by a brightness and the toe only for a contrast
+    // pushed up by one, and a look with neither is not worth a demux and four hundred
+    // keyframes of a long take before the first frame of the stage.
     const T = (opts.look && opts.look.treatment) || {}
-    if (T.autoLevel || +T.bloom > 0 || +T.halation > 0) {
+    const grades = +T.contrast > 0 && (+T.brightness || 0) !== 0
+    if (T.autoLevel || +T.bloom > 0 || +T.halation > 0 || grades) {
       tasks.levels = memo(`lv|${id}|${JSON.stringify([start, end, crop])}`,
         () => Levels.measure(seek.src, { start, end, crop, width: W, height: H }))
     }
@@ -167,9 +178,23 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
       // take is off the product already (processor.applyEdit decides the same)
       const dodge = cues.length && !opts.backdrop && (!cst.position || cst.position === 'bottom') && cst.fx == null
       const clock = Timeline.outClock(opts.cuts, start, end || dur)
-      tasks.captions = memo(`c|${id}|${JSON.stringify([cues, dodge, dodge ? [opts.zooms, opts.autoZoom, opts.cuts, start, end, crop] : null])}`, async () => {
+      // A lift re-frames the zoom it rides, so the window the frame pass draws is not
+      // the edit's own zoom and the dodge has to judge its two zones through the one
+      // that will be on screen. A lift only moves a window there is one of, so nothing
+      // waits on the marks being fitted unless the edit has both.
+      const lifts = (opts.zooms || []).some(z => z && +z.end > +z.start) ? drawn.filter(x => x.kind === 'lift') : []
+      tasks.captions = memo(`c|${id}|${JSON.stringify([cues, dodge, dodge ? [opts.zooms, lifts, opts.autoZoom, opts.cuts, start, end, crop] : null])}`, async () => {
+        // the re-framing is the plan's own (marks.planMarks), asked of it here rather
+        // than worked out twice, and it needs the lifts fitted to their elements first
+        let zoomsOut = null
+        if (dodge && lifts.length) {
+          try {
+            const marks = tasks.marks ? await tasks.marks : null
+            zoomsOut = Plan.prepare(opts, m, { prepared: { src, content, marks } }).zooms
+          } catch (e) { console.warn(`[prepare] captions read the raw zooms: ${e && e.message}`) }
+        }
         const busy = dodge
-          ? await proc.captionClutterTimes(seek.src, { start, end: end || dur, crop, zooms: opts.zooms, autoZoom: opts.autoZoom, clock }).catch(() => [])
+          ? await proc.captionClutterTimes(seek.src, { start, end: end || dur, crop, zooms: opts.zooms, zoomsOut, autoZoom: opts.autoZoom, clock }).catch(() => [])
           : []
         return { cues, words, busy }
       })

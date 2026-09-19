@@ -35,18 +35,39 @@ void main(){
   o = vec4(clamp(m * yuv, 0.0, 1.0), 1.0);
 }`
 
+// The app's own light, laid on the ground a look chose. `tokens.css` lights the body
+// with two very wide, very faint pools of `--fur-1` in opposite corners, for the reason
+// it writes down there: a flat field is an absence of light rather than a room. The
+// export is of the same product and drew none of it, so the colour and the geometry are
+// the stylesheet's rather than invented ones. Its two ellipses are 70 by 55 and 60 by 50
+// percent of the frame at the two corners, each fading to nothing at about three fifths
+// of that, which is the reach here; the ramp is linear to nothing as a two-stop CSS
+// gradient's is, and the top left goes on last because in CSS the first layer is the top
+// one. A few levels deep over eight hundred pixels, and the ground's own tooth is wider
+// than the step that takes, so it cannot band.
+const GL_POOL = `
+const vec3 POOL = vec3(240.0, 169.0, 60.0) / 255.0;
+vec3 pooled(vec3 c, vec2 uv){
+  float a = 0.040 * max(0.0, 1.0 - length(uv / vec2(0.434, 0.341)));
+  float b = 0.026 * max(0.0, 1.0 - length((uv - 1.0) / vec2(0.360, 0.300)));
+  return mix(mix(c, POOL, b), POOL, a);
+}`
+
 // A still background: a two-colour linear gradient corner to corner (a solid colour is
 // a gradient from a colour to itself), or an image covering the frame, dimmed.
 const FS_BG = `#version 300 es
 precision highp float;
 uniform vec2 uRes; uniform int uKind; uniform vec3 uC0, uC1;
 uniform sampler2D uImg; uniform vec4 uImgUV; uniform float uImgLod, uDim; out vec4 o;
+${GL_POOL}
 void main(){
   vec2 p = gl_FragCoord.xy;
   if (uKind == 1) {
     // ffmpeg's gradients source: c0 at the top left, c1 at the bottom right, mixed in sRGB
     float t = clamp(dot(p, uRes) / dot(uRes, uRes), 0.0, 1.0);
-    o = vec4(mix(uC0, uC1, t), 1.0);
+    // and the app's own pools over it: a photo brings its own light and a mesh is a
+    // composition of its own, so this is the branch that has a flat field to answer for
+    o = vec4(pooled(mix(uC0, uC1, t), p / uRes), 1.0);
   } else {
     vec2 uv = uImgUV.xy + (p / uRes) * uImgUV.zw;
     o = vec4(textureLod(uImg, uv, uImgLod).rgb * (1.0 - 0.7 * uDim), 1.0);
@@ -188,6 +209,8 @@ const FS_FRAME = `#version 300 es
 precision highp float;
 uniform vec2 uRes;
 uniform int uBgKind;                 // 0 none, 1 still, 2 blurred take
+uniform uint uFrame;                 // the ground's tooth is seeded by it, like the film and the dither
+uniform float uTooth;                // and scaled by it: the export's three levels, at the size being drawn
 uniform sampler2D uBg, uFill;
 uniform float uVig;                  // the treatment's vignette, which lands on the ground too
 uniform vec2 uFillBand;              // how far a blur ground may stand off the take's own mean: least, most
@@ -195,7 +218,7 @@ uniform vec4 uRect; uniform float uRadius;
 uniform vec2 uTake;                  // the take's opacity and its shadow's (a title card's reveal)
 uniform vec4 uShadow;                // dy, sigma, alpha, on
 uniform vec4 uBorder; uniform float uBorderPx;
-uniform vec3 uEdge;                  // the edge floor in luma, the hairline's width, and which way it goes
+uniform vec2 uEdge;                  // the edge floor in luma, and the hairline's width
 uniform vec3 uEdgeCol;               // the warm end that ground leaves open (plan.js edgeEnd)
 uniform sampler2D uContent; uniform vec2 uContentSize; uniform vec4 uCropUV, uInner;
 uniform int uMarked;                 // the content target carries a mask in its alpha
@@ -225,6 +248,27 @@ float roundedBoxShadow(vec2 lower, vec2 upper, vec2 point, float sigma, float co
 float sdRound(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r; }
 uint hash(uint x){ x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
 
+// The ground's tooth, in luma. A surface has one and a field of one number across
+// 1920x1080 does not, which is the other half of what makes an export read as a CSS
+// background rather than as a set. Three levels either side whatever the ground's own
+// luma is, which is the noise the classic blur fill has always carried (ffmpeg
+// noise=c0s=3) and about ten times the fifth of a level the film's own grain leaves on a
+// ground at either end of the range, where Paper, Mono print and Noir live: its midtone
+// weighting is right for a picture and backwards for the one surface a look picks the
+// luma of. Seeded by the frame index like the film and the dither, so it breathes with
+// them and any frame still draws alone. It is on the ground the eye sees and not on the
+// ground the edge floor reads (groundAt), because the floor is a distance between two
+// tones and three levels of tooth is not a tone.
+//
+// Three levels of the export's own pixels. On a stage drawn at half the file's size,
+// four of those pixels are one, and averaging them halves the noise, so uTooth brings
+// the amplitude down with the size the way the film's grain already comes down with its
+// cell: the editor's ground is the file's ground at that size rather than twice as
+// gritty as anything that will be exported.
+float tooth(vec2 p){
+  return (float(hash(uint(p.x) * 1973u + hash(uint(p.y) * 9277u + uFrame * 7919u)) & 255u) / 255.0 - 0.5) * 6.0 / 219.0 * uTooth;
+}
+
 // A cubic B-spline read of a tiny texture from four bilinear taps, so the blur fill
 // scaled up thirty times has no bilinear diamonds.
 vec3 bspline(sampler2D t, vec2 uv){
@@ -238,38 +282,50 @@ vec3 bspline(sampler2D t, vec2 uv){
 }
 
 // The blurred take pressed into a deep colour field: luma to 30 percent, chroma to 80
-// (the classic lutyuv), a cos^4 vignette on luma (ffmpeg's vignette at 0.4), a still grain.
-// Then held inside a band of the take's own mean at this point (uFillBand), because this
-// one ground is the take itself and is meant to read as bleed. The press is right for a
-// dark take and ruinous for a bright one: a 236 page pressed to 30 percent put a 51 fill
-// against it with no shadow, no corner and no transition, which is a black bar.
-vec3 fillAt(vec2 p){
+// (the classic lutyuv), a cos^4 vignette on luma (ffmpeg's vignette at 0.4), the tooth.
+// The pressed and vignetted luma is then held inside a band of the take's own mean at
+// this point (uFillBand), because this one ground is the take itself and is meant to read
+// as bleed. The press is right for a dark take and ruinous for a bright one: a 236 page
+// pressed to 30 percent put a 51 fill against it with no shadow, no corner and no
+// transition, which is a black bar.
+//
+// The tooth is the caller's, so the same ground can be drawn with it and read without
+// it: the edge floor is a distance between two tones, and a ground probe that carries
+// three levels of noise puts that noise into the hairline's opacity, which on a moving
+// tooth is a line that crawls.
+vec3 fillAt(vec2 p, float grit){
   vec3 c = bspline(uFill, p / uRes);
   vec3 k = vec3(0.2126, 0.7152, 0.0722);
   float y = dot(c, k), cb = (c.b - y) / 1.8556, cr = (c.r - y) / 1.5748;
   float ym = y;                      // the take's own colour here, before the press
   y *= 0.3; cb *= 0.8; cr *= 0.8;
-  // The band, as a lift on the pressed luma and nothing else. On the luma, so the
-  // classic chroma press stands: scaling the whole colour to hit a luma multiplied the
-  // gutter's chroma by the same factor and left it more saturated than the take it came
-  // from. Before the vignette and the grain, so both still land on it: forcing the
-  // finished ground to a number the blurred take alone decides divided them straight
-  // back out and left a smooth, toothless field. And it only ever lifts, and never
-  // under zero: a take too dark to stand a gutter under it has nothing to be lifted
-  // from, and a target below zero paints the one thing the output never draws.
-  if (uFillBand.y > 0.0) y = clamp(y, max(0.0, ym - uFillBand.y), max(y, ym - uFillBand.x));
   float dn = length(p - uRes * 0.5) / length(uRes * 0.5);
   float cv = cos(0.4 * dn); cv = cv * cv * cv * cv;
   float yc = (16.0 + 219.0 * y) * cv;
   y = (yc - 16.0) / 219.0;
-  y += (float(hash(uint(p.x) * 1973u + uint(p.y) * 9277u) & 255u) / 255.0 - 0.5) * 6.0 / 219.0;
+  // The band, as a lift on the pressed luma and nothing else. On the luma, so the
+  // classic chroma press stands: scaling the whole colour to hit a luma multiplied the
+  // gutter's chroma by the same factor and left it more saturated than the take it came
+  // from. After the fall-off and before the grain, because the band is a promise about
+  // the finished frame: applied before the vignette, the fall-off spent another fifth of
+  // the gutter and the default look's 64 levels of bleed measured 108 to 126, a grey mat
+  // down both sides of a white page. The fall-off survives wherever it stays inside the
+  // band, which is what it was always meant to do; the grain lands on the gutter either
+  // way, since it goes on after. The take beside it is what the treatment's vignette
+  // will leave of it, so both ends of the contract are read on the finished frame. And
+  // it only ever lifts, and never under zero: a take too dark to stand a gutter under it
+  // has nothing to be lifted from, and a target below zero paints the one thing the
+  // output never draws.
+  float vt = max(mix(1.0, cv, uVig), 1e-3);
+  if (uFillBand.y > 0.0) y = clamp(y, max(0.0, ym * vt - uFillBand.y), max(y, ym * vt - uFillBand.x));
+  y += grit;
   vec3 ground = vec3(y + 1.5748 * cr, y - 0.187324 * cb - 0.468124 * cr, y + 1.8556 * cb);
   // the treatment's vignette (uVig, FS_TREAT) multiplies this ground again, so its share
   // is taken back out here and the ground keeps this one fall-off whatever the dial says.
   // Without it the ground fell off twice as fast as the take and the take's edge became a
   // break in it. A corner bright enough to pass 1 once divided clips, which only costs it
   // the little the treatment is about to take off anyway.
-  return clamp(ground / max(mix(1.0, cv, uVig), 1e-3), 0.0, 1.0);
+  return clamp(ground / vt, 0.0, 1.0);
 }
 
 // the take's colour and, in alpha, how much of that sample is the recording rather
@@ -294,7 +350,7 @@ float sdTake(vec2 q, vec2 lo, vec2 hi){
 // the shadow at that point over it. Read a few pixels outside the take by the edge
 // floor, which is measured against the ground a viewer actually sees there.
 vec3 groundAt(vec2 q, vec2 lo, vec2 hi){
-  vec3 g = uBgKind == 1 ? texture(uBg, q / uRes).rgb : uBgKind == 2 ? fillAt(q) : vec3(0.0);
+  vec3 g = uBgKind == 1 ? texture(uBg, q / uRes).rgb : uBgKind == 2 ? fillAt(q, 0.0) : vec3(0.0);
   if (uShadow.w > 0.5) {
     float sh = roundedBoxShadow(lo + vec2(0.0, uShadow.x), hi + vec2(0.0, uShadow.x), q, uShadow.y, uRadius);
     g *= 1.0 - uShadow.z * uTake.y * clamp(sh, 0.0, 1.0);
@@ -306,8 +362,10 @@ void main(){
   vec2 p = gl_FragCoord.xy;
   vec3 col = vec3(0.0);
   float mask = 0.0;                  // the ground is a colour the look chose: no grade
-  if (uBgKind == 1) col = texelFetch(uBg, ivec2(p), 0).rgb;
-  else if (uBgKind == 2) col = fillAt(p);
+  // the ground the look chose, with the app's own pools already in it (FS_BG) and its
+  // tooth on it here, since that is the part that has to be new every frame
+  if (uBgKind == 1) col = texelFetch(uBg, ivec2(p), 0).rgb + tooth(p);
+  else if (uBgKind == 2) col = fillAt(p, tooth(p));
   vec2 lo = uRect.xy, hi = uRect.xy + uRect.zw;
   if (uShadow.w > 0.5) {
     float sh = roundedBoxShadow(lo + vec2(0.0, uShadow.x), hi + vec2(0.0, uShadow.x), p, uShadow.y, uRadius);
@@ -344,29 +402,49 @@ void main(){
       vec2 n = normalize(vec2(sdTake(p + e.xy, lo, hi) - sdTake(p - e.xy, lo, hi),
                               sdTake(p + e.yx, lo, hi) - sdTake(p - e.yx, lo, hi)) + 1e-5);
       float yg = dot(groundAt(p + n * (2.5 - d), lo, hi), K), yt = dot(c.rgb, K);
-      // The floor is a distance, not a direction. gap is how far the take's edge already
-      // stands toward the end the ground leaves open (plan.js edgeEnd picks that end
-      // once for the whole frame); what is left of the floor is what the line has to
-      // make up, and an edge standing clear the other way hands it back over a window
-      // rather than at a step, so nothing switches along the perimeter. Read as a signed
-      // target alone it fired on edges that were already far clear: a Paper page sixty
-      // levels above its own shadow was painted back down to exactly the floor, and a
-      // bright gradient corner beside a dark take edge went a hundred and twenty.
-      float gap = (yt - yg) * uEdge.z;
-      float want = yt + uEdge.z * max(0.0, uEdge.x - gap) * (1.0 - smoothstep(uEdge.x, 3.0 * uEdge.x, -gap));
-      // and only while the end's own luma is far enough from the take's to carry it.
-      // Within the floor of it the line cannot deliver the distance at any opacity, and
-      // its denominator passing through zero swung the full range across half a level
-      // of the take's own pixels, which is a solid rim in one decode path and none in
-      // the other.
-      float den = dot(uEdgeCol, K) - yt;
-      float a = clamp((want - yt) / (den + (den < 0.0 ? -1e-3 : 1e-3)), 0.0, 1.0)
-              * smoothstep(0.5 * uEdge.x, uEdge.x, abs(den));
+      float f = uEdge.x, dy = yt - yg;
+      // The tone the line goes to is the plan's end and only ever that: picked once
+      // from the background (plan.edgeEnd) so a gradient crossing mid grey cannot put a
+      // seam down one side, and held there so the line stays on one side of the take.
+      // Drifting it to the other end where the take's own edge sat on it read well on a
+      // still frame and could not hold: the two ends are two hundred and thirty levels
+      // apart, so the tone crossed the take's own luma, and one level of the take either
+      // side of the crossing took the pixel from a floor above the take to a floor below
+      // it, thirty levels of swing. That is a line that pops as a lift fades a page, and
+      // the two decode paths differ by a level, so it is a solid rim in one and none in
+      // the other. Where this end cannot carry the floor the line delivers what it has
+      // and no more, which is the honest shortfall rather than a switch.
+      vec3 col = uEdgeCol;
+      float den = dot(col, K) - yt;
+      // How far it has to move this pixel: clear of the further of the take and the
+      // ground by the floor, because a line that lands on the take's own tone is not a
+      // line. Measured off the ground alone it drew exactly the floor under the ground
+      // and left the take inside it, which is the hole a lift opened: a Paper page at
+      // 194 with its ground at 214 wore a line at 193.
+      //
+      // The floor is a distance, not a direction, so an edge already standing clear
+      // hands the requirement back over a window rather than at a step, whichever way it
+      // stands: two floors wide where the line would be going on past the ground (a
+      // Paper page sixty levels above its own shadow was painted back down to exactly
+      // the floor before that window existed), one floor wide where the take itself is
+      // the far one of the pair and the line is only seeing itself out.
+      float down = (f + max(dy, 0.0)) * (1.0 - smoothstep(f, dy > 0.0 ? 3.0 * f : 2.0 * f, abs(dy)));
+      float up   = (f - min(dy, 0.0)) * (1.0 - smoothstep(f, dy < 0.0 ? 3.0 * f : 2.0 * f, abs(dy)));
+      float move = mix(down, up, smoothstep(-0.5 * f, 0.5 * f, den));
+      // The opacity is whatever lands on that, and never more: what arrives is the
+      // smaller of what was asked for and what the tone can carry. Read as a signed
+      // target rather than a distance, the denominator passing through zero swung the
+      // full range across half a level of the take's own pixels, which is a solid rim in
+      // one decode path and none in the other; as a distance it is 1 on both sides of
+      // zero and continuous through it. What is left to fade out is the last few levels,
+      // where the line has nothing to deliver and would only be a pixel of Fetch's own
+      // colour taken out of the grade for no gain.
+      float a = clamp(move / max(abs(den), 1e-3), 0.0, 1.0) * smoothstep(0.15 * f, 0.35 * f, abs(den));
       // only where there is ground to stand off: a take that reaches the output's own
       // edge has none there, and a line round that is a line round the video
       float room = min(min(p.x, uRes.x - p.x), min(p.y, uRes.y - p.y));
       a *= clamp(d + uEdge.y + 0.5, 0.0, 1.0) * clamp(room - uEdge.y - 1.5, 0.0, 1.0);
-      c.rgb = mix(c.rgb, uEdgeCol, a);
+      c.rgb = mix(c.rgb, col, a);
       // and out of the grade's mask by its own share of the pixel, like the border and
       // like anything else Fetch chose the colour of. Carving four times as fast took
       // the take's outermost pixel and a quarter out of the grade altogether wherever
@@ -1176,7 +1254,7 @@ class Compositor {
       uTake: [mv.alpha, mv.shadow],
       uShadow: sh ? [sh.dy * k, Math.max(0.5, sh.sigma * k), sh.alpha, 1] : [0, 1, 0, 0],
       uBorder: spec.border ? [...spec.border.color, 1] : [0, 0, 0, 0], uBorderPx: spec.border ? spec.border.px * k : 0,
-      uEdge: edge ? [edge.floor, edge.px * k, edge.sign] : [0, 0, 0],
+      uEdge: edge ? [edge.floor, edge.px * k] : [0, 0],
       uEdgeCol: edge ? edge.col : [0, 0, 0],
       uFillBand: spec.bg.band || [0, 0],
       uContentSize: marked ? marked.size : [c.w, c.h], uCropUV: marked ? [0, 0, 1, 1] : cropUV,
@@ -1185,6 +1263,7 @@ class Compositor {
       uV0: fp.view0, uV1: fp.view1, uTaps: fp.taps,
       uCam: cam ? 1 : 0,
       uVig: spec.treat ? spec.treat.vignette : 0,
+      uFrame: src.n || 0, uTooth: Math.min(1, k),
     }
     if (cam) {
       u.uCamRect = [spec.cam.x * k, spec.cam.y * k, spec.cam.d * k, spec.cam.d * k]

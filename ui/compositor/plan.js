@@ -24,23 +24,40 @@ const num = (v, d) => (v != null && Number.isFinite(+v) ? +v : d)
 
 // The shoulder on the contrast line, and the same curve mirrored for its toe.
 //
-// w is what the take's own white point becomes under the straight line
-// (c - 0.5) * contrast + 0.5 + brightness. At 1 or under, nothing goes over the edge
-// and the line is left exactly as it was. Over 1, the line runs straight up to a knee
-// and a cubic takes it from there into 1.0, arriving flat: the take's white lands on
-// white and the hairline a pixel under it is still a hairline instead of clipping into
-// it. Returns [knee, run, and the curve's two terms] for gl.js's rollIn().
+// w is what the top of the range becomes under the straight line
+// (c - 0.5) * contrast + 0.5 + brightness, wp what the take's own white point becomes
+// under it, and gain the line's own slope. At 1 or under nothing goes over the edge and
+// the line is left exactly as it was. Over 1, the line runs straight up to a knee and a
+// cubic takes it from there onto 1.0 at w, so nothing the line carries past the range's
+// end is cut off. Returns [knee, run, and the curve's two terms] for gl.js's rollIn().
 //
-// The knee leaves two thirds of its run as output, which is gentle enough not to read
-// as a flattening and steep enough to land inside the range. Past a gain that would put
-// the knee below 0 the whole line is curve, and the ratio goes with it.
-function rollOff(w) {
+// Two numbers place the knee, and the take's own white is the first of them: the run
+// starts there where there is room above it, so the overshoot is spent entirely on what
+// the take has nothing in and the picture keeps the line whole. A white app page leaves
+// no room at all (this take's white measures 253 of 255), and there the run reaches down
+// into the picture instead, far enough that the curve still arrives carrying 1 / gain of
+// the line's slope. That is the slope the picture had before the grade touched it, so a
+// hairline at the top of the take is never flatter than it was ungraded, whatever the
+// dial says. Never past the bottom of the range: a gain that would put the knee under 0
+// makes the whole line curve, and the arrival goes with it.
+//
+// It arrives carrying that slope rather than flat, and that is the fix. Arriving flat
+// put the one place the curve has no slope left exactly on the take's white, which on a
+// white app page is the page: every row separator and card hairline a level under it was
+// compressed into it, 2.5 times on Noir. Above the take's white the curve still runs, so
+// a cursor or a white toast in the top 0.4 percent levels.js leaves out is rolled in
+// rather than clipped.
+function rollOff(w, wp, gain) {
   if (!(w > 1.0001)) return [0, 0, 0, 0]
-  const k = Math.max(0, 3 - 2 * w)
-  const a = w - k, r = (1 - k) / a - 1
-  // f(0) = 0, f'(0) = 1 so it meets the straight line, f(a) = 1 - k and f'(a) = 0 so it
-  // arrives on the end point flat and nothing above it can clip
-  return [k, a, 1 + 3 * r, -1 - 2 * r]
+  const d = w - 1
+  const a = Math.min(w, Math.max(w - wp, gain > 1.0001 ? d * gain / (gain - 1) : w))
+  const k = w - a, r = (1 - k) / a - 1
+  // f(0) = 0, f'(0) = 1 so it meets the straight line; f(1) = 1 + r so w lands on 1.0;
+  // f'(1) = 1 + r, the shoulder's own average slope, so it arrives on the end carrying
+  // slope. Monotone for every dial: the curve's least slope is 1 + 4r/3, and r, which is
+  // 1/gain - 1 where the slope sets the run and (1 - w)/w where the range does, does not
+  // reach -3/4 anywhere the dials go (contrast 1 with brightness 1 leaves it at -0.6).
+  return [k, a, 2 * r, -r]
 }
 
 // ── the take's edge ─────────────────────────────────────────────────────
@@ -57,26 +74,44 @@ const EDGE_FLOOR = 24 / 255
 // Pressed to 30 percent luma under a 236 page it measured 183 levels, which is a black
 // bar by any other name, and PRODUCT says the output never draws one.
 const EDGE_BLEED = 64 / 255
+// How far the top of the vignette dial reaches, in cos^4 fall-offs (see the treatment's
+// own note below). At 1 the frame's furthest corner keeps a third of its light and the
+// take's own corners about seven tenths, which is a lens and not a tunnel.
+const VIG_REACH = 2.4
 // Warm ink over a light ground, a warm light over a dark one (BRAND --ink-1, --text-0).
 // Never #000 or #fff: every neutral here is warmed toward the fur hue.
 const EDGE_INK = '#1A1714', EDGE_LIT = '#FBFAF8'
 const lum = c => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
 
 /**
- * Which warm end the hairline goes to, and which way that is: { col, sign }. Decided
- * once from the ground a look chose, not per pixel, and that is the point. A ground can
- * cross mid grey along one edge (every gradient does), and a line that changed ends
- * where it crossed would put a seam down one side of the frame and would land the two
- * decode paths on opposite sides of it. One end for the whole frame is continuous in
- * whatever is under it, so the line fades to nothing rather than switching off.
+ * Which warm end the hairline goes to: { col }. Which way that is falls out of the tone
+ * itself in the frame pass, which reads the take's own edge against it.
+ *
+ * Decided once from the ground a look chose, not per pixel, and that is the point. A
+ * ground can cross mid grey along one edge (every gradient does), and a line that
+ * changed ends where it crossed would put a seam down one side of the frame and would
+ * land the two decode paths on opposite sides of it. One end for the whole frame is
+ * continuous in whatever is under it, so the line fades to nothing rather than
+ * switching off.
  *
  * A blurred copy of the take is the take's own dark side by construction (the band in
  * blurFill only ever holds it under the take's own mean), so the take is the light one
  * of the pair and the line goes with it: an ink line there would close the very gap it
  * is drawn to open. A photo can be anything, so the compositor reads the decoded
  * picture's own mean and picks with edgeFor(); until it has, the ink end stands.
+ *
+ * One end, and it does not travel. The take's own edge is under a lift for part of a
+ * perimeter and not for the rest, so it can land on the very tone the plan chose, and
+ * letting the line drift to the other end there was tried and taken out: the two ends
+ * are the range apart, so the drift carried the line's tone across the take's own luma,
+ * and one level of the take either side of that crossing took the finished pixel from a
+ * floor above the take to a floor below it. A hairline that swings thirty levels on a
+ * level of the picture pops while a lift fades a page and lands the two decode paths on
+ * opposite sides of the crossing, which is the rim the whole contract exists to stop.
+ * Where this end cannot carry the floor against the take, the frame pass delivers what
+ * the tone has and no more.
  */
-const edgeFor = light => (light ? { col: rgb(EDGE_INK), sign: -1 } : { col: rgb(EDGE_LIT), sign: 1 })
+const edgeFor = light => (light ? { col: rgb(EDGE_INK) } : { col: rgb(EDGE_LIT) })
 function edgeEnd(bg) {
   const light = bg.kind === 'gradient' ? (lum(bg.c0) + lum(bg.c1)) / 2 > 0.5
     : bg.kind === 'mesh' ? bg.c.reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i % 3], 0) / (bg.c.length / 3) > 0.5
@@ -309,7 +344,16 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const sat = clamp(num(T.saturation, 0), -1, 1)
   const tintAmount = clamp(num(T.tintAmount, 0), 0, 1)
   const haze = clamp(num(T.haze, 0), 0, 1)
-  const vignette = clamp(num(T.vignette, 0), 0, 1)
+  // The dial is how many fall-offs, not the fall-off itself. One of them is the blur
+  // ground's own cos^4 at ffmpeg's angle 0.4 (gl.js fillAt), which was the right shape
+  // to hold the ground and the frame to one fall-off and the wrong size for a dial: at
+  // the top of the range it took 28 percent off the frame's furthest corner and 15 off
+  // the take's, so a look whose identity is a vignette had nothing left to ask for and
+  // Noir's 0.35 measured 6. VIG_REACH is what the top of the dial is worth in those
+  // fall-offs. It scales the mix and nothing else, so the share the blur ground divides
+  // back out stays exactly the share the treatment puts on, and the ground and the take
+  // still fall off together and once.
+  const vignette = clamp(num(T.vignette, 0), 0, 1) * VIG_REACH
   const soft = clamp(num(T.blur, 0), 0, 1)
   const bloom = clamp(num(T.bloom, 0), 0, 1)
   const halation = clamp(num(T.halation, 0), 0, 1)
@@ -321,23 +365,28 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   // nobody could measure, or one that already fills the range, ends where the range
   // ends, and then nothing in it is above its own white.
   const white = P && P.levels && P.levels.hi > P.levels.lo ? P.levels.hi : 1
-  // The take's ends where the grade sees them, which is after auto level: a measured
-  // take has already been stretched onto 0 and 1 by the time the grade runs, and an
-  // unmeasured one is taken to fill the range. So the shoulder and the toe land on the
-  // ends themselves, and nothing the straight line carries past them is thrown away.
-  // Pinning them to a measured pair instead would clip the tails levels.js deliberately
-  // leaves outside its 0.4 percent, which is the loss this exists to stop.
+  const black = P && P.levels && P.levels.hi > P.levels.lo ? P.levels.lo : 0
+  // The take's own two ends where the grade sees them, which is after auto level: a
+  // measured take has already been stretched onto 0 and 1 by the time the grade runs,
+  // so its ends are the range's; an unmeasured one is taken to fill the range, which is
+  // the same two numbers. Everywhere else they are what levels.js measured, and the
+  // shoulder and the toe are pinned to them: they say where the picture actually ends,
+  // so the curve knows what it may bend and what it must leave alone. prepare.js
+  // measures them for anything that grades, not only for auto level and the glow.
+  const gWhite = lv ? 1 : white, gBlack = lv ? 0 : black
   const line = v => (v - 0.5) * (1 + contrast) + 0.5 + bright
   const treat = lv || bright || contrast || sat || tintAmount || haze || vignette || soft || glow || aberration ? {
     level: lv,
     // the dials ffmpeg eq takes: 1 is neutral for contrast and saturation, brightness adds
     bright, contrast: 1 + contrast, sat: 1 + sat,
-    // and the two ends of that line rolled in rather than cut off. Without these a
-    // contrast over about 0.06 takes a white app page and everything near it to 255
-    // together, which is every row separator, card edge and hairline in the product
-    // gone. The toe is the same argument at the bottom, where a hairline on a dark
-    // page goes into black.
-    shoulder: rollOff(line(1)), toe: rollOff(1 - line(0)),
+    // and the two ends of that line rolled in rather than cut off, each pinned to the
+    // take's own end. Without these a contrast over about 0.06 takes a white app page
+    // and everything near it to 255 together, which is every row separator, card edge
+    // and hairline in the product gone; with them but pinned to the range instead of to
+    // the take, the same hairlines survived the clip and died in the shoulder. The toe
+    // is the same argument at the bottom, where a hairline on a dark page goes black.
+    shoulder: rollOff(line(1), line(gWhite), 1 + contrast),
+    toe: rollOff(1 - line(0), 1 - line(gBlack), 1 + contrast),
     tint: rgb(T.tint || '#F0A93C'), tintAmount, haze, vignette,
     // the whole frame softened: sigma in export pixels, about 26 of them at 1080 at full
     blur: soft * 0.024 * g.outH,

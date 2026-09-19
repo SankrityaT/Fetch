@@ -629,6 +629,10 @@ function captionFrost({ W, H, phrases, capStyle, measure = estimate, box = null 
 // the frame to tell a local change from a scroll or a new page.
 const CAP_ZONE = { x0: 0.2, x1: 0.8, y0: 0.78, y1: 0.98 }
 const REST_ZONE = { x0: 0, x1: 1, y0: 0.12, y1: 0.66 }
+// And where it goes when it moves: two lines at the top with the plate's feather round
+// them (captionLayout, position 'top'). A caption is only carried up if the place it
+// lands is quieter than the place it left.
+const TOP_ZONE = { x0: 0.2, x1: 0.8, y0: 0.05, y1: 0.24 }
 
 // Mean and spread of a zone of a w x h grey frame, and the frame's pixels in it
 function zoneOf(px, w, h, v, z) {
@@ -672,6 +676,34 @@ function captionClutter(frames, w, h, view = () => ({ x: 0, y: 0, w: 1, h: 1 }),
       out.push(f.t)
       break
     }
+  }
+  return out
+}
+
+/**
+ * When the product's own content is simply there, under the captions, for the whole
+ * take: a list, a table, a grid of cards. A toast arrives and leaves, so captionClutter
+ * sees it as a change; content that never moves shows as no change at all, and the
+ * caption spent the whole take on the thing being demonstrated. This is the other half,
+ * and it is one frame's own question rather than a comparison over time: how much the
+ * caption zone carries against how much the band it would move to carries, on the same
+ * frame, through the same window.
+ *
+ * Flagged only where moving up is a gain. A frame whose top is as busy as its bottom
+ * (a page with a header, a toolbar and a table, at the same weight) asks the caption to
+ * hop for nothing, and a caption that hops is worse than one that covers a row: it is
+ * the only thing in the frame that was not there when the take was recorded, and it has
+ * to behave like it was placed rather than like it is dodging.
+ */
+function captionLive(frames, w, h, view = () => ({ x: 0, y: 0, w: 1, h: 1 }), o = {}) {
+  const minInk = o.minInk || 12, minGain = o.minGain || 15, share = o.share || 0.7
+  const out = []
+  for (const f of frames) {
+    const v = view(f.t)
+    if (!v) continue
+    const cap = zoneOf(f.px, w, h, v, CAP_ZONE), top = zoneOf(f.px, w, h, v, TOP_ZONE)
+    if (cap.spread < minInk) continue
+    if (cap.spread - top.spread >= minGain && top.spread <= cap.spread * share) out.push(f.t)
   }
   return out
 }
@@ -1503,5 +1535,5 @@ module.exports = {
   alignWords, snapToSpeech, spokenWords, captionPhrases, phraseTimes, captionLayout, CAP_BAND, BAND_WRAP, backdropGeometry, titleParts, textStyle, titleCards,
   cardLanding, clearOfTitles, gutterInsets, windowCorner, frameScript, contentScript, captionFrost, spotlightSpan, roundRect, SPOT_DIM,
   FOCUS, FOCUS_KINDS, focusShape, focusTiming, focusLevel, focusAt, focusExprs, focusDist, cornerRadius, edgeFit, stepLabel, stepSize, stepSpot, stepCorner, stepGrid, spotFit,
-  captionClutter, placeCaptions, CAP_ZONE,
+  captionClutter, captionLive, placeCaptions, CAP_ZONE, TOP_ZONE,
 }
