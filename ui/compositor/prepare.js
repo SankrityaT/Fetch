@@ -13,6 +13,8 @@
 //             captions sit (captionClutterTimes), so those phrases go to the top
 //   autoZooms auto zoom's moments (processor.zoomMoments), when the edit has no zooms
 //             of its own, on the output clock
+//   levels    the take's black and white points (levels.js), while the look asks for
+//             auto level: treatment stretches every frame between the same two
 //
 // Times stay on the source clock except `busy`, which is on the output clock of the
 // edit it was judged for. Each part is cached on what it depends on, so moving a zoom
@@ -25,6 +27,7 @@ const Targets = require('../targets')
 const Plan = require('./plan')
 const Overlays = require('../overlays')
 const Pointer = require('../pointer')
+const Levels = require('./levels')
 
 const cache = new Map()
 const MAX = 48
@@ -124,6 +127,13 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
         const moments = proc.zoomMoments(data, { ...zo, clock: Timeline.outClock(opts.cuts, start, end || dur), crop })
         tasks.autoZooms = Promise.resolve(moments.map(q => ({ start: q.inStart, end: q.outEnd, scale: zo.zoom != null ? zo.zoom : 1.7, x: q.x, y: q.y })))
       }
+    }
+
+    // Auto level's two constants, measured once for the whole take: every frame is
+    // stretched between them, so they cannot come from the frame being drawn.
+    if (opts.look && opts.look.treatment && opts.look.treatment.autoLevel) {
+      tasks.levels = memo(`lv|${id}|${JSON.stringify([start, end, crop])}`,
+        () => Levels.measure(seek.src, { start, end, crop, width: W, height: H }))
     }
 
     const spans = proc.macCursorSpans(src, opts)

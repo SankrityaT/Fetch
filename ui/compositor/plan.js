@@ -17,7 +17,7 @@ const Layout = require('./layout')
 const Overlays = require('../overlays')
 const Marks = require('./marks')
 const Text = require('./text')
-const { GRADIENTS } = require('../look-schema')
+const { GRADIENTS, MESHES } = require('../look-schema')
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const num = (v, d) => (v != null && Number.isFinite(+v) ? +v : d)
@@ -152,11 +152,20 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     const amount = clamp(num(L('background').blurAmount, 0.5), 0, 1)
     return { kind: 'blur', fw, fh, sigma: Math.max(2, 125 * fh / 1080) * (0.25 + 1.5 * amount) }
   }
+  // Bokeh is the background's own defocus given an aperture's shape, so it rides on the
+  // background rather than on the finished frame: an image backdrop or the take's own
+  // blurred ground. A gradient, a mesh or no background has nothing to defocus.
+  const bokehDial = clamp(num(L('treatment').bokeh, 0), 0, 1)
   if (!framed) bg = aspect ? blurFill() : { kind: 'none' }
   else if (id === 'blur') bg = blurFill()
   else if (id.startsWith('img:') && ctx.imageFile) {
     const B = L('background')
     bg = { kind: 'image', file: ctx.imageFile, blur: clamp(num(B.imageBlur, 0), 0, 1), dim: clamp(num(B.imageDim, 0), 0, 1) }
+  } else if (L('background').kind === 'mesh') {
+    // A mesh gradient: its control points as plain numbers, drawn once per plan like
+    // the still gradient is. Colours stay in sRGB, as the flat gradient's do.
+    const pts = (MESHES[L('background').mesh] || MESHES.dusk).slice(0, 8)   // FS_MESH carries eight
+    bg = { kind: 'mesh', p: pts.flatMap(q => [q[0], q[1], q[2]]), c: pts.flatMap(q => rgb(q[3])) }
   } else if (/^color:#?[0-9a-f]{6}$/i.test(id)) {
     const col = rgb(id.slice(6).replace('#', ''))
     bg = { kind: 'gradient', c0: col, c1: col }
@@ -164,6 +173,7 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     const pair = GRADIENTS[id] || GRADIENTS.dusk
     bg = { kind: 'gradient', c0: rgb(pair[0]), c1: rgb(pair[1]) }
   }
+  if (bokehDial > 0 && (bg.kind === 'image' || bg.kind === 'blur')) bg.bokeh = bokehDial
 
   // Zooms on the output clock, as the classic export places them; with auto zoom and
   // none of its own, the moments prepare.js found (already on the output clock)
@@ -203,6 +213,42 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const pointer = points ? Marks.planPointer(points, { W: cw, H: ch, clock, crop: c, scale: P && P.pointer ? P.pointer.scale : null,
     span, px, zooms: pm.zooms, size: Cu.size, ripple: Cu.ripple }) : null
   const marks = { ...pm, erase, pointer }
+  // Treatment: the grade and the lens over the finished frame, as plain numbers in
+  // export pixels. Null while the look asks for none of it, so the pass is skipped and
+  // a default look draws what it drew before treatment existed.
+  const T = L('treatment')
+  const lv = T.autoLevel && P && P.levels && P.levels.hi > P.levels.lo ? [P.levels.lo, P.levels.hi] : null
+  const bright = clamp(num(T.brightness, 0), -1, 1)
+  const contrast = clamp(num(T.contrast, 0), -1, 1)
+  const sat = clamp(num(T.saturation, 0), -1, 1)
+  const tintAmount = clamp(num(T.tintAmount, 0), 0, 1)
+  const haze = clamp(num(T.haze, 0), 0, 1)
+  const vignette = clamp(num(T.vignette, 0), 0, 1)
+  const soft = clamp(num(T.blur, 0), 0, 1)
+  const bloom = clamp(num(T.bloom, 0), 0, 1)
+  const halation = clamp(num(T.halation, 0), 0, 1)
+  const aberration = clamp(num(T.aberration, 0), 0, 1)
+  const glow = Math.max(bloom, halation)
+  const treat = lv || bright || contrast || sat || tintAmount || haze || vignette || soft || glow || aberration ? {
+    level: lv,
+    // the dials ffmpeg eq takes: 1 is neutral for contrast and saturation, brightness adds
+    bright, contrast: 1 + contrast, sat: 1 + sat,
+    tint: rgb(T.tint || '#F0A93C'), tintAmount, haze, vignette,
+    // the whole frame softened: sigma in export pixels, about 26 of them at 1080 at full
+    blur: soft * 0.024 * g.outH,
+    bloom, halation,
+    // One dial, so it has to move the threshold as well as the strength: a light touch
+    // of bloom should only catch what is nearly white, and a heavy one should catch the
+    // bright half of the picture. Bloom and halation share the bright pass, so the
+    // louder of the two sets it.
+    glowThresh: 0.9 - 0.45 * glow,
+    // Aberration: how far the channels part at the corners, in export pixels. 3 px at
+    // 1080 at the top of the dial, so the settings anyone will actually use are a
+    // fraction of a pixel and read as a fringe on an edge, not as three pictures.
+    aberration: aberration * 3 * g.outH / 1080,
+  } : null
+  const film = clamp(num(L('grain').film, 0), 0, 1)
+
   const text = Text.planText(opts, { clock, span, W: g.outW, H: g.outH, box: framed ? { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH } : null,
     prepared: P, zooms: pm.zooms })
 
@@ -214,7 +260,13 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     border: borderPx > 0 ? { px: borderPx, color: rgb(L('frame').borderColor || '#FFFFFF') } : null,
     bg, zooms: pm.zooms, cam, marks,
     text: text.phrases.length || text.cards.length || text.labels.length ? text : null,
-    motionBlur: clamp(num(L('treatment').motionBlur, 0), 0, 1),
+    motionBlur: clamp(num(T.motionBlur, 0), 0, 1),
+    treat,
+    // Film grain: its strength, and a cell sized on the output so a look grains the
+    // same at 720p and at 4K. 0.055 at full is a little over three times the still
+    // grain the classic blur ground carries (noise=c0s=3), which is what a moving
+    // grain needs to read at all without eating the text under it.
+    grain: film > 0 ? { amp: film * 0.055, cell: Math.max(1, g.outH * 1.4 / 1080) } : null,
     fadeIn: Math.max(0, num(opts.fadeIn, 0)), fadeOut: Math.max(0, num(opts.fadeOut, 0)),
     dither: L('grain').dither !== false,
   }

@@ -117,6 +117,10 @@ typography, focus. Seven presets ship in `ui/looks/` (Fetch, Clean, Studio, Film
 Paper, Mono print); "Save look" keeps a person's own in `userData/looks/`. A preset
 restyles and keeps the shape, captions, motion and cursor. Fields the ffmpeg renderer
 does not draw yet are stored, hidden from the inspector, and named in `look_warnings`.
+That flag has not caught up with M4: the Treatment and grain fields the compositor now
+draws still carry it, so the inspector hides them and `look_warnings` calls them undrawn
+while every MP4 export draws them. The flag has to become "the classic renderer cannot
+draw this", said only where that renderer is the one running.
 Output keeps the take's shape; a chosen shape is filled by the background, and with no
 background by a soft blur of the take, never black bars. Browser chrome is a setting:
 for a take whose agent reported the page's viewport, `frame.chrome: remove` crops to the
@@ -129,7 +133,17 @@ file's pixels: background, corners, shadow, zooms (with motion blur, `treatment.
 fades, cuts, the camera bubble, and since M3 everything placed on the take: the Mac's
 pointer lifted out, redactions, blurs, spotlights, lifts, steps, the agent's cursor with
 its ripples and Biscuit's badge, captions with the spoken word and frosted glass, title
-cards, lower thirds and labels. It is the default renderer: every MP4 or MOV export runs
+cards, lower thirds and labels. Since M4 it draws the whole Treatment section as well:
+the take's own exposure evened out (its black and white points measured once per take by
+`levels.js` and held to the take, never to the background a look chose), brightness,
+contrast, saturation, a tint laid over with the luminance put back, haze, a softened
+frame, bloom and halation off one bright pass, chromatic aberration at the corners, a
+vignette that falls off with the ground behind it, film grain over the top and a dither
+under everything. With the backgrounds those need: a mesh gradient, the photo set in
+`assets/backdrops/`, and either defocus behind the take, a Gaussian or a hexagonal
+aperture (`treatment.bokeh`). Every wide effect works at a reduced size off mip levels,
+which is what keeps the whole stack inside the speed gate. It is the default renderer:
+every MP4 or MOV export runs
 it in a hidden window (`ui/render-host.js`, `render.html`), several times real time, with
 the sound rendered by ffmpeg alongside, and `preview_frame` draws with it too. GIF and
 WebM, auto zoom without explicit zooms, and a take the compositor cannot read go to the

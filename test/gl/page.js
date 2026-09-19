@@ -160,6 +160,19 @@ window.stateless = async (job, others) => {
   return diff(first, again)
 }
 
+// One frame, then the same frame with one field of the look changed: what a field
+// actually moves on screen. Holds a preset to its word, so a field it declares and no
+// pass draws fails here instead of quietly doing nothing.
+window.moved = async (job, variants) => {
+  const a = await renderFrame({ ...job, path: 'nv12' }), ax = Uint8Array.from(a.px)
+  const out = []
+  for (const v of variants) {
+    const b = await renderFrame({ ...v, path: 'nv12' })
+    out.push(b.W !== a.W || b.H !== a.H ? { max: 255, mean: 255, over2: 100, size: `${b.W}x${b.H}` } : diff(ax, b.px, a.W))
+  }
+  return out
+}
+
 // Write a frame to look at
 window.shot = async (job, file) => {
   const a = await renderFrame({ ...job, path: job.path || 'nv12' })

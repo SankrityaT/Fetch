@@ -43,6 +43,21 @@ const GRADIENTS = {
   ink: ['#2A2320', '#0A0908'],
 }
 
+// Mesh gradients: the same six names, loosened into control points. Each point is a
+// place in the frame (fractions), a reach, and a colour; the compositor blends them by
+// normalised Gaussian weights in sRGB, so a mesh and the flat gradient of the same name
+// are relatives rather than strangers. The middle point is always the deep, quiet one:
+// the take sits on top of it, and a busy centre fights the recording.
+// The classic ffmpeg renderer cannot draw a mesh and falls back to the flat pair.
+const MESHES = {
+  dusk: [[0.10, 0.12, 0.30, '#F6C15F'], [0.92, 0.06, 0.26, '#C97F1E'], [0.06, 0.90, 0.28, '#8A4A16'], [0.88, 0.94, 0.30, '#4E2409'], [0.50, 0.54, 0.34, '#7A3E12']],
+  ember: [[0.08, 0.10, 0.30, '#FF8A62'], [0.94, 0.18, 0.26, '#E0452F'], [0.12, 0.92, 0.28, '#7A1F3D'], [0.90, 0.88, 0.30, '#4A0F26'], [0.50, 0.52, 0.34, '#93304A']],
+  mint: [[0.10, 0.08, 0.30, '#7FF0CE'], [0.90, 0.12, 0.26, '#2FB8A6'], [0.08, 0.88, 0.28, '#0B7285'], [0.92, 0.92, 0.30, '#053F50'], [0.50, 0.54, 0.34, '#0F6B7C']],
+  violet: [[0.12, 0.10, 0.30, '#B9A2FF'], [0.88, 0.08, 0.26, '#7C5CE0'], [0.06, 0.92, 0.28, '#3B1D6E'], [0.94, 0.90, 0.30, '#200F45'], [0.50, 0.52, 0.34, '#3F2178']],
+  slate: [[0.10, 0.10, 0.30, '#8494AC'], [0.92, 0.14, 0.26, '#4E5C73'], [0.08, 0.90, 0.28, '#1B2540'], [0.90, 0.94, 0.30, '#0B1120'], [0.50, 0.52, 0.34, '#26314A']],
+  ink: [[0.12, 0.10, 0.30, '#3A312B'], [0.90, 0.10, 0.26, '#241F1B'], [0.08, 0.92, 0.28, '#100D0C'], [0.92, 0.90, 0.30, '#0A0908'], [0.50, 0.52, 0.34, '#161311']],
+}
+
 const ASPECTS = ['auto', '16:9', '1:1', '9:16', '4:3', '4:5']
 
 // f(path, type, default, extra): extra carries min, max, step, unit, options, label,
@@ -76,11 +91,14 @@ const FIELDS = [
 
   // ── background ──
   f('background.kind', 'enum', 'none', { options: ['none', 'solid', 'gradient', 'mesh', 'image', 'video-blur'], label: 'Background',
-    doc: 'none shows the take edge to edge. solid, gradient, image and video-blur (the take itself, blurred and deepened) frame it with padding and a shadow.',
-    gpuOptions: ['mesh'] }),
+    doc: 'none shows the take edge to edge. solid, gradient, mesh (a gradient loosened into control points), image and video-blur ' +
+      '(the take itself, blurred and deepened) frame it with padding and a shadow.' }),
   f('background.gradient', 'enum', 'dusk', { options: Object.keys(GRADIENTS), label: 'Gradient',
     doc: 'Which gradient: dusk (gold), ember, mint, violet, slate, ink (warm near-black).', when: { 'background.kind': 'gradient' } }),
   f('background.color', 'color', '#1A1714', { label: 'Colour', doc: 'The solid colour, #RRGGBB.', when: { 'background.kind': 'solid' } }),
+  f('background.mesh', 'enum', 'dusk', { options: Object.keys(MESHES), label: 'Mesh',
+    doc: 'Which mesh: the same six palettes as the gradients, drawn from control points instead of corner to corner.',
+    when: { 'background.kind': 'mesh' } }),
   f('background.image', 'asset', null, { label: 'Image',
     doc: 'An image backdrop id from list_looks backgrounds (img:...).', when: { 'background.kind': 'image' } }),
   f('background.imageBlur', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Image blur', doc: 'Softens the image.', gpu: true, when: { 'background.kind': 'image' } }),
@@ -98,7 +116,7 @@ const FIELDS = [
   f('treatment.tintAmount', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Tint amount', doc: 'How strong the tint is.', gpu: true }),
   f('treatment.haze', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Haze', doc: 'Lifted blacks, like a soft lens.', gpu: true }),
   f('treatment.blur', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Blur', doc: 'Softens the whole frame.', gpu: true, advanced: true }),
-  f('treatment.bokeh', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Bokeh', doc: 'Lens blur on the background.', gpu: true }),
+  f('treatment.bokeh', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Bokeh', doc: 'The background defocused through an aperture, so highlights open into its shape. Needs an image or video-blur background.', gpu: true }),
   f('treatment.bloom', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Bloom', doc: 'Bright areas glow.', gpu: true }),
   f('treatment.halation', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Halation', doc: 'A warm film glow round highlights.', gpu: true }),
   f('treatment.aberration', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Aberration', doc: 'Colour fringes at the edges.', gpu: true, advanced: true }),
@@ -150,4 +168,4 @@ const FIELDS = [
 
 const BY_PATH = new Map(FIELDS.map(x => [x.path, x]))
 
-module.exports = { SECTIONS, FIELDS, BY_PATH, GRADIENTS, ASPECTS }
+module.exports = { SECTIONS, FIELDS, BY_PATH, GRADIENTS, MESHES, ASPECTS }

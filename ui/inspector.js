@@ -39,12 +39,23 @@ function parsed(x, s) {
 const LABELS = { 'video-blur': 'Blur', 'none': 'None', 'auto': 'Auto', 'hide': 'Hide', 'keep': 'Keep', 'remove': 'Remove' }
 const optLabel = o => LABELS[o] || (/^\d/.test(o) ? o : o.charAt(0).toUpperCase() + o.slice(1))
 
+// A mesh as CSS: the same control points the compositor reads, each a soft radial
+// stop over the deepest one. Close enough for a swatch, and there is still only one
+// table of points.
+const meshCss = name => {
+  const pts = S.MESHES[name] || S.MESHES.dusk
+  const stops = pts.map(([x, y, r, c]) =>
+    `radial-gradient(circle at ${Math.round(x * 100)}% ${Math.round(y * 100)}%,${c} 0%,${c}00 ${Math.round(r * 150)}%)`)
+  return `${stops.join(',')},${pts[pts.length - 1][3]}`
+}
+
 // A small picture of a look: its background, and the take as a rounded card on it
 function thumbStyle(look, file) {
   const L = Look.resolve(look), b = L.background
   const grad = g => `linear-gradient(135deg,${S.GRADIENTS[g][0]},${S.GRADIENTS[g][1]})`
   const bg = b.kind === 'solid' ? b.color
     : b.kind === 'gradient' ? grad(b.gradient)
+    : b.kind === 'mesh' ? meshCss(b.mesh)
     : b.kind === 'image' && file ? `url("file://${encodeURI(file).replace(/"/g, '%22')}") center/cover`
     : b.kind === 'video-blur' ? 'radial-gradient(circle at 30% 30%,#6B5A48,#241F1B 70%)'
     : b.kind === 'none' ? 'var(--ink-2)' : grad('dusk')
@@ -86,10 +97,11 @@ function create(root, o) {
       body = `<label class="lk-top lk-bool"><span class="lk-lbl" title="${esc(x.doc)}">${esc(x.label)}${mod ? '<i class="lk-dot" aria-label="changed"></i>' : ''}</span>
         ${mod ? `<button class="lk-reset" data-reset="${x.path}" aria-label="Reset ${esc(x.label)}">${ico('arrow-counter-clockwise', 'icon-sm')}</button>` : ''}
         <span class="switch"><input type="checkbox" id="${id}" data-bool="${x.path}" ${v ? 'checked' : ''}><span class="track"></span></span></label>`
-    } else if (x.type === 'enum' && x.path === 'background.gradient') {
+    } else if (x.type === 'enum' && (x.path === 'background.gradient' || x.path === 'background.mesh')) {
+      const swatch = g => x.path === 'background.mesh' ? meshCss(g) : `linear-gradient(135deg,${S.GRADIENTS[g][0]},${S.GRADIENTS[g][1]})`
       body = head() + `<div class="lk-swatches" role="radiogroup" aria-label="${esc(x.label)}">${x.options.map(g =>
         `<button class="lk-grad" role="radio" aria-checked="${g === v}" data-enum="${x.path}" data-v="${g}" data-tip="${optLabel(g)}"
-          style="background:linear-gradient(135deg,${S.GRADIENTS[g][0]},${S.GRADIENTS[g][1]})"></button>`).join('')}</div>`
+          style="background:${swatch(g)}"></button>`).join('')}</div>`
     } else if (x.type === 'enum') {
       const chips = x.options.length > 4 || x.path === 'background.kind'
       body = head() + (chips
