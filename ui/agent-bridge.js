@@ -53,6 +53,21 @@ let endingAt = 0
 // element: 'E129' and use that element's own box. An agent given a box still worked
 // out a centre and a scale by hand; naming the element leaves nothing to work out.
 const foundBy = new Map()      // path -> { at, boxes: Map(id -> box) }
+// The same, for a pass Fetch ran for itself rather than for the agent: the lasso's
+// snapping while the person scrubs, and the frame a zoom's aim is read from. E ids are
+// positional per frame (ui/targets.js:143), so putting a background pass into foundBy
+// would quietly renumber the ids the agent is still holding from its own
+// find_on_screen, and E7 would resolve to a different element's box with no warning.
+// Its ids still resolve; they just never take one away from the pass that minted it.
+const foundFor = new Map()     // path -> { at, boxes: Map(id -> box) }
+// What the person lassoed on the stage, per recording: R1, R2... An area someone drew
+// with their own hand is a better target than anything a search ranks, so it is kept
+// apart from foundBy, whose E ids are renumbered by every search. Regions outlive the
+// turn that carried them, so "now lift it" in the next message still finds R1, and
+// they die with the app like the E ids do.
+const regions = new Map()      // path -> [region], newest last
+const regionSeq = new Map()    // path -> the last number handed out, never rewound
+const MAX_REGIONS = 8
 
 function socketPath() {
   const dir = app ? app.getPath('userData') : require('os').tmpdir()
@@ -264,7 +279,6 @@ const ops = {
     if (!args.path) throw new Error('path is required')
     if (!args.doc || typeof args.doc !== 'object') throw new Error('doc is required')
     const FD = require('./fetchdoc')
-    args = { ...args, doc: withElements(args.path, args.doc) }
     if (args.doc.remove != null && !Array.isArray(args.doc.remove)) throw new Error('remove is a list of ids, e.g. remove: [\'M12\']')
     // marks: { remove: [...] } was taken as nothing and reported as done
     for (const k of ['clips', 'zooms', 'texts', 'marks', 'cues']) {
@@ -274,6 +288,12 @@ const ops = {
     }
     const prev = ['marks', 'zooms', 'texts', 'remove'].some(k => Array.isArray(args.doc[k]))
       ? await inEditor(args.path, 'window.fetchDoc.get()') : null
+    // the edit as it stands is read first: which mark ids exist decides whether a lift
+    // is being retimed or made, and the crop decides what a lassoed box now points at
+    args = { ...args, doc: withElements(args.path, args.doc, prev) }
+    // a zoom is held to what it frames before the document sees it, so a point becomes
+    // the element under it and a scale that would not read becomes Fetch's own fit
+    const aim = await aimZooms(args.path, args.doc, prev)
     // a new lift or spotlight replaces the one it lands on, rather than stacking
     let replaced = [], timed = null
     if (Array.isArray(args.doc.marks)) {
@@ -314,6 +334,13 @@ const ops = {
         `${a.id} (${a.kind} ${a.start}-${a.end} s): what is inside its box keeps changing, so no one element is there for the span. ` +
         'Call find_on_screen at a moment the element is fully open and preview_frame near the start and the end.'))
     }
+    // what aiming did to the zooms, now that the new ones have their ids
+    if (aim) {
+      const said = nameZooms(aim, doc)
+      if (said.snapped) out.snapped = said.snapped
+      if (said.refit) out.refit = said.refit
+      if (said.warnings.length) out.warnings = (out.warnings || []).concat(said.warnings)
+    }
     // what the look part of the edit did: values clamped, fields unknown, settings not drawn yet
     const lw = lookWarnings(FD.lookPatchOf(args.doc).look, doc, args.path)
     if (lw.length) out.look_warnings = lw
@@ -329,6 +356,7 @@ const ops = {
       out.alongside = { marks: along, why: 'these still play during the zoom you changed. An earlier edit may have added them unasked: ' +
         'remove one (remove: [id]) if the person did not ask for it or complained about a highlight there, and name each in your reply' }
     }
+    out.preview = await previewOf(args.path, check, args.doc, doc)
     return out
   },
 
@@ -436,18 +464,12 @@ const ops = {
     const crop = args.cropped === false ? null : deps.proc.readDoc(args.path, meta && meta.duration).crop || null
     const r = await deps.proc.findOnScreen(args.path, args.at, { crop, query: args.query, limit: args.limit })
     // only boxes measured in apply_edit's frame (after the crop) can be named there
-    const T = require('./targets'), all = r.all || r.elements
+    const all = r.all || r.elements
     // a card, grid or panel a lift would come out wrong on says so here, with the one
     // inside it to lift instead, so the agent does not have to be refused to learn it
-    const noLift = new Map()
-    for (const e of r.elements) {
-      if (!['card', 'grid', 'panel'].includes(e.kind)) continue
-      const b = T.liftBlock(e, all)
-      if (b) noLift.set(e.id, b)
-    }
-    const boxes = new Map(r.elements.map(e => [e.id, e.box]))
-    for (const b of noLift.values()) if (b.instead) boxes.set(b.instead.id, b.instead.box)
-    if (crop || args.cropped !== false) foundBy.set(args.path, { at: r.at, boxes, all })
+    const noLift = crop || args.cropped !== false
+      ? noteFound(args.path, r.at, r.elements, all)
+      : liftNotes(r.elements, all)
     return {
       image: r.image, at: r.at, cropped: !!crop, query: args.query || null,
       found: r.found, shown: r.elements.length,
@@ -456,7 +478,7 @@ const ops = {
         colour: e.background.colour, tone: e.background.tone, hex: e.background.hex, luminance: e.background.luminance,
         confidence: e.confidence, ...(e.in ? { in: e.in } : {}), ...(e.cards ? { cards: e.cards } : {}),
         ...(e.score != null && args.query ? { score: e.score } : {}),
-        ...(noLift.has(e.id) ? { no_lift: liftAdvice(noLift.get(e.id)) } : {}),
+        ...(noLift.has(e.id) ? { no_lift: noLift.get(e.id).advice } : {}),
       })),
     }
   },
@@ -706,20 +728,142 @@ async function askPerson(message, detail, sessionLabel) {
 // changing doc.marks in place. Returns what moved and what never settled.
 // element: 'E129' on a zoom or mark is that element's box from the last find_on_screen
 // on this recording. An id it never handed out is refused rather than guessed at.
-function withElements(src, doc) {
-  const seen = foundBy.get(src)
+// element: 'R2' is an area the person lassoed on the stage. From here on it is an
+// ordinary box: fitted by boxZoom, judged by liftBlock, settled by settleFocus. A
+// lasso buys a target, not a way past the rules.
+function withElements(src, doc, prev) {
+  const seen = foundBy.get(src) || null, mine = foundFor.get(src) || null
+  const T = require('./targets')
+  // the crop this edit lands in: the one it is setting, else the one already there
+  const crop = doc && doc.crop !== undefined ? doc.crop : (prev && prev.crop) || null
+  // a lift may only be retimed without a box when the document already holds that id
+  // and its geometry. An id the document has never seen is a new mark, and mergeMarks
+  // pushes it through as one, so it has to answer for its box like any other.
+  const known = new Set(((prev && prev.marks) || []).map(m => m && m.id).filter(Boolean))
   const swap = list => !Array.isArray(list) ? list : list.map(it => {
-    if (it && it.kind === 'lift') liftable(seen, it)
-    if (!it || !it.element) return it
-    const { element, ...rest } = it
-    const box = seen && seen.boxes.get(String(element).trim().toUpperCase())
-    if (!box) {
-      throw new Error(`${element} is not in the last find_on_screen result for this recording` +
-        (seen ? ` (at ${seen.at} s)` : '') + '. Call find_on_screen again and name one it lists, or send its box.')
+    const aimed = it && it.element ? resolveElement(src, seen, mine, crop, it) : it
+    if (aimed && aimed.kind === 'lift') {
+      // a new lift with nothing but times raises nothing at all, so say what to send.
+      // One that names an existing mark keeps that mark's box and is only being retimed.
+      if (!aimed.id || !known.has(aimed.id)) {
+        const needs = T.liftNeedsBox(it)
+        if (needs) throw new Error(needs)
+      }
+      liftable(seen || mine, aimed)
     }
-    return { ...rest, box }
+    return aimed
   })
   return { ...doc, ...(doc.zooms ? { zooms: swap(doc.zooms) } : {}), ...(doc.marks ? { marks: swap(doc.marks) } : {}) }
+}
+
+// One id, one box. R ids come from the lasso, E ids from an Elements pass, and neither
+// map can shadow the other. The agent's own find_on_screen is read before a pass Fetch
+// ran for itself, so a background pass never takes an E id away from it.
+function resolveElement(src, seen, mine, crop, it) {
+  const { element, ...rest } = it
+  const id = String(element).trim().toUpperCase()
+  if (/^R\d+$/.test(id)) {
+    const region = regionFor(src, id)
+    if (!region) {
+      throw new Error(`${id} is not an area the person lassoed on this recording. ` +
+        'Ask them to lasso it again, or call find_on_screen and name an E id.')
+    }
+    return { ...rest, box: regionBox(region, crop) }
+  }
+  const box = (seen && seen.boxes.get(id)) || (mine && mine.boxes.get(id))
+  if (!box) {
+    const at = seen || mine
+    throw new Error(`${element} is not in the last find_on_screen result for this recording` +
+      (at ? ` (at ${at.at} s)` : '') + '. Call find_on_screen again and name one it lists, or send its box.')
+  }
+  return { ...rest, box }
+}
+
+// A region's box is fractions of the frame as it was cropped when the person drew the
+// rectangle. Move the crop and those same fractions point at a different part of the
+// picture, so the box goes back into the recording's own frame and is read again in the
+// crop this edit lands in. A crop that has cut the area away is refused, not guessed at.
+function regionBox(region, crop) {
+  const T = require('./targets')
+  const same = c => c && c.w > 0 && c.h > 0 ? c : { x: 0, y: 0, w: 1, h: 1 }
+  const f = same(region.crop), t = same(crop)
+  if (f.x === t.x && f.y === t.y && f.w === t.w && f.h === t.h) return region.box
+  const b = region.box
+  const s = { x: f.x + f.w * b.x, y: f.y + f.h * b.y, w: f.w * b.w, h: f.h * b.h }
+  const r = { x: (s.x - t.x) / t.w, y: (s.y - t.y) / t.h, w: s.w / t.w, h: s.h / t.h }
+  // what is left of it inside the new frame, measured before clamping: cleanBox slides
+  // a box back in rather than cutting it, which would hide a crop that moved right off
+  const span = (a, len) => Math.max(0, Math.min(1, a + len) - Math.max(0, a))
+  const ow = span(r.x, r.w), oh = span(r.y, r.h)
+  const moved = ow * oh >= r.w * r.h / 2
+    ? T.cleanBox({ x: Math.max(0, r.x), y: Math.max(0, r.y), w: ow, h: oh }) : null
+  if (!moved) {
+    throw new Error(`${region.id} was lassoed in a different crop, and this one cuts most of it away. ` +
+      'Ask the person to lasso it again in the crop the edit uses, or send the box yourself.')
+  }
+  const r4 = n => Math.round(n * 10000) / 10000
+  return { x: r4(moved.x), y: r4(moved.y), w: r4(moved.w), h: r4(moved.h) }
+}
+
+// A card, grid or panel a lift would come out wrong on: why, what to lift instead,
+// and the sentence that says both. find_on_screen returns these as no_lift, the
+// lasso's own Elements pass hands them to the editor, and liftable refuses on them.
+function liftNotes(elements, all) {
+  const T = require('./targets')
+  const out = new Map()
+  for (const e of elements || []) {
+    if (!['card', 'grid', 'panel'].includes(e.kind)) continue
+    const b = T.liftBlock(e, all || elements)
+    if (b) out.set(e.id, { ...b, advice: liftAdvice(b) })
+  }
+  return out
+}
+
+/**
+ * Remember what an Elements pass found, so apply_edit can take element: 'E7' and use
+ * that element's own box. The only way boxes are registered: find_on_screen and the
+ * editor's lasso both come through here, so an id the person can see is an id the
+ * agent can aim with.
+ *
+ * `agent` false is a pass Fetch ran for itself, which is kept in its own map: its ids
+ * resolve, but they never replace the ones the agent asked for and is still holding.
+ */
+function noteFound(path, at, elements, all, { agent = true } = {}) {
+  const list = all || elements || []
+  const notes = liftNotes(elements, list)
+  const boxes = new Map((elements || []).map(e => [e.id, e.box]))
+  // an element named only inside a refusal is still one the agent may aim at
+  for (const b of notes.values()) if (b.instead) boxes.set(b.instead.id, b.instead.box)
+  ;(agent ? foundBy : foundFor).set(path, { at, boxes, all: list })
+  return notes
+}
+
+/** An area the person drew, given the next id for this recording and kept. */
+function noteRegion(path, region) {
+  const n = (regionSeq.get(path) || 0) + 1
+  regionSeq.set(path, n)
+  const kept = { ...region, id: 'R' + n }
+  const list = regions.get(path) || []
+  list.push(kept)
+  while (list.length > MAX_REGIONS) list.shift()
+  regions.set(path, list)
+  return kept
+}
+
+function regionFor(path, id) {
+  const want = String(id || '').trim().toUpperCase()
+  return (regions.get(path) || []).find(r => r.id === want) || null
+}
+
+// The person took the chip off the message, so the agent must not be able to aim at it.
+function forgetRegion(path, id) {
+  const list = regions.get(path)
+  if (!list) return false
+  const want = String(id || '').trim().toUpperCase()
+  const i = list.findIndex(r => r.id === want)
+  if (i < 0) return false
+  list.splice(i, 1)
+  return true
 }
 
 // Ids in the zooms, texts and marks before an edit that are not there after it.
@@ -762,8 +906,10 @@ function liftAdvice(b) {
   if (b.instead) return `${b.why}; only small pieces inside it can be lifted (such as ${name(b.instead)}): lift the one the person means, or point at the whole with a spotlight and say why`
   return `${b.why}; nothing inside it can be lifted either, so a spotlight is the way to point at it (say so if the person asked for a lift)`
 }
+// Every lift with a box is checked, including one being moved: the old guard let a
+// lift dragged onto the frame's edge by a bare box through without a word.
 function liftable(seen, m) {
-  if (!seen || !seen.all || (m.id && !m.element)) return
+  if (!seen || !seen.all) return
   const T = require('./targets')
   const id = m.element ? String(m.element).trim().toUpperCase() : null
   const box = m.box && typeof m.box === 'object' ? T.cleanBox(m.box) : null
@@ -772,6 +918,134 @@ function liftable(seen, m) {
   const b = el && ['card', 'grid', 'panel'].includes(el.kind) ? T.liftBlock(el, seen.all) : null
   if (!b) return
   throw new Error(`Not lifting ${el.id}: ${liftAdvice(b)}. A lifted piece needs room on every side and its whole content on screen.`)
+}
+
+const r2 = n => Math.round(n * 100) / 100
+
+// The elements on the frame at `at`: the ones the agent already has when it looked at
+// about this moment, otherwise a fresh pass, registered so it can name what it got.
+// Null when the frame cannot be read, which is never a reason to fail an edit.
+async function elementsNear(src, at, crop) {
+  for (const m of [foundBy, foundFor]) {
+    const seen = m.get(src)
+    if (seen && seen.all && seen.all.length && Math.abs(seen.at - at) <= 0.75) return seen.all
+  }
+  if (!deps.proc || !deps.proc.findOnScreen) return null
+  try {
+    const r = await deps.proc.findOnScreen(src, at, { crop: crop && crop.w > 0 ? crop : null, limit: 40 })
+    // Fetch's own pass, so it does not renumber the E ids the agent is holding
+    noteFound(src, r.at, r.elements, r.all, { agent: false })
+    return r.all || r.elements
+  } catch (e) {
+    console.warn('[aim] could not read the frame at', at, e && e.message)
+    return null
+  }
+}
+
+/**
+ * Hold every zoom in this patch to what it is actually aimed at, before the document
+ * sees it. A zoom given a bare point is put on the element under that point: a point
+ * is a guess at a centre, and the thing under it is what was meant. A zoom that ends
+ * up with a box is framed by Fetch's own fit, so a scale too loose to read or so tight
+ * the element is cut off does not land. Changes doc.zooms in place, the way timeFocus
+ * changes doc.marks, and returns what to tell the agent.
+ */
+async function aimZooms(src, doc, prev) {
+  if (!Array.isArray(doc.zooms)) return null
+  const T = require('./targets'), FD = require('./fetchdoc')
+  const was = new Map(((prev && prev.zooms) || []).filter(z => z && z.id).map(z => [z.id, z]))
+  const crop = doc.crop !== undefined ? doc.crop : (prev && prev.crop) || null
+  const out = { snapped: [], refit: [], warnings: [], unnamed: [] }
+  for (const z of doc.zooms) {
+    if (!z || typeof z !== 'object') continue
+    const old = z.id ? was.get(z.id) : null
+    // a zoom sent back unchanged is not being re-aimed, and re-reading its frame would
+    // move a zoom the person never asked about
+    if (old && FD.sameItem(old, z)) continue
+    const num = (v, alt) => Number.isFinite(+v) && v !== null ? +v : (old && Number.isFinite(+alt) ? +alt : null)
+    const start = num(z.start, old && old.start), end = num(z.end, old && old.end)
+    const mine = []
+    let box = T.cleanBox(z.box), el = null
+    if (!box) {
+      const x = num(z.x, old && old.x), y = num(z.y, old && old.y)
+      // {start, end} alone still means 1.8x at the frame centre: nothing was aimed, so
+      // there is nothing to correct
+      if (x == null && y == null || !(end > start)) continue
+      const aim = r2(start + Math.min(1, (end - start) / 3))
+      const found = await elementsNear(src, aim, crop)
+      el = found ? T.nearPoint({ x: x == null ? 0.5 : x, y: y == null ? 0.5 : y }, found) : null
+      box = el ? T.cleanBox(el.box) : null
+      if (!box) continue      // nothing under the point: the zoom stands, and handAimed says so
+      z.box = box
+      const entry = { id: z.id || null, element: el.id, at: aim,
+        from: { x, y, scale: num(z.scale, old && old.scale) }, to: null, box }
+      out.snapped.push(entry); mine.push(entry)
+    }
+    // where the box lands the zoom: the one place a box becomes a zoom is normalize,
+    // and this is the same sum it will do
+    const land = T.boxZoom(box)
+    const share = r2(T.zoomShare(land.scale, box))
+    const sent = Number.isFinite(+z.scale) ? +z.scale : null
+    for (const e of mine) e.to = land
+    // A box on a zoom wins over any scale beside it, every time (ui/fetchdoc.js:252),
+    // so what lands is boxZoom's sum whether or not the sent scale was readable. The
+    // report is of what landed: telling the agent its 2.0 stood when 2.6 did is worse
+    // than telling it nothing.
+    const fit = T.zoomFit({ x: z.x, y: z.y, scale: sent }, box)
+    if (sent !== null && sent !== land.scale) {
+      delete z.scale     // the box path in normalize is the single place the fit is worked out
+      const entry = { id: z.id || null, scale_sent: sent, scale: land.scale, share,
+        why: fit.changed ? 'the target was cut off or too small to read at the scale sent'
+          : 'a box frames its own zoom, so the scale beside it was not used' }
+      out.refit.push(entry); mine.push(entry)
+    }
+    if (share < T.FIT_LOW) {
+      const entry = { id: z.id || null, what: el ? el.id : 'its box', share }
+      out.warnings.push(entry); mine.push(entry)
+    }
+    // a new zoom has no id until the document mints one
+    if (mine.some(e => e.id == null) && end > start) out.unnamed.push({ entries: mine, start, end })
+  }
+  return out.snapped.length || out.refit.length || out.warnings.length ? out : null
+}
+
+// A new zoom is named by the document, after the edit lands. Until then every report
+// about it says "the new zoom", which is no use to an agent that wants to fix it.
+function nameZooms(aim, doc) {
+  for (const u of aim.unnamed) {
+    const got = (doc.zooms || []).find(d => Math.abs(d.start - u.start) < 0.006 && Math.abs(d.end - u.end) < 0.006)
+    for (const e of u.entries) if (e.id == null && got) e.id = got.id
+  }
+  for (const e of [...aim.snapped, ...aim.refit, ...aim.warnings]) if (e.id == null) e.id = 'the new zoom'
+  return {
+    ...(aim.snapped.length ? { snapped: { zooms: aim.snapped,
+      why: 'a zoom aimed at a point was put on the element under that point and fitted to it' } } : {}),
+    ...(aim.refit.length ? { refit: { zooms: aim.refit,
+      why: 'the zoom was fitted to its box rather than to the scale sent, and each entry says why' } } : {}),
+    warnings: aim.warnings.map(w => `${w.id} frames ${w.what} at ${w.share} of the view, ` +
+      `the tightest a zoom goes (${require('./targets').BOX_MAX}x). ` +
+      'Lasso a smaller area, or say the element is too small to fill the frame.'),
+  }
+}
+
+// A picture of what just happened. An agent that reported from the numbers it sent
+// said "done" over a zoom on the wrong half of the frame; one frame of the edit as it
+// now stands costs a second and is the only thing that can tell it otherwise.
+async function previewOf(src, check, sent, doc) {
+  const at = check.length ? check[0] : firstChange(sent, doc)
+  try {
+    const p = await ops['edit.preview']({ path: src, at })
+    return { image: p.image, at: p.at, why: 'this is the edit as it now stands at that moment. Look at it before replying.' }
+  } catch (e) {
+    // a frame that could not be drawn never undoes an edit that was applied
+    return { error: (e && e.message) || String(e) }
+  }
+}
+function firstChange(sent, doc) {
+  for (const it of [...(sent.zooms || []), ...(sent.marks || [])]) {
+    if (it && Number.isFinite(+it.start) && +it.end > +it.start) return r2((+it.start + +it.end) / 2)
+  }
+  return Math.min(1, (+doc.dur || 2) / 2)
 }
 
 // A new or moved zoom placed by centre and scale rather than by what it frames. Fine
@@ -1195,4 +1469,9 @@ function stop() {
   server = null
 }
 
-module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEndedAlone, stillNote, occludedTake, noteMoves, follow, checkTimes, liftable }
+module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEndedAlone, stillNote, occludedTake, noteMoves, follow, checkTimes, liftable,
+  // the lasso: main.js registers what the Elements pass found and the areas the person
+  // drew, and apply_edit resolves R ids out of the same store
+  noteFound, noteRegion, regionFor, forgetRegion,
+  // the two rules that are code rather than prose, exercised by test/lasso.test.js
+  withElements, aimZooms }

@@ -66,6 +66,14 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   model accepts. It starts on the person's own CLI default and remembers their pick.
 - Editor: beats strip named from speech, zoom track (`Z1 2.0x`), marks track
   (redact, lift, spotlight, step), trim, cuts, text, captions, look, camera, audio, voiceover.
+  A lasso in the transport, off until it is armed, draws a rectangle over the stage at
+  the moment the person is paused on; while they drag it snaps to the real element under
+  it, found by the same Elements pass `find_on_screen` uses, and stays exactly as drawn
+  when there is nothing there. On release it becomes a gold chip in the chat composer,
+  `R1`, carrying the moment, the box in the recording's own pixels and a JPEG of that
+  area alone, and the message tells the agent to work on exactly that. The lasso writes
+  nothing to the edit document: it points, the agent makes the mark, and the Undo button
+  already there takes it back.
 - Library: masonry, each tile the real shape of its take.
 - Activity: every action on the machine, attributed. No vendor mark means a person.
 - Settings: Recording access (never-record list), Connect, voiceover account.
@@ -145,7 +153,14 @@ the last frame the take wrote at or before its moment, across cuts.
 `find_on_screen` reads a frame on device (Vision, `Elements.swift`) and returns its
 text, chips, buttons and cards as E1, E2... with boxes, ranked against the person's
 words ("the black chip"), plus the frame with them numbered; zooms and marks take that
-box, and Fetch picks the scale that frames it (`ui/targets.js`). Panels and card grids come back too (found from their hairline edges), each element says which one it is `in`, and a new lift or spotlight replaces any it lands on and is held to the part of its span where its element is on screen (a card that opens mid-sentence is not lifted before it opens); a lift needs room: one at or near the frame edge, or on a pane whose content is cut off at its foot, is refused, naming the card or grid inside it to lift instead (`find_on_screen` marks these `no_lift`; a spotlight is offered only when nothing inside can stand for it). Re-aiming a zoom lists under `alongside` the lifts and spotlights still playing with it, so one an earlier turn added unasked is named or removed. `preview_frame` draws
+box, and Fetch picks the scale that frames it (`ui/targets.js`). Panels and card grids come back too (found from their hairline edges), each element says which one it is `in`, and a new lift or spotlight replaces any it lands on and is held to the part of its span where its element is on screen (a card that opens mid-sentence is not lifted before it opens); a lift needs room: one at or near the frame edge, or on a pane whose content is cut off at its foot, is refused, naming the card or grid inside it to lift instead (`find_on_screen` marks these `no_lift`; a spotlight is offered only when nothing inside can stand for it). Re-aiming a zoom lists under `alongside` the lifts and spotlights still playing with it, so one an earlier turn added unasked is named or removed. `apply_edit` stops taking an
+agent's aim on trust, in code rather than in a description (principle 4): a zoom given
+only a centre point is put on the element under that point, never on a bare line of text,
+and fitted to it; a zoom carrying a box is framed by that box whatever scale came beside
+it, and the result says what the scale became and why; a lift with no box is refused,
+naming the two ways to give it one; and an area the person lassoed is aimed at as `R1`,
+re-read in the crop the edit is in and held to the same lift rules as any other box. Every
+applied edit comes back with one frame of itself to look at. `preview_frame` draws
 frames of the edit exactly as export will, several in one call; `apply_edit` lists under `check` when to look at what it placed (just after it lands, and its middle), so an agent checks where a zoom landed before it reports. Marks merge by id: one an agent leaves out stays (an edit adding a lift once dropped the blurs hiding a name), only `remove: [ids]` deletes, and the result names every id an edit took out. A lift's box is grown to the element's own hairline at export and framed evenly, so its border comes up whole. Every 1.0 option is reachable: trim and cuts as clips, crop and aspect, texts with any
 installed font, caption style and position, zooms, backdrops, camera, denoise, loudness,
 gain, fades, music (an added track, or one of three beds made in `tools/make-beds.js`, `look.music`, ducked under the voice), redaction, lift, spotlight and numbered steps. The pipeline runs with the

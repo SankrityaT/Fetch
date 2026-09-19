@@ -40,7 +40,27 @@ const ids = list => list.length ? ` (${list.slice(0, 8).join(', ')}${list.length
 // took it as the answer and never read the library, so a take that landed a moment
 // later, or one renamed or deleted meanwhile, went unseen. Only list_recordings is
 // current by construction.
-function contextHeader({ open, omitted } = {}) {
+// An area the person drew round on the stage, as the agent reads it. The box is
+// already the frame apply_edit places things in, and the picture beside the message is
+// that area alone, so there is nothing left to search for or rank.
+function regionLines(regions) {
+  const list = arr(regions).filter(r => r && r.id && r.box).slice(0, 8)
+  if (!list.length) return []
+  const out = ['The person lassoed an area of the video for this message. Work on exactly that area.']
+  for (const r of list) {
+    const px = r.px ? `, ${Math.round(r.px.w)} by ${Math.round(r.px.h)} pixels of the recording` : ''
+    // the path on every bullet: a chip can outlive the editor being on screen, and
+    // without it the agent has an area and no file to apply it to
+    const on = r.path ? ` of ${r.path}` : ''
+    out.push(`- ${r.id} at ${(+r.at || 0).toFixed(2)} s${on}, "${r.label || 'Area'}" (${r.kind || 'free'}). ` +
+      `Box ${JSON.stringify(r.box)} of the frame after the crop${px}. The attached picture is that area only.`)
+  }
+  out.push(`Send element: ${list.map(r => `'${r.id}'`).join(', ')} on the zoom or mark. Do not call find_on_screen for it, ` +
+    'do not rank anything, and do not pick a different element: the person has already pointed at it.')
+  return out
+}
+
+function contextHeader({ open, omitted, regions = [] } = {}) {
   const lines = ['<fetch_context>', 'Current as of this message.']
   if (open && open.path) {
     lines.push(`Open in the Fetch editor: ${open.path}${open.dur ? ` (${clock(open.dur)})` : ''}.`)
@@ -95,6 +115,7 @@ function contextHeader({ open, omitted } = {}) {
     'and fix what they name. After the edit, call preview_frame once with at set to every time the result lists ' +
     'under check.preview_frame_at (just after each new zoom or mark lands, and its middle), never just one, and ' +
     'look at each frame; if one is not on the thing they meant, or anything else dims or covers it, fix it before replying.')
+  lines.push(...regionLines(regions))
   // The brand writes no em dashes, and models reach for them by default
   lines.push('Write replies in short plain sentences. Never use an em dash; use a comma, colon, ' +
     'full stop or parentheses instead.')

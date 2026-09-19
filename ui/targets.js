@@ -523,8 +523,147 @@ function liftBlock(el, all) {
   return { why, instead, share: instead ? round(area(instead.box) / area(el.box)) : 0 }
 }
 
+// ── the rectangle a person draws, and holding an edit to what it aims at ────
+// The lasso lets someone point at an area of their own video, and apply_edit stops
+// taking an agent's aim on trust. Both need the same few judgements, and they are
+// here because they are arithmetic on boxes and nothing else.
+const SNAP_IOU = 0.55     // a drawn box that overlaps an element this much is that element
+const SNAP_HOLD = 4       // a small drag inside an element snaps to it only if it is at most
+                          //   4x the drawn area, so a flick inside a panel does not take the panel
+const SNAP_REACH = 0.12   // how far from a point an element may be and still be what was meant
+const FIT_LOW = 0.5       // a target narrower than half the view is too far away to read
+const FIT_HIGH = 0.92     // wider than this and its own edges are cut off
+
+const eNum = e => +String(e.id || '').replace(/\D/g, '') || 0
+// smaller first, then the one found earlier, so the answer never depends on input order
+const bySize = (a, b) => area(a.box) - area(b.box) || eNum(a) - eNum(b)
+
+/**
+ * The element a drawn rectangle means, or none. A box over a card is that card even
+ * when the drag was sloppy; a small box inside a chip is the chip; the same small box
+ * inside a whole panel is left as drawn, because nobody flicks at a corner to mean the
+ * sidebar. Text is never snapped to: the thing around the words is what an edit lands on.
+ */
+function snapBox(drawn, elements) {
+  const b = cleanBox(drawn)
+  if (!b) return { box: null, element: null, kind: 'free', iou: 0 }
+  const cand = (elements || []).filter(e => e && e.box && e.kind !== 'text')
+  // rounded before comparing: two elements the drag covers equally well are a tie, not
+  // a coin toss on the last bit of a float
+  const over = cand.map(e => ({ e, v: round(iou(e.box, b)) })).filter(o => o.v >= SNAP_IOU)
+    .sort((p, q) => q.v - p.v || bySize(p.e, q.e))
+  const hit = over.length ? over[0].e
+    : cand.filter(e => inside(b, e.box) && area(e.box) <= SNAP_HOLD * area(b)).sort(bySize)[0]
+  if (!hit) return { box: b, element: null, kind: 'free', iou: 0 }
+  return { box: roundBox(hit.box), element: hit.id, kind: hit.kind, iou: round(iou(hit.box, b)) }
+}
+
+// How far a point is from a box: 0 inside it, else the straight line to its nearest edge
+function pointGap(p, b) {
+  const dx = Math.max(b.x - p.x, 0, p.x - (b.x + b.w))
+  const dy = Math.max(b.y - p.y, 0, p.y - (b.y + b.h))
+  return Math.sqrt(dx * dx + dy * dy)
+}
+
+/**
+ * The element a bare point means: the smallest one it falls in, or the nearest one
+ * within `reach`. A zoom sent as a centre point is aimed at something, and this is
+ * what it was aimed at.
+ *
+ * Text is not a candidate, for the reason snapBox refuses it: a line of words is
+ * almost always inside the chip, button or card an edit lands on, and it is the
+ * smallest thing round the point, so a point aimed at a control would frame a two
+ * percent tall sliver of it instead.
+ */
+function nearPoint(point, elements, reach = SNAP_REACH) {
+  const n = v => v !== null && v !== '' && Number.isFinite(+v) ? +v : null
+  const p = point && n(point.x) != null && n(point.y) != null ? { x: n(point.x), y: n(point.y) } : null
+  if (!p) return null
+  const cand = (elements || []).filter(e => e && e.box && e.kind !== 'text')
+  const held = cand.filter(e => pointGap(p, e.box) === 0).sort(bySize)
+  if (held.length) return held[0]
+  const near = cand.filter(e => pointGap(p, e.box) <= reach)
+    .sort((a, b) => pointGap(p, a.box) - pointGap(p, b.box) || bySize(a, b))
+  return near[0] || null
+}
+
+/**
+ * The fraction of the view a box spans on its wider axis at this scale. A zoom scales
+ * both axes alike, so the view is 1/scale of the frame each way.
+ */
+function zoomShare(scale, box) {
+  return Math.max(box.w * scale, box.h * scale)
+}
+
+/**
+ * The zoom that actually shows `box`: the one that was sent when it frames the thing
+ * at a readable size, otherwise Fetch's own fit. `capped` says the fit ran into
+ * boxZoom's 2.6x ceiling and still could not fill half the view, which is a fact about
+ * the target, not a mistake to correct.
+ */
+function zoomFit(zoom, box) {
+  const b = cleanBox(box)
+  if (!b) return null
+  const sent = zoom && Number.isFinite(+zoom.scale) ? +zoom.scale : null
+  if (sent > 0) {
+    const share = zoomShare(sent, b)
+    if (share >= FIT_LOW && share <= FIT_HIGH) {
+      return { x: zoom.x, y: zoom.y, scale: sent, changed: false, share: round(share), capped: false }
+    }
+  }
+  const fit = boxZoom(b)
+  const share = zoomShare(fit.scale, b)
+  return { ...fit, changed: true, share: round(share), capped: share < FIT_LOW }
+}
+
+const LABEL_MAX = 40
+const trim = s => String(s || '').replace(/\s+/g, ' ').trim()
+const short = s => s.length <= LABEL_MAX ? s : trim(s.slice(0, LABEL_MAX - 1)) + '…'
+const capital = s => s ? s[0].toUpperCase() + s.slice(1) : ''
+
+/**
+ * What to call the area someone lassoed, in their own screen's words: the element it
+ * snapped to, or the longest thing written inside it, or just "Area".
+ */
+function regionLabel(box, elements, element) {
+  const all = (elements || []).filter(e => e && e.box)
+  const id = element ? String(element).trim().toUpperCase() : null
+  const el = id ? all.find(e => e.id === id) : null
+  if (el) return short(trim(el.text) || capital(el.kind) || 'Area')
+  const b = cleanBox(box)
+  if (b) {
+    const inIt = all.filter(e => {
+      const c = centre(e.box)
+      return c.x >= b.x && c.x <= b.x + b.w && c.y >= b.y && c.y <= b.y + b.h
+    }).map(e => trim(e.text)).filter(Boolean).sort((p, q) => q.length - p.length)
+    if (inIt.length) return short(inIt[0])
+  }
+  return 'Area'
+}
+
+/**
+ * Why a lift cannot be placed, in words, or null. A lift raises a piece of the
+ * picture, so it needs to know which piece: times alone raise nothing, and used to
+ * apply quietly as a mark with no geometry.
+ */
+function liftNeedsBox(mark) {
+  const m = mark || {}
+  const named = !!trim(m.element)
+  const boxed = !!cleanBox(m.box)
+  const rect = ['x', 'y', 'w', 'h'].every(k => Number.isFinite(+m[k]))
+  if (named || boxed || rect) return null
+  const start = Number.isFinite(+m.start) ? +m.start : 0
+  const span = Number.isFinite(+m.end) && +m.end > start ? +m.end - start : 0
+  const aim = Math.round((start + Math.min(1, span / 3)) * 100) / 100
+  return 'A lift needs the box of the thing it raises, and this one has only a time.\n' +
+    `Call find_on_screen at ${aim} s and send element: its E id, or ask the person to lasso ` +
+    'the area in the editor and send element: its R id.'
+}
+
 module.exports = {
   presentSpan, liftEdges, cutEdges, liftBlock, LIFT_CLEAR, LIFT_GROW,
   luminance, tone, colourName, elementsFrom, parseQuery, rank, pick, boxZoom, cleanBox,
   BOX_MARGIN, BOX_MAX, BOX_MIN,
+  snapBox, nearPoint, zoomShare, zoomFit, regionLabel, liftNeedsBox,
+  SNAP_IOU, SNAP_HOLD, SNAP_REACH, FIT_LOW, FIT_HIGH,
 }

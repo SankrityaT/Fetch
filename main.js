@@ -1333,13 +1333,85 @@ function tidySaveFolders() {
 
 ipcMain.handle('list-recordings', () => { tidySaveFolders(); return proc.listRecordings() })
 ipcMain.handle('probe', (e, src) => proc.probeMeta(src))
+
+// ---- the lasso: the person points at an area of their own video ----------
+// The editor's rectangle snaps to what is really under it, and the chip it becomes is
+// a target the agent can aim with by id. The same Elements pass find_on_screen uses,
+// registered in the same place, so R1 and E7 resolve through one door.
+// The crop the box was measured in. The editor sends the one its stage is drawing,
+// because the document on disk is up to one autosave behind a crop drag (400 ms,
+// ui/editor.js:591) and a box read in the wrong crop points at the wrong pixels.
+const lassoCrop = async (src, sent) => {
+  const meta = await proc.probeMeta(src).catch(() => ({}))
+  const drawn = require('./ui/targets').cleanBox(sent)
+  if (drawn) return { meta, crop: drawn.w >= 1 && drawn.h >= 1 ? null : drawn }
+  const doc = proc.readDoc(src, meta && meta.duration)
+  return { meta, crop: doc.crop && doc.crop.w > 0 ? doc.crop : null }
+}
+ipcMain.handle('lasso-elements', async (e, { path: src, at, crop: sent } = {}) => {
+  try {
+    const { crop } = await lassoCrop(src, sent)
+    const r = await proc.findOnScreen(src, at, { crop, limit: 40 })
+    // Fetch's own pass, for the band to snap against: its ids still resolve in
+    // apply_edit, but a scrub with the lasso armed never renumbers the E ids the
+    // agent is holding from its own find_on_screen
+    const notes = agentBridge.noteFound(src, r.at, r.elements, r.all, { agent: false })
+    return {
+      at: r.at, width: r.width, height: r.height,
+      elements: r.elements.map(el => ({
+        id: el.id, kind: el.kind, text: el.text, box: el.box,
+        ...(notes.has(el.id) ? { no_lift: notes.get(el.id).advice } : {}),
+      })),
+    }
+  } catch (err) {
+    // a frame that could not be read means no snapping, never a broken gesture
+    console.warn('[lasso] no elements at', at, err && err.message)
+    return { at: +at || 0, width: 0, height: 0, elements: [] }
+  }
+})
+
+const REGION_KINDS = ['chip', 'card', 'panel', 'grid', 'icon', 'text', 'free']
+ipcMain.handle('lasso-region', async (e, { path: src, at, box, element, kind, label, crop: sent } = {}) => {
+  const T = require('./ui/targets')
+  const b = T.cleanBox(box)
+  if (!b || b.w < 0.02 || b.h < 0.02) throw new Error('that area is too small to work on')
+  const { meta, crop } = await lassoCrop(src, sent)
+  const r4 = n => Math.round(n * 10000) / 10000
+  const c = crop || { x: 0, y: 0, w: 1, h: 1 }
+  // where the area sits in the recording's own frame, before the crop: the fractions
+  // frameAt takes, and the pixels the agent reads
+  const sub = { x: c.x + c.w * b.x, y: c.y + c.h * b.y, w: c.w * b.w, h: c.h * b.h }
+  const px = {
+    x: Math.round(meta.width * sub.x), y: Math.round(meta.height * sub.y),
+    w: Math.round(meta.width * sub.w), h: Math.round(meta.height * sub.h),
+  }
+  // frameAt's own name is keyed on the path and the time alone, so the Elements pass
+  // for this same moment writes that very file. The picture is named before ffmpeg
+  // runs rather than renamed after, because renaming afterwards races a pass that is
+  // still reading it, and either the region gets the whole frame or the Elements
+  // binary gets nothing.
+  const shot = path.join(os.tmpdir(), `fetch-region-${path.parse(src).name}-${Date.now().toString(36)}.jpg`)
+  const f = await proc.frameAt(src, at, 1600, sub, shot)
+  const region = agentBridge.noteRegion(src, {
+    id: null, path: src, at: f.at,
+    box: { x: r4(b.x), y: r4(b.y), w: r4(b.w), h: r4(b.h) }, px,
+    source: { width: meta.width, height: meta.height }, crop,
+    element: element || null, kind: REGION_KINDS.includes(kind) ? kind : 'free',
+    label: String(label || 'Area').slice(0, 40), image: f.file, made: Date.now(),
+  })
+  return region
+})
+
+ipcMain.handle('lasso-drop', (e, { path: src, id } = {}) => agentBridge.forgetRegion(src, id))
 // The in-app chat. Runs on the person's own Claude Code or Codex, so events stream
 // back from a real CLI rather than from any model Fetch talks to itself.
 // Everything the pane shows is also written to userData/chat.jsonl, so the thread is
 // still there after a restart (ui/chat-log.js).
 ipcMain.on('chat-send', (e, payload) => {
   const d = (payload && payload.display) || {}
-  chatLog.append({ kind: 'user', text: d.text || '', tags: d.tags || [], attachments: d.attachments || [] })
+  // the lassoed areas ride with the message, so the chips are still on the bubble
+  // after a restart
+  chatLog.append({ kind: 'user', text: d.text || '', tags: d.tags || [], attachments: d.attachments || [], regions: d.regions || [] })
   const reply = ev => {
     chatLog.append(ev)
     try { e.sender.send('chat-event', ev) } catch {}

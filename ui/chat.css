@@ -279,6 +279,48 @@
 .chat-tag button:hover { opacity:1; background:rgba(240,169,60,.2); }
 .chat-tag button svg { width:10px; height:10px; }
 
+/* an area lassoed on the stage, which points at one thing in the picture. The gold
+   chip idiom again: the person drew this, and Fetch did not infer it. The id is on
+   the chip at rest, because it is the handle the agent is given. */
+.chat-region { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:var(--s-2); }
+.chat-region[hidden] { display:none; }
+.chat-region-chip {
+  display:inline-flex; align-items:center; max-width:100%;
+  height:26px; padding:0 4px 0 4px; border-radius:var(--r-pill);
+  background:rgba(240,169,60,.12); border:1px solid rgba(240,169,60,.32);
+  font-size:var(--t-11); color:var(--fur-0);
+}
+.chat-region-go {
+  display:inline-flex; align-items:center; gap:7px; min-width:0; max-width:100%;
+  height:100%; padding:0 5px 0 0; border-radius:var(--r-pill); color:inherit;
+}
+.chat-region-go img {
+  width:18px; height:18px; flex:none; border-radius:var(--r-sm);
+  object-fit:cover; background:var(--ink-2); display:block;
+}
+.chat-region-lab { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fur-0); }
+.chat-region-at, .chat-region-id { flex:none; font-size:var(--t-11); color:var(--text-2); }
+.chat-region-go:hover .chat-region-id { color:var(--fur-1); }
+.chat-region-go:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
+.chat-region-x {
+  display:grid; place-items:center; width:18px; height:18px; flex:none;
+  border-radius:50%; color:var(--fur-1); opacity:.7;
+  transition:opacity var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in);
+}
+.chat-region-x:hover { opacity:1; background:rgba(240,169,60,.2); }
+.chat-region-x:active { background:rgba(240,169,60,.3); }
+.chat-region-x svg { width:10px; height:10px; }
+
+/* after sending, the areas stay on the message they went with */
+.chat-me-regions { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+.chat-me-regions span {
+  display:inline-flex; align-items:center; gap:5px;
+  font-size:var(--t-11); color:var(--fur-0); padding:2px 8px 2px 2px; border-radius:var(--r-pill);
+  background:rgba(240,169,60,.14);
+}
+.chat-me-regions img { width:16px; height:16px; border-radius:8px; object-fit:cover; background:var(--ink-2); }
+.chat-me-regions .mono { color:var(--text-2); }
+
 /* the recording open in the editor, which goes along with every message until removed */
 #chatOn { margin-bottom:var(--s-2); }
 #chatOn[hidden] { display:none; }

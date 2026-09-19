@@ -13,6 +13,7 @@ const ed = {
   audioTrack: null,   // {file, name, volume, offset, replace, peaks}
   cam: null,          // camera take: {file, x, y, size, ...} when one was recorded
   tab: 'trim',
+  lasso: false,       // the lasso armed, so a drag on the stage points Biscuit at an area
 }
 
 const EDITOR_HTML = `
@@ -39,6 +40,8 @@ const EDITOR_HTML = `
       <button class="pc" id="edRedo" data-tip="Redo (⇧⌘Z)" aria-label="Redo" disabled>${ico('arrow-clockwise', 'icon-sm')}</button>
       <button class="btn btn-sm btn-ghost ed-undo-agent" id="edUndoAgent" hidden
         data-tip="Put the edit back how it was before Biscuit changed it">${ico('arrow-counter-clockwise', 'icon-sm')}<span class="ed-lbl">Undo Biscuit's change</span></button>
+      <button class="pc ed-lasso" id="edLasso" aria-pressed="false" aria-label="Lasso an area for Biscuit"
+        data-tip="Lasso an area for Biscuit">${ico('selection', 'icon-sm')}</button>
       <button class="btn btn-sm ed-ask" id="edAsk" aria-pressed="false" data-tip="Ask for an edit in plain words">
         <img class="ed-ask-dog" src="./assets/mascot/idle.png" alt=""><span class="ed-lbl">Ask Biscuit</span><kbd class="ed-kbd mono">⌘J</kbd></button>
     </div>
@@ -609,6 +612,7 @@ document.addEventListener('keydown', e => {
 // ── wiring ──────────────────────────────────────────────────────────────
 function wireEditor() {
   const v = $('edVideo')
+  wireLasso()
 
   $('inspTabs').onclick = e => {
     const b = e.target.closest('button[data-tab]'); if (!b) return
@@ -616,6 +620,9 @@ function wireEditor() {
     document.querySelectorAll('#inspTabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)))
     document.querySelectorAll('.insp-panel').forEach(p => { p.hidden = p.dataset.panel !== ed.tab })
     $('cropBox').hidden = !(ed.tab === 'crop' && ed.crop)
+    // the crop handles own the gesture on their tab, and the compositor stage is off
+    // there, so the lasso has nothing to pick against
+    if (ed.tab === 'crop') setLasso(false)
     // the Crop tab shows the whole recording, every other tab the crop, as exported
     try { paintBackdrop(); paintCrop(); paintCaption() } catch {}
     paintOverlays()   // the zoom preview steps aside on the Crop tab
@@ -1337,6 +1344,7 @@ window.editorCloseIfGone = () => {
   const v = $('edVideo')
   if (v) { v.pause(); v.removeAttribute('src'); v.load() }
   ed.src = null; ed.docReady = false; ed.meta = null; ed.cam = null; ed.audioTrack = null
+  setLasso(false); clearBand()
   const mount = $('editorMount')
   mount.className = 'empty'
   mount.innerHTML = `<img class="biscuit biscuit-lg" src="./assets/mascot/sad.png" alt="">
@@ -2643,7 +2651,7 @@ function stageGLBox(frame, v, spec) {
 function paintStageGL({ fresh = false, upload = false, t = null } = {}) {
   const frame = $('stageFrame'), v = $('edVideo'), cv = $('stageGL')
   if (!frame || !v || !cv || stageGL === false) return
-  const off = () => { if (frame.dataset.gl === 'on') { frame.dataset.gl = 'off'; paintCam() } }
+  const off = () => { if (lassoBand) lassoBand.hidden = true; if (frame.dataset.gl === 'on') { frame.dataset.gl = 'off'; paintCam() } }
   // stepped aside (the Crop tab, a lost context): the frame it holds goes stale, so the
   // next paint uploads the <video>'s frame again
   if (ed.tab === 'crop' || !v.videoWidth || cv._lost) { if (stageGL) stageGL.ready = false; return off() }
@@ -2697,6 +2705,9 @@ function paintStageGL({ fresh = false, upload = false, t = null } = {}) {
     if (!comp.render(spec, fp, { cropUV: [c.x / s.w, c.y / s.h, c.w / s.w, c.h / s.h], cam, camUV, n: Math.round(tOut * spec.fps) })) return
     comp.present()
     if (frame.dataset.gl !== 'on') { frame.dataset.gl = 'on'; paintCam() }
+    // the lasso's band rides the same geometry, so it follows a zoom, a title card
+    // and a resize without being told about any of them
+    paintLasso()
   } catch (e) {
     // no WebGL2, or a shader this machine cannot build: the CSS stage stays
     console.warn('stage canvas off:', e && e.message)
@@ -2718,4 +2729,270 @@ function armStageGL(v) {
   for (const ev of ['loadeddata', 'seeked', 'pause']) v.addEventListener(ev, () => paintStageGL({ upload: true }))
   const cb = $('camBubble')
   if (cb) cb.addEventListener('seeked', () => { if (v.paused) paintStageGL() })
+}
+
+// ── the lasso ───────────────────────────────────────────────────────────
+// Drag a rectangle over the picture and it snaps to the element under it, then goes
+// to the chat as a chip. It writes nothing to the edit: the lasso points, the agent
+// makes the mark, and the button that is already there undoes it.
+//
+// Nothing is written to the document while the button is held either. A doc change
+// per frame re-keys stageGLSpec and rebuilds the whole plan, so the band is one div
+// laid over the stage and the geometry is read, never stored.
+const Pick = require('./ui/stage-pick')
+const Targets = require('./ui/targets')
+
+const LASSO_NEAR = 0.5           // a box drawn at 12 s means nothing at 40 s
+const LASSO_ELS = 8              // moments of elements kept in hand
+
+let lassoDrag = null             // { from, to, at, box, element, kind, label } while held
+let lassoBand = null             // the rubber band, one div inside #stageFrame
+let lassoShown = null            // the region the band is standing for, once it is made
+let lassoAsk = null              // the debounce behind a settled video
+let lassoOnce = false            // window-level wiring, which outlives one open take
+let lassoBlurOnce = false        // the same, for the drag a lost mouseup would strand
+const lassoEls = new Map()       // `${path}|${at}` -> the elements at that moment
+
+function setLasso(on) {
+  ed.lasso = !!on
+  const b = $('edLasso'), frame = $('stageFrame')
+  if (b) b.setAttribute('aria-pressed', String(ed.lasso))
+  if (frame) { if (ed.lasso) frame.dataset.lasso = 'on'; else delete frame.dataset.lasso }
+  clearTimeout(lassoAsk)
+  if (ed.lasso) askElements()
+  else if (lassoDrag) { endLasso(); clearBand() }
+}
+
+function wireLasso() {
+  const frame = $('stageFrame'), v = $('edVideo')
+  if (!frame || !v) return
+  if ($('edLasso')) $('edLasso').onclick = () => setLasso(!ed.lasso)
+  // the bubble phase: the camera, the caption and the text layers stop their own
+  // drags from getting this far, so they keep them for free
+  frame.addEventListener('mousedown', lassoDown)
+  // the elements for the moment on screen, once the video settles on one
+  const settle = () => {
+    if (!ed.lasso) return
+    clearTimeout(lassoAsk)
+    lassoAsk = setTimeout(() => askElements(), 300)
+  }
+  for (const ev of ['seeked', 'pause']) v.addEventListener(ev, settle)
+  endLasso(); lassoBand = null; lassoShown = null
+  setLasso(false)                // every take opens with the tool off
+  if (!lassoBlurOnce) { lassoBlurOnce = true; window.addEventListener('blur', lassoCancel) }
+  // the chat pane installs window.fetchLasso as it builds, so this waits for it
+  if (lassoOnce || !window.fetchLasso) return
+  lassoOnce = true
+  // the band belongs to its chip: when the chip goes, so does it
+  window.fetchLasso.onDrop(id => { if (lassoShown && lassoShown.id === id) clearBand() })
+  // clicking the chip comes back to the moment the area was drawn at
+  window.addEventListener('fetch:region-show', e => showRegion(e.detail))
+}
+
+// the crop is in the key: move the handles and the same moment holds different
+// elements, measured in a different frame
+const lassoKey = (path, at, crop) =>
+  `${path}|${at.toFixed(1)}|${crop ? [crop.x, crop.y, crop.w, crop.h].map(n => n.toFixed(4)).join(',') : ''}`
+
+// The Elements pass takes about a second, so it is asked for as soon as the tool is
+// armed and again on mousedown when this moment is not in hand. A drag that starts
+// before the answer lands is free form and begins snapping the moment it arrives.
+async function askElements(at) {
+  const path = ed.src, v = $('edVideo')
+  if (!ed.lasso || !path || !v) return []
+  at = at != null ? at : v.currentTime
+  const g = lassoGeom()
+  const crop = g ? g.crop : null
+  const key = lassoKey(path, at, crop)
+  if (lassoEls.has(key)) return lassoEls.get(key)
+  let r = null
+  try { r = await ipcRenderer.invoke('lasso-elements', { path, at, crop }) } catch {}
+  const els = (r && r.elements) || []
+  lassoEls.set(key, els)
+  if (lassoEls.size > LASSO_ELS) lassoEls.delete(lassoEls.keys().next().value)
+  return els
+}
+
+// What is known about the moment being drawn on. Empty until the pass lands, which
+// is the whole loading story: no spinner, no blocking, no modal.
+function elementsNow(g) {
+  const v = $('edVideo')
+  if (!v || !ed.src) return []
+  return lassoEls.get(lassoKey(ed.src, lassoDrag ? lassoDrag.at : v.currentTime, g ? g.crop : null)) || []
+}
+
+// Where the take is on the stage at this moment: its rect (moved, if a title card has
+// lifted it), the window margin trimmed inside it, and the zoom in force. Plan.viewAt
+// rather than fp.view0, which with motion blur is half a shutter early.
+function lassoGeom() {
+  const frame = $('stageFrame'), v = $('edVideo'), cv = $('stageGL')
+  if (!frame || !v || !cv || !stageGL || !stageGL.spec || frame.dataset.gl !== 'on') return null
+  const Plan = require('./ui/compositor/plan')
+  const spec = stageGL.spec
+  const tOut = stageGL.clock(v.currentTime)
+  const fp = Plan.framePlan(spec, tOut)
+  return { spec, cv, W: spec.W, H: spec.H, inner: spec.inner, crop: lassoCropOf(spec),
+    rect: Pick.movedRect(spec.rect, fp.move), view: Plan.viewAt(spec, tOut) }
+}
+
+// The crop the stage is drawing, in fractions of the recording. It travels with the
+// box, because main reads the crop from the document on disk and the autosave is up
+// to 400 ms behind the handles (:591): a box measured in one crop and read in another
+// points at the wrong part of the picture.
+function lassoCropOf(spec) {
+  const c = spec && spec.crop, s = spec && spec.src
+  if (!c || !s || !(s.w > 0 && s.h > 0 && c.w > 0 && c.h > 0)) return null
+  const box = { x: c.x / s.w, y: c.y / s.h, w: c.w / s.w, h: c.h / s.h }
+  return box.x === 0 && box.y === 0 && box.w >= 1 && box.h >= 1 ? null : box
+}
+
+function bandEl() {
+  if (lassoBand && lassoBand.isConnected) return lassoBand
+  const frame = $('stageFrame')
+  if (!frame) return null
+  lassoBand = document.createElement('div')
+  lassoBand.className = 'lasso-box'
+  lassoBand.innerHTML = '<span class="lasso-tag"></span>'
+  frame.appendChild(lassoBand)
+  return lassoBand
+}
+
+// A box of the cropped frame, as a rectangle inside #stageFrame. The canvas's own
+// offset and CSS size carry the stage's scale, so no device pixel ratio comes into it.
+function placeBand(g, box, tag) {
+  const el = bandEl()
+  if (!el) return
+  const a = Pick.fromFrac(box, g)
+  const b = Pick.fromFrac({ x: box.x + box.w, y: box.y + box.h }, g)
+  const kx = g.cv.offsetWidth / g.W, ky = g.cv.offsetHeight / g.H
+  const top = g.cv.offsetTop + a.y * ky
+  Object.assign(el.style, {
+    left: (g.cv.offsetLeft + a.x * kx) + 'px', top: top + 'px',
+    width: Math.max(1, (b.x - a.x) * kx) + 'px', height: Math.max(1, (b.y - a.y) * ky) + 'px',
+  })
+  // no room above for the label near the top of the frame, so it drops inside
+  el.classList.toggle('tag-in', top < 26)
+  if (tag != null) el.firstChild.innerHTML = tag
+  el.hidden = false
+}
+
+function clearBand() {
+  if (lassoBand) lassoBand.remove()
+  lassoBand = null; lassoShown = null
+}
+
+// The band that is already made, kept true to the picture. It hides away from the
+// moment it was drawn at, because a box at 12 s means nothing at 40.
+function paintLasso() {
+  if (!lassoBand || lassoDrag) return
+  const v = $('edVideo')
+  if (!lassoShown || !v) return
+  const g = Math.abs(v.currentTime - lassoShown.at) > LASSO_NEAR ? null : lassoGeom()
+  if (!g) { lassoBand.hidden = true; return }
+  placeBand(g, lassoShown.box)
+}
+
+const bandTag = (id, label) => '<span class="lasso-id mono">' + escHtml(id) + '</span>' +
+  (label ? '<span class="lasso-what">' + escHtml(label) + '</span>' : '')
+
+// Back to the moment a chip was drawn at, with its band on the picture again.
+function showRegion(r) {
+  if (!r || r.path !== ed.src) return
+  seek(r.at)
+  lassoShown = r
+  const el = bandEl()
+  if (el) { el.classList.add('is-set'); el.firstChild.innerHTML = bandTag(r.id, r.label) }
+  paintLasso()
+}
+
+function lassoDown(e) {
+  if (!ed.lasso || e.button !== 0 || ed.tab === 'crop') return
+  // a caption being typed into owns its own clicks: its span lets them through so the
+  // caret can land, and preventDefault here would stop the caret moving at all
+  if (e.target.closest && e.target.closest('[data-editing="true"]')) return
+  const g = lassoGeom()
+  if (!g) return
+  const f = Pick.toFrac(Pick.toOutput({ x: e.clientX, y: e.clientY }, g.cv.getBoundingClientRect(), g.spec), g)
+  if (!f) return                   // the backdrop, not the take: nothing to point at
+  e.preventDefault()
+  clearBand()
+  lassoDrag = { from: f, to: f, at: $('edVideo').currentTime, crop: g.crop,
+    box: null, element: null, kind: 'free', label: '' }
+  askElements(lassoDrag.at)
+  document.addEventListener('mousemove', lassoMove)
+  document.addEventListener('mouseup', lassoUp)
+  document.addEventListener('keydown', lassoEscape, true)
+  lassoMove(e)
+}
+
+function lassoMove(e) {
+  if (!lassoDrag) return
+  // the mouseup was swallowed by something else, so the band was following a pointer
+  // with no button held. The rectangle is drawn, so finish it rather than lose it.
+  if (e.type === 'mousemove' && !e.buttons) { lassoUp(); return }
+  const g = lassoGeom()
+  if (!g) return
+  const p = Pick.toOutput({ x: e.clientX, y: e.clientY }, g.cv.getBoundingClientRect(), g.spec)
+  // a drag that runs off the take keeps going, held at the edge of the picture
+  const to = Pick.toFrac({ x: Math.min(Math.max(p.x, g.rect.x), g.rect.x + g.rect.w),
+    y: Math.min(Math.max(p.y, g.rect.y), g.rect.y + g.rect.h) }, g)
+  if (to) lassoDrag.to = to
+  const drawn = Pick.clampBox(Pick.rectOf(lassoDrag.from, lassoDrag.to))
+  if (!drawn) return
+  // snapping is judged fresh on every move: the band either sits on an element or is
+  // exactly what was drawn, and the jump between the two is instant
+  const els = elementsNow(g)
+  const snap = els.length ? Targets.snapBox(drawn, els) : null
+  const got = snap && snap.box ? snap : { box: drawn, element: null, kind: 'free' }
+  lassoDrag.box = got.box
+  lassoDrag.element = got.element || null
+  lassoDrag.kind = got.kind || 'free'
+  lassoDrag.label = Targets.regionLabel(got.box, els, lassoDrag.element)
+  placeBand(g, got.box, lassoDrag.element ? bandTag(lassoDrag.element, lassoDrag.label) : 'Free')
+}
+
+function lassoEscape(e) {
+  if (e.key !== 'Escape' || !lassoDrag) return
+  e.preventDefault(); e.stopPropagation()
+  lassoCancel()
+}
+
+// Cmd+Tab or Mission Control mid-drag: the mouseup goes to whatever took the window,
+// so the drag is dropped here rather than left live behind them.
+function lassoCancel() {
+  if (!lassoDrag) return
+  endLasso(); clearBand()
+}
+
+function endLasso() {
+  lassoDrag = null
+  document.removeEventListener('mousemove', lassoMove)
+  document.removeEventListener('mouseup', lassoUp)
+  document.removeEventListener('keydown', lassoEscape, true)
+}
+
+async function lassoUp() {
+  const d = lassoDrag
+  endLasso()
+  if (!d || !d.box) { clearBand(); return }
+  // under two percent either way a drag was a click, which is how the stage keeps its
+  // ordinary clicks
+  if (Pick.tooSmall(d.box)) { clearBand(); toast('That area is too small to work on. Drag a bigger one.', 'bad'); return }
+  const path = ed.src
+  let region = null
+  try {
+    region = await ipcRenderer.invoke('lasso-region',
+      // the crop the band was drawn inside travels with the box, so main never reads
+      // a stale one off disk mid-autosave
+      { path, at: d.at, box: d.box, element: d.element, kind: d.kind, label: d.label, crop: d.crop })
+  } catch (err) {
+    clearBand()
+    toast(escHtml(String((err && err.message) || 'that area could not be read').replace(/^.*Error: /, '')), 'bad')
+    return
+  }
+  if (!region || ed.src !== path) { clearBand(); return }
+  lassoShown = region
+  const el = bandEl()
+  if (el) { el.classList.add('is-set'); el.firstChild.innerHTML = bandTag(region.id, region.label) }
+  if (window.fetchLasso) window.fetchLasso.add(region)
 }

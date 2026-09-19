@@ -296,6 +296,7 @@
         <div class="chat-mention" id="chatMention" hidden></div>
         <div class="chat-on-row" id="chatOn" hidden></div>
         <div class="chat-ctx" id="chatCtx" hidden></div>
+        <div class="chat-region" id="chatRegion" hidden></div>
         <div class="att-tray" id="chatAtt" hidden></div>
         <textarea id="chatInput" rows="1" placeholder="Ask anything, or type @ to point at a recording"></textarea>
         <div class="chat-foot">
@@ -326,9 +327,9 @@
       paintOn()
       input.focus()
     })
-    window.addEventListener('fetch:editor-open', () => { ctxOff = false; paintOn(); paintIntro() })
-    window.addEventListener('fetch:editor-ready', () => { paintOn(); paintIntro() })
-    window.addEventListener('fetch:editor-closed', () => { paintOn(); paintIntro() })
+    window.addEventListener('fetch:editor-open', () => { ctxOff = false; paintOn(); paintIntro(); paintRegions() })
+    window.addEventListener('fetch:editor-ready', () => { paintOn(); paintIntro(); paintRegions() })
+    window.addEventListener('fetch:editor-closed', () => { paintOn(); paintIntro(); paintRegions() })
     // The take is context only while its editor is the view on screen. Leaving it for
     // the Record screen or the Library takes the chip, and the edit chips, with it.
     const edView = document.querySelector('.view[data-view="editor"]')
@@ -357,6 +358,13 @@
     pane.querySelector('#chatCtx').addEventListener('click', e => {
       const x = e.target.closest('[data-untag]')
       if (x) { tags.splice(+x.dataset.untag, 1); paintTags() }
+    })
+    pane.querySelector('#chatRegion').addEventListener('click', e => {
+      const x = e.target.closest('[data-unregion]')
+      if (x) { dropRegion(+x.dataset.unregion); input.focus(); return }
+      // the chip goes back to the moment the area was drawn at, band and all
+      const go = e.target.closest('[data-region]')
+      if (go) window.dispatchEvent(new CustomEvent('fetch:region-show', { detail: regions[+go.dataset.region] }))
     })
     wireAttach(input, pane.querySelector('#chatForm'))
     enginePill.onclick = () => openPicker(enginePill)
@@ -446,6 +454,71 @@
         '<span>' + esc(t.name) + '</span>' +
         '<button type="button" data-untag="' + i + '" aria-label="Remove">' + ico('x', 'icon-sm') + '</button>' +
       '</span>').join('')
+  }
+
+  // ── lassoed areas ──────────────────────────────────────────────────────
+  // The person drags a rectangle over the picture in the editor and it lands here as
+  // a chip: what is in it, when it is, and the id the agent aims at. Gold, like the @
+  // chips, because the person chose this and did not have it inferred.
+  //
+  // ui/editor.js draws the band on the stage and mints the region through main; this
+  // is the other half of the same feature, sharing one window rather than an IPC hop.
+  const MAX_REGIONS = 8
+  let regions = []
+  let regionGone = []            // the editor's listeners, so the band goes with the chip
+
+  window.fetchLasso = {
+    add(region) {
+      if (!region || !region.id || regions.some(r => r.id === region.id)) return
+      regions.push(region)
+      if (regions.length > MAX_REGIONS) regions.shift()
+      paintRegions()
+      if (!state.open) toggle(true)
+      else input.focus()
+    },
+    drop(id) { dropRegion(regions.findIndex(r => r.id === id)) },
+    list() { return regions.slice() },
+    onDrop(fn) { if (typeof fn === 'function') regionGone.push(fn) },
+  }
+
+  // Taking the chip back takes the area back: the agent must not be able to aim at an
+  // area the person removed from the message.
+  function dropRegion(i) {
+    const r = regions[i]
+    if (!r) return
+    regions.splice(i, 1)
+    paintRegions()
+    ipcRenderer.invoke('lasso-drop', { path: r.path, id: r.id }).catch(() => {})
+    for (const fn of regionGone) { try { fn(r.id) } catch {} }
+  }
+
+  const atText = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}.${Math.floor(t * 10) % 10}`
+
+  function regionHtml(r, i) {
+    return '<span class="chat-region-chip">' +
+      '<button type="button" class="chat-region-go" data-region="' + i + '" ' +
+        'title="Show this area in the editor">' +
+        '<img src="' + esc(fileUrl(r.image)) + '" alt="">' +
+        '<span class="chat-region-lab">' + esc(r.label) + '</span>' +
+        '<span class="chat-region-at mono">' + atText(r.at) + '</span>' +
+        '<span class="chat-region-id mono">' + esc(r.id) + '</span>' +
+      '</button>' +
+      '<button type="button" class="chat-region-x" data-unregion="' + i + '" ' +
+        'aria-label="Take this area off the message" title="Take this area off the message">' +
+        ico('x', 'icon-sm') + '</button>' +
+    '</span>'
+  }
+
+  function paintRegions() {
+    const host = pane && pane.querySelector('#chatRegion')
+    if (!host) return
+    // a chip points at a moment of one recording. With another take open, or none,
+    // there is nothing on screen for it to point at, so it goes. The area itself
+    // stays in the app, so "now lift R1" in the next message still lands.
+    const src = currentSrc()
+    if (regions.some(r => r.path !== src)) regions = regions.filter(r => r.path === src)
+    host.hidden = !regions.length
+    host.innerHTML = regions.map(regionHtml).join('')
   }
 
   // ── dictation ──────────────────────────────────────────────────────────
@@ -604,7 +677,13 @@
     // what was tagged stays visible on the message it went with
     const tagLine = sentTags.length
       ? '<div class="chat-me-tags">' + sentTags.map(t => '<span>@' + esc(t.name) + '</span>').join('') + '</div>' : ''
-    add((sentAtt.length ? `<div class="chat-me-att">${thumbs}</div>` : '') + (typed ? esc(typed) : '') + tagLine,
+    // and so does what was lassoed, with the id the agent was told to aim at
+    const sentRegions = msg.regions || []
+    const regionLine = sentRegions.length
+      ? '<div class="chat-me-regions">' + sentRegions.map(r =>
+        '<span><img src="' + esc(fileUrl(r.image)) + '" alt="">' + esc(r.label) +
+        '<span class="mono">' + esc(r.id) + '</span></span>').join('') + '</div>' : ''
+    add((sentAtt.length ? `<div class="chat-me-att">${thumbs}</div>` : '') + (typed ? esc(typed) : '') + tagLine + regionLine,
       'chat-msg chat-me' + (typed ? '' : ' chat-me-only-att'))
   }
 
@@ -620,7 +699,11 @@
     // the chips were for this message; the conversation remembers them from here
     const sentTags = tags.slice()
     tags = []; paintTags()
-    const display = { text: typed, tags: sentTags, attachments: sentAtt }
+    // the lassoed areas go with this message and no other: the agent is told about
+    // them once, and the chips leave the composer as the message does
+    const sentRegions = regions.slice()
+    regions = []; paintRegions()
+    const display = { text: typed, tags: sentTags, attachments: sentAtt, regions: sentRegions }
     renderUser(display)
     input.value = ''; grow()
     startTurn()
@@ -629,7 +712,7 @@
     // The open take is what "this" means, not what "my latest" means, and a resumed
     // session must not answer either from memory.
     turn.pending = true
-    let prompt = (await contextHeader()) + '\n\n' + text
+    let prompt = (await contextHeader(sentRegions)) + '\n\n' + text
     // Tagged recordings travel as exact paths, so the agent acts on the file that was
     // pointed at rather than one it guessed from a description.
     if (sentTags.length) {
@@ -641,12 +724,14 @@
     if (turn.stopped) { render({ kind: 'done', ok: false, cancelled: true }); return }
 
     const pick = state.pick && state.pick.engine === state.engine ? state.pick : {}
+    // a region's picture is an image like any other, so it rides the path attachments
+    // already take rather than inventing a second one
     ipcRenderer.send('chat-send', { engine: state.engine, model: pick.model, effort: pick.effort, prompt,
-      attachments: sentAtt.map(a => a.path), display })
+      attachments: sentAtt.map(a => a.path).concat(sentRegions.map(r => r.image)), display })
   }
 
   // Read fresh on every send, never cached: the whole point is that it is current.
-  async function contextHeader() {
+  async function contextHeader(sent = []) {
     const src = contextSrc()
     let open = null
     if (src) {
@@ -654,7 +739,7 @@
       try { if (window.ed && window.ed.docReady) doc = window.fetchDoc.get() } catch {}
       open = { path: src, dur: window.ed && window.ed.dur, doc }
     }
-    return Assist.contextHeader({ open, omitted: !src && ctxOff && !!currentSrc() && editorShown() })
+    return Assist.contextHeader({ open, omitted: !src && ctxOff && !!currentSrc() && editorShown(), regions: sent })
   }
 
   // ── a turn in progress ─────────────────────────────────────────────────

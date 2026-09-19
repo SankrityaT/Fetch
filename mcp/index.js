@@ -283,13 +283,20 @@ function build() {
         'pointer, which never sees clicks a driver injects into a page (Playwright ' +
         'page.mouse, anything over CDP). pointer.autoZoomSpots in the result says how many it found; ' +
         'at 0, place zooms yourself.\n' +
-        'Returns the full edit as it now stands.',
+        'Returns the full edit as it now stands. The result\'s preview is a frame of the edit at that moment; look at it.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
         doc: z.record(z.string(), z.any()).describe('Only the parts of the edit you are changing.'),
       }),
     },
-    async args => text(await drive('edit.apply', args, { timeoutMs: 60000 })))
+    async args => {
+      // a still of the edit is drawn inside this call, so it takes longer than the rest
+      const r = await drive('edit.apply', args, { timeoutMs: 90000 })
+      const out = text(r)
+      const shot = r && r.preview && r.preview.image
+      if (shot) try { out.content.push({ type: 'image', mimeType: 'image/jpeg', data: readFileSync(shot).toString('base64') }) } catch {}
+      return out
+    })
 
   server.registerTool(
     'export',
