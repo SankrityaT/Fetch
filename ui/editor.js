@@ -22,6 +22,7 @@ const EDITOR_HTML = `
     <div class="ed-canvas" id="edCanvas">
       <div class="stage-frame" id="stageFrame" data-bd="none">
         <video id="edVideo" preload="auto"></video>
+        <canvas class="stage-gl" id="stageGL" aria-hidden="true"></canvas>
         <div class="cap-overlay" id="capOverlay"><span></span></div>
         <video class="cam-bubble" id="camBubble" muted playsinline hidden></video>
       </div>
@@ -456,6 +457,7 @@ async function openInEditor(src) {
   const v = $('edVideo')
   // a take named from a window title can hold # or %, which a bare file:// URL misreads
   v.src = 'file://' + encodeURI(src).replace(/#/g, '%23').replace(/\?/g, '%3F')
+  armStageGL(v)
   ed.meta = await ipcRenderer.invoke('probe', src)
 
   // MediaRecorder webm has no duration header, so seek past the end to force one
@@ -504,8 +506,14 @@ async function openInEditor(src) {
   }
   ed.docReady = true
   startDocAutosave(src)
-  ed.windowCorner = 0
-  ipcRenderer.invoke('window-corner', src, ed.dur, ed.crop).then(c => { if (ed.src === src) { ed.windowCorner = +c || 0; paintBackdrop() } }).catch(() => {})
+  ed.windowCorner = 0; ed.gutter = null
+  // the window's own margin and corner, which the export trims and rounds to (the stage's
+  // canvas draws the same), measured once
+  ipcRenderer.invoke('frame-gutter', src, ed.dur, ed.crop).then(g => {
+    if (ed.src !== src) return
+    ed.gutter = g || null; ed.windowCorner = (g && +g.corner) || 0; paintBackdrop()
+  }).catch(() => {})
+  ipcRenderer.send('render-warm')
   // the chat's edit suggestions are picked from the saved edit, which only exists now
   window.dispatchEvent(new CustomEvent('fetch:editor-ready', { detail: { src } }))
 
@@ -1892,7 +1900,7 @@ function paintBackdrop() {
       frame.style.height = ''; frame.style.width = ''
       fitVideoToStage(v)
     }
-    renderTexts(); paintCam()
+    renderTexts(); paintCam(); paintStageGL({ fresh: true })
     return
   }
   frame.dataset.bd = ed.backdrop
@@ -1935,6 +1943,7 @@ function paintBackdrop() {
   v.style.boxShadow = `0 18px 44px -12px rgba(0,0,0,${Math.min(1, 1.25 * (ed.look ? ed.look.frame.shadow : 0.6)).toFixed(2)})`
   setTimeout(() => { try { renderTexts(); paintCaption() } catch {} }, 0)
   renderTexts()
+  paintStageGL({ fresh: true })
 }
 
 function paintSwatches() {
@@ -2132,6 +2141,8 @@ function paintZoom(t, pic) {
   if (layer) {
     layer.style.transform = box && pic ? `scale(${1 / box.k}) translate(${-box.x * pic.w}px, ${-box.y * pic.h}px)` : ''
   }
+  // paused, an edit or a seek redraws the stage's canvas; playing, its own loop does
+  if (v.paused) paintStageGL({ fresh: true })
   if ((ed.zooms || []).length && !v.paused && !zoomLoop && v.requestVideoFrameCallback) {
     zoomLoop = true
     v.requestVideoFrameCallback((_, meta) => {
@@ -2309,6 +2320,9 @@ function syncCam() {
 function paintCam() {
   const box = $('camBubble'), v = $('edVideo'), frame = $('stageFrame')
   if (!box) return
+  // with the stage on the canvas this bubble is only the invisible handle: the one seen
+  // is drawn there, so a drag, the size slider or a corner has to redraw it
+  if (frame && frame.dataset.gl === 'on') queueMicrotask(() => paintStageGL({ fresh: true }))
   if (!ed.cam || !ed.cam.on) { box.hidden = true; return }
   const host = box.offsetParent || frame
   if (!v || !host) return
@@ -2561,4 +2575,116 @@ async function doExport(pick) {
     if (j.status === 'cancelled') { jobs.delete(cid); ov.close(); $('doExport').disabled = false }
   })
   return ipcRenderer.invoke('edit-job', { op: 'export', src: ed.src, opts, cid, jobId })
+}
+
+// ── the stage, drawn by the compositor ─────────────────────────────────────
+// The picture on the stage is the export's own renderer (ui/compositor/): one canvas,
+// fed each frame the <video> presents (requestVideoFrameCallback), drawn from the same
+// plan the export draws from, so the background, the corners, the shadow, a zoom and
+// the camera bubble are the file's pixels, not a CSS imitation of them. The <video>
+// stays in place at zero opacity (rVFC still fires, M0): it is what the caption,
+// text and mark layers and the handles are laid out against, and the camera bubble
+// stays a drag handle the same way. Fades draw only while playing, so a paused stage
+// at the first frame is not black. The Crop tab shows the whole recording, so the
+// canvas steps aside there. Without WebGL2 the old CSS stage is left as it was.
+var stageGL = null          // { comp, spec, key, clock, ready } once made; false if WebGL2 is missing
+
+function stageGLSpec(fresh) {
+  if (stageGL.spec && !fresh) return stageGL.spec
+  const v = $('edVideo')
+  const FD = require('./ui/fetchdoc')
+  const Plan = require('./ui/compositor/plan')
+  const Timeline = require('./ui/timeline')
+  const opts = FD.toExportOpts(window.fetchDoc.get())
+  const meta = { width: v.videoWidth, height: v.videoHeight, duration: ed.dur, fps: (ed.meta && ed.meta.fps) || 30 }
+  const ctx = { gutter: ed.gutter || null, imageFile: ed.backdropFile || null }
+  const key = JSON.stringify([opts, meta, ctx])
+  if (key !== stageGL.key) {
+    stageGL.key = key
+    stageGL.spec = Plan.prepare(opts, meta, ctx)
+    stageGL.clock = Timeline.outClock(opts.cuts, stageGL.spec.start, stageGL.spec.end)
+  }
+  return stageGL.spec
+}
+
+// Where the output sits on the stage: the frame when the look frames the take or picks
+// a shape, else the video's own box
+function stageGLBox(frame, v, spec) {
+  if (spec.framed || spec.bg.kind === 'blur') return { x: 0, y: 0, w: frame.clientWidth, h: frame.clientHeight }
+  return { x: v.offsetLeft, y: v.offsetTop, w: v.offsetWidth, h: v.offsetHeight }
+}
+
+function paintStageGL({ fresh = false, upload = false, t = null } = {}) {
+  const frame = $('stageFrame'), v = $('edVideo'), cv = $('stageGL')
+  if (!frame || !v || !cv || stageGL === false) return
+  const off = () => { if (frame.dataset.gl === 'on') { frame.dataset.gl = 'off'; paintCam() } }
+  // stepped aside (the Crop tab, a lost context): the frame it holds goes stale, so the
+  // next paint uploads the <video>'s frame again
+  if (ed.tab === 'crop' || !v.videoWidth || cv._lost) { if (stageGL) stageGL.ready = false; return off() }
+  try {
+    if (!stageGL || stageGL.canvas !== cv) {
+      // a fresh stage per take: the last one's context goes, or they pile up to the limit
+      if (stageGL && stageGL.comp) stageGL.comp.destroy()
+      const { Compositor } = require('./ui/compositor/gl')
+      stageGL = { canvas: cv, comp: new Compositor(2, 2, { canvas: cv }), spec: null, key: null, ready: false }
+      // only this canvas's own loss: destroying the last take's context fires one too,
+      // after the new stage is made. A lost canvas stays on the CSS stage; the next take
+      // gets a fresh canvas and tries again.
+      cv.addEventListener('webglcontextlost', () => { cv._lost = true; if (stageGL && stageGL.canvas === cv) { stageGL = null; off() } })
+    }
+    const spec = stageGLSpec(fresh)
+    const comp = stageGL.comp
+    if (spec.bg.kind === 'image' && spec.bg.file && !comp.images.has(spec.bg.file)) {
+      require('./ui/compositor').loadImage(spec.bg.file).then(img => { comp.setImage(spec.bg.file, img); comp.bgKey = null; paintStageGL() }).catch(() => {})
+    }
+    const box = stageGLBox(frame, v, spec)
+    if (!(box.w > 4 && box.h > 4)) return
+    Object.assign(cv.style, { left: box.x + 'px', top: box.y + 'px', width: box.w + 'px', height: box.h + 'px' })
+    // the stage's own pixels, never more than the file's
+    const dpr = window.devicePixelRatio || 1
+    const k = Math.min(1, (box.w * dpr) / spec.W)
+    comp.resize(spec.W * k, spec.H * k)
+    if (upload || !stageGL.ready) {
+      if (v.readyState < 2) return
+      comp.uploadImage('content', v, v.videoWidth, v.videoHeight)
+      stageGL.ready = true
+    }
+    const src = t != null ? t : v.currentTime
+    const tOut = stageGL.clock(src)
+    const fp = require('./ui/compositor/plan').framePlan(spec, tOut)
+    if (v.paused) fp.fade = 1
+    const s = spec.src, c = spec.crop
+    // the camera's own <video>, kept on the take's clock by syncCam
+    let cam = false, camUV = [0, 0, 1, 1]
+    const cb = $('camBubble')
+    if (spec.cam && cb && ed.cam && ed.cam.on !== false && fp.camT != null && cb.readyState >= 2 && cb.videoWidth) {
+      comp.uploadImage('cam', cb, cb.videoWidth, cb.videoHeight)
+      const a = cb.videoWidth / cb.videoHeight
+      camUV = a > 1 ? [(1 - 1 / a) / 2, 0, 1 / a, 1] : [0, (1 - a) / 2, 1, a]
+      cam = true
+    }
+    if (!comp.render(spec, fp, { cropUV: [c.x / s.w, c.y / s.h, c.w / s.w, c.h / s.h], cam, camUV, n: Math.round(tOut * spec.fps) })) return
+    comp.present()
+    if (frame.dataset.gl !== 'on') { frame.dataset.gl = 'on'; paintCam() }
+  } catch (e) {
+    // no WebGL2, or a shader this machine cannot build: the CSS stage stays
+    console.warn('stage canvas off:', e && e.message)
+    stageGL = false
+    off()
+  }
+}
+
+// One redraw per frame the <video> presents while it plays, and one after every seek
+function armStageGL(v) {
+  if (!v || v._stageGL) return
+  v._stageGL = true
+  const tick = (_now, meta) => {
+    if (!v.isConnected) return
+    paintStageGL({ upload: true, t: meta && meta.mediaTime })
+    if (!v.paused && v.requestVideoFrameCallback) v.requestVideoFrameCallback(tick)
+  }
+  v.addEventListener('play', () => { if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(tick) })
+  for (const ev of ['loadeddata', 'seeked', 'pause']) v.addEventListener(ev, () => paintStageGL({ upload: true }))
+  const cb = $('camBubble')
+  if (cb) cb.addEventListener('seeked', () => { if (v.paused) paintStageGL() })
 }

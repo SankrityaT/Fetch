@@ -300,7 +300,9 @@ function build() {
         'deliverable at the top of that folder, <Take>/<Take>.<format>, and exporting again ' +
         'overwrites it. An older recording on the Desktop gets a -edit copy beside it. Runs ' +
         'in the background queue, one export at a time, so it can take a while for a long ' +
-        'recording.',
+        'recording. engine in the result says which renderer drew it: gl (the compositor, ' +
+        'several times real time) or classic (ffmpeg, still used for edits with marks, text, ' +
+        'captions or the drawn cursor; classic_because names them).',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
         format: z.enum(['mp4', 'webm', 'gif', 'mov']).optional().describe('Defaults to mp4.'),

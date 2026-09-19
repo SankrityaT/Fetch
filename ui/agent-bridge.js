@@ -405,7 +405,9 @@ const ops = {
     const r = await deps.exportDoc(args.path, opts)
     const mb = r && r.file && require('fs').existsSync(r.file)
       ? +(require('fs').statSync(r.file).size / 1e6).toFixed(1) : null
-    return { path: r && r.file, mb, seconds: +FD.outDuration(doc).toFixed(2) }
+    // which renderer drew it: gl (the compositor) or classic, and what kept it classic
+    const engine = r && r.engine ? { engine: r.engine, ...(r.engine === 'classic' && r.why && r.why.length ? { classic_because: r.why } : {}) } : {}
+    return { path: r && r.file, mb, seconds: +FD.outDuration(doc).toFixed(2), ...engine }
   },
 
   // Rename through the same helper the Library uses, so sidecars (transcript, beats,
@@ -1055,6 +1057,10 @@ function logOp(op, ctx, t0, args, result, error) {
   else if (op === 'edit.enhance' && result) detail = result.path
   else if (op === 'recordings.trash' && result) detail = result.trashed
   else if (op === 'settings.set' && args && args.settings) detail = Object.keys(args.settings).join(', ')
+  else if (op === 'edit.export' && result && result.path) {
+    detail = result.engine === 'gl' ? `${result.path} · compositor`
+      : result.engine ? `${result.path} · classic renderer${result.classic_because ? ` (${result.classic_because.join(', ')})` : ''}` : result.path
+  }
 
   activity.record({
     op,

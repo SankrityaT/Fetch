@@ -2424,6 +2424,35 @@ function audioGraph({ hasAudio, denoise, loudnorm, gain, fadeIn = 0, fadeOut = 0
     `[base][extra]amix=inputs=2:duration=first:dropout_transition=0,alimiter=limit=0.95[amixed]` }
 }
 
+// The sound of an export on its own, for the compositor (ui/render-host.js), which draws
+// the picture elsewhere and muxes the two: the same kept ranges and the same audioGraph
+// as applyEdit, AAC at 48 kHz stereo, span seconds long. Resolves to out, or null when
+// there is no sound at all.
+async function renderAudio(srcArg, opts, keep, span, meta, out, jobId) {
+  const extra = opts.audioTrack && opts.audioTrack.file && fs.existsSync(opts.audioTrack.file) ? opts.audioTrack : null
+  if (!meta.hasAudio && !extra) return null
+  const hasCuts = (opts.cuts || []).some(c => Array.isArray(c) && c.length === 2)
+  const parts = []
+  if (meta.hasAudio) {
+    keep.forEach(([a, b], i) => parts.push(`[0:a]atrim=${a.toFixed(3)}:${b.toFixed(3)},asetpts=PTS-STARTPTS[ca${i}]`))
+    parts.push(keep.map((_, i) => `[ca${i}]`).join('') + `concat=n=${keep.length}:v=0:a=1[cuta]`)
+  }
+  const fadeIn = +opts.fadeIn > 0 ? +opts.fadeIn : 0
+  const fadeOut = +opts.fadeOut > 0 ? +opts.fadeOut : 0
+  // an added track follows the cuts only when there are cuts, as in applyEdit
+  const { af, extraGraph, extraMap } = audioGraph({
+    hasAudio: meta.hasAudio, denoise: opts.denoise, loudnorm: opts.loudnorm, gain: opts.gain,
+    fadeIn, fadeOut, span, extra, extraInput: 1, keep: hasCuts ? keep : null,
+    base: meta.hasAudio ? '[cuta]' : '[0:a]',
+  })
+  let map = '[aout]'
+  if (extraGraph) { parts.push(extraGraph); map = extraMap }
+  else parts.push(`[cuta]${af.length ? af.join(',') : 'anull'}[aout]`)
+  await run(FFMPEG, ['-y', '-i', srcArg, ...(extra ? ['-i', extra.file] : []), '-filter_complex', parts.join(';'),
+    '-map', map, '-t', span.toFixed(3), '-vn', ...AUDIO_OUT, ...WEB_AUDIO, out], null, jobId)
+  return out
+}
+
 async function applyEdit(srcArg, opts, onProgress, jobId) {
   // Say so plainly: a missing file used to surface as whichever check failed first
   if (!srcArg || !fs.existsSync(srcArg)) throw new Error(`No recording at ${srcArg}. It may have been renamed or deleted.`)
@@ -2985,5 +3014,7 @@ module.exports = {
   speechRegions, buildBeats, buildCues, beatsFromCursor, readCursor, readPointer, pointerTrack, macCursorSpans, cursorPlates, cursorEraseFilters,
   zoomMoments, zoomExpr, autoZoomFilter, explicitZoomFilter, focusFilters, outClock, backdropGeometry,
   readDoc, writeDoc, beatsFor,
+  // for the compositor's export (ui/render-host.js)
+  renderAudio, musicBed, register, unregister, run, FORMATS, imageBackdrops,
   fontList: () => Object.keys(FONT_FILES),
 }

@@ -390,47 +390,9 @@ const CAP_BAND = 0.12
 // Where a framed video sits on its backdrop: the canvas, the video's size and offset,
 // its corner radius and shadow blur, in pixels. The export builds its filter from this
 // and the editor lays out its stage from it, so the two frame a take alike.
+// It lives in ui/compositor/layout.js now, the one geometry every renderer reads.
 function backdropGeometry(srcW, srcH, opts = {}) {
-  const inset = Math.min(0.22, Math.max(0.02, opts.inset ?? 0.08))
-
-  // "Auto" keeps the source shape and adds the same margin on every side. Forcing
-  // a 16:9 canvas around a 16:10 recording gives fat side margins and thin top and
-  // bottom ones, which reads as the video being anchored rather than centred.
-  let outW, outH
-  const target = opts.outAspect   // number (w/h) when the user picks a shape
-  if (!target) {
-    const pad = inset * Math.max(srcW, srcH)
-    outW = 2 * Math.round((srcW + pad * 2) / 2)
-    outH = 2 * Math.round((srcH + pad * 2) / 2)
-    // keep the canvas sane for encoding
-    const cap = opts.scale === 720 ? 1280 : 1920
-    if (outW > cap) {
-      const k = cap / outW
-      outW = 2 * Math.round((outW * k) / 2)
-      outH = 2 * Math.round((outH * k) / 2)
-    }
-  } else {
-    // outWidth is the long edge: a portrait shape 1920 wide came out 3414 tall
-    const long = opts.outWidth || 1920
-    outW = 2 * Math.round((target >= 1 ? long : long * target) / 2)
-    outH = 2 * Math.round((target >= 1 ? long / target : long) / 2)
-  }
-
-  // band: a share of the height kept below the video for captions, in place of the
-  // bottom margin, so they sit on the backdrop rather than on the product
-  const band = Math.max(0, Math.min(0.25, +opts.band || 0))
-  const bottom = band ? Math.max(band, inset) : inset
-  const boxW = 2 * Math.round((outW * (1 - inset * 2)) / 2)
-  const boxH = 2 * Math.round((outH * (1 - inset - bottom)) / 2)
-  const scale = Math.min(boxW / srcW, boxH / srcH)
-  const vidW = 2 * Math.round((srcW * scale) / 2)
-  const vidH = 2 * Math.round((srcH * scale) / 2)
-  const radius = Math.max(6, Math.round(opts.radius ?? Math.min(vidW, vidH) * 0.035))
-  const ox = Math.round((outW - vidW) / 2)
-  // with a band the video hangs from the top margin; the band takes what is left
-  const oy = band ? Math.round(outH * inset + (boxH - vidH) / 2) : Math.round((outH - vidH) / 2)
-  const blur = Math.max(4, Math.round(vidH * 0.035))
-  return { outW, outH, vidW, vidH, radius, ox, oy, blur }
+  return require('./compositor/layout').backdropGeometry(srcW, srcH, opts)
 }
 // In the band a phrase has the whole width, so it stays on one line
 const BAND_WRAP = 60

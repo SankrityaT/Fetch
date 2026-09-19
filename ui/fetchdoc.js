@@ -352,6 +352,9 @@ function toExportOpts(doc, extra = {}) {
     fadeIn: L.fadeIn,
     fadeOut: L.fadeOut,
     music: A.music,
+    // the whole look, for the compositor (ui/compositor/plan.js), which draws fields
+    // the classic options above cannot say; applyEdit ignores it
+    look: Look.resolve(doc.look),
     ...extra,
   }
 }

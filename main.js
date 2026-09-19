@@ -267,9 +267,10 @@ app.whenReady().then(() => {
       writePrefs(patch)
       if (control && !control.isDestroyed()) control.webContents.send('prefs-changed', patch)
     },
+    // the compositor when it can draw the edit, the classic renderer otherwise (ui/render-host.js)
     exportDoc: (src, opts) => jobQueue.submit({
       id: 'agent:export:' + Date.now(), op: 'export',
-      run: () => require('./processor').applyEdit(src, opts, null, 'agent-export-' + Date.now()),
+      run: () => require('./ui/render-host').exportEdit(src, opts, null, 'agent-export-' + Date.now()),
     }),
   })
 
@@ -1417,12 +1418,9 @@ ipcMain.handle('activity-clear', () => { activity.clear(); return true })
 
 // The edit document, and the beats a recording is scrubbed by.
 ipcMain.handle('read-doc', (e, src, dur) => proc.readDoc(src, dur))
-// the recorded window's own corner, as a fraction of the frame's width, so the stage
-// rounds a framed take no tighter than the export does (processor backdropChain)
-ipcMain.handle('window-corner', async (e, src, dur, crop) => {
-  const g = await proc.frameGutter(src, 0, dur || 1, crop || null).catch(() => null)
-  return (g && g.corner) || 0
-})
+// the recorded window's own margin and corner (corner as a fraction of the frame's
+// width), so the stage trims and rounds a framed take as the export does
+ipcMain.handle('frame-gutter', (e, src, dur, crop) => proc.frameGutter(src, 0, dur || 1, crop || null).catch(() => null))
 ipcMain.handle('write-doc', (e, src, doc) => proc.writeDoc(src, doc))
 ipcMain.handle('beats-for', (e, src, dur) => proc.beatsFor(src, dur))
 
@@ -1431,8 +1429,10 @@ ipcMain.handle('write-cues', (e, src, cues) => proc.writeCues(src, cues))
 ipcMain.handle('cancel-job', (e, id) => {
   // A job waiting in the queue has no child process to kill yet, so drop it from the
   // lane; otherwise cancelling something tenth in line would wait for the nine ahead.
-  const dropped = jobQueue.dropIfQueued(id)
-  return proc.cancel(id) || dropped
+  // A job sent with its own jobId runs as ext:<jobId> (edit-job namespaces it), so the
+  // editor's Cancel, which knows only its jobId, has to be looked up the same way.
+  const dropped = jobQueue.dropIfQueued(id) || jobQueue.dropIfQueued('ext:' + id)
+  return proc.cancel(id) || proc.cancel('ext:' + id) || dropped
 })
 ipcMain.handle('queue-stats', () => jobQueue.stats())
 ipcMain.handle('formats', () => proc.formatList())
@@ -1475,11 +1475,19 @@ const JOB_TITLES = {
 // anyone did, and logging them would bury everything that matters.
 const JOB_QUIET = new Set(['thumb', 'waveform', 'filmstrip'])
 
+// Which renderer drew an export, for its Activity row: the compositor with its speed, or
+// the classic ffmpeg renderer and what sent it there
+function engineNote(r) {
+  if (r.engine === 'gl') return `compositor${r.render && r.render.realtime ? `, ${r.render.realtime}x real time` : ''}`
+  return `classic renderer${r.why && r.why.length ? ` (${r.why.join(', ')})` : ''}`
+}
+
 function logJob(payload, t0, result, error) {
   if (JOB_QUIET.has(payload.op)) return
   let detail = (result && result.file) || payload.src || null
   if (payload.op === 'silence' && result) detail = `kept ${result.cuts} segments, saved ${result.savedPct}%`
   if (payload.op === 'transcribe' && result) detail = `${result.words} words, ${(result.cues || []).length} cues`
+  if (payload.op === 'export' && result && result.engine) detail = `${detail} · ${engineNote(result)}`
   activity.record({
     op: payload.op,
     title: JOB_TITLES[payload.op] || payload.op,
@@ -1520,7 +1528,7 @@ ipcMain.handle('edit-job', async (e, payload) => {
         case 'thumb':      result = await proc.thumbnail(payload.src, payload.atSec, onP, id); break
         case 'waveform':   result = await proc.waveform(payload.src, o, onP, id); break
       case 'filmstrip':  result = await proc.filmstrip(payload.src, o, onP, id); break
-        case 'export':     result = await proc.applyEdit(payload.src, o, onP, id); break
+        case 'export':     result = await require('./ui/render-host').exportEdit(payload.src, o, onP, id); break
         case 'transcribe':
           result = await proc.transcribe(payload.src, o,
             (pct, isDownload) => send('progress', isDownload ? { downloadPct: pct } : { pct }), id)
@@ -1545,4 +1553,7 @@ ipcMain.handle('edit-job', async (e, payload) => {
 
 
 app.on('window-all-closed', () => app.quit())
-app.on('before-quit', () => agentBridge.stop())
+app.on('before-quit', () => { agentBridge.stop(); require('./ui/render-host').close() })
+// The editor opening a take is the moment an export becomes likely: start the hidden
+// render window now so the first export does not wait for it
+ipcMain.on('render-warm', () => require('./ui/render-host').warm())
