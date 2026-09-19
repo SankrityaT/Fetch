@@ -220,37 +220,9 @@ const EDITOR_HTML = `
         <div class="cue-list" id="cueList"></div>
       </section>
 
-      <!-- LOOK -->
+      <!-- LOOK: generated from the Look spec (ui/inspector.js) -->
       <section class="insp-panel" data-panel="look" hidden>
-        <div class="insp-sec">Auto zoom</div>
-        <label class="opt" style="padding:8px 0"><span class="opt-txt">
-          <span class="opt-title">Follow my cursor</span>
-          <span class="opt-sub">pushes in where you stop and settle</span></span>
-          <span class="switch"><input type="checkbox" id="autoZoom"><span class="track"></span></span></label>
-        <div class="row"><span class="row-lbl">Amount</span>
-          <input type="range" class="slider" id="zoomAmt" min="120" max="240" value="170">
-          <span class="row-val mono" id="zoomAmtVal">1.7×</span></div>
-        <p class="micro dimmer" id="zoomNote">Needs a recording made by Fetch.</p>
-
-        <div class="insp-sec" style="margin-top:10px">Backdrop</div>
-        <div class="bd-grid" id="bdGrid"></div>
-        <div><div class="insp-sec" style="margin-top:8px">Output shape</div>
-          <div class="aspect-chips" id="outAspect">
-            <button class="chip" data-ar="" aria-pressed="true">Auto</button>
-            <button class="chip" data-ar="1.7778">16:9</button>
-            <button class="chip" data-ar="1">1:1</button>
-            <button class="chip" data-ar="0.5625">9:16</button>
-            <button class="chip" data-ar="1.3333">4:3</button>
-          </div>
-          <p class="micro dimmer" style="margin-top:6px" id="aspectNote">
-            Auto keeps your recording's shape with an even margin all round.</p>
-        </div>
-        <div class="row"><span class="row-lbl">Inset</span>
-          <input type="range" class="slider" id="bdInset" min="2" max="20" value="8">
-          <span class="row-val mono" id="bdInsetVal">8%</span></div>
-        <div class="row"><span class="row-lbl">Corners</span>
-          <input type="range" class="slider" id="bdRadius" min="0" max="60" value="26">
-          <span class="row-val mono" id="bdRadiusVal">26</span></div>
+        <div class="lk" id="lookInspector"></div>
       </section>
 
       <!-- AUDIO -->
@@ -332,6 +304,13 @@ const EDITOR_HTML = `
         <div class="row"><span class="row-lbl">Gain</span>
           <input type="range" class="slider" id="gain" min="-10" max="10" value="0">
           <span class="row-val mono" id="gainVal">0dB</span></div>
+        <div class="row"><span class="row-lbl">Music</span>
+          <div class="seg seg-sm" id="musicBed">
+            <button data-bed="" aria-selected="true">None</button>
+            <button data-bed="warm" aria-selected="false">Warm</button>
+            <button data-bed="bright" aria-selected="false">Bright</button>
+            <button data-bed="calm" aria-selected="false">Calm</button>
+          </div></div>
         <div id="extraPanel" hidden>
           <div class="insp-sec" style="margin-top:10px">Added track</div>
           <div class="extra-file"><span class="mono" id="extraName">none</span></div>
@@ -349,13 +328,7 @@ const EDITOR_HTML = `
             ${ico('sparkle', 'icon-sm')} Transcribe this track instead</button>
         </div>
 
-        <div class="insp-sec" style="margin-top:8px">Fades</div>
-        <div class="row"><span class="row-lbl">In</span>
-          <input type="range" class="slider" id="fadeIn" min="0" max="30" value="0">
-          <span class="row-val mono" id="fadeInVal">0.0s</span></div>
-        <div class="row"><span class="row-lbl">Out</span>
-          <input type="range" class="slider" id="fadeOut" min="0" max="30" value="0">
-          <span class="row-val mono" id="fadeOutVal">0.0s</span></div>
+        <p class="micro dimmer" style="margin-top:8px">Fades in and out are in Look, under Motion: they take the picture and the sound together.</p>
       </section>
     </div>
 
@@ -473,6 +446,7 @@ async function openInEditor(src) {
   mount.innerHTML = EDITOR_HTML
 
   ed.src = src; ed.texts = []; ed.cues = []; ed.crop = null; ed.selText = null; ed.peaks = []
+  ed.doc = null; ed.look = LookLib.defaults(); syncLookMirrors()   // never the last clip's look
   window.dispatchEvent(new CustomEvent('fetch:editor-open', { detail: { src } }))   // the chat's "Working on" chip
   ed.docReady = false
   wireEditor()
@@ -530,6 +504,8 @@ async function openInEditor(src) {
   }
   ed.docReady = true
   startDocAutosave(src)
+  ed.windowCorner = 0
+  ipcRenderer.invoke('window-corner', src, ed.dur, ed.crop).then(c => { if (ed.src === src) { ed.windowCorner = +c || 0; paintBackdrop() } }).catch(() => {})
   // the chat's edit suggestions are picked from the saved edit, which only exists now
   window.dispatchEvent(new CustomEvent('fetch:editor-ready', { detail: { src } }))
 
@@ -579,7 +555,11 @@ function historyStep(dir) {
   ipcRenderer.invoke('write-cues', ed.src, ed.cues).catch(() => {})
   docSaveLast = h.stack[j]
   paintUndo()
+  // one pill for undo and redo: stepping back and forth replaces it, never stacks two
+  const box = $('toasts')
+  if (h.toastEl && h.toastEl.isConnected) h.toastEl.remove()
   toast(dir < 0 ? 'Undone' : 'Redone')
+  h.toastEl = box && box.lastElementChild
 }
 
 function paintUndo() {
@@ -628,6 +608,8 @@ function wireEditor() {
     document.querySelectorAll('#inspTabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)))
     document.querySelectorAll('.insp-panel').forEach(p => { p.hidden = p.dataset.panel !== ed.tab })
     $('cropBox').hidden = !(ed.tab === 'crop' && ed.crop)
+    // the Crop tab shows the whole recording, every other tab the crop, as exported
+    try { paintBackdrop(); paintCrop(); paintCaption() } catch {}
     paintOverlays()   // the zoom preview steps aside on the Crop tab
   }
 
@@ -752,6 +734,12 @@ function wireEditor() {
     paintCaption()
     $('capPos').querySelectorAll('button').forEach(x => x.setAttribute('aria-selected', String(x === b)))
   }
+  // a bed under the voice, ducked while anyone speaks (processor.js musicBed)
+  $('musicBed').onclick = e => {
+    const b = e.target.closest('[data-bed]'); if (!b) return
+    ed.music = b.dataset.bed || null
+    paintMusic()
+  }
   // how the word being spoken stands out; captions never sit on a slab
   $('capHl').onclick = e => {
     const b = e.target.closest('[data-hl]'); if (!b) return
@@ -777,96 +765,14 @@ function wireEditor() {
 
   // audio
   bindRange('gain', v2 => {}, v2 => `${v2 > 0 ? '+' : ''}${v2}dB`)
-  bindRange('fadeIn', () => {}, v2 => (v2 / 10).toFixed(1) + 's')
-  bindRange('fadeOut', () => {}, v2 => (v2 / 10).toFixed(1) + 's')
 
-  // look panel
-  const bd = $('bdGrid')
-  const loadBackdrops = () => ipcRenderer.invoke('backdrops').then(list => {
-    bd.innerHTML = `<button class="bd" data-bd="" aria-selected="${!ed.backdrop}"><span class="bd-swatch none">${ico('x', 'icon-sm')}</span>None</button>` +
-      list.map(b => `<button class="bd" data-bd="${b.id}"
-        ${b.file ? `data-file="${b.file}"` : ''} aria-selected="false">
-        <span class="bd-swatch ${b.image ? '' : 'bd-' + b.id}"
-          ${b.file ? `style="background:url('file://${encodeURI(b.file).replace(/'/g, '%27')}') center/cover"` : ''}></span>${b.label}</button>`).join('')
-      + `<button class="bd bd-add" id="bdAdd">
-           <span class="bd-swatch none">${ico('plus', 'icon-sm')}</span>Your image</button>`
-    bd.onclick = e => {
-      if (e.target.closest('#bdAdd')) return pickBackdrop()
-      const b = e.target.closest('.bd'); if (!b) return
-      ed.backdrop = b.dataset.bd || null
-      ed.backdropFile = b.dataset.file || null
-      bd.querySelectorAll('.bd').forEach(x => x.setAttribute('aria-selected', String(x === b)))
-      paintBackdrop()
-    }
-  })
-  loadBackdrops()
-
-  // Upload runs in the renderer with a file input, no main process round trip.
-  // Files are copied into userData so they survive an app update.
-  function pickBackdrop() {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = 'image/png,image/jpeg,image/webp'
-    input.onchange = async () => {
-      const f = input.files && input.files[0]
-      if (!f) return
-      const srcPath = f.path
-      const url = URL.createObjectURL(f)
-      const dims = await new Promise(res => {
-        const img = new Image()
-        img.onload = () => res({ w: img.naturalWidth, h: img.naturalHeight })
-        img.onerror = () => res(null)
-        img.src = url
-      })
-      URL.revokeObjectURL(url)
-      if (!dims) return toast('That image could not be read', 'bad')
-
-      const dir = path.join(os.homedir(), 'Library/Application Support/Fetch/backdrops')
-      try { fs.mkdirSync(dir, { recursive: true }) } catch {}
-      let dest = path.join(dir, path.basename(srcPath))
-      let n = 1
-      while (fs.existsSync(dest)) {
-        const e = path.extname(srcPath), b = path.basename(srcPath, e)
-        dest = path.join(dir, `${b}-${++n}${e}`)
-      }
-      try { fs.copyFileSync(srcPath, dest) } catch { return toast('Could not save that image', 'bad') }
-
-      // The compositor scales to cover and centre-crops, so anything under
-      // 1920x1080 gets upscaled and will look soft. Say so rather than hide it.
-      const small = dims.w < 1920 || dims.h < 1080
-      const ratio = (dims.w / dims.h).toFixed(2)
-      const offAspect = Math.abs(dims.w / dims.h - 16 / 9) > 0.25
-      await loadBackdrops()
-      const added = bd.querySelector(`[data-file="${CSS.escape(dest)}"]`)
-      if (added) added.click()
-      if (small) toast(`Added, but it is ${dims.w}x${dims.h}. Under 1920x1080 will look soft.`, 'bad', 6500)
-      else if (offAspect) toast(`Added. At ${ratio}:1 it will be cropped to fit 16:9.`, '', 5500)
-      else toast(`Added ${dims.w}x${dims.h} backdrop`, 'ok')
-    }
-    input.click()
-  }
-  $('outAspect').onclick = e => {
-    const b = e.target.closest('[data-ar]'); if (!b) return
-    ed.outAspect = b.dataset.ar ? +b.dataset.ar : null
-    $('outAspect').querySelectorAll('.chip').forEach(x => x.setAttribute('aria-pressed', String(x === b)))
-    $('aspectNote').textContent = ed.outAspect
-      ? 'Your recording is fitted inside this shape, so margins differ by side.'
-      : "Auto keeps your recording's shape with an even margin all round."
-    paintBackdrop()
-  }
-  bindRange('bdInset', paintBackdrop, v => v + '%')
+  // look: the inspector, generated from the Look spec (ui/inspector.js)
+  mountLook()
   // burned captions take a band below a framed video, so the frame follows the switch
   if ($('burnCaps')) $('burnCaps').addEventListener('change', () => { try { paintBackdrop() } catch {} })
-  bindRange('bdRadius', paintBackdrop, v => String(v))
-  bindRange('zoomAmt', () => {}, v => (v / 100).toFixed(1) + '×')
-  $('autoZoom').onchange = e => { ed.autoZoom = e.target.checked }
-  // tell the user plainly whether cursor data exists for this clip
-  ipcRenderer.invoke('has-cursor', ed.src).then(has => {
-    $('zoomNote').textContent = has
-      ? 'Cursor track found for this recording.'
-      : 'No cursor track: only recordings made by Fetch can auto zoom.'
-    $('autoZoom').disabled = !has
-  })
+  // tell the user plainly whether cursor data exists for this clip (the auto zoom switch)
+  ed.hasCursor = null
+  ipcRenderer.invoke('has-cursor', ed.src).then(has => { ed.hasCursor = !!has; if (lookUI) lookUI.render() })
 
   // ---- added audio track ----
   const pickAudio = () => {
@@ -1069,28 +975,26 @@ function wireEditor() {
     doc.beats = (ed.beats || []).map((b, i) => ({ ...b, id: b.id || 'B' + (i + 1) }))
     doc.zooms = (ed.zooms || []).map(z => ({ ...z, id: z.id || FD.mintId(doc, 'zooms') }))
     doc.marks = (ed.marks || []).map(m => ({ ...m, id: m.id || FD.mintId(doc, 'marks') }))
-    doc.backdropFile = ed.backdropFile || null
     doc.crop = ed.crop; doc.cropAR = ed.cropAR
-    doc.capStyle = ed.capStyle
     doc.camera = ed.cam || null
     doc.audioTrack = ed.audioTrack || null
-    doc.backdrop = ed.backdrop || null
-    doc.outAspect = ed.outAspect || null
     doc.autoZoom = !!ed.autoZoom
 
-    // the nine values that used to live only as slider positions
+    // The look from the inspector, with the captions from their own tab: its style
+    // and the Burn switch. A caption dragged to a place keeps it (fx, fy).
+    const cs = ed.capStyle || {}
+    doc.look = LookLib.merge(ed.look || doc.look, { captions: {
+      show: !!($('burnCaps') && $('burnCaps').checked),
+      font: cs.font, scale: cs.scale, colour: cs.colour, position: cs.position, highlight: cs.highlight,
+      fx: cs.fx != null ? cs.fx : null, fy: cs.fy != null ? cs.fy : null,
+    } }).look
     const num = (id, d) => { const n = $(id); return n ? +n.value : d }
-    doc.look = {
-      zoomAmt: num('zoomAmt', 170) / 100,
-      bdInset: num('bdInset', 6) / 100,
-      bdRadius: num('bdRadius', 14),
-      burnCaps: !!($('burnCaps') && $('burnCaps').checked),
+    doc.audio = FD.cleanAudio({
       denoise: !!($('denoise') && $('denoise').checked),
       loudnorm: !!($('loudnorm') && $('loudnorm').checked),
       gain: num('gain', 0),
-      fadeIn: num('fadeIn', 0) / 10,
-      fadeOut: num('fadeOut', 0) / 10,
-    }
+      music: ed.music || null,
+    })
     return FD.ensureIds(doc)
   }
 
@@ -1108,11 +1012,11 @@ function wireEditor() {
     ed.beats = (doc.beats || []).map(x => ({ ...x }))
     ed.zooms = (doc.zooms || []).map(x => ({ ...x }))
     ed.marks = (doc.marks || []).map(x => ({ ...x }))
-    // These used to be read from the document and never applied, so an agent setting a
-    // backdrop or moving the camera bubble changed a file the editor then ignored.
-    ed.backdrop = doc.backdrop || null
-    ed.backdropFile = doc.backdropFile || null
-    ed.outAspect = doc.outAspect != null ? doc.outAspect : null
+    // The look, whole. Setting ed.backdrop and ed.outAspect from the document matters:
+    // they used to be read and never applied, so an agent setting a backdrop changed a
+    // file the editor then ignored. They are mirrors of the look now (syncLookMirrors).
+    ed.look = LookLib.resolve(doc.look)
+    syncLookMirrors()
     ed.audioTrack = doc.audioTrack || null
     // A camera can only be positioned if one was recorded. Accepting a camera object
     // for a take without one would draw a bubble with nothing in it.
@@ -1125,17 +1029,19 @@ function wireEditor() {
         size: c.size != null ? Math.max(0.1, Math.min(0.45, +c.size)) : ed.cam.size }
     }
     ed.crop = doc.crop; ed.cropAR = doc.cropAR || 'free'
-    ed.capStyle = { ...ed.capStyle, ...(doc.capStyle || {}) }
+    const C = ed.look.captions
+    ed.capStyle = { ...ed.capStyle, font: C.font, scale: C.scale, colour: C.colour, position: C.position, highlight: C.highlight }
+    if (C.fx != null && C.fy != null) { ed.capStyle.fx = C.fx; ed.capStyle.fy = C.fy } else { delete ed.capStyle.fx; delete ed.capStyle.fy }
     paintCapHl()
     ed.autoZoom = !!doc.autoZoom
 
-    const L = doc.look || {}
+    const A = FD.cleanAudio(doc.audio)
     const set = (id, v) => { const n = $(id); if (n && v != null) n.value = v }
-    set('zoomAmt', Math.round(L.zoomAmt * 100)); set('bdInset', Math.round(L.bdInset * 100))
-    set('bdRadius', L.bdRadius); set('gain', L.gain)
-    set('fadeIn', Math.round(L.fadeIn * 10)); set('fadeOut', Math.round(L.fadeOut * 10))
+    set('gain', A.gain)
     const chk = (id, v) => { const n = $(id); if (n) n.checked = !!v }
-    chk('burnCaps', L.burnCaps); chk('denoise', L.denoise); chk('loudnorm', L.loudnorm)
+    chk('burnCaps', C.show); chk('denoise', A.denoise); chk('loudnorm', A.loudnorm)
+    ed.music = A.music || null; paintMusic()
+    if (lookUI) lookUI.render()
 
     paintTrim(); renderCuts(); renderTexts(); renderCues(); renderBeats(); renderZooms(); renderMarks()
     try { paintBackdrop(); paintCam(); paintCrop() } catch {}
@@ -1355,26 +1261,30 @@ function renderZooms() {
       '<span class="tl-zoom-x mono">' + (z.scale || 1.8).toFixed(1) + '&times;</span>' +
     '</button>'
   }).join('')
+  fitPills(host)
 }
 
-// A take still called recording-<timestamp> is renamed from the first thing said in
-// it, once there is a transcript to read. Only names Fetch generated are touched; a
-// name someone typed is theirs.
+// A short span's pill cannot hold its id and its detail ("Z38 1.9x" on a 3 s zoom was
+// cut mid-number). The detail steps aside, to the tooltip, and the id, the handle an
+// agent and the person both name it by, always shows whole.
+function fitPills(host) {
+  if (!host.clientWidth) return   // not laid out yet; the next layout pass fits them
+  for (const n of host.children) {
+    n.classList.remove('tight')
+    if (n.scrollWidth > n.clientWidth + 1) n.classList.add('tight')
+  }
+}
+
+// A take still under a name Fetch gave it is named again once there is a transcript
+// to read: by the person's agent when naming with it is on, else from the app in
+// front and the first thing said. ui/take-namer.js decides, and never touches a name
+// someone typed or one the agent already gave.
 async function upgradeName() {
-  const naming = require('./ui/naming')
-  const stem = path.basename(ed.src, path.extname(ed.src))
-  if (!naming.isAutoName(stem) || !ed.beats.length) return
-  const next = naming.smartName({ said: ed.beats[0].label })
-  if (!next) return
+  if (!ed.beats.length) return
   try {
-    const was = ed.src
-    const renamed = await renameTake(ed.src, next)      // editorFollowRename moves ed.src
-    if (renamed === was) return
-    refreshLibrary()
-    // the folder's name for a take folder (it has no extension to strip: "v1.2" is a name)
-    const inTake = /\/Original$/.test(path.dirname(renamed))
-    const shown = inTake ? path.basename(path.dirname(path.dirname(renamed))) : path.parse(renamed).name
-    toast('Named it "' + escHtml(shown) + '"', 'ok')
+    const [r] = await ipcRenderer.invoke('name-takes', [ed.src], { upgrade: true })
+    if (!r || !r.to) return
+    toast('Named it "' + escHtml(r.name) + '"', 'ok')
   } catch (e) { console.error('rename after transcribe failed:', e.message) }
 }
 
@@ -1431,7 +1341,7 @@ window.editorCloseIfGone = () => {
 
 // Marks as their own track. A redaction in particular must be visible before export:
 // it is the one edit where missing it means something private ships.
-const MARK_LABEL = { redact: 'Redact', blur: 'Blur', spotlight: 'Spotlight', step: 'Step' }
+const MARK_LABEL = { redact: 'Redact', blur: 'Blur', lift: 'Lift', spotlight: 'Spotlight', step: 'Step' }
 function renderMarks() {
   const host = $('tlMarks')
   if (!host) return
@@ -1447,6 +1357,7 @@ function renderMarks() {
       '<span class="tl-mark-kind">' + escHtml(what) + '</span>' +
     '</button>'
   }).join('')
+  fitPills(host)
 }
 
 // Text layers get a track like zooms and marks: T1 is how an agent names one, so it
@@ -1773,6 +1684,119 @@ function renderLayerList() {
     paintTextRange()
   }
 }
+// ── the look ────────────────────────────────────────────────────────────
+// ed.look is the whole Look spec (ui/look.js); the inspector is generated from it.
+// ed.backdrop, ed.backdropFile and ed.outAspect are read-only mirrors of it for the
+// stage painting below, refreshed by syncLookMirrors after every change. Captions
+// keep their own tab (ed.capStyle and the Burn switch), merged into the look by
+// docFromEd.
+const LookLib = require('./ui/look')
+const InspectorLib = require('./ui/inspector')
+const LOOK_DIR = path.join(os.homedir(), 'Library/Application Support/Fetch/looks')
+let lookUI = null
+let lookBackdropList = []
+const loadLookBackdrops = () => ipcRenderer.invoke('backdrops')
+  .then(list => { lookBackdropList = list || []; if (lookUI) lookUI.render(); paintBackdrop() }).catch(() => {})
+
+function syncLookMirrors() {
+  const L = ed.look = LookLib.resolve(ed.look)
+  ed.backdrop = LookLib.backdropId(L)
+  const img = L.background.kind === 'image' && lookBackdropList.find(b => b.id === L.background.image)
+  ed.backdropFile = img ? img.file : null
+  ed.outAspect = LookLib.aspectNumber(L.frame.aspect)
+}
+
+// A change from the inspector. Browser chrome switched with the page's place known
+// moves the crop with it, as the document does for an agent (FD.chromeCrop).
+function setLook(patch) {
+  const was = LookLib.resolve(ed.look)
+  ed.look = LookLib.merge(was, patch).look
+  if (was.frame.chrome !== ed.look.frame.chrome && ed.doc && ed.doc.viewport) {
+    const d = require('./ui/fetchdoc').chromeCrop({ look: ed.look, viewport: ed.doc.viewport, crop: ed.crop }, was.frame.chrome)
+    ed.crop = d.crop
+    try { paintCrop() } catch {}
+  }
+  syncLookMirrors()
+  paintBackdrop()
+  try { paintCaption() } catch {}
+}
+
+function mountLook() {
+  const root = $('lookInspector')
+  if (!root) return
+  lookUI = InspectorLib.create(root, {
+    get: () => ed.look || LookLib.defaults(),
+    set: patch => setLook(patch),
+    sections: ['frame', 'background', 'motion', 'cursor'],
+    open: ['frame', 'background', 'motion'],
+    userDir: LOOK_DIR,
+    ico, toast,
+    assets: () => lookBackdropList.filter(b => b.image),
+    onAddAsset: done => pickBackdropImage(done),
+    notes: {
+      'frame.aspect': L => L.frame.aspect === 'auto' ? "Keeps your recording's shape."
+        : L.background.kind === 'none' ? 'The space round your recording is filled with a soft blur of it, never black bars.'
+        : 'Your recording is fitted inside this shape on the background.',
+      'frame.chrome': () => ed.doc && ed.doc.viewport ? 'Fetch knows where the page sits in this browser take.'
+        : 'Only for browser takes an agent recorded. Use Crop for others.',
+    },
+    extras: {
+      // auto zoom is part of the edit, not the look, so it sits here by its depth
+      motion: () => `<label class="lk-top lk-bool"><span class="lk-lbl">Auto zoom on clicks</span>
+          <span class="switch"><input type="checkbox" id="autoZoom" ${ed.autoZoom ? 'checked' : ''} ${ed.hasCursor === false ? 'disabled' : ''}><span class="track"></span></span></label>
+        <p class="micro dimmer lk-note" id="zoomNote">${ed.hasCursor === false ? 'No cursor track: only recordings made by Fetch can auto zoom.'
+          : 'Pushes in where the cursor clicks or settles.'}</p>`,
+    },
+  })
+  root.addEventListener('change', e => { if (e.target.id === 'autoZoom') ed.autoZoom = e.target.checked })
+  loadLookBackdrops()
+}
+
+// Upload runs in the renderer with a file input, no main process round trip.
+// Files are copied into userData so they survive an app update. done(id) gets the
+// backdrop's id (img:user/<file>) once it is in the list.
+function pickBackdropImage(done) {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = 'image/png,image/jpeg,image/webp'
+  input.onchange = async () => {
+    const f = input.files && input.files[0]
+    if (!f) return
+    const srcPath = f.path
+    const url = URL.createObjectURL(f)
+    const dims = await new Promise(res => {
+      const img = new Image()
+      img.onload = () => res({ w: img.naturalWidth, h: img.naturalHeight })
+      img.onerror = () => res(null)
+      img.src = url
+    })
+    URL.revokeObjectURL(url)
+    if (!dims) return toast('That image could not be read', 'bad')
+
+    const dir = path.join(os.homedir(), 'Library/Application Support/Fetch/backdrops')
+    try { fs.mkdirSync(dir, { recursive: true }) } catch {}
+    let dest = path.join(dir, path.basename(srcPath))
+    let n = 1
+    while (fs.existsSync(dest)) {
+      const e = path.extname(srcPath), b = path.basename(srcPath, e)
+      dest = path.join(dir, `${b}-${++n}${e}`)
+    }
+    try { fs.copyFileSync(srcPath, dest) } catch { return toast('Could not save that image', 'bad') }
+
+    // The compositor scales to cover and centre-crops, so anything under
+    // 1920x1080 gets upscaled and will look soft. Say so rather than hide it.
+    const small = dims.w < 1920 || dims.h < 1080
+    const ratio = (dims.w / dims.h).toFixed(2)
+    const offAspect = Math.abs(dims.w / dims.h - 16 / 9) > 0.25
+    await loadLookBackdrops()
+    done('img:user/' + path.basename(dest))
+    if (small) toast(`Added, but it is ${dims.w}x${dims.h}. Under 1920x1080 will look soft.`, 'bad', 6500)
+    else if (offAspect) toast(`Added. At ${ratio}:1 it will be cropped to fit 16:9.`, '', 5500)
+    else toast(`Added ${dims.w}x${dims.h} backdrop`, 'ok')
+  }
+  input.click()
+}
+
 // live preview of the framed look: no export needed to see it
 const BD_CSS = {
   dusk:   'linear-gradient(135deg,#F0A93C,#7A3E12)',
@@ -1786,17 +1810,22 @@ const BD_CSS = {
 // The blur backdrop previews as the current frame, blurred by CSS, behind the video.
 // Redrawn on load, seek and pause, not per frame: it is a background, and the export
 // is what renders it exactly.
+// A shape with no background is filled the same way (never black bars), so the
+// stage shows the blurred take round it as the export does.
+const blurFilled = () => ed.backdrop === 'blur' || (!ed.backdrop && !!ed.outAspect)
 function paintBlurFill(frame, v) {
   let c = frame.querySelector('canvas.bd-fill')
-  if (ed.backdrop !== 'blur') { if (c) c.remove(); return }
+  if (!blurFilled()) { if (c) c.remove(); return }
   if (!c) {
     c = document.createElement('canvas')
     c.className = 'bd-fill'
     frame.prepend(c)
     const draw = () => {
-      if (ed.backdrop !== 'blur' || !v.videoWidth) return
-      c.width = 320; c.height = Math.round(320 * v.videoHeight / v.videoWidth)
-      try { c.getContext('2d').drawImage(v, 0, 0, c.width, c.height) } catch {}
+      if (!blurFilled() || !v.videoWidth) return
+      // the cropped frame, as the export blurs it
+      const s = stageView(), sw = v.videoWidth * s.w, sh = v.videoHeight * s.h
+      c.width = 320; c.height = Math.round(320 * sh / sw)
+      try { c.getContext('2d').drawImage(v, v.videoWidth * s.x, v.videoHeight * s.y, sw, sh, 0, 0, c.width, c.height) } catch {}
     }
     for (const ev of ['loadeddata', 'seeked', 'pause']) v.addEventListener(ev, draw)
     c._draw = draw
@@ -1807,10 +1836,23 @@ function paintBlurFill(frame, v) {
 // max-height:100% does not clamp a replaced element whose height is derived from
 // its own intrinsic aspect: the video kept its width-driven height, overflowed the
 // stage, and overflow:hidden cut off the bottom of the frame, captions included.
+// The part of the recording the stage shows: the crop, as the export frames it, and
+// the whole picture only on the Crop tab, where the handles need it. It showed the
+// whole recording everywhere, so the browser's tab and address bars the crop removes
+// were on the stage but never in the file.
+function stageView() {
+  const c = ed.crop
+  return c && ed.tab !== 'crop' && c.w > 0 && c.h > 0 ? c : { x: 0, y: 0, w: 1, h: 1 }
+}
+function stageAR(v) {
+  const s = stageView()
+  const ar = (ed.videoW && ed.videoH) ? ed.videoW / ed.videoH
+    : (v && v.videoWidth && v.videoHeight) ? v.videoWidth / v.videoHeight : 16 / 9
+  return ar * s.w / s.h
+}
 function fitVideoInto(v, availW, availH) {
   if (!v || !availW || !availH) return
-  const ar = (ed.videoW && ed.videoH) ? ed.videoW / ed.videoH
-    : (v.videoWidth && v.videoHeight) ? v.videoWidth / v.videoHeight : 16 / 9
+  const ar = stageAR(v)
   let w = availW, h = w / ar
   if (h > availH) { h = availH; w = h * ar }
   v.style.width = Math.round(w) + 'px'
@@ -1833,6 +1875,7 @@ function paintBackdrop() {
     frame.style.padding = '0'
     v.style.objectFit = ''
     v.style.borderRadius = ''
+    v.style.boxShadow = ''
     // An output shape has to change the preview even with no backdrop, otherwise
     // the stage shows the source shape while the export letterboxes into another
     // one. Mirrors the scale+pad the exporter applies in this same case.
@@ -1843,7 +1886,7 @@ function paintBackdrop() {
       if (boxH > availH) { boxH = availH; boxW = boxH * ed.outAspect }
       frame.style.width = Math.round(boxW) + 'px'
       frame.style.height = Math.round(boxH) + 'px'
-      frame.style.background = ed.padColor || '#000'
+      frame.style.background = '#1A1714'      // under the blurred fill while it draws
       fitVideoInto(v, boxW, boxH)
     } else {
       frame.style.height = ''; frame.style.width = ''
@@ -1856,42 +1899,41 @@ function paintBackdrop() {
   paintBlurFill(frame, v)
   frame.style.background = ed.backdropFile
     ? `url("file://${encodeURI(ed.backdropFile).replace(/"/g, '%22')}") center/cover no-repeat`
+    : String(ed.backdrop).startsWith('color:') ? ed.backdrop.slice(6)
     : (BD_CSS[ed.backdrop] || BD_CSS.dusk)
-  const inset = ($('bdInset') ? +$('bdInset').value : 8) / 100
-  // the stage is small, so the inset is expressed against the frame's own width
-  // The frame fills the stage and the video shrinks inside it. Padding the frame
-  // around a full size video made the whole thing overflow the stage.
-  const srcAR = (ed.videoW && ed.videoH) ? ed.videoW / ed.videoH
-    : (v.videoWidth && v.videoHeight) ? v.videoWidth / v.videoHeight : 16 / 9
-  // Explicit pixel sizes for both boxes. Percentages against an aspect-ratio
-  // derived height do not resolve reliably, which left the bottom margin short.
-  // Computed synchronously: requestAnimationFrame does not fire while the window
-  // is not being composited.
+  const inset = ed.look ? ed.look.frame.padding : 0.06
+  // Laid out with the export's own geometry (Overlays.backdropGeometry) on the frame
+  // the export frames, the crop, then scaled to the stage. An approximation of it
+  // put the window at about 70% of the stage where the file has it at 83%.
+  // Explicit pixel sizes for both boxes, computed synchronously: requestAnimationFrame
+  // does not fire while the window is not being composited.
   const stage = $('edCanvas')
-  const ar = ed.outAspect || srcAR
-  let boxH = stage.clientHeight
-  let boxW = boxH * ar
-  if (boxW > stage.clientWidth) { boxW = stage.clientWidth; boxH = boxW / ar }
-  const px = Math.round(Math.max(boxW, boxH) * inset)
-
-  frame.style.aspectRatio = ''
-  frame.style.padding = '0'
-  frame.style.width = Math.round(boxW) + 'px'
-  frame.style.height = Math.round(boxH) + 'px'
+  const view = stageView()
+  const vw = (ed.videoW || v.videoWidth || 1920) * view.w, vh = (ed.videoH || v.videoHeight || 1080) * view.h
   // Burned captions get a band of their own below the video, on the backdrop, as the
-  // export draws them (processor.js backdropGeometry, Overlays.captionLayout)
+  // export draws them (Overlays.captionLayout)
   const cst = ed.capStyle || {}
   const capsOn = !!($('burnCaps') && $('burnCaps').checked && ed.cues.length &&
     (!cst.position || cst.position === 'bottom') && cst.fx == null)
-  const bottom = capsOn ? Math.max(px, ovLib().CAP_BAND * boxH) : px
-  v.style.width = Math.round(boxW - px * 2) + 'px'
-  v.style.height = Math.round(boxH - px - bottom) + 'px'
+  const r = ed.look ? ed.look.frame.radius : 14
+  const g = ovLib().backdropGeometry(vw, vh, { inset, radius: r, band: capsOn ? ovLib().CAP_BAND : 0,
+    outWidth: 1920, outAspect: ed.outAspect || null })
+  const sc = Math.min(stage.clientWidth / g.outW, stage.clientHeight / g.outH)
+  frame.style.aspectRatio = ''
+  frame.style.padding = '0'
+  frame.style.width = Math.round(g.outW * sc) + 'px'
+  frame.style.height = Math.round(g.outH * sc) + 'px'
+  fitVideoInto(v, g.vidW * sc, g.vidH * sc)
   // the frame centres the video's margin box, so this hangs it from the top margin
-  v.style.marginBottom = bottom > px ? Math.round(bottom - px) + 'px' : ''
+  const under = (g.outH - g.vidH - 2 * g.oy) * sc
+  v.style.marginBottom = under > 0.5 ? Math.round(under) + 'px' : ''
   v.style.objectFit = 'contain'
+  // no tighter than the window's own corner, as the export (processor backdropChain)
+  const radius = Math.max(g.radius, ed.windowCorner ? Math.ceil(ed.windowCorner * g.vidW * 1.45) + 2 : 0)
+  v.style.borderRadius = Math.max(2, Math.round(radius * sc)) + 'px'
+  // frame.shadow, where 0.6 is the stage's own shadow
+  v.style.boxShadow = `0 18px 44px -12px rgba(0,0,0,${Math.min(1, 1.25 * (ed.look ? ed.look.frame.shadow : 0.6)).toFixed(2)})`
   setTimeout(() => { try { renderTexts(); paintCaption() } catch {} }, 0)
-  const r = $('bdRadius') ? +$('bdRadius').value : 26
-  v.style.borderRadius = Math.round(r * 0.5) + 'px'
   renderTexts()
 }
 
@@ -1995,14 +2037,22 @@ function paintCaption() {
       if (cx !== st.fx) { st.fx = cx; span.style.left = (cx * 100) + '%' }
       if (cy !== st.fy) { st.fy = cy; span.style.top = (cy * 100) + '%' }
     }
+  } else if (L.an === 5 && vb.height) {
+    // centred in the band under a framed video, where the export draws it (captionLayout)
+    box.dataset.pos = 'free'
+    span.style.left = (L.x / vb.width * 100) + '%'
+    span.style.top = (L.y / vb.height * 100) + '%'
+    // positioned, it would shrink to its longest word; the band phrase is one line
+    span.style.whiteSpace = 'nowrap'
   } else {
     span.style.left = ''; span.style.top = ''
   }
+  if (!(L.an === 5 && st.fx == null)) span.style.whiteSpace = ''
 }
 
 // ── overlays on the stage ───────────────────────────────────────────────
 // What ui/overlays.js burns into the export, previewed live: captions phrased and
-// highlighted the same way, step badges, spotlights, blurs and title cards. CSS
+// highlighted the same way, step badges, lifts, spotlights, blurs and title cards. CSS
 // stands in for libass, so it is close rather than exact: the blur's edge is not
 // feathered here. Explicit zooms are previewed (paintZoom); auto zoom is not.
 // A function, not a const: renderTexts can run before this line has been reached
@@ -2010,12 +2060,16 @@ function ovLib() { return require('./ui/overlays') }
 var ovCaps = { key: null, phrases: [] }
 
 function capPhrases() {
-  const key = ed.src + '#' + ed.cues.length + ':' + ed.cues.map(c => c.start + c.text).join('|')
+  // in the band under a framed video a phrase has the whole width, one line, as exported
+  const st = ed.capStyle || {}
+  const band = !!(ed.backdrop && (!st.position || st.position === 'bottom') && st.fx == null)
+  const key = ed.src + '#' + band + '#' + ed.cues.length + ':' + ed.cues.map(c => c.start + c.text).join('|')
   if (ovCaps && key === ovCaps.key) return ovCaps.phrases
   let words = null
   try { words = JSON.parse(fs.readFileSync(sidecarIn(ed.src, '.words.json'), 'utf8')) } catch {}
   // on the voice, as the export times them (Overlays.spokenWords)
-  ovCaps = { key, phrases: ovLib().phraseTimes(ovLib().captionPhrases(ovLib().spokenWords(ed.cues, words))) }
+  const o = band ? { wrapAt: ovLib().BAND_WRAP } : {}
+  ovCaps = { key, phrases: ovLib().phraseTimes(ovLib().captionPhrases(ovLib().spokenWords(ed.cues, words), o)) }
   return ovCaps.phrases
 }
 
@@ -2023,6 +2077,10 @@ function capPhrases() {
 function ovSpan() { return Math.max(0, (ed.out || ed.dur || 0) - (ed.in || 0)) }
 function ovRel(t) { return { ...t, start: t.start != null ? t.start - (ed.in || 0) : null, end: t.end != null ? t.end - (ed.in || 0) : null } }
 
+function paintMusic() {
+  const seg = $('musicBed'); if (!seg) return
+  for (const b of seg.querySelectorAll('[data-bed]')) b.setAttribute('aria-selected', String((b.dataset.bed || null) === (ed.music || null)))
+}
 function paintCapHl() {
   const hl = (ed.capStyle && ed.capStyle.highlight) || 'word'
   const seg = $('capHl')
@@ -2032,7 +2090,7 @@ function paintCapHl() {
 // The picture inside the video element, which letterboxes when framed, in page pixels
 function ovPicture(v) {
   const r = v.getBoundingClientRect(), f = $('stageFrame').getBoundingClientRect()
-  const ar = (ed.videoW && ed.videoH) ? ed.videoW / ed.videoH : (v.videoWidth / v.videoHeight) || r.width / r.height
+  const ar = stageAR(v) || r.width / r.height
   let w = r.width, h = w / ar
   if (h > r.height) { h = r.height; w = h * ar }
   return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, w, h, fl: f.left, ft: f.top }
@@ -2040,25 +2098,37 @@ function ovPicture(v) {
 
 // Explicit zooms (Z1, Z2) previewed on the stage with the export's own curve
 // (Overlays.zoomView). object-view-box crops inside the video element, so the rounded
-// corners, the shadow and the backdrop stay put while the picture pushes in. Zoom
-// coordinates live in the cropped frame, but the stage shows the whole recording, so
-// the window is mapped through the crop and kept at the picture's shape. Off on the
-// Crop tab, where the handles need the whole picture. timeupdate only fires about
-// four times a second, so while playing a zoom is repainted on every video frame.
+// corners, the shadow and the backdrop stay put while the picture pushes in. The same
+// view box shows only the crop (stageView), and zoom coordinates live in that cropped
+// frame, so the window is kept at the picture's shape inside it. Off on the Crop tab,
+// where the handles need the whole picture. timeupdate only fires about four times a
+// second, so while playing a zoom is repainted on every video frame.
 var zoomLoop = false
 function paintZoom(t, pic) {
   const v = $('edVideo'), layer = document.querySelector('#stageFrame .ov-zoom')
   if (!v) return
   const z = ed.tab === 'crop' ? { s: 1 } : ovLib().zoomView(ed.zooms, t)
+  const view = stageView(), c = ed.crop && ed.tab !== 'crop' ? ed.crop : null
+  // the cropped frame in the picture's own fractions: the whole picture unless the Crop tab shows all of it
+  const fr = c ? { x: (c.x - view.x) / view.w, y: (c.y - view.y) / view.h, w: c.w / view.w, h: c.h / view.h } : { x: 0, y: 0, w: 1, h: 1 }
   let box = null
   if (z.s > 1.001) {
-    const c = ed.crop || { x: 0, y: 0, w: 1, h: 1 }
-    const k = Math.min(1, Math.max(z.w * c.w, z.h * c.h))
-    const mx = c.x + (z.x + z.w / 2) * c.w, my = c.y + (z.y + z.h / 2) * c.h
+    const k = Math.min(1, Math.max(z.w * fr.w, z.h * fr.h))
+    const mx = fr.x + (z.x + z.w / 2) * fr.w, my = fr.y + (z.y + z.h / 2) * fr.h
     box = { x: Math.max(0, Math.min(1 - k, mx - k / 2)), y: Math.max(0, Math.min(1 - k, my - k / 2)), k }
   }
   const pct = n => (n * 100).toFixed(3) + '%'
-  v.style.objectViewBox = box ? `inset(${pct(box.y)} ${pct(1 - box.x - box.k)} ${pct(1 - box.y - box.k)} ${pct(box.x)})` : ''
+  // the box is in the picture's fractions; the view box wants the recording's
+  const src = box ? { x: view.x + box.x * view.w, y: view.y + box.y * view.h, w: box.k * view.w, h: box.k * view.h } : view
+  const whole = src.x <= 0 && src.y <= 0 && src.w >= 1 && src.h >= 1
+  v.style.objectViewBox = whole ? '' : `inset(${pct(src.y)} ${pct(1 - src.x - src.w)} ${pct(1 - src.y - src.h)} ${pct(src.x)})`
+  // Chromium paints a view box's picture out to the element's edges, so a letterboxed
+  // video spilled a wider zoomed picture into its bars. Clipped to the picture itself.
+  if (pic) {
+    const r = v.getBoundingClientRect(), l = pic.left - r.left, tp = pic.top - r.top
+    const bars = l > 0.5 || tp > 0.5
+    v.style.clipPath = bars ? `inset(${tp.toFixed(1)}px ${l.toFixed(1)}px round ${getComputedStyle(v).borderTopLeftRadius})` : ''
+  }
   if (layer) {
     layer.style.transform = box && pic ? `scale(${1 / box.k}) translate(${-box.x * pic.w}px, ${-box.y * pic.h}px)` : ''
   }
@@ -2070,6 +2140,7 @@ function paintZoom(t, pic) {
       paintOverlays()
     })
   }
+  return box
 }
 
 function paintOverlays() {
@@ -2086,25 +2157,63 @@ function paintOverlays() {
   clip.style.left = (pic.left - pic.fl) + 'px'; clip.style.top = (pic.top - pic.ft) + 'px'
   clip.style.width = pic.w + 'px'; clip.style.height = pic.h + 'px'
   clip.style.borderRadius = getComputedStyle(v).borderRadius
-  // marks live in the cropped frame, so map them through the crop onto the picture
-  const c = ed.crop || { x: 0, y: 0, w: 1, h: 1 }
+  // marks live in the cropped frame, which is the whole picture unless the Crop tab
+  // shows all of the recording; then they are mapped through the crop onto it
+  const view = stageView(), c0 = ed.crop || view
+  const c = { x: (c0.x - view.x) / view.w, y: (c0.y - view.y) / view.h, w: c0.w / view.w, h: c0.h / view.h }
   const cw = c.w * pic.w, ch = c.h * pic.h, cx = c.x * pic.w, cy = c.y * pic.h
   // marks are drawn before the zoom in the export, so they ride it here as well
   let layer = clip.querySelector('.ov-zoom')
   if (!layer) { layer = el('div', 'ov-zoom'); clip.appendChild(layer) }
-  paintZoom(t, pic)
+  const zb = paintZoom(t, pic)
   const seen = new Set()
   let stepK = 0
   for (const m of ed.marks || []) {
     if (m && m.kind === 'step') stepK++
-    if (!m || !m.id || !['step', 'spotlight', 'blur'].includes(m.kind)) continue
+    if (!m || !m.id || !['step', 'spotlight', 'lift', 'blur'].includes(m.kind)) continue
     seen.add(m.id)
-    const cls = m.kind === 'step' ? 'ov-step' : m.kind === 'spotlight' ? 'ov-spot' : 'ov-blur'
-    let n = layer.querySelector(`[data-id="${m.id}"]`)
-    if (!n || !n.classList.contains(cls)) { if (n) n.remove(); n = el('div', cls); n.dataset.id = m.id; layer.appendChild(n) }
-    // a spotlight rides a nearby zoom in the export, so it does here too
-    const on = m.kind === 'spotlight' ? ovLib().spotlightSpan(m, ed.zooms) : { a: m.start, b: m.end }
+    const focus = m.kind === 'spotlight' || m.kind === 'lift'
+    const cls = m.kind === 'step' ? 'ov-step' : focus ? 'ov-focus' : 'ov-blur'
+    // A cutout sits outside the zoom layer: Chromium ignores a clip-path hole in a
+    // backdrop blur, and a mask one inside a scaled ancestor, so the piece meant to be
+    // crisp came out blurred. Its zoom is applied by hand below instead.
+    const home = focus ? clip : layer
+    let n = clip.querySelector(`[data-id="${m.id}"]`)
+    if (!n || n.parentNode !== home || !n.classList.contains(cls) || n.dataset.kind !== m.kind) {
+      if (n) n.remove()
+      n = el('div', cls, focus ? '<div class="ov-focus-lift"></div><div class="ov-focus-dim"></div>' : '')
+      n.dataset.id = m.id; n.dataset.kind = m.kind; home.appendChild(n)
+    }
+    // a lift or spotlight rides a nearby zoom in the export, so it does here too
+    const on = focus ? ovLib().spotlightSpan(m, ed.zooms) : { a: m.start, b: m.end }
     n.dataset.on = String(t >= on.a && t < on.b)
+    if (focus) {
+      // The export's own cutout (Overlays.focusShape) on the cropped frame, seen at the
+      // largest zoom it rides as the export sizes it: the rest dimmed and lightly
+      // blurred through a feathered rounded hole (a luminance mask, which a backdrop
+      // blur honours), and for a lift a ring and shadow that rise with the piece.
+      const zs = Math.max(1, ...(ed.zooms || []).filter(z => z && Math.min(z.end, on.b) - Math.max(z.start, on.a) > 0.3).map(z => +z.scale || 1))
+      const s = ovLib().focusShape(m, cw, ch, { px: 1080 / ch, seen: zs, radius: m.radius })
+      const k = zb ? zb.k : 1, ox = zb ? zb.x * pic.w : 0, oy = zb ? zb.y * pic.h : 0
+      const W = cw / k, H = ch / k, x = s.x / k, y = s.y / k, w = s.w / k, h = s.h / k, r = s.r / k, f = v => v.toFixed(1)
+      Object.assign(n.style, { left: f((cx - ox) / k) + 'px', top: f((cy - oy) / k) + 'px', width: f(W) + 'px', height: f(H) + 'px' })
+      const dim = n.querySelector('.ov-focus-dim'), lift = n.querySelector('.ov-focus-lift')
+      const soft = s.kind === 'lift' ? 0 : s.feather / k / 3
+      const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${f(W)}' height='${f(H)}'>` +
+        (soft > 0.3 ? `<filter id='f' x='-50%' y='-50%' width='200%' height='200%'><feGaussianBlur stdDeviation='${f(soft)}'/></filter>` : '') +
+        `<rect width='100%' height='100%' fill='white'/><rect x='${f(x)}' y='${f(y)}' width='${f(w)}' height='${f(h)}' rx='${f(r)}' fill='black'` +
+        (soft > 0.3 ? ` filter='url(%23f)'` : '') + `/></svg>`
+      if (dim._svg !== svg) {
+        dim._svg = svg
+        Object.assign(dim.style, { maskImage: `url("data:image/svg+xml;utf8,${svg.replace(/</g, '%3C').replace(/>/g, '%3E')}")`,
+          maskMode: 'luminance', maskSize: '100% 100%', maskRepeat: 'no-repeat' })
+      }
+      Object.assign(dim.style, { background: `rgba(10,9,8,${s.dim})`, backdropFilter: `blur(${f(Math.max(0.5, s.blur / k))}px)` })
+      Object.assign(lift.style, { left: f(x) + 'px', top: f(y) + 'px', width: f(w) + 'px', height: f(h) + 'px', borderRadius: f(r) + 'px',
+        boxShadow: s.kind === 'lift' ? `0 ${f(s.shadow.dy / k)}px ${f(s.shadow.soft / k)}px rgba(0,0,0,${s.shadow.alpha * 0.6})` : '',
+        transform: n.dataset.on === 'true' ? `scale(${s.lift})` : '' })
+      continue
+    }
     if (m.kind === 'step') {
       const D = Math.max(12, 0.046 * ch)
       n.textContent = ovLib().stepLabel(m, stepK)
@@ -2112,21 +2221,10 @@ function paintOverlays() {
         borderWidth: Math.max(1.5, D * 0.05) + 'px', fontSize: (D * (n.textContent.length > 1 ? 0.46 : 0.56) / 1.18) + 'px',
         boxShadow: `0 ${D * 0.07}px ${D * 0.16}px rgba(0,0,0,.36)` })
     } else {
-      const grow = m.kind === 'spotlight' ? 0.008 * ch : 0
-      let x0 = cx + m.x * cw - grow, y0 = cy + m.y * ch - grow
-      let x1 = cx + (m.x + (m.w || 0.2)) * cw + grow, y1 = cy + (m.y + (m.h || 0.1)) * ch + grow
-      // as the export does: a spotlight within a hair of the edge opens through it
-      if (m.kind === 'spotlight') {
-        const near = 0.03 * ch, P = 0.1 * ch
-        if (x0 - cx < near) x0 = cx - P
-        if (y0 - cy < near) y0 = cy - P
-        if (cx + cw - x1 < near) x1 = cx + cw + P
-        if (cy + ch - y1 < near) y1 = cy + ch + P
-      }
-      const w = x1 - x0, h = y1 - y0
+      const x0 = cx + m.x * cw, y0 = cy + m.y * ch
+      const w = (m.w || 0.2) * cw, h = (m.h || 0.1) * ch
       Object.assign(n.style, { left: x0 + 'px', top: y0 + 'px', width: w + 'px', height: h + 'px',
-        borderRadius: Math.min((m.kind === 'spotlight' ? 0.018 : 0.014) * ch, w / 2, h / 2) + 'px',
-        filter: m.kind === 'spotlight' ? `blur(${Math.max(1, 0.011 * ch * 0.5)}px)` : '' })
+        borderRadius: Math.min(0.014 * ch, w / 2, h / 2) + 'px' })
     }
   }
   clip.querySelectorAll('[data-id]').forEach(n => { if (!seen.has(n.dataset.id)) n.remove() })
@@ -2413,35 +2511,16 @@ function exportOverlay(label) {
 }
 
 async function doExport(pick) {
-  const opts = {
-    start: ed.in, end: ed.out,
+  // The edit as one document, read through the same adapter the MCP export and
+  // preview_frame use. Options built here by hand from the controls dropped every
+  // mark (redactions included) and read the look half from sliders, half from state.
+  const FD = require('./ui/fetchdoc')
+  const doc = window.fetchDoc.get()
+  if (!doc.clips.length) doc.clips = [{ id: 'C1', start: 0, end: ed.dur }]
+  const opts = FD.toExportOpts(doc, {
     format: pick.fmt, quality: pick.q,
     scale: pick.res ? +pick.res : undefined,
-    crop: ed.crop, texts: ed.texts, cuts: ed.cuts,
-    audioTrack: ed.audioTrack ? {
-      file: ed.audioTrack.file, volume: ed.audioTrack.volume,
-      offset: ed.audioTrack.offset, replace: ed.audioTrack.replace,
-    } : null,
-    autoZoom: !!ed.autoZoom,
-    zooms: (ed.zooms || []).map(z => ({ start: z.start, end: z.end, scale: z.scale, x: z.x, y: z.y })),
-    // an agent's adjusted cursor track; null falls back to the one recorded with the take
-    pointer: ed.doc && Array.isArray(ed.doc.pointer) ? ed.doc.pointer : null,
-    hideMacCursor: ed.doc && typeof ed.doc.hideMacCursor === 'boolean' ? ed.doc.hideMacCursor : null,
-    autoZoomOpts: { zoom: $('zoomAmt') ? +$('zoomAmt').value / 100 : 1.7 },
-    backdrop: ed.backdrop || null,
-    backdropAspect: ed.outAspect || null,
-    inset: $('bdInset') ? +$('bdInset').value / 100 : 0.08,
-    radius: $('bdRadius') ? +$('bdRadius').value : undefined,
-    captions: $('burnCaps') && $('burnCaps').checked,
-    captionStyle: ed.capStyle,
-    camera: (ed.cam && ed.cam.on) ? { file: ed.cam.file, x: ed.cam.x, y: ed.cam.y, size: ed.cam.size,
-      screenStartedAt: ed.cam.screenStartedAt, camStartedAt: ed.cam.camStartedAt, gaps: ed.cam.gaps } : null,
-    denoise: $('denoise') && $('denoise').checked,
-    loudnorm: $('loudnorm') ? $('loudnorm').checked : true,
-    gain: $('gain') ? +$('gain').value : 0,
-    fadeIn: $('fadeIn') ? +$('fadeIn').value / 10 : 0,
-    fadeOut: $('fadeOut') ? +$('fadeOut').value / 10 : 0,
-  }
+  })
   $('doExport').disabled = true
   const jobId = Date.now()
   const ov = exportOverlay(ed.backdrop || ed.autoZoom ? 'Building your video' : 'Fetching your video')

@@ -62,6 +62,7 @@ fi
 cp Fetch.icns "$APP/Contents/Resources/Fetch.icns"
 cp -R /tmp/FetchBubble/Fetch.app "$APP/Contents/Resources/Fetch.app"
 swiftc -O WindowList.swift -o "$APP/Contents/Resources/WindowList"
+swiftc -O Elements.swift -o "$APP/Contents/Resources/Elements"
 swiftc -O Recorder.swift  -o "$APP/Contents/Resources/Recorder"
 cp -R Transcribe.app "$APP/Contents/Resources/Transcribe.app"
 
@@ -115,6 +116,7 @@ find "$APP/Contents/Frameworks" -name "chrome_crashpad_handler" -print0 | while 
 for f in "$APP/Contents/Frameworks/"*.framework; do sign "$f/Versions/A"; done
 for h in "$APP/Contents/Frameworks/"*.app; do sign "$h/Contents/MacOS/"*; sign "$h"; done
 sign "$APP/Contents/Resources/WindowList"
+sign "$APP/Contents/Resources/Elements"
 sign "$APP/Contents/Resources/Recorder"
 sign "$APP/Contents/Resources/Fetch.app/Contents/MacOS/Fetch"
 sign "$APP/Contents/Resources/Fetch.app"

@@ -23,3 +23,6 @@ mosaic-home.png
 *.webm
 !assets/**/*.webm
 Recorder
+
+Elements
+tools/spike-compositor/node_modules

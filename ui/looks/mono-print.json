@@ -1,0 +1,11 @@
+{
+  "name": "mono-print",
+  "label": "Mono print",
+  "doc": "Greyscale on an off-white ground, tight corners, printed grain.",
+  "look": {
+    "background": { "kind": "solid", "color": "#F2EFE9" },
+    "frame": { "padding": 0.07, "radius": 6, "shadow": 0.25 },
+    "treatment": { "saturation": -1, "contrast": 0.1 },
+    "grain": { "film": 0.2 }
+  }
+}

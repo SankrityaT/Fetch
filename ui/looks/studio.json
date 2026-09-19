@@ -1,0 +1,10 @@
+{
+  "name": "studio",
+  "label": "Studio",
+  "doc": "Fetch gold gradient, generous padding, a deep shadow.",
+  "look": {
+    "background": { "kind": "gradient", "gradient": "dusk" },
+    "frame": { "padding": 0.07, "radius": 18, "shadow": 0.7 },
+    "grain": { "dither": true }
+  }
+}

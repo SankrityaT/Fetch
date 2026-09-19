@@ -67,9 +67,13 @@ for (let t = 0; t <= 15; t += 0.05) {
 }
 is('a pan between zooms previews as it exports', panWorst, null)
 is('...and did check', panSame, true)
-is('zooms under a second apart never drop to the whole frame between them', lowest >= 1.5 - 0.001, true)
-const mid2 = O.zoomView(PAN, 4.35).s
-is('the pan starts where the second zoom does and eases between the two scales', mid2 < 1.7 && mid2 > 1.5 && O.zoomView(PAN, 3.99).s === 1.7, true)
+is('zooms under a second apart never drop to the whole frame between them', lowest > 1.1, true)
+// far apart (0.8, 0.7 to 0.2, 0.2), the camera eases back while it travels, and lands
+const far = [O.zoomView(PAN, 3.84).s, O.zoomView(PAN, 4.35).s, O.zoomView(PAN, 4.86).s]
+is('a far pan eases back mid-move and lands on the second zoom', [far[0], far[1] < 1.4, far[2]], [1.7, true, 1.5])
+const NEAR = [{ start: 1, end: 4, scale: 1.7, x: 0.5, y: 0.5 }, { start: 4, end: 7, scale: 1.5, x: 0.6, y: 0.55 }]
+const mid2 = O.zoomView(NEAR, 4.35).s
+is('a near pan starts where the second zoom does and eases between the two scales', mid2 < 1.7 && mid2 > 1.5 && O.zoomView(NEAR, 3.99).s === 1.7, true)
 is('a zoom well after the last still pushes in from the whole frame', r3(O.zoomView(PAN, 11.9).s), 1)
 const plan = O.zoomPlan(PAN)
 is('the pans are planned from the zoom before', plan.map(m => !!m.from), [false, true, true, false])

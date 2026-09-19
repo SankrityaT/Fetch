@@ -127,5 +127,27 @@ const display = { x: 0, y: 0, width: 1440, height: 900 }
   is('and the top margin stays the inset', Math.abs(b.oy - b.outH * 0.06) <= 2, true)
 }
 
+// ---- lift and spotlight: the graph ----
+{
+  const size = { w: 2868, h: 1600 }
+  const lift = { kind: 'lift', start: 21.2, end: 27.8, x: 0.749, y: 0.474, w: 0.227, h: 0.32 }
+  const spot = { kind: 'spotlight', start: 35, end: 38.7, x: 0.4194, y: 0.7848, w: 0.3494, h: 0.0426 }
+  const fs = p.focusFilters([lift, spot, { kind: 'step', start: 1, end: 2, x: 0.5, y: 0.5 }], [{ start: 35, end: 38.4, scale: 1.9 }], size, { px: 0.6, fps: 60, span: 52.36 })
+  is('one graph per lift or spotlight, none for a step', fs.length, 2)
+  // the take cut in three around the mark: a layer trimmed over the whole take made
+  // overlay hold every frame before it, gigabytes for a mark half a minute in
+  is('the rest of the take passes through untouched, around the mark', fs.every(g => /trim=end=/.test(g) && /concat=n=3:v=1:a=0$/.test(g)), true)
+  // masks are made once, on a still, before the loop that repeats them
+  is('no mask is evaluated per frame: geq only ever runs on a one-frame still, before any loop',
+    fs.every(g => g.split(';').filter(c => /geq=/.test(c)).every(c => /^color=[^,]*:r=1:d=1,/.test(c) && c.indexOf('geq=') < (c.indexOf('loop=') + 1 || Infinity))), true)
+  is('a lift raises its piece and a spotlight does not', [/zoompan=/.test(fs[0]), /zoompan=/.test(fs[1])], [true, false])
+  is('a spotlight riding its zoom starts with it', /trim=start=35\.000:end=38\.400/.test(fs[1]), true)
+  // each label made once and used once
+  const labels = fs.map(g => { const c = {}; for (const l of g.match(/\[[a-z0-9]+\]/g)) c[l] = (c[l] || 0) + 1; return Object.values(c).every(n => n === 2) })
+  is('every stream label is made once and read once', labels, [true, true])
+  const edge = p.focusFilters([{ ...lift, start: 0, end: 52.36 }], [], size, { fps: 60, span: 52.36 })
+  is('a mark over the whole take is not cut at all', [edge.length, /concat=n=1/.test(edge[0]), /trim=end=/.test(edge[0])], [1, true, false])
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

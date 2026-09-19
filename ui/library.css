@@ -72,3 +72,36 @@
 .lib-menu-item.danger:hover { background: rgba(255, 68, 56, .12); color: #FFD5D1; }
 .lib-menu-item.danger .icon-sm { color: inherit; }
 .lib-menu-empty { padding: 9px 10px; font-size: var(--t-12); color: var(--text-2); }
+
+/* ── naming takes after the fact (openNameTakes in app.js) ─────────────── */
+.name-list {
+  display: grid; max-height: 280px; overflow: auto;
+  background: var(--ink-2); border-radius: var(--r-md); padding: var(--s-1);
+}
+.name-pick {
+  position: relative; display: flex; align-items: center; gap: var(--s-3);
+  padding: var(--s-2) var(--s-3); border-radius: var(--r-sm); cursor: pointer;
+  font-size: var(--t-13); transition: background 120ms var(--ease-in);
+}
+.name-pick:hover { background: rgba(255, 255, 255, .04); }
+.name-pick input { position: absolute; opacity: 0; pointer-events: none; }
+.name-box {
+  width: 18px; height: 18px; flex: none; display: grid; place-items: center;
+  border-radius: 6px; border: 1.5px solid var(--ink-4); color: transparent;
+  transition: background 120ms var(--ease-in), border-color 120ms var(--ease-in);
+}
+.name-box .icon-sm { width: 14px; height: 14px; }
+.name-pick input:checked + .name-box { background: var(--fur-1); border-color: var(--fur-1); color: var(--ink-0); }
+.name-pick input:focus-visible + .name-box { outline: 2px solid var(--fur-1); outline-offset: 2px; }
+.name-pick input:disabled ~ * { opacity: .6; }
+.name-was { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name-pick input:not(:checked) ~ .name-was { color: var(--text-2); }
+.name-when { font-size: var(--t-11); color: var(--text-2); flex: none; }
+
+.lib-named {
+  display: flex; align-items: center; gap: var(--s-3);
+  margin-bottom: var(--s-4); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-4);
+  background: var(--ink-1); border-radius: var(--r-md);
+  box-shadow: var(--shadow-1), var(--sheen); font-size: var(--t-13);
+}
+.lib-named > .icon-sm { color: var(--good); flex: none; }

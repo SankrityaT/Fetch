@@ -39,19 +39,26 @@ function build() {
         'access setting, Fetch may first ask them to approve the take, so this can wait ' +
         'on a person; if they decline, it fails with that reason. The take is recorded ' +
         'without the Mac\'s own pointer; report yours with the pointer tool as you act, and ' +
-        'the video draws a cursor there. If the window is mostly covered by other windows, ' +
+        'the video draws a cursor there. With neither window nor display, Fetch records the window of ' +
+        'the app in front (never Fetch itself), and the result names it; pass full_screen or display ' +
+        'only when the person asked for the whole screen. If the window is mostly covered by other windows, ' +
         'nothing is recorded and this returns status "occluded" with what covers it, the ' +
         'display it is on and the crop that shows just that window.',
       inputSchema: z.object({
         display: z.string().optional()
-          .describe('Display id to record. Omit to record the main display.'),
+          .describe('Display id to record the whole of. Only when the person asked for the whole screen.'),
         window: z.string().optional()
-          .describe('Window id from list_windows. Records that window only, instead of a display.'),
+          .describe('Window id from list_windows. Records that window only. Omit to record the front app\'s window.'),
+        full_screen: z.boolean().optional()
+          .describe('Record the whole main display instead of a window. Only when the person asked for it.'),
         allow_covered: z.boolean().optional()
           .describe('Record a window even when other windows cover it. Its covered part will not update.'),
         mic: z.boolean().optional().describe('Include the microphone. Default off.'),
         system_audio: z.boolean().optional().describe('Include audio playing on the Mac. Default off.'),
         camera: z.boolean().optional().describe('Record the camera bubble. Default off; only when the person asked for their face.'),
+        name: z.string().optional()
+          .describe('Name for the take, e.g. "Linear · Issue Triage". Used as given and never replaced. ' +
+            'Omit it and Fetch names the take from the app in front and, when it has speech, from what was said.'),
       }),
     },
     async args => {
@@ -71,7 +78,9 @@ function build() {
         'Original/ subfolder; pass that path to the editing tools. If the recorded window ' +
         'closed before this was called, the take up to that moment is already saved: this ' +
         'returns its path with stopped_early set. If a recorded window showed nothing new for ' +
-        'several seconds (usually because another window covered it), note says so.',
+        'several seconds (usually because another window covered it), note says so. A take given ' +
+        'no name may be renamed shortly after, from what was said; the path returned here keeps ' +
+        'working with every tool, and list_recordings shows the new one.',
       inputSchema: z.object({}),
     },
     async () => text(await drive('record.stop', {}, { timeoutMs: 3 * 60 * 1000 })))
@@ -189,20 +198,52 @@ function build() {
         'All positions and sizes are 0 to 1 fractions of the frame AFTER the crop (use ' +
         'get_frame with cropped: true to see it); all times are seconds in the original ' +
         'recording.\n' +
-        'LISTS (sending one replaces that whole list; omit id on new items):\n' +
+        'AIMING: before placing any zoom or mark, call find_on_screen at that moment with the ' +
+        'person\'s words and send element: its E id (e.g. element: \'E12\'), or its box; never ' +
+        'work out x, y and scale yourself or place one from coordinates guessed off a ' +
+        'picture (the result warns when a zoom is aimed by a centre point). Add only what was asked for: a zoom request is a zoom, not a ' +
+        'zoom plus a spotlight. A new lift or spotlight takes the place of any it overlaps (the ' +
+        'result lists them under replaced; the result warns if two still overlap). A lift needs room: one whose box is at or near ' +
+        'the frame edge, or on a pane whose content is cut off (find_on_screen marks these no_lift), is refused, ' +
+        'naming the card or grid inside it to lift instead: when the person asked for a lift, lift that one; a spotlight ' +
+        'is for when nothing inside can be raised, and say so. A new lift or ' +
+        'spotlight is held to the part of its span where its box shows the element, so one timed ' +
+        'to the narration does not lift a card before it opens (the result lists it under retimed). ' +
+        'The result\'s check.preview_frame_at lists when to look (just after each new zoom or mark lands, ' +
+        'and in its middle): call preview_frame once with at set to all of them, and fix the edit if any ' +
+        'frame is not on the thing the person meant, before saying it is done. Re-aiming a zoom lists under ' +
+        'alongside the lifts and spotlights still playing with it; remove one the person did not ask for, and name each.\n' +
+        'LISTS (sending clips, zooms, texts or cues replaces that whole list; keep the id on every item you send ' +
+        'back, and omit id only on new items). marks are merged by id instead: a mark sent with ' +
+        'an id changes that mark, one without an id is added, and every mark you leave out stays. ' +
+        'To delete anything, name it: remove: [\'M12\', \'Z3\'] (any list). The result lists every ' +
+        'id the edit took out under removed and replaced; tell the person.\n' +
         '- clips [{id,start,end}]: the kept pieces in order. Trimming or cutting is ' +
         'changing these.\n' +
-        '- zooms [{id,start,end,scale,x,y}]: scale e.g. 1.8; x,y the point to centre on. ' +
+        '- zooms [{id,start,end,element} or {id,start,end,box} or {id,start,end,scale,x,y}]: ' +
+        'element is an E id from your last find_on_screen on this recording; box {x,y,w,h} is the thing ' +
+        'to frame (from find_on_screen): Fetch centres on it with room around it and picks the ' +
+        'scale (1.2x to 2.6x). Sent with a box, the zoom\'s old x, y and scale are ignored. ' +
+        'Otherwise scale e.g. 1.8 and x,y the point to centre on. ' +
         'Left out, scale is 1.8 and x,y the frame centre, so "zoom in on the first two ' +
         'seconds" is just {start:0,end:2}: add it, do not ask for numbers the person did not give.\n' +
         '- marks [{id,kind,start,end,x,y,w,h,n,strength}]: kind is redact (destroys the ' +
         'region, for anything private), blur (a Gaussian blur, strength 4 to 60, default ' +
         '18; softens but can be partly undone, so never for secrets; soft rounded edge), ' +
-        'spotlight (dims everything else to about half; a zoom starting or ending within ' +
-        '1.2s of it, or up to 3s inside it, carries it, so the two read as one move) or step (a round gold badge; n is the ' +
-        'number, left out the steps count 1, 2, 3 in order). For redact, blur and spotlight x,y is the top-left corner; for step x,y is ' +
+        'lift (the element raised off the page: cut out with its own rounded corners, a ' +
+        'few percent larger over a soft shadow, the rest of the frame dimmed about a third ' +
+        'and lightly blurred; the premium way to say "look at this card", best with the ' +
+        'element\'s exact box), spotlight (the same cutout without the rise: the element ' +
+        'stays put, everything else dims to about half with a light blur), or step (a round gold badge; n is the ' +
+        'number, left out the steps count 1, 2, 3 in order). Lift and spotlight ease in and ' +
+        'out on the zoom curve, and a zoom starting or ending within 1.2s of one, or up to ' +
+        '3s inside it, carries it, so zoom and lift read as one move: to zoom on and lift ' +
+        'one thing, send the same box to both. For redact, blur, lift and spotlight x,y is the top-left corner; for step x,y is ' +
         'the point it numbers, e.g. the corner of a card, and the badge is centred there so ' +
         'it never covers the card\'s label.\n' +
+        '  Any mark also takes element (an E id from your last find_on_screen) or box {x,y,w,h} ' +
+        'in place of x,y,w,h, the element\'s box as find_on_screen returned it; a step goes on ' +
+        'that box\'s top left corner.\n' +
         '- texts [{id,text,start,end,fx,fy,sizeFrac,color,box,font,align,style,subtitle}]: ' +
         'overlays. fx,fy is the centre; sizeFrac is text height as a fraction of the frame, ' +
         'e.g. 0.06; start and end null for the whole clip. style is title (a title card: the ' +
@@ -210,7 +251,7 @@ function build() {
         'at the start the video rises into place as it clears; use for the opening and ' +
         'closing seconds, e.g. the product name, then the URL), lower-third (a name and a ' +
         'line under it, bottom left, with a gold rule) or label (a short line over the ' +
-        'video; box puts it on a dark pill). Without style, a centred text in the first or ' +
+        'video; box true puts it on a dark pill: on a text, box is true or false, not a place). Without style, a centred text in the first or ' +
         'last second, up to 8s long, is a title and anything else a label. subtitle is the ' +
         'smaller line; without it, "Title · subtitle" or a line break splits the text. ' +
         'Titles and lower thirds use the house face; font applies to labels.\n' +
@@ -220,21 +261,22 @@ function build() {
         'agent take. Unlike everything else, x,y are fractions of the whole recording (before ' +
         'the crop), so a crop does not move it. Read it with get_edit include_pointer. [] draws ' +
         'no cursor; null goes back to the track recorded with the take.\n' +
-        '- hideMacCursor: true lifts the Mac\'s own pointer out of a take that has it in the ' +
-        'pixels (older agent takes, a person\'s take), false keeps it, null (the default) ' +
-        'lifts it only when a pointer track is drawn instead.\n' +
         'SETTINGS (merged, so send only the fields you change):\n' +
-        '- look {denoise, loudnorm, gain (dB, -10 to 10), fadeIn, fadeOut (seconds), ' +
-        'burnCaps (burn captions into the video), zoomAmt (auto-zoom depth), bdInset, bdRadius}\n' +
-        '- capStyle {font, scale, colour (#RRGGBB), position (top|middle|bottom), highlight ' +
-        '(word: the spoken word turns gold, pill: it sits on a gold pill, none)}. Captions ' +
-        'are bold white with a soft shadow, in short phrases of up to two lines, fading in ' +
-        'and out; boxed is ignored.\n' +
+        '- look: how the video looks, by section, e.g. {preset: \'studio\'} or ' +
+        '{frame: {aspect: \'16:9\', padding: 0.08}, background: {kind: \'gradient\', gradient: \'ink\'}, ' +
+        'captions: {font, scale, colour, position, highlight}, motion: {fadeIn, fadeOut, zoomDepth}, ' +
+        'cursor: {show, hideSystem}}. Every field, range and default: get_look_schema; whole looks: ' +
+        'list_looks and apply_look. A field left out is kept, null resets it, {preset} starts from that look. ' +
+        'Output keeps the take\'s shape unless frame.aspect is set, and a chosen shape is filled by the ' +
+        'background, never black bars. Values out of range are clamped and listed under look_warnings, ' +
+        'with any field this version does not draw yet.\n' +
+        '- audio {denoise, loudnorm, gain (dB, -10 to 10), music (a bed under the voice, ducked ' +
+        'while anyone speaks: warm, bright, calm, or null for none)}\n' +
         '- camera {on, x, y, size}: only if a camera was recorded; x,y the bubble centre, ' +
         'size 0.1 to 0.45.\n' +
         '- crop {x,y,w,h} or null to remove it; cropAR sets the crop shape.\n' +
-        '- backdrop: a name from options.backdrops, or null. outAspect: output shape, e.g. ' +
-        '0.5625 for vertical, or null.\n' +
+        'Older fields still work and are moved into look: backdrop, outAspect, capStyle, hideMacCursor, ' +
+        'and look.zoomAmt, bdInset, bdRadius, burnCaps, denoise, loudnorm, gain, fadeIn, fadeOut, music.\n' +
         '- autoZoom: true to zoom automatically on each click, or where the pointer settled ' +
         'if nothing was clicked. Explicit zooms win over it. It follows the pointer track ' +
         'when the take has one (clicks sent with the pointer tool), otherwise the real ' +
@@ -262,7 +304,8 @@ function build() {
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
         format: z.enum(['mp4', 'webm', 'gif', 'mov']).optional().describe('Defaults to mp4.'),
-        quality: z.enum(['fast', 'balanced', 'best']).optional().describe('Defaults to balanced.'),
+        quality: z.enum(['fast', 'balanced', 'best']).optional()
+          .describe('best is the largest, sharpest file; fast the smallest. Defaults to balanced.'),
         resolution: z.enum(['720', '1080']).optional().describe('Omit to keep the original size.'),
       }),
     },
@@ -277,10 +320,12 @@ function build() {
         'folder, the raw take, its working versions and the deliverable are all renamed ' +
         'together; its transcript, beats, camera take and edit move with it. If the name is ' +
         'taken it becomes "Name 2". Returns the new path and name, which replace the old ' +
-        'ones in any later call.',
+        'ones in any later call. Without a name, Fetch names it the way it names new takes ' +
+        '(the app it showed and what was said), only if its name is still an automatic one ' +
+        'such as recording-<timestamp>; a name a person typed is left alone.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
-        name: z.string().describe('The new name, without an extension.'),
+        name: z.string().optional().describe('The new name, without an extension. Omit to have Fetch name it.'),
       }),
     },
     async args => text(await drive('recordings.rename', args)))
@@ -290,7 +335,8 @@ function build() {
     {
       description:
         'Show one frame of a recording, as an image and a saved JPEG path, to look at what is on ' +
-        'screen at a moment before placing a zoom, redaction, spotlight or step. Positions ' +
+        'screen at a moment. To place a zoom, redaction, spotlight or step, use find_on_screen ' +
+        'instead, which returns the boxes to send. Positions ' +
         'in apply_edit are fractions of the frame from the top left, 0 to 1, so a point a ' +
         'quarter across and halfway down is x 0.25, y 0.5.',
       inputSchema: z.object({
@@ -308,6 +354,128 @@ function build() {
       try { out.content.push({ type: 'image', mimeType: 'image/jpeg', data: readFileSync(r.image).toString('base64') }) } catch {}
       return out
     })
+
+  // Aiming by what is there rather than by eye. A model looking at one frame guessed
+  // coordinates and zoomed on the wrong button; this hands it numbered boxes.
+  server.registerTool(
+    'find_on_screen',
+    {
+      description:
+        'Find the things on a frame that an edit can point at, before placing any zoom, ' +
+        'lift, spotlight, blur, redaction or step. Reads the frame on this Mac (text, and the chip, ' +
+        'button or card around it, and the panels and card grids they sit in) and returns ' +
+        'elements E1, E2... each with its text, kind (chip, card, panel, grid, icon, text, ' +
+        'shape), box {x,y,w,h}, background colour and tone, confidence, and `in`: the element ' +
+        'it sits in. Plus the frame with those elements outlined and numbered. For something ' +
+        'bigger than one card (a details panel, a stats grid, a sidebar), use the panel or grid ' +
+        'element, or step out through `in`; never draw a box by eye. With query ' +
+        '(the person\'s own words: "the black chip", "the yellow Pick for me button", ' +
+        '"Tonight") the best matches come first, scored on the words on the element, its ' +
+        'colour and its kind. Look at the picture to check the first one is what the person meant; ' +
+        'if not, pick another by its number or search again with other words. Name the ' +
+        'chosen one in apply_edit as element: \'E12\' (zooms[].element, marks[].element; ids ' +
+        'from the latest search on that recording), or send its box as it is: boxes are fractions of ' +
+        'the frame after the edit\'s crop, the frame apply_edit places things in.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        at: z.number().min(0).describe('Seconds into the recording, a moment the thing is fully on screen.'),
+        query: z.string().optional().describe('What the person called it, in their words. Omit to list everything.'),
+        cropped: z.boolean().optional().describe('Default true: measured after the edit\'s crop, as apply_edit takes ' +
+          'positions. False: the whole recording.'),
+        limit: z.number().int().min(1).max(60).optional().describe('How many elements to return and number. Default 8 with a query, 40 without.'),
+      }),
+    },
+    async args => {
+      const r = await drive('find', args, { timeoutMs: 60000 })
+      const out = text(r)
+      try { out.content.push({ type: 'image', mimeType: 'image/jpeg', data: readFileSync(r.image).toString('base64') }) } catch {}
+      return out
+    })
+
+  server.registerTool(
+    'preview_frame',
+    {
+      description:
+        'Show frames of the edited video exactly as export will draw them (crop, zoom, marks, ' +
+        'captions, text, backdrop), as images, a couple of seconds each. Call it after every ' +
+        'apply_edit that places a zoom or a mark, with at set to the times the result lists under ' +
+        'check.preview_frame_at (just after it lands and in its middle, both in one call), and look at ' +
+        'every frame: the thing the person asked for should be the subject, and nothing else should ' +
+        'dim or cover it. If it is not, fix the edit and preview again before reporting back.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        at: z.union([z.number().min(0), z.array(z.number().min(0)).min(1).max(6)])
+          .describe('Seconds into the original recording: one time, or a list (up to 6), e.g. [35.9, 36.7].'),
+        look: z.record(z.string(), z.any()).optional()
+          .describe('A look to try on these frames without saving it, in apply_look\'s shape, e.g. {preset: \'film\'}.'),
+      }),
+    },
+    async args => {
+      const n = Array.isArray(args.at) ? args.at.length : 1
+      const r = await drive('edit.preview', args, { timeoutMs: 60000 * n })
+      const out = text(r)
+      // in the order of frames[] in the text, which says when each is; a second text
+      // block would stop the chat reading the result as JSON
+      for (const f of r.frames || [r]) {
+        try { out.content.push({ type: 'image', mimeType: 'image/jpeg', data: readFileSync(f.image).toString('base64') }) } catch {}
+      }
+      return out
+    })
+
+  // Looks: the whole of how a video looks, as one spec (ui/look-schema.js)
+  server.registerTool(
+    'get_look_schema',
+    {
+      description:
+        'Every setting of how a video looks (frame, background, captions, motion, cursor and more), ' +
+        'one line each: its type or range, its default and what it does. Read it before building a look ' +
+        'by hand with apply_look or apply_edit\'s look.',
+      inputSchema: z.object({}),
+    },
+    async args => text(await drive('look.schema', args)))
+
+  server.registerTool(
+    'list_looks',
+    {
+      description:
+        'The looks that can be applied whole with apply_look (built-in presets and ones the person or ' +
+        'an agent saved), and the gradient and image backgrounds a look can use.',
+      inputSchema: z.object({}),
+    },
+    async args => text(await drive('look.list', args)))
+
+  server.registerTool(
+    'apply_look',
+    {
+      description:
+        'Change how a recording looks: start from a named look (preset), change fields (look, by ' +
+        'section, e.g. {background: {kind: \'solid\', color: \'#1A1714\'}, frame: {radius: 18}}), put ' +
+        'fields back (reset, e.g. [\'frame.padding\']), or all three. Fields left out are kept. The person ' +
+        'sees it in the editor and one Undo takes it back. Returns the look as its preset and what differs ' +
+        'from it, and look_warnings for values clamped and fields this version does not draw yet. Check ' +
+        'the result with preview_frame.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        preset: z.string().optional().describe('A look from list_looks to start from, e.g. studio.'),
+        look: z.record(z.string(), z.any()).optional().describe('Fields to change, by section.'),
+        reset: z.array(z.string()).optional().describe('Field paths to put back to the preset, e.g. [\'frame.shadow\'].'),
+      }),
+    },
+    async args => text(await drive('look.apply', args, { timeoutMs: 60000 })))
+
+  server.registerTool(
+    'save_look',
+    {
+      description:
+        'Save a look under a name so it can be applied to other recordings (apply_look preset) and ' +
+        'shows in the editor\'s looks. Saves the look of the recording at path, or the look given.',
+      inputSchema: z.object({
+        name: z.string().describe('What to call it, e.g. "Launch video".'),
+        path: z.string().optional().describe('A recording whose look to save.'),
+        look: z.record(z.string(), z.any()).optional().describe('A look to save instead, by section.'),
+      }),
+    },
+    async args => text(await drive('look.save', args)))
 
   server.registerTool(
     'remove_dead_air',
@@ -345,8 +513,8 @@ function build() {
       description:
         'Read Fetch\'s recording settings: save folder, camera, microphone, system audio, ' +
         'countdown, whether the editor opens after a take, whether originals are kept, ' +
-        'quick record, and automatic updates. Also lists the settings only a person can ' +
-        'change.',
+        'quick record, automatic updates, and whether takes are named with the person\'s agent ' +
+        '(agentNames). Also lists the settings only a person can change.',
       inputSchema: z.object({}),
     },
     async () => text(await drive('settings.get')))
@@ -372,6 +540,9 @@ function build() {
           quickRecord: z.boolean().optional(),
           autoConvertMp4: z.boolean().optional(),
           autoUpdate: z.boolean().optional(),
+          agentNames: z.boolean().optional()
+            .describe('Name new takes with the person\'s own agent CLI from the app in front and the first words said. ' +
+              'Unset, it is on while Claude Code or Codex is connected. Names someone typed are never changed.'),
         }).passthrough(),
       }),
     },

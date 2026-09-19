@@ -49,6 +49,10 @@ let endedTake = null
 // When a take ended on its own and is still being saved, so a record_stop in that
 // second waits for the path instead of hearing "not recording".
 let endingAt = 0
+// What find_on_screen last handed out for each recording, so apply_edit can take
+// element: 'E129' and use that element's own box. An agent given a box still worked
+// out a centre and a scale by hand; naming the element leaves nothing to work out.
+const foundBy = new Map()      // path -> { at, boxes: Map(id -> box) }
 
 function socketPath() {
   const dir = app ? app.getPath('userData') : require('os').tmpdir()
@@ -76,12 +80,21 @@ const TITLES = {
   'recordings.rename': 'Renamed a recording',
   'edit.silence': 'Removed dead air',
   frame: 'Looked at a frame',
+  find: 'Looked for something on screen',
+  'edit.preview': 'Checked a frame of the edit',
   'edit.enhance': 'Cleaned up the audio',
   'settings.set': 'Changed settings',
   'recordings.trash': 'Moved a recording to the Trash',
+  'look.schema': 'Read the look settings',
+  'look.list': 'Listed looks',
+  'look.apply': 'Changed a look',
+  'look.save': 'Saved a look',
 }
 
 const { AGENT_PREFS, HUMAN_ONLY_PREFS } = policy
+// Where agents run. Never the product an agent means when it records "the app in front".
+const AGENT_HOSTS = ['Terminal', 'iTerm2', 'Warp', 'Ghostty', 'kitty', 'Alacritty', 'WezTerm', 'Hyper',
+  'Conductor', 'Claude', 'Codex', 'ChatGPT']
 
 const ops = {
   // Sent once by the shim so the log can say which agent is driving rather than
@@ -110,6 +123,18 @@ const ops = {
     const win = deps.getWindow()
     if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
 
+    // Window first: with no window and no display named, the take is the window of the
+    // app in front, not the whole screen, which caught the person's other windows,
+    // notifications and desktop. The terminal or chat the agent itself runs in, and
+    // anything on the never-record list, are looked past.
+    let front = null
+    if (args.window == null && args.display == null && !args.full_screen && deps.frontWindow) {
+      const prefs = deps.getPrefs ? deps.getPrefs() : {}
+      const never = (prefs.neverRecord || policy.DEFAULT_NEVER || []).map(x => typeof x === 'string' ? x : x && x.app).filter(Boolean)
+      front = await deps.frontWindow([...AGENT_HOSTS, ...never]).catch(() => null)
+      if (front) args = { ...args, window: String(front.id) }
+    }
+
     // Access check before anything starts. This is the enforcement point: the rule
     // lives here rather than in the MCP tool description, because a description is
     // prose and prose is a suggestion.
@@ -128,18 +153,28 @@ const ops = {
     const quiet = !(deps.getPrefs && deps.getPrefs().agentTakesVisible)
     if (deps.setQuiet) deps.setQuiet(quiet, true)
     await win.webContents.executeJavaScript(`window.__quietTake = ${quiet}`)
+    // A name the agent gives is used as it is and never replaced by an automatic one
+    const naming = require('./naming')
+    const given = args.name != null ? naming.fit(naming.clean(args.name)) : ''
+    await win.webContents.executeJavaScript(`window.__takeName = ${JSON.stringify(given || null)}`)
     deps.toRenderer('start')
 
     // The renderer counts down before it captures, so allow for that plus a margin.
-    return await new Promise((resolve, reject) => {
+    const started = await new Promise((resolve, reject) => {
       pendingTake = {
         phase: 'starting', resolve, reject,
         timer: setTimeout(() => {
           pendingTake = null
+          // the name was for this take, not the person's next one
+          if (!win.isDestroyed()) win.webContents.executeJavaScript('window.__takeName = null').catch(() => {})
           reject(new Error('the recording did not start in time'))
         }, 30000),
       }
     })
+    // say which window was picked, so an agent that meant another can stop and name it
+    return front && started && typeof started === 'object'
+      ? { ...started, recording: { window: String(front.id), app: front.app, title: front.title || '', chosen: 'the app in front' } }
+      : started
   },
 
   async 'record.stop'() {
@@ -228,9 +263,126 @@ const ops = {
   async 'edit.apply'(args = {}) {
     if (!args.path) throw new Error('path is required')
     if (!args.doc || typeof args.doc !== 'object') throw new Error('doc is required')
+    const FD = require('./fetchdoc')
+    args = { ...args, doc: withElements(args.path, args.doc) }
+    if (args.doc.remove != null && !Array.isArray(args.doc.remove)) throw new Error('remove is a list of ids, e.g. remove: [\'M12\']')
+    // marks: { remove: [...] } was taken as nothing and reported as done
+    for (const k of ['clips', 'zooms', 'texts', 'marks', 'cues']) {
+      if (args.doc[k] != null && !Array.isArray(args.doc[k])) {
+        throw new Error(`${k} is a list; to delete items send remove: ['M12'] beside it in doc, not inside it`)
+      }
+    }
+    const prev = ['marks', 'zooms', 'texts', 'remove'].some(k => Array.isArray(args.doc[k]))
+      ? await inEditor(args.path, 'window.fetchDoc.get()') : null
+    // a new lift or spotlight replaces the one it lands on, rather than stacking
+    let replaced = [], timed = null
+    if (Array.isArray(args.doc.marks)) {
+      // marks are merged by id (FD.mergeMarks): the ones not sent stay, so settle the
+      // whole list, and what settling drops goes out as remove, or the merge keeps it
+      const merged = FD.mergeMarks(prev && prev.marks, args.doc.marks, args.doc.remove)
+      const s = FD.settleFocus(prev && prev.marks, merged.marks)
+      args = { ...args, doc: { ...args.doc, marks: s.marks, remove: [...(args.doc.remove || []), ...s.replaced] } }
+      replaced = s.replaced
+      timed = await timeFocus(args.path, prev, args.doc).catch(() => ({ moved: [], absent: [] }))
+    }
     const doc = await inEditor(args.path, `window.fetchDoc.apply(${JSON.stringify(args.doc)})`)
     deps.proc.writeDoc(args.path, doc)
-    return summarise(doc, args.path)
+    const out = summarise(doc, args.path)
+    if (replaced.length) out.replaced = { marks: replaced, why: 'a new lift or spotlight takes the place of one it overlaps' }
+    // Anything else this edit took out (named in remove, or left out of a zooms or texts
+    // list), so the reply can say so rather than the person finding out in the export.
+    const gone = removedIds(prev, doc).filter(id => !replaced.includes(id))
+    if (gone.length) out.removed = { ids: gone, why: 'these are no longer in the edit; say so in your reply' }
+    const check = checkTimes(FD, prev, doc)
+    if (check.length) {
+      out.check = { preview_frame_at: check, why: 'call preview_frame once with at set to these times (just after each new zoom or mark lands, and in its middle) and look before replying' }
+    }
+    // a new mark had no id when it was timed; name it by the one it was given
+    if (timed) {
+      for (const a of [...timed.moved, ...timed.absent]) {
+        if (!/^the new /.test(a.id)) continue
+        const to = a.to || [a.start, a.end]
+        const m = (doc.marks || []).find(x => x.kind === (a.kind || x.kind) && x.start === to[0] && x.end === to[1] && ['lift', 'spotlight'].includes(x.kind))
+        if (m) a.id = m.id
+      }
+    }
+    if (timed && timed.moved.length) {
+      out.retimed = { marks: timed.moved, why: 'the element is only on screen for part of the span, so the lift or spotlight now starts when it appears and ends when it goes' }
+    }
+    if (timed && timed.absent.length) {
+      out.warnings = (out.warnings || []).concat(timed.absent.map(a =>
+        `${a.id} (${a.kind} ${a.start}-${a.end} s): what is inside its box keeps changing, so no one element is there for the span. ` +
+        'Call find_on_screen at a moment the element is fully open and preview_frame near the start and the end.'))
+    }
+    // what the look part of the edit did: values clamped, fields unknown, settings not drawn yet
+    const lw = lookWarnings(FD.lookPatchOf(args.doc).look, doc, args.path)
+    if (lw.length) out.look_warnings = lw
+    const warn = [...handAimed(FD, prev, args.doc, doc), ...FD.focusClashes(doc.marks).map(c =>
+      `${c.a} (${c.kinds[0]}) and ${c.b} (${c.kinds[1]}) cover the same part of the frame from ${c.start} to ${c.end} s, ` +
+      'so one dims or cuts across the other. Keep one of them unless the person asked for both.'),
+    ...(Array.isArray(args.doc.zooms) ? FD.zoomClashes(doc.zooms) : []).map(c =>
+      `${c.a} and ${c.b} are both zooms from ${c.start} to ${c.end} s, and only one frames the shot at a time. ` +
+      'Re-aim or retime the one already there rather than adding a second.')]
+    if (warn.length) out.warnings = (out.warnings || []).concat(warn)
+    const along = FD.focusAlongside(prev, doc)
+    if (along.length) {
+      out.alongside = { marks: along, why: 'these still play during the zoom you changed. An earlier edit may have added them unasked: ' +
+        'remove one (remove: [id]) if the person did not ask for it or complained about a highlight there, and name each in your reply' }
+    }
+    return out
+  },
+
+  // ── looks ──────────────────────────────────────────────────────────────
+  // The Look spec (ui/look-schema.js) as an agent reads it: every field, its range and
+  // default, one line each, generated from the same table the inspector is.
+  async 'look.schema'() {
+    const Look = require('./look')
+    return {
+      how: 'A look is { preset, <section>: { <field>: value } }. Send only what changes: a field left out is kept, ' +
+        'null puts it back to the preset, { preset: name } starts from that look. Fields marked [new renderer] are ' +
+        'saved but not drawn by this version; apply_look warns when one is set.',
+      fields: Look.describe(),
+      looks: Look.list(looksDir()).map(p => p.name),
+    }
+  },
+
+  async 'look.list'() {
+    const Look = require('./look')
+    return {
+      looks: Look.list(looksDir()).map(p => ({ name: p.name, label: p.label, about: p.doc || undefined, yours: p.mine || undefined })),
+      backgrounds: { gradients: Object.keys(require('./look-schema').GRADIENTS),
+        images: deps.proc.backdropList().filter(b => b.image).map(b => b.id) },
+    }
+  },
+
+  // A look onto a recording's edit: a preset, a patch, fields to reset, or all three.
+  // Through the editor like apply_edit, so the person sees it and one Undo takes it back.
+  async 'look.apply'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const Look = require('./look')
+    const patch = { ...(args.look && typeof args.look === 'object' ? args.look : {}) }
+    if (args.preset) patch.preset = args.preset
+    for (const p of Array.isArray(args.reset) ? args.reset : []) patch[String(p)] = null
+    if (!Object.keys(patch).length) throw new Error('send preset, look or reset')
+    const doc = await inEditor(args.path, `window.fetchDoc.apply(${JSON.stringify({ look: patch })})`)
+    deps.proc.writeDoc(args.path, doc)
+    const out = { look: Look.compact(doc.look, looksDir()) }
+    const w = lookWarnings(patch, doc, args.path)
+    if (w.length) out.look_warnings = w
+    return out
+  },
+
+  async 'look.save'(args = {}) {
+    if (!args.name) throw new Error('name is required')
+    const Look = require('./look')
+    let look = args.look && typeof args.look === 'object' ? Look.validate(args.look).look : null
+    if (!look) {
+      if (!args.path) throw new Error('send path (to save that recording\'s look) or look')
+      const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+      look = deps.proc.readDoc(args.path, meta && meta.duration).look
+    }
+    const saved = Look.save(looksDir(), args.name, look)
+    return { name: saved.name, label: saved.label, changes: saved.look }
   },
 
   // Renders the recording's current edit, exactly what the editor's Export would.
@@ -270,6 +422,56 @@ const ops = {
     }
     const r = await deps.proc.frameAt(args.path, args.at, 1280, crop)
     return { image: r.file, at: r.at, source_width: r.width, source_height: r.height, cropped: !!crop }
+  },
+
+  // The things on a frame an edit can land on, found on device and ranked against what
+  // the person said. Measured after the crop unless asked otherwise, because that is
+  // the frame every zoom and mark is placed in.
+  async find(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    if (!fs.existsSync(args.path)) throw new Error('no such file')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    const crop = args.cropped === false ? null : deps.proc.readDoc(args.path, meta && meta.duration).crop || null
+    const r = await deps.proc.findOnScreen(args.path, args.at, { crop, query: args.query, limit: args.limit })
+    // only boxes measured in apply_edit's frame (after the crop) can be named there
+    const T = require('./targets'), all = r.all || r.elements
+    // a card, grid or panel a lift would come out wrong on says so here, with the one
+    // inside it to lift instead, so the agent does not have to be refused to learn it
+    const noLift = new Map()
+    for (const e of r.elements) {
+      if (!['card', 'grid', 'panel'].includes(e.kind)) continue
+      const b = T.liftBlock(e, all)
+      if (b) noLift.set(e.id, b)
+    }
+    const boxes = new Map(r.elements.map(e => [e.id, e.box]))
+    for (const b of noLift.values()) if (b.instead) boxes.set(b.instead.id, b.instead.box)
+    if (crop || args.cropped !== false) foundBy.set(args.path, { at: r.at, boxes, all })
+    return {
+      image: r.image, at: r.at, cropped: !!crop, query: args.query || null,
+      found: r.found, shown: r.elements.length,
+      elements: r.elements.map(e => ({
+        id: e.id, text: e.text, kind: e.kind, box: e.box,
+        colour: e.background.colour, tone: e.background.tone, hex: e.background.hex, luminance: e.background.luminance,
+        confidence: e.confidence, ...(e.in ? { in: e.in } : {}), ...(e.cards ? { cards: e.cards } : {}),
+        ...(e.score != null && args.query ? { score: e.score } : {}),
+        ...(noLift.has(e.id) ? { no_lift: liftAdvice(noLift.get(e.id)) } : {}),
+      })),
+    }
+  },
+
+  // One frame of the saved edit drawn as the export would, to check an edit landed.
+  async 'edit.preview'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    if (!fs.existsSync(args.path)) throw new Error('no such file')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    let doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    // a look to try, drawn without saving it
+    if (args.look && typeof args.look === 'object') doc = require('./fetchdoc').mergeDoc(doc, { look: args.look })
+    // several moments in one call: the start of a move and its middle are both checked
+    const times = (Array.isArray(args.at) ? args.at : [args.at]).slice(0, 6)
+    const frames = []
+    for (const t of times) frames.push(await deps.proc.previewFrame(args.path, doc, t))
+    return { image: frames[0].file, at: frames[0].at, frames: frames.map(r => ({ image: r.file, at: r.at })) }
   },
 
   async 'edit.silence'(args = {}) {
@@ -324,7 +526,7 @@ const ops = {
       refresh()
       return { trashed: take, folder: true, recoverable: true }
     }
-    const side = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
+    const side = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3', '.name.json']
       .map(e => deps.proc.sidecarIn(args.path, e)).filter(f => f !== args.path && fs.existsSync(f))
     for (const f of [args.path, ...side]) await shell.trashItem(f)
     refresh()
@@ -333,6 +535,13 @@ const ops = {
 
   async 'recordings.rename'(args = {}) {
     if (!args.path) throw new Error('path is required')
+    // No name: the same naming as a new take, and only over a name Fetch gave it
+    if (args.name == null && deps.nameTake) {
+      const r = await deps.nameTake(args.path)
+      if (!r || !r.to) return { path: args.path, name: deps.proc.takeName(args.path), renamed: false, reason: (r && r.skipped) || 'nothing better to name it from' }
+      const take = deps.proc.takeDir(r.to)
+      return { path: r.to, name: r.name, renamed: true, ...(take ? { folder: take } : {}) }
+    }
     const naming = require('./naming')
     const stem = naming.fit(naming.clean(args.name || ''))
     if (!stem) throw new Error('name is empty once cleaned')
@@ -480,6 +689,122 @@ async function askPerson(message, detail, sessionLabel) {
   return 'no'
 }
 
+// A lift or spotlight an agent times to the narration can start before the card it
+// raises has opened, lifting whatever was there first. Each new or moved one is held to
+// the part of its span where its box shows one steady picture (Targets.presentSpan),
+// changing doc.marks in place. Returns what moved and what never settled.
+// element: 'E129' on a zoom or mark is that element's box from the last find_on_screen
+// on this recording. An id it never handed out is refused rather than guessed at.
+function withElements(src, doc) {
+  const seen = foundBy.get(src)
+  const swap = list => !Array.isArray(list) ? list : list.map(it => {
+    if (it && it.kind === 'lift') liftable(seen, it)
+    if (!it || !it.element) return it
+    const { element, ...rest } = it
+    const box = seen && seen.boxes.get(String(element).trim().toUpperCase())
+    if (!box) {
+      throw new Error(`${element} is not in the last find_on_screen result for this recording` +
+        (seen ? ` (at ${seen.at} s)` : '') + '. Call find_on_screen again and name one it lists, or send its box.')
+    }
+    return { ...rest, box }
+  })
+  return { ...doc, ...(doc.zooms ? { zooms: swap(doc.zooms) } : {}), ...(doc.marks ? { marks: swap(doc.marks) } : {}) }
+}
+
+// Ids in the zooms, texts and marks before an edit that are not there after it.
+function removedIds(prev, doc) {
+  if (!prev) return []
+  const out = []
+  for (const key of ['zooms', 'texts', 'marks']) {
+    const now = new Set((doc[key] || []).map(x => x && x.id))
+    for (const x of prev[key] || []) if (x && x.id && !now.has(x.id)) out.push(x.id)
+  }
+  return out
+}
+
+// When to look at what an edit just placed: for each new or changed zoom and mark,
+// once it has landed (past the ease in) and in its middle. An agent that checked one
+// frame of a zoom saw it half way through the push and called it done.
+function checkTimes(FD, prev, doc) {
+  const out = []
+  for (const key of ['zooms', 'marks']) {
+    const was = new Map((((prev && prev[key]) || [])).filter(x => x && x.id).map(x => [x.id, x]))
+    for (const it of doc[key] || []) {
+      if (!it || !(+it.end > +it.start)) continue
+      if (was.has(it.id) && FD.sameItem(was.get(it.id), it)) continue
+      const span = +it.end - +it.start
+      out.push(+it.start + Math.min(1, span / 3), +it.start + span / 2)
+    }
+  }
+  const r = [...new Set(out.map(t => Math.round(t * 10) / 10))].sort((a, b) => a - b)
+  return prev ? r.slice(0, 6) : []
+}
+
+// A new lift, named by element or sent with a found element's box, on something a
+// lift comes out wrong on (Targets.liftBlock): flush with the frame's edge, or a pane
+// whose content is cut off at its foot. Refused, naming the element inside to lift.
+// With a piece inside to lift, that is the only way out offered: offered "or use a
+// spotlight" too, an agent asked to lift the song details spotlit the whole pane.
+function liftAdvice(b) {
+  const name = e => `${e.id} (${e.kind}, "${String(e.text || '').slice(0, 40)}")`
+  if (b.instead && b.share >= 0.2) return `${b.why}; to lift it, lift ${name(b.instead)}, the part of it that can be raised`
+  if (b.instead) return `${b.why}; only small pieces inside it can be lifted (such as ${name(b.instead)}): lift the one the person means, or point at the whole with a spotlight and say why`
+  return `${b.why}; nothing inside it can be lifted either, so a spotlight is the way to point at it (say so if the person asked for a lift)`
+}
+function liftable(seen, m) {
+  if (!seen || !seen.all || (m.id && !m.element)) return
+  const T = require('./targets')
+  const id = m.element ? String(m.element).trim().toUpperCase() : null
+  const box = m.box && typeof m.box === 'object' ? T.cleanBox(m.box) : null
+  const same = (a, b) => ['x', 'y', 'w', 'h'].every(k => Math.abs(a[k] - b[k]) < 0.004)
+  const el = seen.all.find(e => id ? e.id === id : box && same(e.box, box))
+  const b = el && ['card', 'grid', 'panel'].includes(el.kind) ? T.liftBlock(el, seen.all) : null
+  if (!b) return
+  throw new Error(`Not lifting ${el.id}: ${liftAdvice(b)}. A lifted piece needs room on every side and its whole content on screen.`)
+}
+
+// A new or moved zoom placed by centre and scale rather than by what it frames. Fine
+// for "zoom in on the first two seconds"; for a thing on screen, Fetch's own fit from
+// the box is what lands it, so the result says so.
+function handAimed(FD, prev, sent, doc) {
+  if (!Array.isArray(sent.zooms)) return []
+  const was = new Map(((prev && prev.zooms) || []).filter(z => z && z.id).map(z => [z.id, z]))
+  const out = []
+  for (const z of FD.adoptIds(prev && prev.zooms, sent.zooms)) {
+    if (!z || z.box || (z.x == null && z.y == null)) continue
+    if (z.id && was.has(z.id) && FD.sameItem(was.get(z.id), z)) continue
+    const got = (doc.zooms || []).find(d => z.id ? d.id === z.id : Math.abs(d.start - z.start) < 0.006 && Math.abs(d.end - z.end) < 0.006)
+    out.push(`${(got && got.id) || 'The new zoom'} (${z.start}-${z.end} s) is aimed by a centre point you worked out, not by what it frames. ` +
+      'If it is on an element, send element (its E id from find_on_screen) or its box instead, so Fetch fits the zoom to it.')
+  }
+  return out
+}
+
+async function timeFocus(src, prev, doc) {
+  const T = require('./targets')
+  const known = new Map(((prev && prev.marks) || []).filter(m => m && m.id).map(m => [m.id, m]))
+  const crop = doc.crop !== undefined ? doc.crop : (prev && prev.crop) || null
+  const moved = [], absent = []
+  for (const m of doc.marks) {
+    if (!m || !['lift', 'spotlight'].includes(m.kind)) continue
+    const was = m.id && known.get(m.id)
+    if (was && require('./fetchdoc').sameItem(was, m)) continue
+    const box = T.cleanBox(m.box && typeof m.box === 'object' ? m.box : { x: m.x, y: m.y, w: m.w, h: m.h })
+    const start = +m.start, end = +m.end
+    if (!box || !(end - start >= 1)) continue
+    const samples = await deps.proc.boxSamples(src, box, start, end, crop && crop.w > 0 ? crop : null)
+    const r = T.presentSpan(samples, start, end)
+    const name = m.id || `the new ${m.kind}`
+    if (!r.present) { absent.push({ id: name, kind: m.kind, start, end }); continue }
+    if (!r.moved) continue
+    // too short once held to the element to read as a move: leave it and say so
+    if (r.end - r.start < 0.8) { absent.push({ id: name, kind: m.kind, start, end }); continue }
+    m.start = r.start; m.end = r.end
+    moved.push({ id: name, kind: m.kind, from: [start, end], to: [r.start, r.end] })
+  }
+  return { moved, absent }
+}
+
 // Open `path` in the editor if it is not already the clip on screen, then run `expr`
 // against it. Opening is visible on purpose: an agent editing a recording should be
 // seen doing it, the same way an agent recording is seen through the border.
@@ -532,7 +857,8 @@ function pointerSummary(path, doc) {
   const mac = path && deps.proc.readCursor ? deps.proc.readCursor(path) : null
   if (mac && mac.inPicture !== false) {
     out.macCursorInPicture = true
-    out.macCursorHidden = doc.hideMacCursor === true || (doc.hideMacCursor !== false && track.length > 0)
+    const hide = require('./look').toClassic(doc.look).hideMacCursor
+    out.macCursorHidden = hide === true || (hide !== false && track.length > 0)
   }
   if (!spots) out.note = 'No clicks or pointer pauses in the picture, so auto-zoom has nothing to zoom on. ' +
     'Input from Playwright or another driver that does not move the real pointer is not seen unless it ' +
@@ -557,6 +883,8 @@ function textOnOutput(doc, t) {
 
 function summarise(doc, path) {
   const r = n => Math.round(n * 100) / 100
+  const Look = require('./look')
+  const L = Look.resolve(doc.look)
   const cam = doc.camera
   return {
     duration: r(doc.dur || 0),
@@ -574,31 +902,56 @@ function summarise(doc, path) {
       style: overlays.textStyle(textOnOutput(doc, t), outputLength(doc)), ...(t.subtitle ? { subtitle: t.subtitle } : {}),
     })),
     beats: (doc.beats || []).map(b => ({ id: b.id, start: r(b.start), end: r(b.end), label: b.label })),
-    captions: { count: (doc.cues || []).length, style: doc.capStyle },
+    captions: { count: (doc.cues || []).length, burned: !!L.captions.show },
 
     crop: doc.crop, cropAR: doc.cropAR,
-    backdrop: doc.backdrop, outAspect: doc.outAspect,
+    ...(doc.viewport ? { viewport: doc.viewport } : {}),
     autoZoom: !!doc.autoZoom,
     camera: cam ? { recorded: true, on: cam.on !== false, x: cam.x, y: cam.y, size: cam.size } : { recorded: false },
     audioTrack: doc.audioTrack ? { name: doc.audioTrack.name, volume: doc.audioTrack.volume,
       offset: doc.audioTrack.offset, replace: !!doc.audioTrack.replace } : null,
-    look: doc.look,
+    // the look as the preset it came from and what differs (get_look_schema for every field)
+    look: Look.compact(doc.look, looksDir()),
+    audio: doc.audio,
     pointer: pointerSummary(path, doc),
 
     // the values each setting accepts, so an agent never has to guess a font name
     options: {
       fonts: (deps.proc.fontList ? deps.proc.fontList() : ['Helvetica']),
-      // from the exporter's own list, so a new backdrop (blur, an image someone dropped
-      // in) is offered to agents the moment it exists, not when this line is edited
-      backdrops: [null, ...deps.proc.backdropList().map(b => b.id)],
-      captionPositions: ['top', 'middle', 'bottom'],
-      captionHighlights: ['word', 'pill', 'none'],
+      looks: Look.list(looksDir()).map(p => p.name),
+      // from the exporter's own list, so an image someone dropped in is offered to
+      // agents the moment it exists, not when this line is edited
+      backgroundImages: deps.proc.backdropList().filter(b => b.image).map(b => b.id),
       textStyles: ['title', 'lower-third', 'label'],
-      markKinds: ['redact', 'blur', 'spotlight', 'step'],
-      aspects: [null, 16 / 9, 9 / 16, 1, 4 / 5],
+      markKinds: ['redact', 'blur', 'lift', 'spotlight', 'step'],
       cropAR: ['free', '16:9', '9:16', '1:1', '4:5'],
     },
   }
+}
+
+// Saved looks live beside the backdrops a person adds, in userData, so an update never
+// wipes them. The editor's inspector reads the same folder.
+function looksDir() {
+  return path.join(app ? app.getPath('userData') : require('os').tmpdir(), 'looks')
+}
+
+// Warnings for a look an agent sent: values clamped or unknown (validate), then what
+// the look as a whole does on this take (Look.warnings: fields not drawn yet, a shape
+// filled rather than letterboxed, chrome that cannot be removed).
+function lookWarnings(patch, doc, file) {
+  const Look = require('./look')
+  const out = patch ? Look.validate(patch, { userDir: looksDir() }).warnings : []
+  const L = Look.resolve(doc && doc.look)
+  let browser = false
+  try {
+    // the app the take was named from (.name.json), or a take the pointer mapped as a page
+    const note = deps.proc.readNameNote(file)
+    const app = (note && note.front && note.front.app) || ''
+    browser = !!(note && note.front && note.front.product) || /chrome|safari|arc\b|firefox|edge|brave|aside|opera|vivaldi|orion|dia\b/i.test(app)
+  } catch {}
+  let images
+  try { images = deps.proc.backdropList().filter(b => b.image).map(b => b.id) } catch {}
+  return out.concat(Look.warnings(L, { viewport: !!(doc && doc.viewport), browser, images }))
 }
 
 // Point the renderer's setup at what was asked for, reusing the same state the UI
@@ -645,6 +998,21 @@ async function applySetup(win, args) {
 }
 
 // ---------- wire ----------
+// Where renamed files went, old path to new. A take is renamed after it lands (from
+// the app in front, then from what was said) and a person can rename one mid-session,
+// so a path an agent was handed a minute ago may have moved. Any path it sends is
+// followed here, so the path record_stop returned keeps working.
+const moved = new Map()
+function noteMoves(moves = []) {
+  for (const [from, to] of moves) if (from && to && from !== to) moved.set(from, to)
+  if (moved.size > 4000) moved.delete(moved.keys().next().value)
+}
+function follow(p) {
+  let out = p
+  for (let i = 0; i < 20 && out && moved.has(out) && !fs.existsSync(out); i++) out = moved.get(out)
+  return out
+}
+
 function handleLine(sock, line, ctx) {
   let msg
   try { msg = JSON.parse(line) } catch { return }
@@ -654,6 +1022,7 @@ function handleLine(sock, line, ctx) {
   const op = msg && msg.op
   const fn = ops[op]
   if (!fn) return reply({ ok: false, error: `unknown op: ${op}` })
+  if (msg.args && typeof msg.args.path === 'string') msg.args.path = follow(msg.args.path)
 
   const t0 = Date.now()
   Promise.resolve()
@@ -681,6 +1050,8 @@ function logOp(op, ctx, t0, args, result, error) {
   else if (op === 'probe' && args && args.path) detail = args.path
   else if (op === 'edit.silence' && result) detail = `${result.removed_percent}% removed, ${result.path}`
   else if (op === 'frame' && result) detail = `${result.at}s`
+  else if (op === 'find' && result) detail = `${result.at}s${result.query ? `, "${result.query}"` : ''}`
+  else if (op === 'edit.preview' && result) detail = (result.frames || [result]).map(f => `${f.at}s`).join(', ')
   else if (op === 'edit.enhance' && result) detail = result.path
   else if (op === 'recordings.trash' && result) detail = result.trashed
   else if (op === 'settings.set' && args && args.settings) detail = Object.keys(args.settings).join(', ')
@@ -809,4 +1180,4 @@ function stop() {
   server = null
 }
 
-module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEndedAlone, stillNote, occludedTake }
+module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEndedAlone, stillNote, occludedTake, noteMoves, follow, checkTimes, liftable }

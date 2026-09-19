@@ -2,6 +2,7 @@
 // each turn, which edits to offer, what an agent's change touched, and how to take it
 // back. Pure, no DOM and no Electron, so test/assist.test.js runs it under plain node.
 
+const Look = require('./look')
 const arr = v => Array.isArray(v) ? v : []
 const clock = s => `${Math.floor((+s || 0) / 60)}:${String(Math.round((+s || 0) % 60)).padStart(2, '0')}`
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
@@ -10,6 +11,7 @@ const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
 // know what is missing, without putting a transcript into every prompt.
 function editFacts(doc) {
   doc = doc || {}
+  const L = doc.look || {}
   const marks = arr(doc.marks)
   return {
     clips: Math.max(1, arr(doc.clips).length),
@@ -21,9 +23,10 @@ function editFacts(doc) {
     texts: arr(doc.texts).length,
     textIds: arr(doc.texts).map(t => t.id).filter(Boolean),
     captions: arr(doc.cues).length,
-    burnCaps: !!(doc.look && doc.look.burnCaps),
-    backdrop: doc.backdrop || null,
-    outAspect: doc.outAspect || null,
+    // v2 keeps these in the look (ui/look.js); a v1 document at the top
+    burnCaps: !!(L.captions ? L.captions.show : L.burnCaps),
+    backdrop: L.background ? Look.backdropId(L) : doc.backdrop || null,
+    outAspect: L.frame ? Look.aspectNumber(L.frame.aspect) : doc.outAspect || null,
     autoZoom: !!doc.autoZoom,
   }
 }
@@ -68,6 +71,30 @@ function contextHeader({ open, omitted } = {}) {
     'needs a fresh list_recordings call in this turn, even if an earlier turn already answered it; ' +
     'the newest is the first take it lists. ' +
     'Name the recording you acted on in your reply.')
+  // An agent that eyeballed one frame zoomed on the wrong button, added a spotlight
+  // nobody asked for and never looked at the result. Aim, add only what was asked, check.
+  lines.push('To zoom on, spotlight, blur, redact or number something, first call find_on_screen at that ' +
+    'moment with the person\'s own words for it, and send element: its E id (or its box) for the one they ' +
+    'meant; never work out x, y and scale yourself or guess coordinates from a frame. For something bigger than one element (a panel, a card grid, a ' +
+    'section), use the element of kind panel or grid, or the one the matching element is `in`; if none ' +
+    'fits, search again with other words rather than drawing a box. Add only the effects that were ' +
+    'asked for. A new lift or spotlight replaces any already on that spot: remove the old one rather ' +
+    'than stacking two. A lift needs room round it and its whole content on screen: an element find_on_screen ' +
+    'marks no_lift is not lifted. When the person asked for a lift, lift the card or grid its no_lift names ' +
+    '(that is what they meant by the card); a spotlight is not a lift, and is only for when no_lift names nothing, which you say. ' +
+    'Time it to when the element is on screen, not to when the narration starts: ' +
+    'a card that opens mid-sentence is not there yet at the sentence\'s start. Fetch holds a new lift ' +
+    'or spotlight to the part of its span where its box shows the element (the result lists it under ' +
+    'retimed). When sending a list back, keep every existing item\'s id. Marks you leave out are kept; ' +
+    'delete one only by naming it in remove, and never remove a redact or blur the person did not ask about. ' +
+    'If the result lists removed or replaced ids, say which in your reply. ' +
+    'When fixing or re-aiming a zoom, the result lists under alongside any spotlight or lift that plays with it: ' +
+    'an earlier turn may have added it unasked. Remove it if the person complained about a highlight there or never ' +
+    'asked for one in this conversation; otherwise keep it. Either way name it in your reply. ' +
+    'Read the result\'s warnings ' +
+    'and fix what they name. After the edit, call preview_frame once with at set to every time the result lists ' +
+    'under check.preview_frame_at (just after each new zoom or mark lands, and its middle), never just one, and ' +
+    'look at each frame; if one is not on the thing they meant, or anything else dims or covers it, fix it before replying.')
   // The brand writes no em dashes, and models reach for them by default
   lines.push('Write replies in short plain sentences. Never use an em dash; use a comma, colon, ' +
     'full stop or parentheses instead.')
@@ -182,7 +209,7 @@ function revert(before, after, now) {
 
 // What an undo did, said as a report the person can check against the timeline. A
 // removed zoom leaves nothing to flash, so the sentence is the only signal they get.
-const MARK_NOUN = { step: 'step badge', spotlight: 'spotlight', blur: 'blur', redact: 'blur', arrow: 'arrow' }
+const MARK_NOUN = { step: 'step badge', lift: 'lift', spotlight: 'spotlight', blur: 'blur', redact: 'blur', arrow: 'arrow' }
 function undoSummary(was, now) {
   was = was || {}; now = now || {}
   const noun = (k, x) => k === 'zooms' ? 'zoom' : k === 'texts' ? 'title' : (MARK_NOUN[x && x.kind] || 'mark')

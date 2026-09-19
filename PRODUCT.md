@@ -55,6 +55,8 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
 - Record screen: Biscuit, "What are we recording today?", a composer, chips. The
   direct record action is the first chip until a setup exists; then the setup card's
   red Start is the one record control, and the chip steps aside.
+  Window first: a take records the window of the app in front (behind Fetch, or past
+  the terminal an agent runs in), never the whole screen unless someone asks for it.
 - Chat pane (Cmd J): spawns the person's own Claude Code or Codex with the Fetch MCP
   server attached. Streams every tool call as a row with its duration. Remembers the
   conversation (`--resume` on the session id). `@` tags a recording by exact path.
@@ -63,7 +65,7 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   Claude Code's model ids), grouped by CLI, searchable, with the effort levels each
   model accepts. It starts on the person's own CLI default and remembers their pick.
 - Editor: beats strip named from speech, zoom track (`Z1 2.0x`), marks track
-  (redact, spotlight, step), trim, cuts, text, captions, look, camera, audio, voiceover.
+  (redact, lift, spotlight, step), trim, cuts, text, captions, look, camera, audio, voiceover.
 - Library: masonry, each tile the real shape of its take.
 - Activity: every action on the machine, attributed. No vendor mark means a person.
 - Settings: Recording access (never-record list), Connect, voiceover account.
@@ -76,6 +78,17 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
 - One rename (`processor.renameTake`) moves the folder, the raw take, its working
   versions, the deliverable and every sidecar together, "Name 2" when taken. The
   Library, the editor and `rename_recording` all use it.
+- Every take is named when it ends, window or display, from the app in front for most
+  of it (sampled every 2 s, `WindowList --front`); for a browser, the product in the tab
+  (`songscription-library.vercel.app` is Songscription), not the browser. A browser's own
+  pages are named by their kind, never their title: Aside's built-in chats are "Aside · Chats",
+  so a private chat title never becomes a folder name. A take with
+  speech is then renamed "Product · What happens" by the person's own agent CLI (Claude
+  Code on Haiku, else Codex), given only the app, the window title and the first 80
+  words, transcribed on device. Setting: "Name recordings with your agent", on when one
+  is connected. Only names Fetch gave are ever replaced (`.fetch/<stem>.name.json`
+  records them); a typed name, or one an agent passed to `record_start`, never is. The
+  Library offers "Name these recordings" for older takes, with Undo.
 - Delete trashes the whole folder. Takes from before this stay loose on the Desktop
   and keep working, with `-edit` exports beside them.
 
@@ -84,16 +97,36 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
 - Clips, not trim plus cuts, are the model, so pieces can be named.
 - Ids from a per-document counter, never reused: `C` clips, `Z` zooms, `T` texts,
   `S` subtitles, `B` beats, `M` marks.
-- The nine values that used to live only as slider positions now persist in `look`.
+- Version 2: `look` holds the whole Look spec and `audio` the sound (denoise, loudness,
+  gain, music). Version 1 files migrate on read, forever; v1 fields sent by an agent
+  (`backdrop`, `outAspect`, `capStyle`, `look.gain`...) are moved to their v2 place.
 
-**MCP tools** (`mcp/index.js`), 20: `record_start`, `record_stop`, `record_status`, `pointer`,
+**Looks** (`ui/look-schema.js`, `ui/look.js`). Every setting of how a video looks is one
+field in one table: type, range, default, label, a line of doc. The inspector (Look tab,
+`ui/inspector.js`), validation and the agent docs are generated from it. Sections:
+frame, device, background, treatment, grain, motion, camera, cursor, captions,
+typography, focus. Seven presets ship in `ui/looks/` (Fetch, Clean, Studio, Film, Noir,
+Paper, Mono print); "Save look" keeps a person's own in `userData/looks/`. A preset
+restyles and keeps the shape, captions, motion and cursor. Fields the ffmpeg renderer
+does not draw yet are stored, hidden from the inspector, and named in `look_warnings`.
+Output keeps the take's shape; a chosen shape is filled by the background, and with no
+background by a soft blur of the take, never black bars. Browser chrome is a setting:
+for a take whose agent reported the page's viewport, `frame.chrome: remove` crops to the
+page exactly. A framed take is never masked tighter than the window's own corner.
+Look changes are undo steps like any other edit.
+
+**MCP tools** (`mcp/index.js`), 26: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `pointer`,
 `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
 `list_beats`, `get_edit`, `apply_edit`, `export`, `rename_recording`,
 `remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`, `delete_recording`,
-`get_frame`. `get_frame` returns the image itself, so an agent places a zoom or a
-redaction by what it sees, not by guessing coordinates. Every 1.0 option is reachable: trim and cuts as clips, crop and aspect, texts with any
+`get_frame`, `find_on_screen`, `preview_frame`. `get_frame` returns the image itself.
+`find_on_screen` reads a frame on device (Vision, `Elements.swift`) and returns its
+text, chips, buttons and cards as E1, E2... with boxes, ranked against the person's
+words ("the black chip"), plus the frame with them numbered; zooms and marks take that
+box, and Fetch picks the scale that frames it (`ui/targets.js`). Panels and card grids come back too (found from their hairline edges), each element says which one it is `in`, and a new lift or spotlight replaces any it lands on and is held to the part of its span where its element is on screen (a card that opens mid-sentence is not lifted before it opens); a lift needs room: one at or near the frame edge, or on a pane whose content is cut off at its foot, is refused, naming the card or grid inside it to lift instead (`find_on_screen` marks these `no_lift`; a spotlight is offered only when nothing inside can stand for it). Re-aiming a zoom lists under `alongside` the lifts and spotlights still playing with it, so one an earlier turn added unasked is named or removed. `preview_frame` draws
+frames of the edit exactly as export will, several in one call; `apply_edit` lists under `check` when to look at what it placed (just after it lands, and its middle), so an agent checks where a zoom landed before it reports. Marks merge by id: one an agent leaves out stays (an edit adding a lift once dropped the blurs hiding a name), only `remove: [ids]` deletes, and the result names every id an edit took out. A lift's box is grown to the element's own hairline at export and framed evenly, so its border comes up whole. Every 1.0 option is reachable: trim and cuts as clips, crop and aspect, texts with any
 installed font, caption style and position, zooms, backdrops, camera, denoise, loudness,
-gain, fades, music, redaction, spotlight and numbered steps. The pipeline runs with the
+gain, fades, music (an added track, or one of three beds made in `tools/make-beds.js`, `look.music`, ducked under the voice), redaction, lift, spotlight and numbered steps. The pipeline runs with the
 window closed. Settings that decide what may be recorded, and telemetry, are refused
 to agents in code.
 
@@ -105,14 +138,17 @@ as `.fetch/<stem>.pointer.json`. The cursor is Fetch's own, never the system's: 
 near-black macOS arrow with a crisp light edge, about 30 px tall at 1080, carrying a
 round Biscuit badge (`idle.png` cropped to the head, `assets/mascot/badge.png`), named
 "Biscuit" for a moment at each click. The export draws it gliding between the points,
-pressing with a gold ripple on clicks, before any zoom so zooms magnify it. While the take records, the same cursor is shown live over
+pressing with a gold ripple on clicks, before any zoom so zooms magnify it. The badge
+shows only for about 0.6 s either side of a click; a rest that would cover words is moved
+to the nearest clear ground (a gutter between cards, the blank side of a row), and a rest
+a zoom has cut away is drawn just inside the zoomed view. While the take records, the same cursor is shown live over
 the recorded window (`agent-cursor.html`: click-through, never focused, kept out of
 every capture) and goes when the take stops. Nothing moves the person's mouse. Its clicks
 are what auto-zoom follows. The track is `pointer` in the edit document, so it can be
 supplied or corrected afterwards.
 
 **Not built**, and not to be claimed: driving apps (Fetch records, other tools drive),
-arrows, loupes, "lift one row", multi-device frames, reading the project's source code.
+arrows, loupes, multi-device frames, reading the project's source code.
 
 ## Strategic principles
 
@@ -139,8 +175,10 @@ arrows, loupes, "lift one row", multi-device frames, reading the project's sourc
    GUI is a feature an agent cannot use. Ship both or neither.
 8. **The network is one labelled exception.** Voiceover through ElevenLabs is the only
    thing that leaves the machine. It says so where it is used, and its key lives in the
-   Keychain. Anything else that would need the network needs the same treatment or
-   should not ship.
+   Keychain. Work handed to the person's own agent CLI (the chat pane, naming takes)
+   goes out on their plan, not Fetch's, and is labelled where it happens: naming sends
+   the app, the window title and the first 80 words, and its setting says so. Anything
+   else that would need the network needs the same treatment or should not ship.
 
 ## Brand
 

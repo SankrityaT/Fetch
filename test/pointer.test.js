@@ -263,6 +263,41 @@ const throws = fn => { try { fn(); return false } catch { return true } }
   is('and defaults to automatic', FD.toExportOpts(FD.emptyDoc('/x.mov', 5)).hideMacCursor, null)
 }
 
+// ---- the badge shows only around a click ----
+{
+  const track = [{ t: 1, x: 0.2, y: 0.2 }, { t: 4, x: 0.8, y: 0.6 }, { t: 9, x: 0.8, y: 0.6, click: true }, { t: 14, x: 0.3, y: 0.3 }]
+  const b = P.pointerBadge(track, { W: 960, H: 600, end: 20 }, 30)
+  const at = t => P.badgeOpacity(b.spans, t)
+  is('not there while the cursor only rests or glides', [at(1.2), at(2.5), at(3.8), at(4.3), at(13.8)], [0, 0, 0, 0, 0])
+  is('up for the click, about 0.6 s either side', [at(8.2), at(8.7), at(9), at(9.3), at(9.8)], [0, 1, 1, 1, 0])
+  is('it fades rather than blinking', at(8.5) > 0 && at(8.5) < 1, true)
+  // the overlay reads the same thing as an expression of T
+  const ev = (e, T) => Function('T', 'between', 'clip', `return ${e.replace(/\bmin\(/g, 'Math.min(')}`)(T,
+    (x, a, c) => (x >= a && x <= c ? 1 : 0), (x, a, c) => Math.max(a, Math.min(c, x)))
+  let worst = 0
+  for (let t = 0.5; t < 20; t += 0.05) worst = Math.max(worst, Math.abs(ev(b.alpha, t) - at(t)))
+  is('the expression matches the opacity on every frame', worst < 0.06, true)
+}
+
+// ---- a rest points at the start of its label, and stays in the zoom ----
+{
+  // a line of text, 12 px tall, from x 200 to 330, the agent's point in its middle
+  const w = 600, h = 400, px = new Uint8Array(w * h).fill(250)
+  for (let x = 200; x < 330; x += 4) for (let y = 150; y < 162; y++) { px[y * w + x] = 40; px[y * w + x + 1] = 40 }
+  const s = P.restSpot(px, w, h, { x: 250 / w, y: 156 / h })
+  is('a rest on words moves just clear of them', [near(s.x * w, 250, 4), s.y * h > 162 && s.y * h < 172], [true, true])
+  is('on blank page it stays', P.restSpot(px, w, h, { x: 100 / w, y: 300 / h }), null)
+  // a second line under the first: the arrow would hang across it, so it goes above
+  for (let x = 200; x < 330; x += 4) for (let y = 170; y < 182; y++) { px[y * w + x] = 40; px[y * w + x + 1] = 40 }
+  const s2 = P.restSpot(px, w, h, { x: 250 / w, y: 156 / h })
+  const A = Math.round(h * 0.034)
+  is('never with its body across the next line', s2.y * h + A < 150 || s2.y * h > 182 || s2.x * w > 330 || s2.x * w + A < 200, true)
+  const pts = [{ t: 1, x: 900, y: 580 }, { t: 3, x: 900, y: 580, click: true }]
+  P.inView(pts, [{ start: 0, end: 5, scale: 2, x: 0.5, y: 0.5 }], 1000, 600, 30)
+  is('a rest the zoom cut away is drawn just inside it', [pts[0].x <= 750 - 24, pts[0].y <= 450 - 36], [true, true])
+  is('a click is never moved', [pts[1].x, pts[1].y], [900, 580])
+}
+
 // ---- a real render, read back ----
 ;(async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-pointer-'))

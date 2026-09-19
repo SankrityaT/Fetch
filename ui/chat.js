@@ -784,6 +784,19 @@
       return { path: inp.path, open: 'editor', image: d.image, compact: true,
         line: `Looked at ${clock(+d.at || +inp.at || 0)}`, meta: [stemOf(inp.path)] }
     }
+    // what the agent aimed at, and what the edit then looked like, so the person sees
+    // the same pictures it judged by
+    if (tool === 'find_on_screen' && inp.path) {
+      const top = Array.isArray(d.elements) && d.elements[0]
+      return { path: inp.path, open: 'editor', image: d.image, compact: true,
+        line: inp.query && top ? `Found ${top.id} for "${inp.query}" at ${clock(+d.at || +inp.at || 0)}`
+          : `Looked for targets at ${clock(+d.at || +inp.at || 0)}`, meta: [stemOf(inp.path)] }
+    }
+    if (tool === 'preview_frame' && inp.path) {
+      return { path: inp.path, open: 'editor', image: d.image, compact: true,
+        line: `Checked the edit at ${(Array.isArray(d.frames) && d.frames.length ? d.frames.map(f => +f.at)
+          : [].concat(d.at != null ? d.at : inp.at || 0)).map(t => clock(+t || 0)).join(', ')}`, meta: [stemOf(inp.path)] }
+    }
     return null
   }
 

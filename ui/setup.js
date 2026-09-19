@@ -13,7 +13,9 @@
 const P = (typeof window !== 'undefined' && window.prefs) || {}
 
 const setup = {
-  mode: 'screen',        // 'screen' | 'window'
+  // Window first: until someone picks, a take records the window of the app in front
+  // (window null, resolved when it starts), never the whole screen by accident.
+  mode: 'window',        // 'screen' | 'window'
   source: null,          // {id,name,thumb} when mode is screen
   window: null,          // {id,app,title} when mode is window
   cam: P.camera !== false, camSize: 260, camZoom: 1, camAnchor: 'br', camId: '',
@@ -53,17 +55,17 @@ function openSetup() {
             <div><h3>What are we capturing?</h3><p>A whole screen, or a single app window.</p></div>
           </div>
           <div class="opt-grid">
-            <button class="pick" data-mode="screen" aria-pressed="true">
+            <button class="pick" data-mode="screen" aria-pressed="${setup.mode === 'screen'}">
               <span class="pico">${ico('monitor', 'icon-lg')}</span>
               <span class="pit">A screen</span><span class="pis">everything you see</span>
             </button>
-            <button class="pick" data-mode="window" aria-pressed="false">
+            <button class="pick" data-mode="window" aria-pressed="${setup.mode === 'window'}">
               <span class="pico">${ico('app-window', 'icon-lg')}</span>
               <span class="pit">One window</span><span class="pis">just that app</span>
             </button>
           </div>
-          <div class="shots" id="wizTiles"></div>
-          <div id="winList" hidden>
+          <div class="shots" id="wizTiles" ${setup.mode === 'screen' ? '' : 'hidden'}></div>
+          <div id="winList" ${setup.mode === 'window' ? '' : 'hidden'}>
             <div class="win-toolbar">
               <span class="win-search">
                 ${ico('magnifying-glass', 'icon-sm')}
@@ -216,6 +218,7 @@ function openSetup() {
 
   const pull = async () => { try { drawTiles(await ipcRenderer.invoke('get-sources')) } catch {} }
   pull()
+  if (setup.mode === 'window') pullWindows()
 
   // windows come from the ScreenCaptureKit helper: desktopCapturer only ever
   // reports one or two of them on current macOS
@@ -232,6 +235,12 @@ function openSetup() {
     const grid = scrim.querySelector('#winGrid')
     if (!grid) return
     winCache = list
+    // nothing picked yet: the window in front (behind Fetch) is the likely one
+    if (!setup.window && list.length) {
+      const fw = await ipcRenderer.invoke('front-window').catch(() => null)
+      setup.window = (fw && list.find(x => x.id === fw.id)) || null
+      paint()
+    }
     if (!list.length) {
       grid.innerHTML = `<p class="micro dimmer" style="grid-column:1/-1;text-align:center;padding:24px 0">
         No open windows found.</p>`
@@ -510,7 +519,7 @@ function moveRunner(scrim, instant) {
 
 const summaryChips = () => {
   const src = setup.mode === 'window'
-    ? (setup.window ? setup.window.app : 'Pick a window')
+    ? (setup.window ? setup.window.app : 'The app in front')
     : (setup.source ? setup.source.name : 'Screen')
   const chips = [[setup.mode === 'window' ? 'app-window' : 'monitor', src, true]]
   chips.push(['video-camera', 'Camera', setup.cam])
@@ -537,7 +546,7 @@ function paintHeroReady() {
   // threw on every setup change, which also failed every agent record_start
   const cta = document.querySelector('.hero-cta'); if (cta) cta.hidden = true
   $('sourceName').textContent = setup.mode === 'window'
-    ? (setup.window ? `${setup.window.app}${setup.window.title ? ' · ' + setup.window.title : ''}` : 'Pick a window')
+    ? (setup.window ? `${setup.window.app}${setup.window.title ? ' · ' + setup.window.title : ''}` : 'The app in front')
     : (setup.source ? setup.source.name : 'Entire screen')
   const img = $('sourceThumb')
   const shot = setup.mode === 'screen' ? setup.source && setup.source.thumb : setup.window && setup.window.shot

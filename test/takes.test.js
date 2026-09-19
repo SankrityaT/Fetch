@@ -113,6 +113,8 @@ function take(stem) {
     fs.unlinkSync(auto2.file)
     const r2 = p.renameTake(raw2, 'Linear · Triage')
     is('a taken name becomes "Name 2"', r2.path, path.join(root, 'Linear · Triage 2', 'Original', 'Linear · Triage 2.mov'))
+    const renamedAgain = p.renameTake(r2.path, 'Linear · Triage')
+    is('"Name 2" given its name again stays "Name 2", not "Name 3"', [renamedAgain.path, renamedAgain.moves.length], [r2.path, 0])
     is('it is still a copy after a rename', !!top(path.join(root, 'Linear · Triage 2')).copy, true)
     await p.applyEdit(r2.path, { loudnorm: false, start: 0, end: 1 })
     is('an export over it is an export', !!top(path.join(root, 'Linear · Triage 2')).copy, false)

@@ -16,7 +16,8 @@
 
 // The curve every travelling move in an export uses: zoompan's smoothstep in
 // processor.js, and the spotlight riding a zoom (ui/overlays.js)
-const ease = require('./overlays').MOVE
+const Overlays = require('./overlays')
+const ease = Overlays.MOVE
 const clamp01 = n => Math.max(0, Math.min(1, n))
 const r3 = n => Math.round(n * 1000) / 1000
 
@@ -46,6 +47,17 @@ function pageToWindow({ x, y, innerWidth, innerHeight, outerWidth, outerHeight }
   const side = Math.max(0, (outerWidth - (innerWidth || outerWidth)) / 2)
   const top = Math.max(0, outerHeight - (innerHeight || outerHeight) - side)
   return { x: (side + x) / outerWidth, y: (top + y) / outerHeight }
+}
+
+// Where the page itself sits in the browser window, as fractions {x, y, w, h}: below
+// the tabs and toolbar, with any side border split evenly (as pageToWindow places a
+// point). null for a viewport that does not add up.
+function viewportBox(v) {
+  const ow = +v.outer_width, oh = +v.outer_height, iw = +v.inner_width || ow, ih = +v.inner_height || oh
+  if (!(ow > 0 && oh > 0 && iw > 0 && ih > 0) || iw > ow + 1 || ih > oh + 1) return null
+  const side = Math.max(0, (ow - iw) / 2), top = Math.max(0, oh - ih - side)
+  const r = n => Math.round(n * 10000) / 10000
+  return { x: r(side / ow), y: r(top / oh), w: r(Math.min(iw, ow) / ow), h: r(Math.min(ih, oh - top) / oh) }
 }
 
 // What the pointer tool was given, as a fraction of the recorded frame. Three forms:
@@ -248,7 +260,48 @@ function pointerBadge(track, opts = {}, fps = 30) {
     if (last && last[1] === x && last[2] === y) continue
     moves.push(last = [r3(i / fps), x, y])
   }
-  return { d, start: L.pl.start, stop: L.stop, moves, ...badgeExpr(L.pl, ox, oy) }
+  const spans = badgeSpans(L.pl)
+  return { d, start: L.pl.start, stop: L.stop, moves, spans, alpha: badgeAlpha(spans), ...badgeExpr(L.pl, ox, oy) }
+}
+
+// The badge is Biscuit's signature on a click, nothing more: it comes up about 0.6 s
+// before each click and is gone about 0.6 s after. Carried on every glide and for a
+// moment after each landing, it sat on the card being narrated and badged, and the
+// cursor looked busy while it only rested.
+const BADGE_SHOW = { around: 0.6, fade: 0.2 }
+
+// When the badge shows, [{ a, b }], merged where the gap is too short to fade through
+function badgeSpans(pl) {
+  const raw = []
+  for (const p of pl.points) if (p.click) raw.push([p.t - BADGE_SHOW.around, p.t + BADGE_SHOW.around])
+  raw.sort((x, y) => x[0] - y[0])
+  const out = []
+  for (const [a, b] of raw) {
+    const last = out[out.length - 1]
+    if (last && a <= last.b + 2 * BADGE_SHOW.fade) last.b = Math.max(last.b, b)
+    // one that starts with the arrow is faded in by the arrow, never twice
+    else out.push({ a: Math.max(pl.start, a), b, withArrow: a <= pl.start })
+  }
+  return out
+}
+
+// How opaque the badge is at t, 0 to 1
+function badgeOpacity(spans, t) {
+  for (const s of spans) {
+    if (t < s.a || t > s.b) continue
+    const up = s.withArrow ? 1 : (t - s.a) / BADGE_SHOW.fade
+    return Math.max(0, Math.min(1, up, (s.b - t) / BADGE_SHOW.fade))
+  }
+  return 0
+}
+
+// The same as an ffmpeg expression of T, for geq on the badge picture
+function badgeAlpha(spans) {
+  const r2 = n => String(Math.round(n * 100) / 100), f = r2(BADGE_SHOW.fade)
+  if (!spans.length) return '0'
+  return spans.map(s => s.withArrow
+    ? `between(T,${r2(s.a)},${r2(s.b)})*clip((${r2(s.b)}-T)/${f},0,1)`
+    : `clip(min((T-${r2(s.a)})/${f},(${r2(s.b)}-T)/${f}),0,1)`).join('+')
 }
 
 // The badge's top-left as ffmpeg expressions of t, the overlay evaluating them on each
@@ -288,7 +341,7 @@ function badgeExpr(pl, ox, oy) {
 
 // Everything both layers need: the points in frame pixels on the output clock, the
 // plan of glides between them, the arrow's size and when the last line stops
-function cursorLayout(track, { W, H, clock = t => t, crop = null, scale = null, end = 0, out = null } = {}) {
+function cursorLayout(track, { W, H, clock = t => t, crop = null, scale = null, end = 0, out = null, zooms = null } = {}) {
   const kept = clock.kept || (() => true)
   const c = crop && crop.w > 0 && crop.h > 0 ? crop : null
   // A point inside a cut or before the trim still says where the cursor was when the
@@ -312,9 +365,70 @@ function cursorLayout(track, { W, H, clock = t => t, crop = null, scale = null, 
   // a giant arrow.
   const want = out > 0 ? LOOK.arrow / out : (scale > 0 ? 25 * scale : H * 0.03)
   const size = Math.max(H * 0.015, Math.min(H * 0.08, want))
+  if (zooms && zooms.length) inView(pts, zooms, W, H, size)
   const pl = plan(pts, { W, H })
   const stop = Math.max(end || 0, pts[pts.length - 1].t + 1)
   return { W, H, pts, pl, size, k: size / ARROW_H, stop, unit: out > 0 ? 1 / out : size / LOOK.arrow }
+}
+
+// A cursor resting where a zoom has cut the frame away, or so near its edge the arrow
+// is sliced by it, is drawn just inside instead: the narration still points there, and
+// half an arrow on the frame's edge reads as a mistake. zooms are on the output clock
+// in fractions of this frame, with x, y their focus (Overlays.zoomView). A click is
+// where it happened and is never moved; a rest is judged at its tightest view.
+function inView(pts, zooms, W, H, size) {
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i]
+    if (p.click || p.jump) continue
+    const until = i + 1 < pts.length ? pts[i + 1].t : p.t + 1
+    let v = null
+    for (let k = 0; k <= 4; k++) {
+      const q = Overlays.zoomView(zooms, p.t + (until - p.t) * k / 4)
+      if (!v || q.s > v.s) v = q
+    }
+    if (!v || v.s <= 1.001) continue
+    const x0 = v.x * W + size * 0.3, x1 = (v.x + v.w) * W - size * 0.8
+    const y0 = v.y * H + size * 0.3, y1 = (v.y + v.h) * H - size * 1.2
+    if (x1 > x0) p.x = Math.min(x1, Math.max(x0, p.x))
+    if (y1 > y0) p.y = Math.min(y1, Math.max(y0, p.y))
+  }
+}
+
+/**
+ * Where a cursor resting on something points from: the nearest spot where the whole
+ * arrow sits on clear ground (a gutter between cards, the blank side of a row), not on
+ * words. An agent reports the centre of what it names, and a cursor parked there covered
+ * the very words the narration was reading ("Up to 1 note at once"); moved just under
+ * the label, its body still hung across the line below. px is a w x h grey frame of the
+ * recording, p the rest in fractions; returns { x, y } fractions, or null when the arrow
+ * is clear where it is or nothing clear is near.
+ */
+function restSpot(px, w, h, p) {
+  const X = Math.round(p.x * w), Y = Math.round(p.y * h)
+  if (!px || px.length < w * h || X < 4 || Y < 4 || X >= w - 4 || Y >= h - 4) return null
+  const ink = (x, y) => {
+    if (x < 1 || y < 1 || x >= w - 1 || y >= h - 1) return true
+    const i = y * w + x, v = px[i]
+    return Math.max(Math.abs(v - px[i + 1]), Math.abs(v - px[i + w])) >= 20
+  }
+  // the arrow's footprint below and right of its tip (about 30 px tall at 1080), with
+  // room to breathe round it, as it is drawn on the recording before any zoom
+  const A = Math.max(8, Math.round(h * 0.034)), Wd = Math.round(A * 0.66), air = Math.max(3, Math.round(A * 0.4))
+  const clear = (x, y) => {
+    for (let yy = y - air; yy <= y + A + air; yy++) for (let xx = x - air; xx <= x + Wd + air; xx++) if (ink(xx, yy)) return false
+    return true
+  }
+  if (clear(X, Y)) return null
+  const R = Math.round(h * 0.12), step = Math.max(2, Math.round(A / 7))
+  let best = null
+  for (let dy = -R; dy <= R; dy += step) {
+    for (let dx = -R; dx <= R; dx += step) {
+      const d = Math.hypot(dx, dy)
+      if (d > R || (best && d >= best.d)) continue
+      if (clear(X + dx, Y + dy)) best = { d, x: X + dx, y: Y + dy }
+    }
+  }
+  return best ? { x: best.x / w, y: best.y / h } : null
 }
 
 // When the tag shows, [{ a, b, left }]: from just before each click until a moment
@@ -359,9 +473,9 @@ function drawCursor(L, { font = null } = {}) {
     const e = Math.min(b, pl.start + FADE_IN), ms = Math.round((e - a) * 1000), all = Math.round((b - a) * 1000)
     return `\\fade(${alphaAt(a)},${alphaAt(e)},0,0,${ms},${all},${all})`
   }
-  // The badge's soft shadow is drawn here; the badge itself is laid over by the export
+  // The badge is laid over by the export, its soft shadow with it, so both can step
+  // away together while the cursor rests (badgeSpans)
   const br = Math.max(BADGE.r * size, LOOK.badgeMin * L.unit / 2)
-  const badgeShadow = circlePath(br * 1.02)
   // The tag: a gold pill tucked behind the badge, the name in rounded bold ink
   const tagH = br * 1.62, tagFs = tagH * 0.6
   const textW = font && font.measure ? font.measure(TAG.text, tagFs) : TAG.text.length * tagFs * 0.5
@@ -413,8 +527,6 @@ function drawCursor(L, { font = null } = {}) {
     const tA = assTime(a), tB = assTime(b)
     lines.push(`Dialogue: 1,${tA},${tB},P,,0,0,0,,{\\an7${place(P, Q, 0, 1.3 * k)}\\bord${bord}` +
       `\\1c&H000000&\\3c&H000000&\\1a&H8C&\\3a&H8C&\\blur${px(2.2 * k)}${fade}${extra}\\p4}${arrow}`)
-    lines.push(`Dialogue: 1,${tA},${tB},P,,0,0,0,,{\\an7${place(P, Q, BADGE.cx * size - br * 1.02, BADGE.cy * size - br * 1.02 + 1.6 * k)}` +
-      `\\bord0\\1c&H000000&\\1a&H90&\\blur${px(2.6 * k)}${fade}\\p4}${badgeShadow}`)
     // the macOS arrow: near-black, a crisp light edge, so it reads on light and dark UI
     lines.push(`Dialogue: 2,${tA},${tB},P,,0,0,0,,{\\an7${place(P, Q, 0, 0)}\\bord${bord}` +
       `\\1c${ARROW_FILL}\\3c${EDGE}\\blur${px(Math.max(0.3, 0.35 * L.unit))}${fade}${extra}\\p4}${arrow}`)
@@ -736,7 +848,7 @@ function boxMoved(hit, f, rep, reg, threshold = 24) {
 }
 
 module.exports = {
-  ease, videoClock, pageToWindow, toFraction, normalizeTrack, asCursorData,
-  plan, positionAt, pointerAss, pointerBadge, ARROW_H, BADGE, TAG, tagOpacity, LOOK,
+  ease, videoClock, pageToWindow, viewportBox, toFraction, normalizeTrack, asCursorData,
+  plan, positionAt, pointerAss, pointerBadge, badgeSpans, badgeOpacity, restSpot, inView, ARROW_H, BADGE, TAG, tagOpacity, LOOK,
   bakedCursorSpans, clearOfCursor, ringDiff, plateFit, platePixels, boxMoved, BAKED,
 }

@@ -1,0 +1,10 @@
+{
+  "name": "fetch-spike-compositor",
+  "private": true,
+  "main": "main.js",
+  "description": "M0 spike: WebGL2 compositor in a hidden Electron window, sources, sinks, parity and gate numbers.",
+  "dependencies": {
+    "mp4box": "2.4.1",
+    "mp4-muxer": "5.2.2"
+  }
+}

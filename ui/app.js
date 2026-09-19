@@ -284,16 +284,29 @@ async function countdown() {
 // after 'take-finished' would hand an agent waiting on record_start a path that no
 // longer exists a moment later.
 //
-// Only window takes can be named here, since only they carry an app and a title.
-// A full-screen take keeps its timestamp until it is transcribed, and is renamed from
-// what was said then (see the editor's transcribe handler).
-async function nameTake(file) {
-  if (setup.mode !== 'window' || !setup.window) return file
+// The name comes from what was in front for most of the take, sampled every two
+// seconds while it recorded (front-track in main.js): the recorded window for a window
+// take, whatever was frontmost on the display for a full-screen one, and for a browser
+// the product in the tab rather than the browser. A take with speech may be renamed
+// again from what was said, by the person's agent (ui/take-namer.js). A name an agent
+// passed to record_start is used as it is.
+async function nameTake(file, given) {
   const naming = require('./ui/naming')
-  const stem = naming.smartName({ app: setup.window.app, title: setup.window.title })
+  const samples = await ipcRenderer.invoke('front-samples').catch(() => [])
+  if (given) {
+    try { return await renameTake(file, given) } catch (e) { console.error('could not name the take:', e.message); return file }
+  }
+  const win = setup.mode === 'window' && setup.window
+  const dom = naming.dominantFront(samples, win ? { app: win.app } : {}) || (win ? { app: win.app, title: win.title } : null)
+  if (!dom) return file
+  const front = { app: dom.app, title: dom.title || '', ...(dom.product ? { product: dom.product } : {}) }
+  const stem = naming.smartName(front)
   if (!stem) return file
   try {
-    return await renameTake(file, stem)
+    const out = await renameTake(file, stem)
+    // the note is what tells this name apart from one a person typed later
+    await ipcRenderer.invoke('name-note', out, front).catch(() => {})
+    return out
   } catch (e) {
     console.error('could not name the take:', e.message)
     return file          // the recording matters more than its name
@@ -303,6 +316,7 @@ async function nameTake(file) {
 // An agent's take borrowed the setup card (applySetup in agent-bridge.js kept the
 // person's own aside). Once the take is over, named or failed, it goes back.
 function restorePersonSetup() {
+  window.__takeName = null        // an agent's name was for its own take only
   const was = window.__personSetup
   if (!was) return
   window.__personSetup = null
@@ -312,11 +326,13 @@ function restorePersonSetup() {
 }
 
 async function finishTake(file, mb, info = {}) {
-  file = await nameTake(file)
+  const given = window.__takeName || null
+  file = await nameTake(file, given)
   restorePersonSetup()
   // Tell main a take landed. hotkey() is fire-and-forget, so without this an agent
-  // that asked for a recording has no way to learn where the file went.
-  try { ipcRenderer.send('take-finished', { ...info, file, mb: +mb }) } catch {}
+  // that asked for a recording has no way to learn where the file went. `named` keeps
+  // an agent's own name from being replaced by an automatic one.
+  try { ipcRenderer.send('take-finished', { ...info, file, mb: +mb, ...(given ? { named: true } : {}) }) } catch {}
   // A background take lands in the library and the agent gets its path. Nothing pops
   // up over whatever the person is doing.
   // The stop above left him on "Working on it...", which stayed until someone
@@ -383,6 +399,7 @@ async function stopNativeOnce(ended) {
   ipcRenderer.send('cam-visible', false)
   ipcRenderer.send('rec-state', 'idle')
   ipcRenderer.send('cursor-track', false)
+  ipcRenderer.send('front-track', false)     // samples stay for nameTake
   clearInterval(ticker); ticker = null
   $('start').disabled = false
   nativeTake = false
@@ -422,11 +439,25 @@ async function stopNativeOnce(ended) {
 ipcRenderer.on('native-ended', (e, info) => { if (nativeTake) stopNative(info || {}) })
 
 async function startRecording() {
+  // Window first: nothing picked yet means the window of the app in front of Fetch
+  if (setup.mode === 'window' && !setup.window) {
+    const fw = await ipcRenderer.invoke('front-window').catch(() => null)
+    const list = fw ? await ipcRenderer.invoke('list-windows').catch(() => []) : []
+    const hit = fw && (list || []).find(x => x.id === fw.id)
+    if (hit) { setup.window = hit; applySetup() }
+    else {
+      const why = 'No app window is open behind Fetch. Pick a window or the whole screen.'
+      try { ipcRenderer.send('take-failed', { error: why }) } catch {}
+      mood('error'); toast(why, 'bad'); openSetup()
+      return
+    }
+  }
   // A window that has since closed would otherwise fall through to recording the
   // whole screen, which is not what anyone picked.
   if (setup.mode === 'window' && !(await refreshWindowTarget(false))) {
     const why = 'That window is closed. Pick another one.'
     try { ipcRenderer.send('take-failed', { error: why }) } catch {}
+    window.__takeName = null        // an agent's name must not land on the person's next take
     if (window.__quietTake) { window.__quietTake = false; restorePersonSetup(); return }
     mood('error'); toast(why, 'bad'); openSetup()
     return
@@ -449,6 +480,7 @@ async function startRecording() {
       }
       ipcRenderer.send('rec-state', 'recording')
       ipcRenderer.send('cursor-track', true)
+      ipcRenderer.send('front-track', true, nativeTarget())
       ticker = setInterval(tick, 250); tick()
       mood('rec')
       return
@@ -476,6 +508,7 @@ async function startRecording() {
       ipcRenderer.send('cam-visible', false)
       ipcRenderer.send('rec-state', 'idle')
       ipcRenderer.send('cursor-track', false)
+      ipcRenderer.send('front-track', false)     // samples stay for nameTake
       stream.getTracks().forEach(t => t.stop())
       clearInterval(ticker); ticker = null
       $('start').disabled = false
@@ -502,6 +535,7 @@ async function startRecording() {
     }
     ipcRenderer.send('rec-state', 'recording')
     ipcRenderer.send('cursor-track', true)      // sampled in the main process while we record
+    ipcRenderer.send('front-track', true, nativeTarget())   // what is in front, to name the take
     ticker = setInterval(tick, 250); tick()
     mood('rec')
   } catch (e) {
@@ -595,7 +629,7 @@ const trash = paths => ipcRenderer.invoke('trash-items', paths).catch(() => 0)
 // Support files live in a hidden folder beside the media, so the save folder only
 // holds recordings and exports. Mirrors sidecarPath() in processor.js.
 const SIDE_DIR = '.fetch'
-const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3']
+const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3', '.name.json']
 const sidecarPath = (media, ext) =>
   path.join(path.dirname(media), SIDE_DIR, path.basename(media).replace(/\.[^.]+$/, '') + ext)
 const sidecarIn = (media, ext) => {
@@ -729,6 +763,7 @@ async function refreshLibraryOnce() {
   const grid = $('libGrid')
   grid._cards = null                            // an empty state must not be re-dealt on resize
   const groups = groupTakes(list)
+  paintNameAction(groups)
 
   // the folder bar lives above the grid and survives refreshes as its own element
   Library.renderBar(grid, groups, refreshLibrary)
@@ -916,6 +951,110 @@ const doImport = async () => {
 }
 $('importBtn').onclick = doImport
 $('libImport').onclick = doImport
+
+// ── naming takes after the fact ─────────────────────────────────────────
+// Takes still called recording-<timestamp>, and ones named only from the app in front,
+// can be named from what was said (ui/take-namer.js). Offered, never done behind
+// anyone's back: the Library lists them, the person picks, and Undo puts every name
+// back. A take the agent already named, or one tried with nothing better found, is
+// not offered again.
+const nameNote = p => { try { return JSON.parse(fs.readFileSync(sidecarIn(p, '.name.json'), 'utf8')) } catch { return null } }
+function autoNamedTakes(groups) {
+  const naming = require('./ui/naming')
+  return groups.filter(g => {
+    if (g.original.imported) return false
+    const note = nameNote(g.original.path)
+    const stem = g.take ? path.basename(g.take) : path.parse(g.original.path).name
+    return naming.isAutoName(stem, note) && !(note && (note.by === 'agent' || note.tried))
+  })
+}
+function paintNameAction(groups) {
+  const b = $('libName')
+  if (!b) return
+  const list = autoNamedTakes(groups)
+  b.hidden = !list.length || !!b.dataset.busy
+  b.querySelector('span').textContent = `Name ${list.length === 1 ? 'this recording' : list.length + ' recordings'}`
+  b.onclick = () => openNameTakes(list)
+}
+async function openNameTakes(list) {
+  const eng = await ipcRenderer.invoke('namer-engine').catch(() => null)
+  const who = eng === 'codex' ? 'Your Codex' : eng ? 'Your Claude Code' : null
+  const scrim = el('div', 'scrim')
+  scrim.innerHTML = `<div class="modal" style="width:min(480px,92vw)">
+    <div class="modal-body" style="display:grid;gap:12px">
+      <div style="display:flex;gap:14px;align-items:center">
+        <img class="biscuit" src="./assets/mascot/thinking.png" alt="" style="width:64px;height:64px">
+        <div style="display:grid;gap:4px">
+          <h3 style="font-family:var(--font-display);font-size:var(--t-18);letter-spacing:-.03em">Name these recordings?</h3>
+          <p class="dim" style="font-size:var(--t-12)">${who
+            ? `${who} names each from the app it showed and its first 80 words, transcribed on this Mac. Never the video or audio.`
+            : 'Named from the app they showed and what was said, where Fetch knows them. Connect Claude Code or Codex for better names.'}</p>
+        </div>
+      </div>
+      <div class="name-list">${list.map((g, i) => `
+        <label class="name-pick"><input type="checkbox" data-i="${i}" checked>
+          <span class="name-box">${ico('check', 'icon-sm')}</span>
+          <span class="name-was">${escHtml(takeTitle(g))}</span>
+          <span class="name-when mono">${fmtAgo(g.original.mtime)}</span></label>`).join('')}</div>
+    </div>
+    <div class="modal-foot"><span class="dim" id="nameProgress" style="font-size:var(--t-12)"></span><div style="flex:1"></div>
+      <button class="btn btn-sm" data-close>Cancel</button>
+      <button class="btn btn-sm btn-primary" id="nameGo">Name ${list.length}</button></div>
+  </div>`
+  document.body.appendChild(scrim)
+  const close = () => scrim.remove()
+  scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)
+  scrim.onclick = e => { if (e.target === scrim && !go.disabled) close() }
+  const go = scrim.querySelector('#nameGo')
+  const picked = () => [...scrim.querySelectorAll('.name-pick input')].filter(x => x.checked).map(x => list[+x.dataset.i])
+  scrim.querySelector('.name-list').onchange = () => {
+    const n = picked().length
+    go.textContent = `Name ${n}`
+    go.disabled = !n
+  }
+  go.onclick = async () => {
+    const takes = picked()
+    if (!takes.length) return
+    go.disabled = true
+    scrim.querySelectorAll('input, [data-close]').forEach(x => { x.disabled = true })
+    $('libName').dataset.busy = '1'
+    const done = []
+    for (let i = 0; i < takes.length; i++) {
+      scrim.querySelector('#nameProgress').textContent = `Naming ${i + 1} of ${takes.length}...`
+      const [r] = await ipcRenderer.invoke('name-takes', [takes[i].original.path]).catch(() => [null])
+      if (r && r.to) done.push(r)
+    }
+    delete $('libName').dataset.busy
+    close()
+    showNamed(done, takes.length)
+    refreshLibrary()
+  }
+}
+// What the last naming did, with its undo, above the grid until dismissed
+function showNamed(done, asked) {
+  const bar = $('libNamed')
+  if (!bar) return
+  if (!done.length) {
+    toast(asked === 1 ? 'Nothing better to name it from yet.' : 'Nothing better to name them from yet.')
+    bar.hidden = true
+    return
+  }
+  const left = asked - done.length
+  bar.innerHTML = `${ico('check-circle-fill', 'icon-sm')}
+    <span>Named ${done.length} recording${done.length === 1 ? '' : 's'}${left ? `. ${left} had nothing better to go on` : ''}.</span>
+    <div style="flex:1"></div>
+    <button class="btn btn-sm" id="namedUndo">${ico('arrow-counter-clockwise', 'icon-sm')} Undo</button>
+    <button class="btn btn-sm btn-ghost" id="namedClose" aria-label="Dismiss">${ico('x', 'icon-sm')}</button>`
+  bar.hidden = false
+  bar.querySelector('#namedClose').onclick = () => { bar.hidden = true }
+  bar.querySelector('#namedUndo').onclick = async e => {
+    e.currentTarget.disabled = true
+    const n = await ipcRenderer.invoke('name-takes-undo', done.map(r => ({ to: r.to, was: r.was, note: r.note })))
+    bar.hidden = true
+    toast(`Put back ${n} name${n === 1 ? '' : 's'}`, 'ok')
+    refreshLibrary()
+  }
+}
 
 // ── boot ─────────────────────────────────────────────────────────────────
 // First run. Deferred to the load event because onboarding.js is parsed after

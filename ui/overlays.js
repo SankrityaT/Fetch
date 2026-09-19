@@ -1,9 +1,11 @@
 // What makes an export look edited rather than annotated: captions, title cards,
-// labels, numbered steps and spotlights, written as ASS (libass) events.
+// labels and numbered steps, written as ASS (libass) events, and the geometry of lifts
+// and spotlights.
 //
 // Two scripts per export, because the two kinds of overlay live in different spaces:
 //
-//   content  steps and spotlights belong to the recording. They are drawn before any
+//   content  steps belong to the recording (as lifts and spotlights do, which change
+//            pixels and are drawn by processor.js from focusShape). Drawn before any
 //            zoom, so a zoom moves them with the thing they point at.
 //   frame    captions, titles and labels belong to the finished frame. They are drawn
 //            last, on the 1920x1080 composite, so a zoom never enlarges a caption and
@@ -269,6 +271,8 @@ const CLAUSE_END = /[,;:\u2014]["'\u201D\u2019)]*$/
 const LEANS = new Set(['a', 'an', 'the', 'and', 'or', 'but', 'of', 'to', 'in', 'on', 'at', 'for', 'with',
   'my', 'your', 'our', 'their', 'his', 'her', 'its', 'is', 'are', 'was', 'i', 'you', 'we', 'it', 'if',
   'that', 'this', 'from', 'by', 'as', 'so', 'into', 'what', 'which'])
+// Words that bind to the noun after them, so a break never follows one ("every | song")
+const BINDS = new Set(['every', 'each', 'some', 'any', 'no', 'these', 'those', 'its', 'own'])
 
 /**
  * Tokens into on-screen phrases: short, breaking where speech does (a sentence end,
@@ -301,9 +305,24 @@ function captionPhrases(tokens, o = {}) {
       if (SENTENCE_END.test(prev.text) || t.start - prev.end > gap) flush()
       else if (CLAUSE_END.test(prev.text) && chars(cur) >= 14) flush()
       else if (long) {
-        // carry a leaning word over, so the break lands between ideas
-        const carry = []
-        while (cur.length > 2 && LEANS.has(normWord(cur[cur.length - 1].text))) carry.unshift(cur.pop())
+        // Break where the words part: weighed over the rest of this clause, the split
+        // that balances the two phrases without stranding "its own | piano roll" or
+        // "you haven't | played yet". Words after the break carry over.
+        let e = i
+        while (e < toks.length - 1 && e - i < 8 && !SENTENCE_END.test(toks[e].text) &&
+               !CLAUSE_END.test(toks[e].text) && toks[e + 1].start - toks[e].end <= gap) e++
+        const seg = cur.concat(toks.slice(i, e + 1))
+        let best = cur.length, bestW = Infinity
+        for (let k = 2; k <= cur.length; k++) {
+          const a = chars(seg.slice(0, k)), b = chars(seg.slice(k))
+          if (a > maxChars + 4) continue
+          const last = normWord(seg[k - 1].text)
+          const w = Math.max(a, b) + (LEANS.has(last) || BINDS.has(last) ? 12 : 0) +
+            (BINDS.has(normWord(seg[k - 2].text)) ? 12 : 0)
+          if (w < bestW) { bestW = w; best = k }
+        }
+        const carry = cur.slice(best)
+        cur = cur.slice(0, best)
         flush(); cur = carry
       }
     }
@@ -340,7 +359,7 @@ function captionPhrases(tokens, o = {}) {
 // The phrase on screen at t, with how long it stays: until its last word ends plus a
 // short hold, never past the next phrase.
 function phraseTimes(phrases) {
-  const show = phrases.map(p => Math.max(0, p.start - 0.06))
+  const show = phrases.map(p => Math.max(0, p.start - 0.06, p.from || 0))
   return phrases.map((p, i) => {
     const end = Math.min(p.end + 0.35, i + 1 < phrases.length ? show[i + 1] : Infinity)
     return { ...p, show: show[i], hide: Math.max(show[i] + 0.2, end), cut: end < p.end + 0.34 }
@@ -367,8 +386,115 @@ function captionLayout(W, H, st = {}, box = null) {
 }
 // How much of the frame's height a framed export keeps below the video for captions
 const CAP_BAND = 0.12
+
+// Where a framed video sits on its backdrop: the canvas, the video's size and offset,
+// its corner radius and shadow blur, in pixels. The export builds its filter from this
+// and the editor lays out its stage from it, so the two frame a take alike.
+function backdropGeometry(srcW, srcH, opts = {}) {
+  const inset = Math.min(0.22, Math.max(0.02, opts.inset ?? 0.08))
+
+  // "Auto" keeps the source shape and adds the same margin on every side. Forcing
+  // a 16:9 canvas around a 16:10 recording gives fat side margins and thin top and
+  // bottom ones, which reads as the video being anchored rather than centred.
+  let outW, outH
+  const target = opts.outAspect   // number (w/h) when the user picks a shape
+  if (!target) {
+    const pad = inset * Math.max(srcW, srcH)
+    outW = 2 * Math.round((srcW + pad * 2) / 2)
+    outH = 2 * Math.round((srcH + pad * 2) / 2)
+    // keep the canvas sane for encoding
+    const cap = opts.scale === 720 ? 1280 : 1920
+    if (outW > cap) {
+      const k = cap / outW
+      outW = 2 * Math.round((outW * k) / 2)
+      outH = 2 * Math.round((outH * k) / 2)
+    }
+  } else {
+    // outWidth is the long edge: a portrait shape 1920 wide came out 3414 tall
+    const long = opts.outWidth || 1920
+    outW = 2 * Math.round((target >= 1 ? long : long * target) / 2)
+    outH = 2 * Math.round((target >= 1 ? long / target : long) / 2)
+  }
+
+  // band: a share of the height kept below the video for captions, in place of the
+  // bottom margin, so they sit on the backdrop rather than on the product
+  const band = Math.max(0, Math.min(0.25, +opts.band || 0))
+  const bottom = band ? Math.max(band, inset) : inset
+  const boxW = 2 * Math.round((outW * (1 - inset * 2)) / 2)
+  const boxH = 2 * Math.round((outH * (1 - inset - bottom)) / 2)
+  const scale = Math.min(boxW / srcW, boxH / srcH)
+  const vidW = 2 * Math.round((srcW * scale) / 2)
+  const vidH = 2 * Math.round((srcH * scale) / 2)
+  const radius = Math.max(6, Math.round(opts.radius ?? Math.min(vidW, vidH) * 0.035))
+  const ox = Math.round((outW - vidW) / 2)
+  // with a band the video hangs from the top margin; the band takes what is left
+  const oy = band ? Math.round(outH * inset + (boxH - vidH) / 2) : Math.round((outH - vidH) / 2)
+  const blur = Math.max(4, Math.round(vidH * 0.035))
+  return { outW, outH, vidW, vidH, radius, ox, oy, blur }
+}
 // In the band a phrase has the whole width, so it stays on one line
 const BAND_WRAP = 60
+
+/**
+ * The window's own margin round its content, as fractions of the frame to trim from
+ * each side ({ l, t, r, b }). A browser that draws its page as a rounded card inside
+ * the window left a pale rim with a second rounded corner inside the frame's own.
+ * px is a w x h grey frame. An edge is trimmed only where it is a run of flat lines of
+ * one tone that ends on a line that differs (the content's own edge), and never by
+ * more than 3 percent: a flat run with no edge behind it is the product's own margin.
+ */
+function gutterInsets(px, w, h) {
+  const out = { l: 0, t: 0, r: 0, b: 0 }
+  if (!px || px.length < w * h || w < 64 || h < 64) return out
+  // a line d in from one side, over its middle 80 percent, as [mean, spread]
+  const line = (side, d) => {
+    const horiz = side === 't' || side === 'b'
+    const n = horiz ? w : h, a = Math.round(n * 0.1), z = Math.round(n * 0.9)
+    const fixed = side === 't' ? d : side === 'b' ? h - 1 - d : side === 'l' ? d : w - 1 - d
+    let lo = 255, hi = 0, sum = 0
+    for (let i = a; i < z; i++) {
+      const v = horiz ? px[fixed * w + i] : px[i * w + fixed]
+      if (v < lo) lo = v
+      if (v > hi) hi = v
+      sum += v
+    }
+    return [sum / (z - a), hi - lo]
+  }
+  for (const side of ['l', 't', 'r', 'b']) {
+    const n = side === 't' || side === 'b' ? h : w, max = Math.round(n * 0.03)
+    const [m0, s0] = line(side, 0)
+    if (s0 > 8) continue
+    let d = 1
+    for (; d <= max; d++) {
+      const [m, sp] = line(side, d)
+      if (sp > 8 || Math.abs(m - m0) > 4) break
+    }
+    if (d >= 2 && d <= max) out[side] = d / n
+  }
+  return out
+}
+
+/**
+ * The recorded window's own corner radius, as a fraction of the frame's width, or 0.
+ * macOS captures a window's rounded corners as black, so a framed take masked with a
+ * smaller radius showed a black nick at each corner. Measured as the run of near-black
+ * pixels along the top and bottom rows from each corner, where the row further in is
+ * light (so a dark UI that simply reaches the corner is not taken for one).
+ */
+function windowCorner(px, w, h) {
+  if (!px || px.length < w * h || w < 64 || h < 64) return 0
+  const at = (x, y) => px[y * w + x]
+  let best = 0
+  for (const y of [0, h - 1]) {
+    for (const [x0, dx] of [[0, 1], [w - 1, -1]]) {
+      let n = 0
+      while (n < w / 8 && at(x0 + dx * n, y) < 40) n++
+      const beyond = at(x0 + dx * Math.min(w - 1, n + 4), y)
+      if (n >= 3 && n < w / 8 && beyond > 90) best = Math.max(best, n)
+    }
+  }
+  return best / w
+}
 
 // Where a phrase's words sit: its lines, the widest line and the top of the block
 function captionBlock(p, L, lineH, measure) {
@@ -414,6 +540,9 @@ function fitLayout(p, W, H, st, box, measure) {
 
 function captionEvents(evs, phrases, W, H, st = {}, measure = estimate, box = null, frosted = false) {
   const fill = colour(st.colour || '#FFFFFF')
+  const hex = String(st.colour || '#FFFFFF').replace('#', '')
+  const inkText = /^[0-9a-f]{6}$/i.test(hex) &&
+    (0.2126 * parseInt(hex.slice(0, 2), 16) + 0.7152 * parseInt(hex.slice(2, 4), 16) + 0.0722 * parseInt(hex.slice(4, 6), 16)) / 255 < 0.25
   const hl = st.highlight === 'none' ? null : st.highlight === 'pill' ? 'pill' : 'word'
   const IN = CAP_IN
   const glow = frosted ? GLOW.frosted : GLOW.plain
@@ -431,9 +560,10 @@ function captionEvents(evs, phrases, W, H, st = {}, measure = estimate, box = nu
     const shade = (op, bord, blur, dy) => evs.add(0, a, b, `{${base}${sfad}\\1c&H0A0908&\\1a${alpha(op)}` +
       `\\bord${n1(L.px * bord)}\\3c&H0A0908&\\3a${alpha(op)}\\blur${n1(L.px * blur)}` +
       `\\pos(${n1(L.x)},${n1(L.y + L.px * dy)})}${plain}`)
-    shade(g.wide, 0.34, 0.75, 0.06)
-    shade(g.near, 0.1, 0.24, 0.04)
-    evs.add(1, a, b, `{${base}${sfad}\\1c&H000000&\\1a&H60&\\blur${n1(L.px * 0.07)}` +
+    // Dark words (on a light ground) take no dark glow, which only muddies them, and
+    // a fainter drop: the look turns captions ink on paper-light backgrounds
+    if (!inkText) { shade(g.wide, 0.34, 0.75, 0.06); shade(g.near, 0.1, 0.24, 0.04) }
+    evs.add(1, a, b, `{${base}${sfad}\\1c&H000000&\\1a&H${inkText ? 'D8' : '60'}&\\blur${n1(L.px * 0.07)}` +
       `\\pos(${n1(L.x)},${n1(L.y + L.px * 0.05)})}${plain}`)
     // The crisp words, one event per stretch of speech so the spoken word can differ
     const cuts = [a, b]
@@ -669,6 +799,22 @@ function titleCards(texts, span) {
 }
 const URLISH = /^(https?:\/\/)?[\w-]+(\.[\w-]+)+(\/\S*)?$/i
 
+// How long an opening card takes to hand over: its ground clears, the title is still
+// leaving and the framed video scales in, all at once, ending as the card does
+const cardLanding = card => Math.min(0.55, card.b * 0.3)
+
+// Captions wait for an opening card to hand over: the voice often starts on the card,
+// and "This is Songscription," under a large "Songscription" names the product twice.
+// A phrase that starts under the card shows from the handover (its early words already
+// spoken, the highlight on the word being said); one that ends before it is dropped.
+function clearOfTitles(phrases, cards) {
+  const open = (cards || []).find(k => k.opens)
+  if (!open || !phrases) return phrases
+  const from = open.b - cardLanding(open)
+  return phrases.filter(p => p.end + 0.35 - Math.max(p.start, from) >= 0.6)
+    .map(p => (p.start < from ? { ...p, from } : p))
+}
+
 // A title card set like a product film's: a large semibold name tracked in a little,
 // a quieter line under it, each rising a few pixels out of a blur on the entering
 // curve, the second a beat after the first. An address signing off is the one thing
@@ -683,28 +829,30 @@ function titleEvents(evs, card, W, H, measure = estimate) {
   const tw = measure(title, px, 'title') * 0.98
   if (tw > W * 0.84) px = Math.floor(px * (W * 0.84) / tw)
   const u = H / 1080
-  const sp = Math.round(Math.max(H * 0.0315, px * 0.3))          // 34 px at 1080
-  const gap = Math.round(18 * u)
-  const pillH = Math.round(sp * 1.9), pillFs = Math.round(sp * 0.92)
+  // the line under it about a third of the name's size (36 px at 1080), so the step
+  // down reads as hierarchy rather than as a caption lost under a headline
+  const sp = Math.round(Math.max(H * 0.0335, px * 0.34))
+  const gap = Math.round((url ? 24 : 18) * u)
+  const pillFs = Math.round(30 * u), pillH = Math.round(pillFs * 2)
   const subText = url ? `${subtitle}  →` : subtitle
   const pillW = url ? Math.round(measure(subText, pillFs, 'sub') + pillH * 0.95) : 0
   const subH = !subtitle ? 0 : url ? pillH : Math.round(sp * 1.2)
   const lineT = Math.round(px * 1.05)
-  const blockH = lineT + (subtitle ? gap + (url ? gap : 0) + subH : 0)
+  const blockH = lineT + (subtitle ? gap + subH : 0)
   const cx = W * (t.fx != null ? +t.fx : 0.5)
   const cy = H * (t.fy != null && +t.fy !== 0.5 ? +t.fy : 0.47)
   const top = cy - blockH / 2
   const ty = top + lineT / 2
-  const sy = top + lineT + gap + (url ? gap : 0) + subH / 2
+  const sy = top + lineT + gap + subH / 2
   const fillT = colour(t.color && t.color !== 'white' ? t.color : WHITE)
 
   const IN = 0.5, OUT = 0.36, stagger = 0.12
   const rise = 16 * u, blurIn = 8 * u
-  // a closing title waits for most of its ground, so it never sits on readable UI;
-  // an opening one is gone before its ground starts to clear, so the product scaling
-  // in (processor.js backdropChain) is never seen through the words
+  // a closing title waits for most of its ground, so it never sits on readable UI
   const inAt = card.opens ? Math.max(0.2, card.text) : card.a + card.fade
-  const outAt = card.opens ? card.b - card.fade - OUT - stagger * 0.5 - 0.06
+  // an opening one starts to leave just before the product scales in, so the two
+  // moves overlap into one handover instead of leaving a beat of empty ground
+  const outAt = card.opens ? card.b - cardLanding(card) - 0.32
     : (card.b < (card.span || Infinity) - 0.05 ? card.b - OUT : null)
   // layers is a list of (op, dy, blur) => text, drawn together as one piece
   const piece = (layer, draws, delay) => {
@@ -734,9 +882,9 @@ function titleEvents(evs, card, W, H, measure = estimate) {
     ], stagger)
     return
   }
-  // quieter by colour and size, not by weight alone: 70 percent white, untracked
+  // quieter by colour and size, not by weight alone: 70 percent white, tracked out a hair
   piece(6, [
-    (op, dy, blur) => text(cx, sy, sp, FONT.sub, o => `\\fsp0\\1c${fillT}\\1a${alpha(o * 0.7)}`)(op, dy, blur) + esc(subtitle),
+    (op, dy, blur) => text(cx, sy, sp, FONT.sub, o => `\\fsp${n1(sp * 0.01)}\\1c${fillT}\\1a${alpha(o * 0.7)}`)(op, dy, blur) + esc(subtitle),
   ], stagger)
 }
 
@@ -807,19 +955,27 @@ function labelEvents(evs, t, style, W, H, span, measure = estimate) {
 // badges were drawn here; every step reading "1" numbers nothing.
 const stepLabel = (m, k) => String(m.n != null && m.n !== '' ? m.n : k).replace(/[^0-9A-Za-z]/g, '').slice(0, 3) || String(k)
 
-// A badge's diameter on an H tall picture, and the ring round it
-const stepSize = H => { const D = Math.max(26, Math.round(H * 0.046)); return { D, ring: Math.max(1.5, D * 0.05) } }
+// A badge's diameter on an H tall picture, and the ring round it. With out, finished
+// pixels per pixel here through the zoom it is seen in, it is sized for the finished
+// frame (60 px at 1080): sized to the recording, a 2x zoom drew it twice as large,
+// over the labels and across the gutter to the next card.
+const stepSize = (H, out = 0) => {
+  const D = out > 0 ? Math.max(12, Math.round(60 / out)) : Math.max(26, Math.round(H * 0.046))
+  return { D, ring: Math.max(out > 0 ? 1.8 / out : 1.5, D * 0.05) }
+}
 
 function stepEvents(evs, m, W, H) {
   const a = m.start, b = m.end
   if (!(b > a + 0.1)) return
-  const { D } = stepSize(H)
+  const { D, ring } = stepSize(H, m.out)
   const R = D / 2
   const edge = R + D * 0.2
-  const cx = Math.min(W - edge, Math.max(edge, (+m.x || 0) * W))
-  const cy = Math.min(H - edge, Math.max(edge, (+m.y || 0) * H))
+  // On a card's corner found in the picture (stepCorner) the badge sits a little up and
+  // out from it, the same on every card, so it holds the corner and clears the label
+  const ox = m.corner ? -D * 0.18 : 0, oy = m.corner ? -D * 0.18 : 0
+  const cx = Math.min(W - edge, Math.max(edge, (+m.x || 0) * W + ox))
+  const cy = Math.min(H - edge, Math.max(edge, (+m.y || 0) * H + oy))
   const n = String(m.n != null ? m.n : '').replace(/[^0-9A-Za-z]/g, '').slice(0, 3) || '1'
-  const { ring } = stepSize(H)
   const IN = Math.min(0.34, (b - a) / 3), OUT = Math.min(0.22, (b - a) / 4)
   const fs = Math.round(D * (n.length > 1 ? 0.46 : 0.56))
   const draw = (s, op) => {
@@ -885,6 +1041,65 @@ function stepSpot(px, w, h, m, H) {
   if (!(best.c < c0 * 0.85)) return keep
   // the frame edges clamp later (stepEvents), so only the nudge is returned here
   return { x: (cx + best.dx * R) / w, y: (cy + best.dy * R) / h }
+}
+
+/**
+ * The card corner a step names, found in the picture: an agent reads a corner off a
+ * screenshot a few pixels out, sometimes in the gutter between two cards, and badges
+ * placed where it said sat at different heights and over the neighbour's corner. Looks
+ * within a badge's width of the point for the top-left corner of a box: an edge running
+ * down from it and one running right, both straight for more than a badge's length
+ * past the corner's rounding. px is a w x h grey frame, H the picture's height the step
+ * is drawn on. Returns { x, y } fractions of the corner, or null when none reads.
+ */
+function stepCorner(px, w, h, m, H) {
+  const { D } = stepSize(H)
+  const d = D * (h / H)
+  if (!px || px.length < w * h || !(d >= 6)) return null
+  const x0 = (+m.x || 0) * w, y0 = (+m.y || 0) * h
+  // Within a third of a badge: layouts align things, and a wider look found the card's
+  // left side meeting the bottom of a button above it as a stronger corner
+  const reach = Math.round(d * 0.35), skip = Math.round(d * 0.45), len = Math.round(d * 1.5)
+  const at = (x, y) => px[y * w + x]
+  // How surely a straight edge runs from (x, y) along one axis: the median step across
+  // it, signed. A card's hairline steps the same way at every pixel of its length; text
+  // steps hard but here and there, and both ways, so its median is nothing.
+  const step = new Array(len)
+  const med = () => { step.sort((a, b) => a - b); return Math.abs(step[len >> 1]) }
+  const down = (x, y) => { for (let j = 0; j < len; j++) step[j] = at(x, y + skip + j) - at(x - 1, y + skip + j); return med() }
+  const right = (x, y) => { for (let i = 0; i < len; i++) step[i] = at(x + skip + i, y) - at(x + skip + i, y - 1); return med() }
+  let best = null
+  for (let y = Math.max(1, Math.round(y0 - reach)); y <= Math.min(h - skip - len - 1, Math.round(y0 + reach)); y++) {
+    for (let x = Math.max(1, Math.round(x0 - reach)); x <= Math.min(w - skip - len - 1, Math.round(x0 + reach)); x++) {
+      // both edges, so the weaker decides: a lone line of text or a divider is not a
+      // corner. Past a clear hairline, strength is no reason to go further from the point
+      const s = Math.min(8, down(x, y), right(x, y)) - 2 * Math.hypot(x - x0, y - y0) / reach
+      if (!best || s > best.s) best = { s, x, y }
+    }
+  }
+  // a hairline on a light page steps by a couple of levels; less than that is noise
+  if (!best || best.s < 2) return null
+  return { x: best.x / w, y: best.y / h }
+}
+
+/**
+ * Steps on one grid of cards share their rows and columns: corners within half a badge
+ * of each other take one x (or one y), so 1 and 2 sit on a line and 3 sits under 1.
+ * list is steps in fractions of a W x H picture; returns the list re-placed.
+ */
+function stepGrid(list, W, H) {
+  const { D } = stepSize(H)
+  const out = list.map(m => ({ ...m }))
+  for (const [key, size] of [['x', W], ['y', H]]) {
+    const done = new Set()
+    for (const m of out) {
+      if (done.has(m)) continue
+      const near = out.filter(o => !done.has(o) && Math.abs(o[key] - m[key]) * size <= D / 2)
+      const mean = near.reduce((a, o) => a + o[key], 0) / near.length
+      for (const o of near) { o[key] = mean; done.add(o) }
+    }
+  }
+  return out
 }
 
 /**
@@ -975,42 +1190,227 @@ function spotlightSpan(m, zooms = []) {
   if (Ta == null && handIn) { Ta = zEase(handIn); a = handIn.end - Ta }
   return { a, b, Ta, Tb }
 }
-function spotlightEvents(evs, m, W, H, zooms = [], px = null) {
+// ── content space: lift and spotlight ───────────────────────────────────────
+// Two ways of saying "look here", in one visual language. Both cut the thing out as a
+// rounded rectangle hugging its box and step the rest of the frame back, dimmed and
+// lightly blurred, never with a hard edge. A spotlight's cutout is feathered and
+// breathes a little round its target. A lift raises the piece itself: a soft wide
+// shadow under it and a few percent of scale, a card coming off the page. Both ease
+// on the zoom's own curve and timing (spotlightSpan), so a zoom and a lift on the same
+// thing read as one move, and both are drawn in the recording's space before any zoom.
+//
+// processor.js focusFilters draws them from masks made once per mark (focusExprs);
+// focusAt is the same geometry point by point, for the tests and the editor preview.
+// dim is the share of light taken from the rest of the frame, blur its Gaussian sigma
+// in finished pixels (light: the page stays recognisable, it only stops competing),
+// shadow how dark a lift's shadow is at its heart.
+const FOCUS = {
+  spotlight: { dim: SPOT_DIM, blur: 1.6, shadow: 0 },
+  lift: { dim: 0.3, blur: 2.4, shadow: 0.6 },
+}
+const FOCUS_KINDS = Object.keys(FOCUS)
+
+/**
+ * A lift or spotlight's cutout on a W x H picture, in its pixels: { kind, x, y, w, h,
+ * r, feather, dim, blur, lift, shadow: { dy, soft, alpha, ring } }. The box plus a little room
+ * (a spotlight's pad), never snapped out through the frame's edge, so there is no L
+ * and no band. Everything is sized in pixels of the finished frame, through the zoom
+ * it is seen in, so a 2x zoom does not double the feather.
+ *   o.px      finished-frame pixels per pixel here, before any zoom
+ *   o.seen    the zoom scale the mark is mostly seen through
+ *   o.radius  the element's own corner radius in pixels here, when measured (cornerRadius)
+ */
+function focusShape(m, W, H, o = {}) {
+  const kind = FOCUS[m && m.kind] ? m.kind : 'spotlight', f = FOCUS[kind]
+  const out = (o.px > 0 ? o.px : 1080 / H) * Math.max(1, +o.seen || 1)
+  const c01 = v => Math.max(0, Math.min(1, +v || 0))
+  const bx = c01(m.x) * W, by = c01(m.y) * H
+  const bw = Math.max(2, Math.min(W - bx, (+m.w > 0 ? +m.w : 0.2) * W)), bh = Math.max(2, Math.min(H - by, (+m.h > 0 ? +m.h : 0.1) * H))
+  // a short wide thing (a toast, a button, a search field) is a pill: its own round
+  // ends read, so it is hugged closer
+  const pill = bh * out < 100 && bw > bh * 2.5
+  // a pill's pad is a hair: a wider ring of lit page round a dark toast reads as a glow.
+  // A lifted card keeps a few pixels of its page on every side, so its own border comes
+  // up whole and evenly framed rather than on the cut, where it read as a clipped screenshot.
+  const pad = (kind === 'lift' ? (pill ? 1 : 4) : pill ? 3 : 12) / out
+  const x = Math.max(0, bx - pad), y = Math.max(0, by - pad)
+  const w = Math.min(W, bx + bw + pad) - x, h = Math.min(H, by + bh + pad) - y
+  // the element's own corners where measured, concentric with the pad; else a pill's
+  // round ends, or a card's corners sized to the card
+  const own = +o.radius > 0 ? +o.radius + pad : null
+  const r = Math.min(w / 2, h / 2, own != null ? own : pill ? h / 2 : Math.max(8 / out, Math.min(18 / out, Math.min(bw, bh) * 0.06)) + pad)
+  // A lift grows by at most 2 percent about its own centre: the shadow and the page
+  // stepping back do the lifting. At 5 percent a card grid's outer cards moved ten
+  // pixels off their own blurred copy and read as a pasted screenshot.
+  const lift = kind === 'lift' ? 1 + Math.max(0.012, Math.min(0.02, 12 / (Math.max(bw, bh) * out))) : 1
+  const big = !pill && bh * out > 120
+  // Round a small lifted thing the page steps further back, toward a dark neutral: at
+  // the card's 30 percent a light UI round a toast went a flat pale grey, not lifted
+  const dim = kind === 'lift' && !big ? 0.45 : f.dim
+  return {
+    kind, x, y, w, h, r,
+    feather: kind === 'lift' ? 1 : (pill ? 6 : 12) / out,
+    dim, blur: f.blur / out,
+    // Round a lift the page steps back softly: no dim at the piece's edge, full dim
+    // about 40 finished pixels out, and a little more with distance, so it reads as
+    // light falling off the piece rather than a flat grey wash with a hole in it
+    fall: kind === 'lift' ? { near: 40 / out, far: 420 / out } : null,
+    lift,
+    // a key shadow below, and a tight ambient one all round: without it the blurred
+    // copy of a dark element under the piece shows past its top edge as a grey ridge.
+    // Small pieces get a shadow as wide as a card's, or they sit flat on the page.
+    shadow: { dy: (big ? 16 : 10) / out, soft: (big ? 44 : 32) / out, alpha: f.shadow, ring: (big ? 10 : 8) / out },
+  }
+}
+
+// Signed distance from (X, Y) to a shape's rounded rectangle: negative inside
+function focusDist(s, X, Y, dy = 0, grow = 1) {
+  const cx = s.x + s.w / 2, cy = s.y + s.h / 2 + dy
+  const hw = s.w * grow / 2, hh = s.h * grow / 2, r = s.r * grow
+  const qx = Math.abs(X - cx) - (hw - r), qy = Math.abs(Y - cy) - (hh - r)
+  return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r
+}
+/**
+ * When a lift or spotlight is in, on the output clock: { a, b, Tin, Tout }, the ease
+ * in starting at a and the ease out ending at b. Riding a zoom it takes the zoom's own
+ * push and pull; on its own, the zoom's length of ease.
+ */
+function focusTiming(m, zooms = []) {
   const { a, b, Ta, Tb } = spotlightSpan(m, zooms)
-  if (!(b > a + 0.2)) return
+  if (!(b > a + 0.2)) return null
   const T0 = Math.min(ZOOM_EASE, (b - a) / 3)
   const Tin = Math.min(Ta != null && Ta > 0.04 ? Ta : T0, (b - a) / 2)
   const Tout = Math.min(Tb != null && Tb > 0.04 ? Tb : T0, (b - a) - Tin)
-  // Sized in pixels of the finished frame, through the zoom it is seen in: a feather
-  // set as a share of the recording, then magnified, spread a pale halo well past the
-  // target that read as a glow rather than a cutout. About 10 px of room round a card
-  // (3 round a pill), an edge about 15 px soft and corners about 12 px, at 1080.
-  const seen = Math.max(1, ...(zooms || []).filter(z => z && Math.min(z.end, b) - Math.max(z.start, a) > 0.3).map(z => +z.scale || 1))
-  const out = (px > 0 ? px : 1080 / H) * seen          // output pixels per pixel here
-  // A window within a few pixels of the frame's edge opens right through it: a sliver
-  // of dim along the edge reads as a dark band, not a spotlight.
-  const near = H * 0.03
-  // a short wide target (a toast, a button, a search field) is a pill, hugged closer
-  // since its own edge already reads; anything taller gets a card's corners
-  const pill = (+m.h || 0.1) * H * out < 100 && (+m.w || 0.2) * W > (+m.h || 0.1) * H * 2.5
-  const grow = (pill ? 3 : 10) / out
-  const feather = Math.max(1.2, (pill ? 3.5 : 5) / out)     // libass's blur spreads about three times its value
-  const P = feather * 6           // the dim runs past the frame so its own edge never shows
-  let x0 = (+m.x || 0) * W - grow, y0 = (+m.y || 0) * H - grow
-  let x1 = ((+m.x || 0) + (+m.w || 0.2)) * W + grow, y1 = ((+m.y || 0) + (+m.h || 0.1)) * H + grow
-  if (x0 < near) x0 = -P * 2
-  if (y0 < near) y0 = -P * 2
-  if (x1 > W - near) x1 = W + P * 2
-  if (y1 > H - near) y1 = H + P * 2
-  const x = x0, y = y0, w = x1 - x0, h = y1 - y0
-  const r = pill ? h / 2 : Math.min(12 / out + grow * 0.5, w / 2, h / 2)
-  // the outer edge is wider than any snapped hole, so the hole always sits inside it
-  const O = P * 3
-  const shape = `m ${n1(-O)} ${n1(-O)} l ${n1(W + O)} ${n1(-O)} l ${n1(W + O)} ${n1(H + O)} l ${n1(-O)} ${n1(H + O)} ` +
-    roundRect(x, y, w, h, r, true)
-  const draw = d => `{\\an7\\pos(0,0)\\p1\\bord0\\shad0\\1c${colour('#0A0908')}\\1a${alpha(d)}\\blur${n1(feather)}}${shape}{\\p0}`
-  evs.bake(15, a, Tin, p => draw(SPOT_DIM * MOVE(p)), b - Tout)
-  evs.bake(15, b - Tout, Tout, p => draw(SPOT_DIM * (1 - MOVE(p))))
+  return { a, b, Tin, Tout }
+}
+// How far in a lift or spotlight is at t, 0 to 1, on the zoom's curve
+function focusLevel(tm, t) {
+  if (!tm || t <= tm.a || t >= tm.b) return 0
+  return MOVE(Math.min((t - tm.a) / tm.Tin, (tm.b - t) / tm.Tout, 1))
+}
+const smooth01 = v => { const p = Math.max(0, Math.min(1, v)); return p * p * (3 - 2 * p) }
+
+/**
+ * The masks at one point, fully in: { a, shade, piece }. a is how much of the stepped
+ * back frame shows (0 in a spotlight's cutout, 1 elsewhere; a lift's piece covers its
+ * own hole), shade what that frame is multiplied by (the dim, and a lift's shadow),
+ * piece how opaque the lifted piece is.
+ */
+function focusAt(s, X, Y) {
+  const d = focusDist(s, X, Y)
+  const a = s.kind === 'lift' ? 1 : smooth01(d / s.feather + 0.5)
+  let sh = 0
+  if (s.shadow.alpha) {
+    const key = s.shadow.alpha * (1 - smooth01(focusDist(s, X, Y, s.shadow.dy, s.lift) / s.shadow.soft + 0.5))
+    const amb = s.shadow.alpha * 0.55 * (1 - smooth01(focusDist(s, X, Y, 0, s.lift) / s.shadow.ring))
+    sh = 1 - (1 - key) * (1 - amb)
+  }
+  const dim = s.fall ? s.dim * smooth01(d / s.fall.near) * (0.72 + 0.28 * smooth01(d / s.fall.far)) : s.dim
+  return { a, shade: (1 - dim) * (1 - sh), piece: Math.max(0, Math.min(1, 0.5 - d)) }
+}
+
+/**
+ * The same masks as ffmpeg expressions of X and Y (geq), on a copy scaled by k:
+ * { a, shade, piece }, each 0 to 1. Evaluated once per mark on a still, never per frame.
+ * piece is in the lifted piece's own crop, whose top left is (ox, oy) here.
+ */
+function focusExprs(s, k = 1, ox = 0, oy = 0) {
+  const f = v => (Math.round(v * 1000) / 1000).toString()
+  const dist = (dy, grow, sc, x0, y0) => {
+    const cx = (s.x + s.w / 2 - x0) * sc, cy = (s.y + s.h / 2 + dy - y0) * sc
+    const hw = s.w * grow / 2 * sc, hh = s.h * grow / 2 * sc, r = s.r * grow * sc
+    const qx = `(abs(X-${f(cx)})-${f(hw - r)})`, qy = `(abs(Y-${f(cy)})-${f(hh - r)})`
+    return `(hypot(max(${qx},0),max(${qy},0))+min(max(${qx},${qy}),0)-${f(r)})`
+  }
+  const sm = e => `(clip(${e},0,1)*clip(${e},0,1)*(3-2*clip(${e},0,1)))`
+  const a = s.kind === 'lift' ? '1' : sm(`${dist(0, 1, k, 0, 0)}/${f(s.feather * k)}+0.5`)
+  const key = `${f(s.shadow.alpha)}*(1-${sm(`${dist(s.shadow.dy, s.lift, k, 0, 0)}/${f(s.shadow.soft * k)}+0.5`)})`
+  const amb = `${f(s.shadow.alpha * 0.55)}*(1-${sm(`${dist(0, s.lift, k, 0, 0)}/${f(s.shadow.ring * k)}`)})`
+  const sh = s.shadow.alpha ? `(1-(1-${key})*(1-${amb}))` : '0'
+  const d0 = dist(0, 1, k, 0, 0)
+  const dim = s.fall
+    ? `${f(s.dim)}*${sm(`${d0}/${f(s.fall.near * k)}`)}*(0.72+0.28*${sm(`${d0}/${f(s.fall.far * k)}`)})`
+    : f(s.dim)
+  return { a, shade: `(1-${dim})*(1-${sh})`, piece: `clip(0.5-${dist(0, 1, 1, ox, oy)},0,1)` }
+}
+
+/**
+ * An element's own corner radius, in pixels of a w x h grey frame, or null. Walks in
+ * along each corner's diagonal from the box's corner until the pixels turn to the
+ * element's fill: a corner of radius r keeps the page for r(1 - 1/sqrt 2) of the way
+ * in. The median of the corners that read, so one corner under a shadow or an icon
+ * does not decide it. m is the box in fractions, and must hug the element: a box
+ * with page along its edges measures nothing.
+ */
+function cornerRadius(px, w, h, m) {
+  if (!px || px.length < w * h) return null
+  const X0 = Math.round((+m.x || 0) * w), Y0 = Math.round((+m.y || 0) * h)
+  const X1 = Math.round(((+m.x || 0) + (+m.w || 0)) * w) - 1, Y1 = Math.round(((+m.y || 0) + (+m.h || 0)) * h) - 1
+  if (X1 - X0 < 8 || Y1 - Y0 < 8 || X0 < 0 || Y0 < 0 || X1 >= w || Y1 >= h) return null
+  const at = (x, y) => px[y * w + x]
+  const reach = Math.floor(Math.min(X1 - X0, Y1 - Y0) / 2)
+  const found = []
+  for (const [x, y, sx, sy] of [[X0, Y0, 1, 1], [X1, Y0, -1, 1], [X0, Y1, 1, -1], [X1, Y1, -1, -1]]) {
+    // the fill: a step in along both edges from this corner, past any rounding
+    const fill = at(x + sx * reach, y + sy * Math.min(3, reach))
+    const fill2 = at(x + sx * Math.min(3, reach), y + sy * reach)
+    if (Math.abs(fill - fill2) > 10) continue
+    const page = at(x, y)
+    if (Math.abs(page - fill) < 14) continue            // no contrast at this corner
+    // a loose box has page along its edges too, and would read as a huge radius
+    const half = Math.abs(page - fill) / 2, mx = (X0 + X1) >> 1, my = (Y0 + Y1) >> 1
+    if (Math.abs(at(mx, y) - fill) > half || Math.abs(at(x, my) - fill) > half) continue
+    let d = -1
+    for (let i = 0; i <= reach; i++) {
+      if (Math.abs(at(x + sx * i, y + sy * i) - fill) <= Math.abs(page - fill) / 2) { d = i; break }
+    }
+    if (d >= 0) found.push(d / (1 - Math.SQRT1_2))
+  }
+  if (found.length < 2) return null
+  found.sort((p, q) => p - q)
+  return found[found.length >> 1]
+}
+
+/**
+ * A lift's box grown out to the element's own outer edge, on a grey picture px (w x h)
+ * with a few pixels of page round the box: { x, y, w, h } in the same fractions, or
+ * null when nothing moved. find_on_screen measures at 1600 wide and keeps the inside of
+ * a hairline, so a stats grid lifted on its box came out with its bottom and right
+ * borders sliced off while the top and left kept theirs. Each side steps out over rows
+ * (or columns) that differ from the page beyond them, up to that page, never in.
+ */
+function edgeFit(px, w, h, m) {
+  if (!px || px.length < w * h) return null
+  const X0 = Math.round((+m.x || 0) * w), Y0 = Math.round((+m.y || 0) * h)
+  const X1 = Math.round(((+m.x || 0) + (+m.w || 0)) * w) - 1, Y1 = Math.round(((+m.y || 0) + (+m.h || 0)) * h) - 1
+  if (X1 - X0 < 16 || Y1 - Y0 < 16 || X0 < 0 || Y0 < 0 || X1 >= w || Y1 >= h) return null
+  const at = (x, y) => px[y * w + x]
+  // the middle of each side only: rounded corners are page there
+  const ix = Math.round((X1 - X0) * 0.15), iy = Math.round((Y1 - Y0) * 0.15)
+  const line = (horiz, k) => {
+    const v = []
+    if (horiz) for (let x = X0 + ix; x <= X1 - ix; x++) v.push(at(x, k))
+    else for (let y = Y0 + iy; y <= Y1 - iy; y++) v.push(at(k, y))
+    return v
+  }
+  const median = v => v.slice().sort((a, b) => a - b)[v.length >> 1]
+  // from just outside the box to the picture's edge, which is page
+  const grow = (horiz, from, to, dir) => {
+    if ((to - from) * dir < 1) return from
+    const page = median(line(horiz, to))
+    let edge = from, gap = 0
+    for (let k = from + dir; (to - k) * dir >= 1; k += dir) {
+      const v = line(horiz, k)
+      if (v.filter(p => Math.abs(p - page) > 6).length >= v.length * 0.5) { edge = k; gap = 0; continue }
+      // a box can stop a pixel or two short of the line, with the card's own fill between
+      if (edge !== from || ++gap > 2) break
+    }
+    return edge
+  }
+  const t = grow(true, Y0, 0, -1), b = grow(true, Y1, h - 1, 1)
+  const l = grow(false, X0, 0, -1), r = grow(false, X1, w - 1, 1)
+  if (t === Y0 && b === Y1 && l === X0 && r === X1) return null
+  return { x: l / w, y: t / h, w: (r - l + 1) / w, h: (b - t + 1) / h }
 }
 
 // ── the two scripts ─────────────────────────────────────────────────────────
@@ -1035,7 +1435,8 @@ function frameScript({ W, H, phrases, capStyle, texts, span, measure, box, frost
   return evs.list.length ? script(W, H, evs) : null
 }
 
-// The content-space script: steps and spotlights, marks already on the output clock
+// The content-space script: numbered steps, marks already on the output clock. Lifts
+// and spotlights change pixels, so processor.js draws them (focusFilters).
 function contentScript({ W, H, marks, zooms, px = null }) {
   const evs = events()
   let k = 0
@@ -1044,10 +1445,31 @@ function contentScript({ W, H, marks, zooms, px = null }) {
     // counted before the time check, so a step cut away keeps the others' numbers
     const n = m.kind === 'step' ? stepLabel(m, ++k) : null
     if (!(m.end > m.start)) continue
-    if (m.kind === 'spotlight') spotlightEvents(evs, m, W, H, zooms, px)
-    else if (m.kind === 'step') stepEvents(evs, { ...m, n }, W, H)
+    if (m.kind !== 'step') continue
+    // sized through the zoom it is mostly seen in, as a lift's edges are
+    const seen = Math.max(1, ...(zooms || []).filter(z => z && Math.min(z.end, m.end) - Math.max(z.start, m.start) > 0.3).map(z => +z.scale || 1))
+    stepEvents(evs, { ...m, n, out: px > 0 ? px * seen : 0, ...stepOnLift(m, marks, zooms, W, H, px) }, W, H)
   }
   return evs.list.length ? script(W, H, evs) : null
+}
+
+// A step numbering a card that is lifted goes up with it: the piece grows a few
+// percent about its centre, which would slide the card's own label under a badge
+// left where the card was. Judged at the step's start, so one that pops in once the
+// lift is up lands on the raised card; the move is the same scale about the same centre.
+function stepOnLift(st, marks, zooms, W, H, px) {
+  const x = +st.x || 0, y = +st.y || 0, slack = 0.02
+  for (const m of marks || []) {
+    if (!m || m.kind !== 'lift' || !(+m.w > 0 && +m.h > 0)) continue
+    if (x < m.x - slack || x > m.x + m.w + slack || y < m.y - slack || y > m.y + m.h + slack) continue
+    const tm = focusTiming(m, zooms)
+    if (!tm || st.start < tm.a + tm.Tin / 2 || st.start >= tm.b) continue
+    const seen = Math.max(1, ...(zooms || []).filter(z => z && Math.min(z.end, tm.b) - Math.max(z.start, tm.a) > 0.3).map(z => +z.scale || 1))
+    const s = focusShape(m, W, H, { px: px || undefined, seen, radius: m.radius })
+    const cx = (s.x + s.w / 2) / W, cy = (s.y + s.h / 2) / H
+    return { x: cx + (x - cx) * s.lift, y: cy + (y - cy) * s.lift }
+  }
+  return null
 }
 
 /**
@@ -1063,7 +1485,7 @@ function zoomView(zooms, t) {
     if (m.from && t < m.inEnd) {
       // panning across from the zoom before: focus and scale move together
       const q = MOVE((t - m.inStart) / (m.inEnd - m.inStart))
-      s = m.from.scale + (m.scale - m.from.scale) * q
+      s = m.from.scale + (m.scale - m.from.scale) * q - (m.from.dip || 0) * 4 * q * (1 - q)
       fx = m.from.x + (m.x - m.from.x) * q; fy = m.from.y + (m.y - m.from.y) * q
     } else {
       const p = t < m.inEnd ? (t - m.inStart) / (m.inEnd - m.inStart)
@@ -1081,7 +1503,11 @@ function zoomView(zooms, t) {
 // straight back in, which reads as a bounce: the first holds, then the camera pans
 // across to the second over ZOOM_PAN, on the same curve, as auto-zoom does.
 // processor.js explicitZoomFilter renders exactly this plan.
-const ZOOM_SETTLE = 0.8, ZOOM_PAN = 0.7
+// Two targets far apart (more than about half a view between them) are not joined by
+// a long diagonal slide across the page, which reads as busy: the camera eases back
+// while it travels (from.dip, taken off the scale at the middle of the move, on a
+// parabola so it still starts and lands on the one curve), over a little longer.
+const ZOOM_SETTLE = 0.8, ZOOM_PAN = 0.7, ZOOM_PAN_FAR = 1.0
 function zoomPlan(zooms) {
   const list = (zooms || []).filter(z => z && z.end > z.start).slice().sort((a, b) => a.start - b.start)
   const plan = list.map(z => {
@@ -1095,17 +1521,25 @@ function zoomPlan(zooms) {
     const at = Math.max(p.inEnd, Math.min(p.outEnd, n.inStart))
     // room for the pan and for the second zoom's own pull back
     if (n.outStart - at < 0.2) continue
-    n.inStart = at
-    n.inEnd = at + Math.min(ZOOM_PAN, n.outStart - at)
-    p.outStart = p.outEnd = at
-    n.from = { x: p.x, y: p.y, scale: p.scale }
+    const lo = Math.min(p.scale, n.scale), d = Math.hypot(n.x - p.x, n.y - p.y)
+    const far = d * lo > 0.6
+    // never all the way out: that would be the bounce this pan exists to avoid
+    const mid = far ? Math.max(1 + (lo - 1) * 0.3, Math.min(lo, 0.6 / d)) : null
+    const dip = far ? Math.max(0, (p.scale + n.scale) / 2 - mid) : 0
+    // the longer move starts earlier where the zoom before has the room
+    const start = far ? Math.max(p.inEnd, at - (ZOOM_PAN_FAR - ZOOM_PAN) / 2) : at
+    n.inStart = start
+    n.inEnd = start + Math.min(far ? ZOOM_PAN_FAR : ZOOM_PAN, n.outStart - start)
+    p.outStart = p.outEnd = start
+    n.from = { x: p.x, y: p.y, scale: p.scale, dip }
   }
   return plan
 }
 
 module.exports = {
   bezier, EASE_IN, EASE_OUT, MOVE, ZOOM_EASE, POP, FONT, GOLD, zoomView, zoomPlan,
-  alignWords, snapToSpeech, spokenWords, captionPhrases, phraseTimes, captionLayout, CAP_BAND, BAND_WRAP, titleParts, textStyle, titleCards,
-  frameScript, contentScript, captionFrost, spotlightSpan, roundRect, SPOT_DIM, stepLabel, stepSpot, spotFit,
+  alignWords, snapToSpeech, spokenWords, captionPhrases, phraseTimes, captionLayout, CAP_BAND, BAND_WRAP, backdropGeometry, titleParts, textStyle, titleCards,
+  cardLanding, clearOfTitles, gutterInsets, windowCorner, frameScript, contentScript, captionFrost, spotlightSpan, roundRect, SPOT_DIM,
+  FOCUS, FOCUS_KINDS, focusShape, focusTiming, focusLevel, focusAt, focusExprs, focusDist, cornerRadius, edgeFit, stepLabel, stepSize, stepSpot, stepCorner, stepGrid, spotFit,
   captionClutter, placeCaptions, CAP_ZONE,
 }

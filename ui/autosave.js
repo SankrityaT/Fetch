@@ -43,6 +43,7 @@
       backdrop: ed.backdrop || null,
       backdropFile: ed.backdropFile || null,
       autoZoom: !!ed.autoZoom,
+      look: ed.look || null,
     }
   }
 
@@ -100,9 +101,16 @@
         in: saved.in, out: saved.out, cuts: saved.cuts || [], texts: saved.texts || [],
         crop: saved.crop, cropAR: saved.cropAR || 'free',
         capStyle: saved.capStyle || ed.capStyle,
-        backdrop: saved.backdrop, backdropFile: saved.backdropFile,
         autoZoom: !!saved.autoZoom,
       })
+      // backdrop is a mirror of the look now (editor.js syncLookMirrors); an older
+      // snapshot without a look still brings its backdrop back
+      try {
+        const Look = require('./ui/look')
+        ed.look = saved.look ? Look.resolve(saved.look)
+          : Look.merge(ed.look, { background: Look.backgroundFromId(saved.backdrop, saved.backdropFile) }).look
+        syncLookMirrors()
+      } catch {}
       try { paintTrim(); renderTexts(); renderLayerList(); paintCrop(); paintBackdrop(); paintCaption() } catch {}
       if (typeof toast === 'function') toast('Restored your edit', 'ok')
       close()

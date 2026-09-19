@@ -1,0 +1,311 @@
+// Aiming an edit at what the person means (ui/targets.js): detections made into
+// elements, elements ranked against their words, and a box made into the zoom that
+// frames it. The detections here are shaped like Elements.swift's output on the
+// Songscription take that went wrong: "zoom on the black chip" landed on the yellow
+// "Pick for me" button.
+const T = require('../ui/targets')
+const FD = require('../ui/fetchdoc')
+
+let pass = 0, fail = 0
+const is = (name, got, want) => {
+  const ok = JSON.stringify(got) === JSON.stringify(want)
+  ok ? pass++ : fail++
+  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}` +
+    (ok ? '' : `\n       got  ${JSON.stringify(got)}\n       want ${JSON.stringify(want)}`))
+}
+const near = (a, b, e = 0.002) => Math.abs(a - b) <= e
+
+const TOAST = { x: 0.4194, y: 0.7859, w: 0.3494, h: 0.0415 }
+const RAW = {
+  width: 1600, height: 892,
+  texts: [
+    { text: 'Library', conf: 1, box: { x: 0.216, y: 0.04, w: 0.036, h: 0.02 }, bg: '#FBFAF7', bgShare: 0.95 },
+    { text: 'Recently played 132', conf: 1, box: { x: 0.333, y: 0.157, w: 0.084, h: 0.02 }, bg: '#FFFFFF', bgShare: 0.9,
+      container: { x: 0.3075, y: 0.148, w: 0.1169, h: 0.0404 }, outside: '#EFEDE8' },
+    { text: 'Pick for me', conf: 1, box: { x: 0.653, y: 0.158, w: 0.049, h: 0.02 }, bg: '#FBE29A', bgShare: 0.9,
+      container: { x: 0.6463, y: 0.1502, w: 0.0631, h: 0.037 }, outside: '#FBFAF7' },
+    { text: 'Tonight: "Fantaisie-Impromptu (right hand)", a favorite you have not played yet.', conf: 0.5,
+      box: { x: 0.43, y: 0.795, w: 0.33, h: 0.022 }, bg: '#141414', bgShare: 0.97, container: TOAST, outside: '#FBFAF7' },
+    // two lines on one card come back as one element
+    { text: 'Fantaisie-Impromptu (right hand)', conf: 1, box: { x: 0.75, y: 0.33, w: 0.2, h: 0.025 }, bg: '#FFFFFF', bgShare: 0.9,
+      container: { x: 0.74, y: 0.31, w: 0.25, h: 0.12 }, outside: '#F4F2EE' },
+    { text: 'Chopin', conf: 1, box: { x: 0.75, y: 0.37, w: 0.05, h: 0.02 }, bg: '#FFFFFF', bgShare: 0.9,
+      container: { x: 0.741, y: 0.31, w: 0.249, h: 0.12 }, outside: '#F4F2EE' },
+  ],
+  rects: [
+    { box: { x: 0.2613, y: 0.324, w: 0.0575, h: 0.0605 }, bg: '#101212', conf: 0.9 },   // a dark thumbnail
+    { box: { x: 0.4190, y: 0.7855, w: 0.3500, h: 0.0420 }, bg: '#141414', conf: 0.8 },  // the toast again
+  ],
+}
+
+console.log('elements')
+const els = T.elementsFrom(RAW)
+const toast = els.find(e => /^Tonight/.test(e.text))
+is('ids run E1, E2... in reading order', els.map(e => e.id), els.map((_, i) => 'E' + (i + 1)))
+is('the toast is one chip, box and all', [toast.kind, toast.box], ['chip', TOAST])
+is('its fill is named black and dark', [toast.background.colour, toast.background.tone], ['black', 'dark'])
+is('two lines on one card are one element', els.filter(e => /Chopin/.test(e.text)).map(e => e.text), ['Fantaisie-Impromptu (right hand) Chopin'])
+is('a rectangle the toast already covers is not listed twice', els.filter(e => near(e.box.y, 0.786, 0.01)).length, 1)
+is('a dark shape with no text is still offered', els.some(e => e.kind === 'shape' && e.background.colour === 'black'), true)
+
+console.log('colour names')
+is('near-black', T.colourName('#141414'), 'black')
+is('the Pick for me yellow', T.colourName('#FBE29A'), 'yellow')
+is('white', T.colourName('#FBFAF7'), 'white')
+is('dark warm is brown, not orange', T.colourName('#5A3A1C'), 'brown')
+is('luminance of white is 1', T.luminance('#FFFFFF'), 1)
+
+console.log('queries')
+const pq = q => { const p = T.parseQuery(q); return { colours: [...p.colours], kinds: [...p.kinds], words: p.words, phrase: p.phrase } }
+is('an apostrophe is not a quote mark', pq("the user's black chip, it's the toast"),
+  { colours: ['black'], kinds: ['chip'], words: ['user'], phrase: null })
+is('a quoted label is words on the thing', pq('the "Pick for me" button').phrase, 'pick for me')
+is('single quotes at word edges quote too', pq("the 'Pick for me' button").phrase, 'pick for me')
+is('curly quotes too', pq('the yellow “Pick for me” button').words, ['pick', 'for', 'me'])
+is('an apostrophe inside a quote stays in it', pq("the 'Tonight's pick' chip").phrase, "tonight's pick")
+
+console.log('ranking')
+const top = q => T.rank(els, q)[0].text.slice(0, 16)
+is('"the black chip" is the toast', top('the black chip'), 'Tonight: "Fantai')
+is('"pick for me" is the Pick for me button', top('pick for me'), 'Pick for me')
+// the person's own request that went wrong: the section is where, the chip is what
+is('the person\'s sentence lands on the toast', top('the pick for me section at 0:35 needs a zoom in on the chip'), 'Tonight: "Fantai')
+is('"the chip in the Pick for me section" is the toast', top('the chip in the Pick for me section'), 'Tonight: "Fantai')
+is('"the Pick for me section" alone is that section', top('the Pick for me section'), 'Pick for me')
+is('a time in the request is not words on screen', pq('the chip at 0:35').words, [])
+is('a shape is not a chip', T.rank(els, 'the black chip')[1].kind === 'shape' ? T.rank(els, 'the black chip')[1].score < 1.5 : true, true)
+is('"the yellow button" is Pick for me', top('the yellow button'), 'Pick for me')
+is('"the toast" is the toast', top('the toast'), 'Tonight: "Fantai')
+is('the user\'s own words, apostrophes and all', top("the user's black chip, it's the toast"), 'Tonight: "Fantai')
+is('words on the chip beat its colour', top('the Tonight chip'), 'Tonight: "Fantai')
+is('no query keeps reading order', T.rank(els, '').map(e => e.id), els.map(e => e.id))
+
+console.log('a box as a zoom')
+const z = T.boxZoom(TOAST)
+// 0.3494 wide with a quarter clear each side: 1 / (0.3494 * 1.5) = 1.91
+is('fits the box with room around it', z.scale, 1.91)
+is('centred across on the box', near(z.x, TOAST.x + TOAST.w / 2, 0.0001), true)
+// the frame at 1.91x is 0.524 tall, so its centre can come no lower than 0.738
+is('held inside the frame at the bottom edge', z.y, 0.7382)
+is('the box is wholly in view', TOAST.y >= z.y - 0.5 / z.scale && TOAST.y + TOAST.h <= z.y + 0.5 / z.scale, true)
+is('a tiny box stops at 2.6x', T.boxZoom({ x: 0.5, y: 0.5, w: 0.02, h: 0.02 }).scale, 2.6)
+is('a big box still reads as a zoom, 1.2x', T.boxZoom({ x: 0.05, y: 0.05, w: 0.9, h: 0.9 }).scale, 1.2)
+is('a tall box is fitted by its height', T.boxZoom({ x: 0.4, y: 0.2, w: 0.05, h: 0.4 }).scale, 1.72)
+is('a small one keeps a quarter of its size clear', T.boxZoom({ x: 0.4, y: 0.4, w: 0.05, h: 0.12 }).scale, 2.6)
+is('a details pane fills the zoom, not an empty column beside it', T.boxZoom({ x: 0.7475, y: 0.4597, w: 0.2257, h: 0.4183 }).scale, 2.13)
+is('centred where it fits', T.boxZoom({ x: 0.4, y: 0.4, w: 0.2, h: 0.2 }), { x: 0.5, y: 0.5, scale: 2.6 })
+is('a corner box is held in on both axes', T.boxZoom({ x: 0, y: 0, w: 0.4, h: 0.1 }), { x: 0.266, y: 0.266, scale: 1.88 })
+is('not a box is no zoom', [T.boxZoom(null), T.boxZoom({ x: 0.1, y: 0.1, w: 0, h: 0.2 }), T.boxZoom(true)], [null, null, null])
+is('a box spilling off the frame is cut to it', T.cleanBox({ x: 0.9, y: -0.1, w: 0.3, h: 0.3 }), { x: 0.9, y: 0, w: 0.09999999999999998, h: 0.3 })
+
+console.log('box targets in the document')
+const doc = FD.normalize({ zooms: [{ id: 'Z37', start: 35, end: 38.4, scale: 2, x: 0.61, y: 0.12, box: TOAST }] }, '/x/a.mov', 52)
+is('a box wins over the old centre and scale', doc.zooms[0], { id: 'Z37', start: 35, end: 38.4, scale: 1.91, x: 0.5941, y: 0.7382 })
+is('and is not kept, so dragging the zoom later is not undone', 'box' in doc.zooms[0], false)
+const again = FD.normalize(doc, '/x/a.mov', 52)
+is('normalising again changes nothing', again.zooms[0], doc.zooms[0])
+const plain = FD.normalize({ zooms: [{ start: 1, end: 2, box: true }] }, '/x/a.mov', 5)
+is('a zoom with a box that is not a box keeps the defaults', [plain.zooms[0].scale, plain.zooms[0].x], [1.8, 0.5])
+const marks = FD.normalize({ marks: [
+  { kind: 'blur', start: 0, end: 5, box: { x: 0.1, y: 0.2, w: 0.3, h: 0.05 } },
+  { kind: 'step', start: 1, end: 5, box: { x: 0.4, y: 0.5, w: 0.1, h: 0.1 } },
+] }, '/x/a.mov', 5).marks
+is('a mark takes a box as its own region', [marks[0].x, marks[0].y, marks[0].w, marks[0].h, 'box' in marks[0]], [0.1, 0.2, 0.3, 0.05, false])
+is('a step goes on the box\'s top left corner', [marks[1].x, marks[1].y, marks[1].w], [0.4, 0.5, undefined])
+const text = FD.normalize({ texts: [{ text: 'Hi', box: true }] }, '/x/a.mov', 5).texts[0]
+is('a text\'s box stays its pill switch', text.box, true)
+
+console.log('panels and grids')
+// The details pane at 21 s of the Songscription take: six stat cards in two columns
+// inside one panel, found from its hairline edges (Elements.swift panels)
+{
+  const card = (label, x, y) => ({ text: label, conf: 1, box: { x: x + 0.008, y: y + 0.015, w: 0.03, h: 0.014 }, bg: '#FCFBF7', bgShare: 1,
+    container: { x, y, w: 0.11, h: 0.09 }, outside: '#FFFFFF' })
+  const raw = {
+    width: 1600, height: 988,
+    texts: [
+      { text: 'Nuages gris (simplified)', conf: 1, box: { x: 0.745, y: 0.395, w: 0.142, h: 0.024 }, bg: '#FDFCF8', bgShare: 1 },
+      card('KEY', 0.748, 0.522), card('TEMPO', 0.864, 0.522),
+      card('METER', 0.748, 0.622), card('LENGTH', 0.864, 0.622),
+      card('RANGE', 0.748, 0.722), card('HANDS', 0.864, 0.722),
+    ],
+    rects: [{ box: { x: 0.7363, y: 0.1852, w: 0.2488, h: 0.7905 }, bg: '#FCFBF7', conf: 0.9, edges: true }],
+  }
+  const E = T.elementsFrom(raw)
+  const panel = E.find(e => e.kind === 'panel'), grid = E.find(e => e.kind === 'grid')
+  const tempo = E.find(e => /TEMPO/.test(e.text) && e.kind === 'card')
+  is('a container of cards is a panel', !!panel && near(panel.box.w, 0.2488), true)
+  is('six cards in two columns are one grid', grid && [grid.cards, near(grid.box.x, 0.748), near(grid.box.y + grid.box.h, 0.812)], [6, true, true])
+  is('each card stays its own element', E.filter(e => e.kind === 'card').length, 6)
+  is('a card says it sits in the grid, the grid in the panel', [tempo.in, grid.in], [grid.id, panel.id])
+  const picked = T.pick(E, 'the song details card', 3)
+  is('asked for a details card, the panel is offered', picked.some(e => e.id === panel.id), true)
+  is('the stat cards ask for the grid too', T.parseQuery('the stat cards').kinds.has('grid'), true)
+  const two = T.elementsFrom({ ...raw, texts: [card('KEY', 0.748, 0.522), card('TEMPO', 0.864, 0.522)], rects: [] })
+  is('two cards are not a grid', two.some(e => e.kind === 'grid'), false)
+}
+
+console.log('panels asked for by what they are')
+// The frame at 22 s of the Songscription take: every word matches somewhere in the main
+// panel and the sidebar ("SONG", "Your Song"), so "song details card" used to pick the
+// whole main panel and put the details pane ninth
+{
+  const el = (id, kind, text, box) => ({ id, kind, text, box, background: { colour: 'white' }, confidence: 1 })
+  const E = [
+    el('E1', 'panel', "Sankritya's library Piano songscription Library 300 Folders No folders yet Jump back in Consolation No 3 Your Song (in G) River Flows in You", { x: 0.005, y: 0.012, w: 0.181, h: 0.977 }),
+    el('E2', 'card', 'Library 300 songs 170:51 of music', { x: 0.1875, y: 0.0112, w: 0.3, h: 0.0717 }),
+    el('E5', 'chip', '+ Add song', { x: 0.9025, y: 0.0314, w: 0.0688, h: 0.0348 }),
+    el('E12', 'panel', 'KEY C LEVEL Easy All 300 Favorites 17 Recently played 131 SONG Bohemian Rhapsody Your Song (left hand) LENGTH', { x: 0.193, y: 0.085, w: 0.794, h: 0.906 }),
+    el('E16', 'panel', 'Liszt Practice Listen KEY C major Declared in the file TEMPO 78 bpm Steady throughout METER 3/4', { x: 0.737, y: 0.096, w: 0.251, h: 0.881 }),
+    el('E37', 'text', 'SONG', { x: 0.2613, y: 0.2758, w: 0.0225, h: 0.0135 }),
+    el('E65', 'card', 'KEY C major Declared in the file', { x: 0.7488, y: 0.4742, w: 0.11, h: 0.0998 }),
+    el('E88', 'text', 'Your Song (left hand)', { x: 0.3269, y: 0.6031, w: 0.1038, h: 0.0202 }),
+  ]
+  const top = q => T.rank(E, q)[0].id
+  is('"song details card" is the pane docked on the right', top('song details card'), 'E16')
+  is('so is "the details"', top('the details'), 'E16')
+  is('"the sidebar" is the one on the left', top('the sidebar'), 'E1')
+  is('a card that says the word beats the panel around it', top('the key card'), 'E65')
+  is('a word that only starts the same is not a match', T.rank(E, 'song').find(e => e.id === 'E1').score < T.rank(E, 'song').find(e => e.id === 'E88').score, true)
+}
+
+console.log('lifts and spotlights an agent adds')
+{
+  const M47 = { id: 'M47', kind: 'spotlight', start: 21.2, end: 27.8, x: 0.75, y: 0.52, w: 0.226, h: 0.29 }
+  const blur = { id: 'M3', kind: 'blur', start: 21, end: 28, x: 0.75, y: 0.52, w: 0.2, h: 0.2 }
+  const lift = { kind: 'lift', start: 21, end: 27, box: { x: 0.7363, y: 0.1852, w: 0.2288, h: 0.7505 } }
+  const r = FD.settleFocus([M47, blur], [M47, blur, lift])
+  is('a new lift replaces the spotlight inside it', [r.marks.map(m => m.id || m.kind), r.replaced], [['M3', 'lift'], ['M47']])
+  is('one elsewhere in time stays', FD.settleFocus([M47], [M47, { ...lift, start: 40, end: 44 }]).replaced, [])
+  is('one elsewhere on screen stays', FD.settleFocus([M47], [M47, { ...lift, box: { x: 0.1, y: 0.1, w: 0.2, h: 0.1 } }]).replaced, [])
+  is('sending the same list again changes nothing', FD.settleFocus([M47], [M47]).marks.length, 1)
+  let err = null
+  try { FD.settleFocus([], [{ id: 'M54', kind: 'lift', start: 21, end: 27, x: 0.737, y: 0.095, w: 0.253, h: 0.905 }]) } catch (e) { err = e.message }
+  is('a lift run off the bottom of the frame is refused, saying why', /M54 runs to the right and bottom edge/.test(err || '') && /spotlight/.test(err), true)
+  err = null
+  // the song details pane as find_on_screen measured it: 1.25% from the right edge
+  try { FD.settleFocus([], [{ kind: 'lift', start: 21, end: 27, box: { x: 0.7369, y: 0.0964, w: 0.2506, h: 0.8812 } }]) } catch (e) { err = e.message }
+  is('so is one a hair inside the edge, which would sit flush with the video', /right and bottom edge/.test(err || ''), true)
+  is('a spotlight there is fine', FD.settleFocus([], [{ kind: 'spotlight', start: 1, end: 2, x: 0.7, y: 0.1, w: 0.3, h: 0.9 }]).marks.length, 1)
+  const old = { id: 'M9', kind: 'lift', start: 1, end: 2, x: 0, y: 0, w: 0.5, h: 0.5 }
+  is('a lift already there is left alone', FD.settleFocus([old], [old]).marks.length, 1)
+
+  // The agent sent every mark back without ids, as get_edit shows them (times to the
+  // hundredth), plus a new lift: the old spotlight was counted as new and both stayed.
+  const shown = m => { const { id, ...r } = m; return { ...r, start: Math.round(r.start * 100) / 100, end: Math.round(r.end * 100) / 100 } }
+  const spot = { ...M47, start: 21.234, end: 27.808 }
+  const s2 = FD.settleFocus([spot, blur], [shown(spot), shown(blur), lift])
+  is('an id-less copy of the spotlight is still it, and the lift replaces it', s2.replaced, ['M47'])
+  is('and the blur keeps its id', s2.marks.map(m => m.id || m.kind), ['M3', 'lift'])
+  is('sent back with ids and rounded times, nothing reads as new', FD.settleFocus([spot], [{ ...shown(spot), id: 'M47' }, lift]).replaced, ['M47'])
+  is('re-aimed with a box, the same id is a change', FD.sameItem(spot, { ...shown(spot), box: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } }), false)
+}
+
+console.log('what a lift can raise')
+{
+  // The Songscription frame at 22 s: the details pane, scrolled so YOUR RECORD's cards
+  // run out of its foot, and the stats grid and level card inside it
+  const el = (id, kind, text, box, x = {}) => ({ id, kind, text, box, ...x })
+  const all = [
+    el('E12', 'panel', 'KEY C LEVEL Easy All 300', { x: 0.1931, y: 0.0852, w: 0.7944, h: 0.9058 }),
+    el('E16', 'panel', 'Liszt Practice Listen KEY C major', { x: 0.7369, y: 0.0964, w: 0.2506, h: 0.8812 }, { in: 'E12' }),
+    el('E40', 'card', 'Nuages gris (simplified)', { x: 0.7381, y: 0.3072, w: 0.2494, h: 0.0953 }, { in: 'E16' }),
+    el('E65', 'card', 'KEY C major Declared in the file', { x: 0.7488, y: 0.4742, w: 0.11, h: 0.0998 }, { in: 'E66' }),
+    el('E66', 'grid', 'KEY · TEMPO · METER', { x: 0.7488, y: 0.4742, w: 0.2268, h: 0.3195 }, { in: 'E16' }),
+    el('E94', 'chip', 'About 13 bars', { x: 0.75, y: 0.639, w: 0.1088, h: 0.0437 }, { in: 'E65', text_box: { x: 0.7569, y: 0.648, w: 0.06, h: 0.017 } }),
+    el('E126', 'card', 'Beginner', { x: 0.7887, y: 0.8117, w: 0.19, h: 0.0964 }, { in: 'E16' }),
+    el('E142', 'text', 'YOUR RECORD', { x: 0.7469, y: 0.926, w: 0.0556, h: 0.0157 }, { in: 'E16' }),
+    el('E144', 'text', 'PLAYED', { x: 0.7569, y: 0.9652, w: 0.0313, h: 0.0146 }, { in: 'E16' }),
+  ]
+  const by = id => all.find(e => e.id === id)
+  is('the pane crowds the right and bottom edges', T.liftEdges(by('E16').box), ['right', 'bottom'])
+  is('and its content runs out of its foot', T.cutEdges(by('E16'), all), ['bottom'])
+  const b = T.liftBlock(by('E16'), all)
+  is('so it is not lifted, and the stats grid inside it is offered', [!!b, b && b.instead.id], [true, 'E66'])
+  is('the reason names both', /right and bottom edge/.test(b.why) && /cut off at its bottom/.test(b.why), true)
+  is('it stands for the pane', b.share >= 0.2, true)
+  is('the grid itself is fine', T.liftBlock(by('E66'), all), null)
+  is('a chip whose fill hugs its card\'s foot is not cut-off content', T.cutEdges(by('E65'), all), [])
+  is('a card flush with the right edge has nothing inside to offer', T.liftBlock(by('E40'), all).instead, null)
+
+  const Bridge = require('../ui/agent-bridge')
+  const seen = { at: 22, all, boxes: new Map(all.map(e => [e.id, e.box])) }
+  let err = null
+  try { Bridge.liftable(seen, { kind: 'lift', start: 21, end: 27, element: 'E16' }) } catch (e) { err = e.message }
+  is('apply_edit refuses the pane by element, naming the grid', /Not lifting E16/.test(err || '') && /lift E66/.test(err), true)
+  err = null
+  try { Bridge.liftable(seen, { kind: 'lift', start: 21, end: 27, box: { ...by('E16').box } }) } catch (e) { err = e.message }
+  is('and by its box', /Not lifting E16/.test(err || ''), true)
+  is('the grid goes through', Bridge.liftable(seen, { kind: 'lift', start: 21, end: 27, element: 'E66' }), undefined)
+  is('a lift already in the edit is not judged again', Bridge.liftable(seen, { id: 'M9', kind: 'lift', start: 1, end: 2, box: by('E16').box }), undefined)
+}
+
+console.log('when to look at what an edit placed')
+{
+  const Bridge = require('../ui/agent-bridge')
+  const prev = { zooms: [{ id: 'Z1', start: 5, end: 8, x: 0.5, y: 0.5, scale: 2 }], marks: [] }
+  const doc = { zooms: [...prev.zooms, { id: 'Z38', start: 35, end: 38, x: 0.6, y: 0.8, scale: 1.91 }],
+    marks: [{ id: 'M60', kind: 'spotlight', start: 35, end: 38, x: 0.4, y: 0.78, w: 0.35, h: 0.04 }] }
+  is('a new 3 s zoom is looked at once landed and in its middle, the old one not at all', Bridge.checkTimes(FD, prev, doc), [36, 36.5])
+  is('nothing new, nothing to check', Bridge.checkTimes(FD, doc, doc), [])
+}
+
+console.log('ids an agent leaves off')
+{
+  const marks = [45, 46, 47].map((n, i) => ({ id: 'M' + n, kind: 'step', start: i * 3, end: i * 3 + 2, x: 0.1 * i, y: 0.2, n: i + 1 }))
+  const doc = FD.normalize({ marks, nextId: { M: 53 } }, '/x', 20)
+  const bare = marks.map(({ id, ...r }) => r)
+  const after = FD.normalize(FD.mergeDoc(doc, { marks: [...bare, { kind: 'lift', start: 10, end: 12, x: 0.3, y: 0.3, w: 0.2, h: 0.2 }] }), '/x', 20)
+  is('adding one mark keeps every other mark\'s id', after.marks.map(m => m.id), ['M45', 'M46', 'M47', 'M53'])
+  is('a moved one is new', FD.adoptIds(marks, [{ ...bare[0], x: 0.5 }])[0].id, undefined)
+  is('two copies of one take its id once', FD.adoptIds(marks, [bare[1], bare[1]]).map(m => m.id), ['M46', undefined])
+  is('an id already sent is not handed out again', FD.adoptIds(marks, [marks[0], { ...bare[0] }]).map(m => m.id), ['M45', undefined])
+  const zooms = [{ id: 'Z4', start: 34.6, end: 41.5, scale: 1.8, x: 0.594, y: 0.807 }]
+  is('zooms too', FD.adoptIds(zooms, [{ start: 34.6, end: 41.5, scale: 1.8, x: 0.594, y: 0.807 }])[0].id, 'Z4')
+  is('but not one named by element', FD.adoptIds(zooms, [{ start: 34.6, end: 41.5, element: 'E129' }])[0].id, undefined)
+}
+
+console.log('lifts and spotlights left on top of each other')
+{
+  const spot = { id: 'M47', kind: 'spotlight', start: 21.2, end: 27.8, x: 0.737, y: 0.096, w: 0.251, h: 0.3 }
+  const lift = { id: 'M62', kind: 'lift', start: 21.9, end: 27, x: 0.74, y: 0.35, w: 0.24, h: 0.5 }
+  is('a spotlight across a lifted card is named', FD.focusClashes([spot, lift]), [{ a: 'M47', b: 'M62', kinds: ['spotlight', 'lift'], start: 21.9, end: 27 }])
+  is('apart in time they are fine', FD.focusClashes([spot, { ...lift, start: 30, end: 33 }]), [])
+  is('a blur is not a focus effect', FD.focusClashes([{ ...spot, kind: 'blur' }, lift]), [])
+  const z = [{ id: 'Z37', start: 35, end: 38.4 }, { id: 'Z40', start: 34.6, end: 41.5 }, { id: 'Z41', start: 42, end: 44 }]
+  is('a zoom added over another is named', FD.zoomClashes(z), [{ a: 'Z40', b: 'Z37', start: 35, end: 38.4 }])
+}
+
+console.log('a spotlight left playing with a re-aimed zoom')
+// Re-aiming Z37 onto the chip kept M53, the spotlight nobody had asked for, unmentioned
+{
+  const m53 = { id: 'M53', kind: 'spotlight', start: 35, end: 38.7, x: 0.417, y: 0.785, w: 0.354, h: 0.042 }
+  const blur = { id: 'M45', kind: 'blur', start: 0, end: 52, x: 0.04, y: 0.02, w: 0.1, h: 0.05 }
+  const prev = { zooms: [{ id: 'Z37', start: 35, end: 38.4, scale: 2, x: 0.61, y: 0.12 }], marks: [blur, m53] }
+  const aimed = { zooms: [{ id: 'Z37', start: 35, end: 38.4, scale: 1.91, x: 0.5941, y: 0.7382 }], marks: [blur, m53] }
+  is('it is named with the zoom', FD.focusAlongside(prev, aimed), [{ id: 'M53', kind: 'spotlight', start: 35, end: 38.7, zoom: 'Z37' }])
+  is('an untouched zoom names nothing', FD.focusAlongside(prev, prev), [])
+  is('nor a spotlight at another time', FD.focusAlongside(prev, { ...aimed, marks: [{ ...m53, start: 40, end: 44 }] }), [])
+  is('nor with no edit before it', FD.focusAlongside(null, aimed), [])
+}
+
+console.log('when a box holds its element')
+// The details pane opens at 20.9 s, but the lift was timed to the sentence at 20.19 s:
+// until then its box shows the song table under it
+{
+  const pic = v => new Uint8Array(768).fill(v)
+  const span = (from, to, f) => { const out = []; for (let t = from; t < to - 1e-9; t += 0.1) out.push({ t: Math.round(t * 100) / 100, v: pic(f(t)) }); return out }
+  const opens = span(20.19, 28.38, t => t < 20.89 ? 60 : 200)
+  is('a lift is held to when the card has opened', T.presentSpan(opens, 20.19, 28.38), { start: 20.89, end: 28.38, moved: true, present: true })
+  const closes = span(27, 34, t => t < 32.45 ? 200 : 145)
+  is('and ends when it closes', T.presentSpan(closes, 27, 34).end, 32.4)
+  const typing = span(11, 17, t => 200 + Math.round((t - 11) * 1.5))
+  is('small changes inside (typing, a playhead) move nothing', T.presentSpan(typing, 11, 17).moved, false)
+  const flicker = span(20, 24, t => Math.abs(t - 20.3) < 0.05 ? 60 : 200)
+  is('one odd frame at the start is not an absence', T.presentSpan(flicker, 20, 24).start <= 20.4, true)
+  const churn = span(0, 4, t => Math.round(t * 10) % 2 ? 20 : 220)
+  is('a box that never holds one picture says so', T.presentSpan(churn.map((x, i) => ({ ...x, v: pic((i * 37) % 255) })), 0, 4).present, false)
+}
+
+console.log(`\n${pass} passed, ${fail} failed`)
+process.exit(fail ? 1 : 0)

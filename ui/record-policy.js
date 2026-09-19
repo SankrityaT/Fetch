@@ -101,7 +101,7 @@ function windowsToExclude(windows, policy = {}) {
 // that could set recordAccess to 'always' or empty the never-record list would pass
 // every check above. Telemetry is here because sharing anything is a person's call.
 const AGENT_PREFS = ['saveDir', 'camera', 'mic', 'systemAudio', 'countdown',
-  'openEditorAfter', 'keepOriginal', 'quickRecord', 'autoConvertMp4', 'autoUpdate']
+  'openEditorAfter', 'keepOriginal', 'quickRecord', 'autoConvertMp4', 'autoUpdate', 'agentNames']
 const HUMAN_ONLY_PREFS = ['recordAccess', 'neverRecord', 'allowedRecordApps', 'telemetry', 'agentTakesVisible']
 
 // A settings patch from an agent, checked and coerced. Throws on the first problem
