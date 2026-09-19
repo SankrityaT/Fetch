@@ -24,6 +24,15 @@ const runHelper = args => new Promise(resolve => {
 })
 const listWindowsJson = () =>
   runHelper([]).then(o => { try { return JSON.parse(o || '[]') } catch { return [] } })
+// The window in front, front to back on screen (WindowList --front), past Fetch and any
+// app named in skip: { id, app, title, ... } or null. What a take records when nobody
+// named a window or asked for the whole screen.
+const frontWindow = (skip = []) => new Promise(resolve => {
+  const bin = winListBin()
+  if (!fs.existsSync(bin)) return resolve(null)
+  require('child_process').execFile(bin, ['--front'], { timeout: 5000, env: { ...process.env, FETCH_FRONT_SKIP: skip.join(',') } },
+    (err, stdout) => { try { const w = JSON.parse(String(stdout || 'null')); resolve(w && w.id ? w : null) } catch { resolve(null) } })
+})
 
 let control, cam
 
@@ -58,6 +67,7 @@ const DEFAULT_PREFS = {
   neverRecord: null,       // null means "use the seeded list"
   allowedRecordApps: [],
   agentTakesVisible: false, // an agent's take runs in the background unless this is on
+  agentNames: null,        // name takes with the person's agent; null means on when one is connected
 }
 let prefsCache = null
 function loadPrefs() {
@@ -232,6 +242,7 @@ app.whenReady().then(() => {
     proc: require('./processor'),
     isRecording: () => recState === 'recording' || recState === 'paused',
     listWindows: listWindowsJson,
+    frontWindow,
     // how much of a window others in front of it hide (WindowList --covered), or null
     windowCovered: id => runHelper(['--covered', String(id)]).then(o => { try { return JSON.parse(o || 'null') } catch { return null } }),
     getPrefs: loadPrefs,
@@ -250,6 +261,7 @@ app.whenReady().then(() => {
       },
     }),
     setQuiet: (on, agent) => { quietTake = !!on; agentTake = !!agent },
+    nameTake: p => takeNamer.name(p, { local: true }),     // rename_recording without a name
     pointer: agentPointer,
     setPrefs: patch => {
       writePrefs(patch)
@@ -326,6 +338,7 @@ app.whenReady().then(() => {
     try { return JSON.parse(out || '[]') } catch { return [] }
   })
   ipcMain.handle('window-shot', async (e, id, px) => (await runHelper([String(id), String(px || 600)])) || null)
+  ipcMain.handle('front-window', () => frontWindow())
 
   session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => cb(true))
   session.defaultSession.setPermissionCheckHandler(() => true)
@@ -747,6 +760,40 @@ ipcMain.on('cam-visible', (e, on) => {
 
 // ---------- cursor tracking (feeds auto-zoom at export time) ----------
 // Has to run *during* the take. There is no way to recover it afterwards.
+// What was in front while a take recorded, sampled every two seconds (WindowList
+// --front, CoreGraphics only), so the take can be named after the app it mostly
+// showed. A window take samples its own window, whose title changes as tabs do; a
+// display take the frontmost window on that display. Kept until the next take starts,
+// since the renderer asks for them after the recorder has stopped.
+let frontSamples = [], frontProc = null
+ipcMain.on('front-track', (e, on, target = {}) => {
+  if (frontProc) { try { frontProc.kill() } catch {} frontProc = null }
+  if (!on || !fs.existsSync(winListBin())) return
+  frontSamples = []
+  const d = target.displayId && screen.getAllDisplays().find(x => String(x.id) === String(target.displayId))
+  const where = target.windowId ? [String(target.windowId)]
+    : d ? [`@${d.bounds.x},${d.bounds.y},${d.bounds.width},${d.bounds.height}`] : []
+  frontProc = require('child_process').spawn(winListBin(), ['--front', '2', ...where])
+  // A never-record app is kept out of the picture, so its window title ("Messages ·
+  // a contact") must not name the file or reach the agent either
+  const { isProtected, DEFAULT_NEVER } = require('./ui/record-policy')
+  const never = loadPrefs().neverRecord || DEFAULT_NEVER
+  let buf = ''
+  frontProc.stdout.on('data', chunk => {
+    buf += chunk
+    const lines = buf.split('\n'); buf = lines.pop()
+    for (const line of lines) {
+      let s; try { s = JSON.parse(line) } catch { continue }
+      if (s && s.app && !isProtected(s.app, never) && frontSamples.length < 5400) frontSamples.push({ app: s.app, title: s.title || '' })
+    }
+  })
+  frontProc.on('error', () => {})
+})
+ipcMain.handle('front-samples', () => {
+  if (frontProc) { try { frontProc.kill() } catch {} frontProc = null }
+  return frontSamples
+})
+
 let cursorSamples = null, cursorTimer = null, cursorFollow = null
 
 // The Chromium path, started by the renderer once MediaRecorder is running. A native
@@ -881,6 +928,12 @@ function agentPointer(args = {}) {
     if (b) bounds = { x: b[1], y: b[2], width: b[3], height: b[4] }
   } else if (s) bounds = s.display
   const f = pointerLib.toFraction(args, bounds, take.kind)
+  // A page's viewport says exactly where the page sits in the browser window, which is
+  // what removing the browser's chrome from the take crops to (look frame.chrome)
+  if (args.viewport && take.kind !== 'display') {
+    const v = pointerLib.viewportBox(args.viewport)
+    if (v) take.viewport = v
+  }
   const at = Date.now()
   take.pointer.push([at, f.x, f.y, args.click ? 1 : 0])
   // and shown live, to the person watching; a picture only, it never moves their mouse.
@@ -901,6 +954,7 @@ function pointerData(take, s) {
     return { t: ms / 1000, x, y, ...(click ? { click: true } : {}) }
   })
   return { v: 1, kind: take.kind || (s && s.kind) || 'display', scale: (s && s.scale) || null,
+    ...(take.viewport ? { viewport: take.viewport } : {}),
     points: pointerLib.normalizeTrack(points) }
 }
 
@@ -1213,8 +1267,55 @@ ipcMain.handle('native-commit', async (e, tmp) => {
 // ---------- edit / post-production ----------
 const proc = require('./processor')
 proc.setTakesRoot(resolvedSaveDir)
-// The one rename for a take: folder, files, sidecars and deliverable move together
-ipcMain.handle('rename-take', (e, file, name) => proc.renameTake(file, name))
+// The one rename for a take: folder, files, sidecars and deliverable move together.
+// The bridge remembers the moves, so a path an agent already holds keeps working.
+ipcMain.handle('rename-take', (e, file, name) => {
+  const r = proc.renameTake(file, name)
+  agentBridge.noteMoves(r.moves)
+  return r
+})
+
+// Names from the person's own agent (ui/take-namer.js): every finished take with
+// speech, unless an agent gave it a name, and the Library's "Name these recordings".
+// Renames go through the renderer's renameTake so the Library and editor follow.
+const takeNamer = require('./ui/take-namer')
+takeNamer.init({
+  proc,
+  getPrefs: loadPrefs,
+  follow: p => agentBridge.follow(p),
+  rename: (file, stem) => {
+    if (!control || control.isDestroyed()) {
+      const r = proc.renameTake(file, stem)
+      agentBridge.noteMoves(r.moves)
+      return Promise.resolve(r.path)
+    }
+    return control.webContents.executeJavaScript(`(async () => {
+      const out = await renameTake(${JSON.stringify(file)}, ${JSON.stringify(stem)})
+      refreshLibrary()
+      return out
+    })()`)
+  },
+  log: e => activity.record(e),
+  // any queued job, or a process under a job id other than the namer's own transcription
+  busy: () => {
+    const q = jobQueue.stats()
+    return q.heavy.active + q.heavy.queued + q.light.active + q.light.queued > 0 ||
+      proc.runningJobs().some(id => !String(id).startsWith('name-'))
+  },
+})
+ipcMain.on('take-finished', (e, info) => {
+  if (info && info.file && !info.named) takeNamer.name(info.file).catch(() => {})
+})
+// The name nameTake in app.js just gave, and what was in front, so the take-namer
+// can tell it from a name a person types later
+ipcMain.handle('name-note', (e, file, front) => proc.writeNameNote(file, proc.takeName(file), 'app', front ? { front } : null))
+ipcMain.handle('namer-engine', () => takeNamer.engine())
+ipcMain.handle('name-takes', async (e, files, opts = {}) => {
+  const out = []
+  for (const f of files || []) out.push(await takeNamer.name(f, { local: true, upgrade: !!opts.upgrade }))
+  return out
+})
+ipcMain.handle('name-takes-undo', (e, entries) => takeNamer.restore(entries))
 
 // tidy any folder that was littered before support files moved out of the way
 let tidied = false
@@ -1316,6 +1417,12 @@ ipcMain.handle('activity-clear', () => { activity.clear(); return true })
 
 // The edit document, and the beats a recording is scrubbed by.
 ipcMain.handle('read-doc', (e, src, dur) => proc.readDoc(src, dur))
+// the recorded window's own corner, as a fraction of the frame's width, so the stage
+// rounds a framed take no tighter than the export does (processor backdropChain)
+ipcMain.handle('window-corner', async (e, src, dur, crop) => {
+  const g = await proc.frameGutter(src, 0, dur || 1, crop || null).catch(() => null)
+  return (g && g.corner) || 0
+})
 ipcMain.handle('write-doc', (e, src, doc) => proc.writeDoc(src, doc))
 ipcMain.handle('beats-for', (e, src, dur) => proc.beatsFor(src, dur))
 

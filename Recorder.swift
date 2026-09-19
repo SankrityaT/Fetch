@@ -82,6 +82,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     let opts: Options
     var stream: SCStream?
     var config: SCStreamConfiguration?
+    // A window take's sound, on a stream of its own (see start)
+    var soundStream: SCStream?
+    private var soundFilter: SCContentFilter?
     var writer: AVAssetWriter!
     var videoIn: AVAssetWriterInput!
     var sysAudioIn: AVAssetWriterInput?
@@ -131,6 +134,15 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 fail("window \(wid) is not on screen any more")
             }
             filter = SCContentFilter(desktopIndependentWindow: win)
+            // A window filter hears only its app's own process, and a browser (Chrome,
+            // Electron, Safari) plays every page from a helper process that belongs to
+            // no app, so a browser window's take came out digitally silent. Its sound
+            // comes from the display instead, with every other app that has a window
+            // left out: the app, its helpers and system sounds, not the person's music.
+            if opts.systemAudio, let d = content.displays.first(where: { $0.frame.intersects(win.frame) }) ?? content.displays.first {
+                let others = content.applications.filter { $0.processID != win.owningApplication?.processID }
+                soundFilter = SCContentFilter(display: d, excludingApplications: others, exceptingWindows: [])
+            }
             // A window's frame is in points. Derive the backing scale from the display
             // it sits on by comparing that display's pixel mode against its point size,
             // rather than assuming 2x: a non-Retina external monitor is 1x.
@@ -202,6 +214,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         } catch {
             fail("could not start capture: \(error.localizedDescription)")
         }
+        if let sf = soundFilter { await openSoundStream(sf) }
         startHolding()
 
         emit(["event": "started",
@@ -396,12 +409,34 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let cfg = config else { throw CocoaError(.featureUnsupported) }
         let s = SCStream(filter: filter, configuration: cfg, delegate: self)
         try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
-        if opts.systemAudio { try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue) }
+        if opts.systemAudio, soundFilter == nil { try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue) }
         if opts.mic, #available(macOS 15.0, *) {
             try s.addStreamOutput(self, type: .microphone, sampleHandlerQueue: sampleQueue)
         }
         try await s.startCapture()
         return s
+    }
+
+    // Sound only: its pictures have no output and are dropped, so they are kept tiny.
+    // Same host clock as the picture, so its samples line up through the one writer.
+    // Losing it loses the sound, never the take.
+    private func openSoundStream(_ f: SCContentFilter) async {
+        let c = SCStreamConfiguration()
+        c.width = 2; c.height = 2
+        c.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        c.showsCursor = false
+        c.capturesAudio = true
+        c.sampleRate = 48000
+        c.channelCount = 2
+        c.excludesCurrentProcessAudio = true
+        let s = SCStream(filter: f, configuration: c, delegate: nil)
+        do {
+            try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
+            try await s.startCapture()
+            soundStream = s
+        } catch {
+            FileHandle.standardError.write("no system audio for this window: \(error.localizedDescription)\n".data(using: .utf8)!)
+        }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -530,6 +565,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard proceed else { return }
 
         try? await stream?.stopCapture()
+        try? await soundStream?.stopCapture()
         // after any sample still being handled, so the held frame is the last one
         sampleQueue.sync { holdToEnd(end) }
         videoIn?.markAsFinished()

@@ -195,6 +195,75 @@ if args.count >= 3, args[1] == "--covered", let id = UInt32(args[2]) {
     exit(0)
 }
 
+// `--front [seconds] [<id> | @x,y,w,h]`: the app and window in front, as JSON
+// {"id":123,"app":"Google Chrome","title":"Library | Songscription","x":..,"y":..,"width":..,"height":..},
+// or null. With seconds, a line that often until killed, so a take can be named after
+// what it mostly showed. With an id, that window's app and title instead (a window
+// take, where the recorded window need not be in front). With @x,y,w,h (points), the
+// frontmost window whose centre is on that display (a display take on a second
+// screen). CoreGraphics lists on-screen windows front to back; no ScreenCaptureKit, so
+// a sample costs well under a millisecond.
+if args.count >= 2, args[1] == "--front" {
+    setvbuf(stdout, nil, _IOLBF, 0)
+    let every = args.count >= 3 ? Double(args[2]) : nil
+    let target = args.count >= 4 ? UInt32(args[3]) : nil
+    let area: CGRect? = {
+        guard args.count >= 4, args[3].hasPrefix("@") else { return nil }
+        let n = args[3].dropFirst().split(separator: ",").compactMap { Double($0) }
+        return n.count == 4 ? CGRect(x: n[0], y: n[1], width: n[2], height: n[3]) : nil
+    }()
+    let mine = Int(ProcessInfo.processInfo.processIdentifier)
+    // Apps to look past, comma separated (FETCH_FRONT_SKIP): an agent's take asks for the
+    // product's window, not the terminal the agent itself runs in.
+    let passOver = Set((ProcessInfo.processInfo.environment["FETCH_FRONT_SKIP"] ?? "")
+        .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+    func sample() -> String {
+        let list: [[String: Any]]
+        if let id = target {
+            list = (CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(id)) as? [[String: Any]]) ?? []
+        } else {
+            list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+        }
+        let ok = list.filter { w in
+            let owner = w[kCGWindowOwnerName as String] as? String ?? ""
+            guard target == nil else { return true }
+            guard (w[kCGWindowLayer as String] as? Int ?? 0) == 0,
+                  (w[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
+                  (w[kCGWindowOwnerPID as String] as? Int ?? 0) != mine,
+                  !owner.isEmpty, !SKIP.contains(owner), !passOver.contains(owner),
+                  !SKIP_PREFIX.contains(where: { owner.hasPrefix($0) }),
+                  let b = w[kCGWindowBounds as String] as? [String: CGFloat],
+                  (b["Width"] ?? 0) >= 140, (b["Height"] ?? 0) >= 120 else { return false }
+            if let a = area {
+                let c = CGPoint(x: (b["X"] ?? 0) + (b["Width"] ?? 0) / 2, y: (b["Y"] ?? 0) + (b["Height"] ?? 0) / 2)
+                return a.contains(c)
+            }
+            return true
+        }
+        // A browser in full screen stacks untitled strips (toolbar, tab bar) over the
+        // page's window: the app is the front one's, the title its first titled window's.
+        let title = { (w: [String: Any]) in w[kCGWindowName as String] as? String ?? "" }
+        let owner = { (w: [String: Any]) in w[kCGWindowOwnerName as String] as? String ?? "" }
+        guard let first = ok.first else { return "null" }
+        let w = title(first).isEmpty ? (ok.first { owner($0) == owner(first) && !title($0).isEmpty } ?? first) : first
+        let b = w[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
+        let out: [String: Any] = [
+            "id": w[kCGWindowNumber as String] as? Int ?? 0,
+            "app": w[kCGWindowOwnerName as String] as? String ?? "",
+            "title": w[kCGWindowName as String] as? String ?? "",
+            "x": Int(b["X"] ?? 0), "y": Int(b["Y"] ?? 0),
+            "width": Int(b["Width"] ?? 0), "height": Int(b["Height"] ?? 0),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: out) else { return "null" }
+        return String(data: data, encoding: .utf8) ?? "null"
+    }
+    guard let secs = every, secs > 0 else { print(sample()); exit(0) }
+    while true {
+        print(sample())
+        usleep(useconds_t(secs * 1_000_000))
+    }
+}
+
 let sem = DispatchSemaphore(value: 0)
 
 if #available(macOS 14.0, *) {

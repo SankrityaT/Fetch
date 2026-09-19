@@ -20,6 +20,7 @@
     keepOriginal: true,
     quickRecord: false,
     telemetry: true,
+    agentNames: null,        // null means on when an agent is connected
   }
 
   window.prefs = Object.assign({}, DEFAULT_PREFS)

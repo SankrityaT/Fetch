@@ -173,6 +173,10 @@
           ${row('rowMp4', 'film-strip', 'Convert to MP4', 'Automatically convert the recording when it finishes', 'defAutoMp4', p.autoConvertMp4)}
           ${row('rowEditor', 'scissors', 'Open in editor', 'Jump straight into editing when a recording finishes', 'defOpenEditor', p.openEditorAfter)}
           ${row('rowKeep', 'check', 'Keep original file', 'Keep the source recording when you export a copy', 'defKeepOriginal', p.keepOriginal)}
+          ${row('rowAgentNames', 'pencil-simple', 'Name recordings with your agent',
+            'Your connected Claude Code or Codex gets the app, the window title and the first 80 words said, ' +
+            'never the video or audio. Names you type are never changed.',
+            'defAgentNames', p.agentNames !== false)}
         </div>
 
         <div class="card">
@@ -266,6 +270,7 @@
     bindToggle('defAutoMp4', 'autoConvertMp4', 'rowMp4')
     bindToggle('defOpenEditor', 'openEditorAfter', 'rowEditor')
     bindToggle('defKeepOriginal', 'keepOriginal', 'rowKeep')
+    bindToggle('defAgentNames', 'agentNames', 'rowAgentNames')
     bindToggle('updateAutoToggle', 'autoUpdate', 'rowAutoUpdate')
     bindToggle('telemetryToggle', 'telemetry', 'rowTelemetry')
     if ($('rerunSetup')) $('rerunSetup').onclick = () => {

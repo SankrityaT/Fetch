@@ -33,7 +33,8 @@ const ALLOWED = [
   'list_windows', 'list_displays', 'list_recordings',
   'probe', 'transcribe',
   'get_edit', 'apply_edit', 'list_beats', 'export', 'rename_recording',
-  'get_frame', 'remove_dead_air', 'enhance_audio', 'get_settings', 'set_settings', 'delete_recording',
+  'get_frame', 'find_on_screen', 'preview_frame', 'remove_dead_air', 'enhance_audio', 'get_settings', 'set_settings', 'delete_recording',
+  'get_look_schema', 'list_looks', 'apply_look', 'save_look',
 ].map(t => `mcp__fetch__${t}`)
 
 let current = null          // the one running turn, if any
@@ -309,7 +310,10 @@ function summarise(content) {
         : Object.values(j).find(v => typeof v === 'string' && v.startsWith('/'))
       if (file) return path.basename(file)
       const keys = Object.keys(j)
-      const val = v => typeof v === 'string' && v.startsWith('/') ? path.basename(v) : v
+      // a list is its length and a look its preset, never "[object Object]"
+      const val = v => typeof v === 'string' && v.startsWith('/') ? path.basename(v)
+        : Array.isArray(v) ? v.length
+        : v && typeof v === 'object' ? (typeof v.preset === 'string' ? v.preset : `${Object.keys(v).length} fields`) : v
       if (keys.length <= 3) return keys.map(k => `${k.replace(/_/g, ' ')} ${val(j[k])}`).join(', ')
       return `${keys.length} fields`
     }

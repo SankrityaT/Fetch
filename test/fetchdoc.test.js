@@ -62,13 +62,13 @@ is('round trip of a single clip has no cuts', rt(0, 10, [], 10), { start: 0, end
   is('surviving clip keeps its id', doc.clips[0].id, 'C2')
 }
 
-// ---- the nine values that used to live only in the DOM ----
+// ---- the nine values that used to live only in the DOM, now in look and audio ----
 {
   const doc = d.fromLegacy({ src: '/a.mov', dur: 5, in: 0, out: 5, cuts: [] },
     { zoomAmt: 2.2, gain: 6, fadeOut: 1.5, burnCaps: false })
-  is('look picks up passed values', [doc.look.zoomAmt, doc.look.gain, doc.look.fadeOut], [2.2, 6, 1.5])
-  is('a false value is not lost to a falsy check', doc.look.burnCaps, false)
-  is('unpassed values keep their default', doc.look.bdRadius, 14)
+  is('look picks up passed values', [doc.look.motion.zoomDepth, doc.audio.gain, doc.look.motion.fadeOut], [2.2, 6, 1.5])
+  is('a false value is not lost to a falsy check', doc.look.captions.show, false)
+  is('unpassed values keep their default', doc.look.frame.radius, 14)
 }
 
 // ---- normalize repairs, never throws ----
@@ -114,16 +114,44 @@ is('a corrupt array is dropped, not fatal', d.normalize({ clips: 'nope' }, '/a.m
     capStyle:{font:'Georgia',colour:'#FFD9A0'}, backdrop:'ink', look:{denoise:true,gain:4} }, '/x', 6)
   const after = d.normalize(d.mergeDoc(mine, { zooms:[{start:1,end:3,scale:2,x:.5,y:.5}] }), '/x', 6)
   is('adding a zoom keeps the crop', after.crop, { x:.1, y:.1, w:.8, h:.8 })
-  is('adding a zoom keeps the caption font', after.capStyle.font, 'Georgia')
-  is('adding a zoom keeps the backdrop', after.backdrop, 'ink')
-  is('adding a zoom keeps look', [after.look.denoise, after.look.gain], [true, 4])
+  is('adding a zoom keeps the caption font', after.look.captions.font, 'Georgia')
+  is('adding a zoom keeps the backdrop', [after.look.background.kind, after.look.background.gradient], ['gradient', 'ink'])
+  is('adding a zoom keeps the sound', [after.audio.denoise, after.audio.gain], [true, 4])
   is('and the zoom is there', after.zooms.length, 1)
 
   const tweak = d.mergeDoc(mine, { look: { gain: -2 } })
-  is('a look change merges, not replaces', [tweak.look.gain, tweak.look.denoise], [-2, true])
+  is('a v1 sound change merges, not replaces', [tweak.audio.gain, tweak.audio.denoise], [-2, true])
+  const pad = d.mergeDoc(mine, { look: { frame: { padding: 0.1 } } })
+  is('a look change merges, not replaces', [pad.look.frame.padding, pad.look.background.gradient, pad.look.captions.font], [0.1, 'ink', 'Georgia'])
   is('a list replaces as a whole', d.mergeDoc(mine, { clips: [] }).clips, [])
   is('crop can be cleared explicitly', d.mergeDoc(mine, { crop: null }).crop, null)
   is('undefined is ignored', d.mergeDoc(mine, { crop: undefined }).crop, { x:.1, y:.1, w:.8, h:.8 })
+}
+
+// ---- marks merge by id, and only remove deletes ----
+{
+  // the precision suite's repro: redaction blurs M45, M46 and a spotlight M53, and an
+  // agent adding one lift sent back only the lift and the steps it had in mind
+  const blurs = [{ id: 'M45', kind: 'blur', start: 0, end: 60, x: .02, y: .1, w: .15, h: .03 },
+    { id: 'M46', kind: 'redact', start: 0, end: 60, x: .8, y: .02, w: .1, h: .03 }]
+  const steps = [48, 49].map((n, i) => ({ id: 'M' + n, kind: 'step', start: 5 + i, end: 7 + i, x: .3, y: .3 + i * .1 }))
+  const spot = { id: 'M53', kind: 'spotlight', start: 40, end: 44, x: .5, y: .5, w: .2, h: .2 }
+  const doc = d.normalize({ marks: [...blurs, ...steps, spot], nextId: { M: 54 } }, '/x', 60)
+  const lift = { kind: 'lift', start: 20.6, end: 27.8, x: .75, y: .47, w: .23, h: .32 }
+  const after = d.normalize(d.mergeDoc(doc, { marks: [lift, { ...steps[0], x: .31 }] }), '/x', 60)
+  is('marks left out stay', after.marks.map(m => m.id), ['M45', 'M46', 'M48', 'M49', 'M53', 'M54'])
+  is('one sent with its id is changed in place', after.marks[2].x, .31)
+  const m = d.mergeMarks(doc.marks, [{ ...lift, id: undefined }], ['m45', 'M53'])
+  is('remove names what goes, and says so', [m.marks.map(x => x.id), m.removed], [['M46', 'M48', 'M49', undefined], ['M45', 'M53']])
+  is('remove works without a marks list', d.mergeDoc(doc, { remove: ['M46'] }).marks.map(x => x.id), ['M45', 'M48', 'M49', 'M53'])
+  is('and on any list, never stored', (x => [x.zooms.length, 'remove' in x])(d.mergeDoc({ zooms: [{ id: 'Z1', start: 0, end: 1 }] }, { remove: ['Z1'] })), [0, false])
+  is('an empty marks list deletes nothing', d.mergeDoc(doc, { marks: [] }).marks.length, 5)
+  // Sonnet listed the steps to keep as bare ids, and they came back with no kind or times
+  const kept = d.normalize(d.mergeDoc(doc, { marks: [{ id: 'M48' }, { id: 'M49', start: 6.5 }] }), '/x', 60)
+  is('a bare id keeps its mark whole', kept.marks.find(x => x.id === 'M48'), doc.marks.find(x => x.id === 'M48'))
+  is('an id with one field changes only that', (x => [x.kind, x.start, x.x])(kept.marks.find(x => x.id === 'M49')), ['step', 6.5, .3])
+  const moved = d.mergeMarks(doc.marks, [{ id: 'M53', kind: 'lift', box: { x: .6, y: .6, w: .1, h: .1 } }]).marks.find(x => x.id === 'M53')
+  is('a new box replaces the old placement', [moved.kind, moved.x, moved.box.x, moved.start], ['lift', undefined, .6, 40])
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`)

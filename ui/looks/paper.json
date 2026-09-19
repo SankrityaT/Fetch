@@ -1,0 +1,11 @@
+{
+  "name": "paper",
+  "label": "Paper",
+  "doc": "A light, warm paper ground with a soft shadow and a trace of grain.",
+  "look": {
+    "background": { "kind": "solid", "color": "#EDE6DA" },
+    "frame": { "padding": 0.08, "radius": 10, "shadow": 0.35 },
+    "treatment": { "haze": 0.05 },
+    "grain": { "film": 0.12 }
+  }
+}

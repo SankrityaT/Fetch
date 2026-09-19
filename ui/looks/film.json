@@ -1,0 +1,11 @@
+{
+  "name": "film",
+  "label": "Film",
+  "doc": "The take over a blurred, deepened copy of itself, with halation, bloom and grain.",
+  "look": {
+    "background": { "kind": "video-blur" },
+    "frame": { "padding": 0.06, "radius": 12, "shadow": 0.6 },
+    "treatment": { "halation": 0.25, "bloom": 0.15, "vignette": 0.25, "contrast": 0.08 },
+    "grain": { "film": 0.3 }
+  }
+}

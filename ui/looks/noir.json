@@ -1,0 +1,11 @@
+{
+  "name": "noir",
+  "label": "Noir",
+  "doc": "Black and white on warm black, strong contrast, vignette and grain.",
+  "look": {
+    "background": { "kind": "solid", "color": "#0A0908" },
+    "frame": { "padding": 0.06, "radius": 10, "shadow": 0.8 },
+    "treatment": { "saturation": -1, "contrast": 0.2, "vignette": 0.35 },
+    "grain": { "film": 0.25 }
+  }
+}
