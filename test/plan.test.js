@@ -199,12 +199,18 @@ console.log('the camera on its own clock')
 console.log('which engine')
 {
   is('a framed look with zooms goes to the compositor', Plan.engineFor({ backdrop: 'dusk', zooms: [{ start: 1, end: 2 }] }).engine, 'gl')
-  is('marks stay classic until M3', Plan.engineFor({ marks: [{ kind: 'redact', start: 1, end: 2 }] }), { engine: 'classic', why: ['marks'] })
-  is('captions that would burn stay classic', Plan.engineFor({ captions: true }, { cues: 3 }).engine, 'classic')
-  is('captions on with nothing to burn do not', Plan.engineFor({ captions: true }, { cues: 0 }).engine, 'gl')
-  is('the drawn cursor stays classic', Plan.engineFor({}, { pointer: true }).why, ['the drawn cursor'])
+  // M3: everything an edit places is the compositor's
+  is('marks go to the compositor', Plan.engineFor({ marks: [{ kind: 'redact', start: 1, end: 2 }, { kind: 'lift', start: 1, end: 3 }] }), { engine: 'gl', why: [] })
+  is('captions that would burn too', Plan.engineFor({ captions: true }, { cues: 3 }).engine, 'gl')
+  is('text and the drawn cursor too', Plan.engineFor({ texts: [{ text: 'Hi' }] }, { pointer: true, macCursor: true }), { engine: 'gl', why: [] })
   is('a gif stays classic even when forced', Plan.engineFor({ format: 'gif' }, {}, 'gl').engine, 'classic')
-  is('forced gl says what it leaves out', Plan.engineFor({ texts: [{ text: 'Hi' }] }, {}, 'gl'), { engine: 'gl', why: ['text'] })
+  is('auto zoom too', Plan.engineFor({ autoZoom: true }), { engine: 'gl', why: [] })
+  is('forced gl says what it leaves out', Plan.engineFor({ still: 3 }, {}, 'gl'), { engine: 'gl', why: ['a still frame'] })
+  const auto = [{ start: 2, end: 4, scale: 1.7, x: 0.3, y: 0.4 }]
+  const meta = { width: 1920, height: 1080, duration: 10, fps: 30 }
+  is('auto zoom\'s moments become the plan\'s zooms', Plan.prepare({ autoZoom: true }, meta, { prepared: { autoZooms: auto } }).zooms, auto)
+  is('zooms asked for by name win over auto zoom', Plan.prepare({ autoZoom: true, zooms: [{ start: 5, end: 7, scale: 2, x: 0.5, y: 0.5 }] }, meta,
+    { prepared: { autoZooms: auto } }).zooms.map(z => z.start), [5])
   is('classic on request', Plan.engineFor({}, {}, 'classic').engine, 'classic')
 }
 

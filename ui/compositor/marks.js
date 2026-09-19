@@ -23,6 +23,12 @@ const kinds = new Set(['redact', 'blur', 'lift', 'spotlight', 'step'])
 // the most of each kind one frame draws: the shaders take fixed-size arrays
 const MAX = { erase: 8, redact: 8, blur: 4 }
 
+// Whether a step's point is on a mark's box, give or take 2 percent of the frame
+const onBox = (st, m, W, H) => {
+  const x = +st.x || 0, y = +st.y || 0, slack = 0.02
+  return x >= (+m.x || 0) - slack && x <= (+m.x || 0) + (+m.w || 0) + slack && y >= (+m.y || 0) - slack && y <= (+m.y || 0) + (+m.h || 0) + slack
+}
+
 // The zoom scale a span is mostly seen through
 const seenIn = (zooms, a, b) => Math.max(1, ...(zooms || []).filter(z => z && Math.min(z.end, b) - Math.max(z.start, a) > 0.3).map(z => +z.scale || 1))
 
@@ -35,9 +41,10 @@ const seenIn = (zooms, a, b) => Math.max(1, ...(zooms || []).filter(z => z && Ma
  *   clock     source seconds to output seconds (Timeline.outClock)
  *   span      output length
  *   zooms     on the output clock; lifts may re-frame them (Focus.reframe)
+ *   look      { dim, lift } from the look's focus section
  * Returns { redact, blur, focus, steps, zooms }.
  */
-function planMarks(marks, { W, H, px, clock, span, zooms }) {
+function planMarks(marks, { W, H, px, clock, span, zooms, look = {} }) {
   const on = (marks || []).filter(m => m && kinds.has(m.kind)).map(m => ({ ...m, a: clock(+m.start), b: clock(+m.end) }))
   const out = { redact: [], blur: [], focus: [], steps: [], zooms }
 
@@ -46,10 +53,12 @@ function planMarks(marks, { W, H, px, clock, span, zooms }) {
     const x = clamp(+m.x || 0, 0, 1) * W, y = clamp(+m.y || 0, 0, 1) * H
     const w = Math.max(2, Math.min(W - x, (+m.w || 0.2) * W)), h = Math.max(2, Math.min(H - y, (+m.h || 0.1) * H))
     if (m.kind === 'redact') {
-      // A redaction destroys what is under it: cells about 16 finished pixels across,
-      // each one the mean of what it covers, so no letter survives at any zoom. It is
-      // on from its first frame to its last, never faded, since a fade shows the secret.
-      out.redact.push({ a: m.a, b: m.b, x, y, w, h, cell: Math.max(4, Math.round(16 / px)) })
+      // A redaction destroys what is under it: cells at least 16 finished pixels across
+      // and never fewer than about three and a half to the box's short side, each one
+      // the mean of what it covers, so no letter survives at any zoom, large type
+      // included. It is on from its first frame to its last, never faded, since a fade
+      // shows the secret.
+      out.redact.push({ a: m.a, b: m.b, x, y, w, h, cell: Math.max(4, Math.round(16 / px), Math.round(Math.min(w, h) / 3.5)) })
     } else if (m.kind === 'blur') {
       // Gaussian, for softening something distracting (redact is for secrets), through a
       // round-cornered mask feathered over about 1 percent of the height, easing in and out
@@ -66,12 +75,18 @@ function planMarks(marks, { W, H, px, clock, span, zooms }) {
   const focus = on.filter(m => m.kind === 'lift' || m.kind === 'spotlight')
     .map(m => ({ m, tm: Overlays.focusTiming({ ...m, start: m.a, end: m.b }, zooms) }))
     .filter(f => f.tm && f.tm.b > f.tm.a + 0.2)
-  const shapeOf = (f, zs) => Focus.shape(f.m, W, H, px * seenIn(zs, f.tm.a, f.tm.b))
+  const shapeOf = (f, zs) => Focus.shape(f.m, W, H, px * seenIn(zs, f.tm.a, f.tm.b), look)
+  // a step badge on a lifted card rises with it, and the frame has to hold it too
+  const riders = f => {
+    const rides = st => st.kind === 'step' && st.a < f.tm.b && st.b > f.tm.a && onBox(st, f.m, W, H)
+    return on.some(rides) ? Overlays.stepSize(H, px * seenIn(zooms, f.tm.a, f.tm.b)).D * 0.8 : 0
+  }
   const lifts = focus.filter(f => f.m.kind === 'lift')
-    .map(f => ({ tm: f.tm, box: { x: +f.m.x || 0, y: +f.m.y || 0, w: +f.m.w || 0.2, h: +f.m.h || 0.1 }, shape: shapeOf(f, zooms) }))
+    .map(f => ({ tm: f.tm, box: { x: +f.m.x || 0, y: +f.m.y || 0, w: +f.m.w || 0.2, h: +f.m.h || 0.1 }, shape: { ...shapeOf(f, zooms), margin: riders(f) } }))
   out.zooms = Focus.reframe(zooms, lifts, W, H)
   for (const f of focus) {
     const s = shapeOf(f, out.zooms)
+    if (s.kind === 'lift') s.margin = riders(f)
     if (s.kind === 'lift') {
       // what is on screen while it is fully up: the zoom it rides at its hold, or all of it
       const mid = (Math.max(f.tm.a + f.tm.Tin, Math.min(f.tm.b - f.tm.Tout, (f.tm.a + f.tm.b) / 2)))
@@ -141,10 +156,14 @@ function planErase(spans, plates, { src, crop, content, clock, end, span }) {
 /**
  * The agent's cursor, from its track (Pointer.cursorLayout): where it glides, when it
  * presses, when Biscuit's badge and name show and the ripples of its clicks.
+ *   size    the look's cursor.size, 1 is about 30 px tall at 1080
+ *   ripple  the look's cursor.ripple
  */
-function planPointer(points, { W, H, clock, crop, scale, span, px, zooms }) {
+function planPointer(points, { W, H, clock, crop, scale, span, px, zooms, size = 1, ripple = true }) {
   if (!Array.isArray(points) || !points.length) return null
-  const L = Pointer.cursorLayout(points, { W, H, clock, crop, scale, end: span, out: px, zooms })
+  // cursorLayout sizes the arrow for the finished frame from px; a larger cursor is the
+  // same arrow for a frame with fewer pixels per content pixel
+  const L = Pointer.cursorLayout(points, { W, H, clock, crop, scale, end: span, out: px / clamp(+size || 1, 0.6, 2), zooms })
   if (!L) return null
   const { BADGE, LOOK, TAG } = Pointer
   const d = 2 * Math.max(4, Math.round(BADGE.r * L.size), Math.round(LOOK.badgeMin * L.unit / 2))
@@ -153,30 +172,16 @@ function planPointer(points, { W, H, clock, crop, scale, span, px, zooms }) {
   // the name's width as the rounded bold sets it, near enough to decide which side it goes
   const tagW = br + tagH * 0.24 + TAG.text.length * tagFs * 0.56 + tagH * 0.42
   const clicks = L.pts.filter(p => p.click).map(p => {
-    // a press finishes before the next glide leaves (drawCursor)
+    // a press finishes before the next glide leaves (pointer.js drawCursor)
     const next = L.pl.moves.find(m => m.from > p.t - 0.005)
     const room = clamp((next ? next.from : L.stop) - p.t, 0.04, 0.25)
     return { t: p.t, x: p.x, y: p.y, room }
   })
   return {
     pl: L.pl, size: L.size, k: L.k, unit: L.unit, stop: L.stop, d, br, tagH, tagFs, tagW,
-    badge: Pointer.badgeSpans(L.pl), tags: tagSpans(L, tagW), clicks,
-    ripple: Math.max(L.size * 1.1, 14 * L.unit),
+    badge: Pointer.badgeSpans(L.pl), tags: Pointer.tagSpans(L, tagW), clicks,
+    ripple: Math.max(L.size * 1.1, 14 * L.unit), rippleOn: ripple !== false,
   }
-}
-// Pointer's tag spans (it keeps them private), the same rule: up just before each click
-function tagSpans(L, tagW) {
-  const { BADGE, TAG } = Pointer
-  const out = []
-  for (const p of L.pts) {
-    if (!p.click) continue
-    const a = p.t - TAG.lead, b = p.t + TAG.hold + TAG.fadeOut
-    const left = p.x + (BADGE.cx * L.size) + tagW > L.W - 4
-    const last = out[out.length - 1]
-    if (last && a <= last.b + 0.3 && last.left === left) last.b = b
-    else out.push({ a: Math.max(L.pl.start, a), b, left })
-  }
-  return out
 }
 
 // ── one moment ───────────────────────────────────────────────────────────
@@ -233,8 +238,17 @@ function at(m, t) {
       const ripples = P.clicks.filter(c => t >= c.t && t < c.t + RIPPLE)
         .map(c => ({ x: c.x, y: c.y, p: Math.pow((t - c.t) / RIPPLE, 0.45) }))
       const tag = P.tags.find(s => t >= s.a && t <= s.b)
+      // pointing at something on a lifted card, the cursor rises with the card, the
+      // same scale about the same centre and the same move in as the piece
+      let x = pos.x, y = pos.y
+      m.focus.forEach((f, i) => {
+        const sh = f.shape, L = lifted[i]
+        if (sh.kind !== 'lift' || !(L > 0) || pos.x < sh.x || pos.x > sh.x + sh.w || pos.y < sh.y || pos.y > sh.y + sh.h) return
+        const k = 1 + (sh.lift - 1) * L, ccx = sh.x + sh.w / 2, ccy = sh.y + sh.h / 2
+        x = ccx + (pos.x - ccx) * k + sh.nudge.dx * L; y = ccy + (pos.y - ccy) * k + sh.nudge.dy * L
+      })
       out.pointer = {
-        x: pos.x, y: pos.y, press, ripples,
+        x, y, press, ripples,
         op: Math.min(1, Math.max(0, t - P.pl.start) / FADE_IN),
         badge: Pointer.badgeOpacity(P.badge, t),
         tag: tag ? { op: Pointer.tagOpacity(P.tags, t), left: tag.left } : null,

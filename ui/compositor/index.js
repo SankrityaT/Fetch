@@ -7,6 +7,7 @@ const Plan = require('./plan')
 const { Compositor, Readback } = require('./gl')
 const { framePts, decodeArgs, FfmpegSource } = require('./sources')
 const { encodeArgs, Nv12PipeSink, WebCodecsSink } = require('./sinks')
+const path = require('path')
 
 const even = n => Math.max(2, 2 * Math.round(n / 2))
 
@@ -24,6 +25,25 @@ function loadImage(file) {
     img.onerror = () => reject(new Error('could not read the background image ' + file))
     img.src = 'file://' + encodeURI(file).replace(/#/g, '%23').replace(/\?/g, '%3F')
   })
+}
+
+/**
+ * The pictures a plan draws from files: the clean patches over the Mac's resting
+ * pointer and Biscuit's badge. Loaded once per compositor; one that cannot be read is
+ * left out (its patch falls back to the fill around it). Returns how many it loaded.
+ */
+async function loadAssets(comp, spec) {
+  let n = 0
+  const files = new Set()
+  for (const e of (spec.marks && spec.marks.erase) || []) if (e.plate && e.plate.file) files.add(e.plate.file)
+  await Promise.all([...files].filter(f => !comp.images.has(f)).map(f => loadImage(f)
+    .then(img => { comp.setImage(f, img, true); n++ }).catch(e => console.warn(e.message))))
+  if (spec.marks && spec.marks.pointer && !comp.imgEls.has('badge')) {
+    const { BADGE } = require('../pointer')
+    const file = [path.join(process.resourcesPath || '', 'app', BADGE.file), path.join(__dirname, '..', '..', BADGE.file)].find(f => require('fs').existsSync(f))
+    if (file) { try { comp.imgEls.set('badge', await loadImage(file)); n++ } catch (e) { console.warn(e.message) } }
+  }
+  return n
 }
 
 /**
@@ -88,6 +108,7 @@ async function renderVideo(job, hooks = {}) {
   if (spec.bg.kind === 'image') {
     try { comp.setImage(spec.bg.file, await loadImage(spec.bg.file)) } catch (e) { console.warn(e.message) }
   }
+  await loadAssets(comp, spec)
   // The encoder: packed NV12 read back into ffmpeg's x264, as the classic export encodes
   // (sinks.js says why); VideoToolbox (sink 'vt') or Chromium's encoder on the canvas
   // (sink 'webcodecs') when asked, for measuring
@@ -162,4 +183,67 @@ async function renderVideo(job, hooks = {}) {
   return stats
 }
 
-module.exports = { renderVideo, decodeSize, camSquare, yieldNow, loadImage }
+/**
+ * Single frames of an edit, drawn exactly as the export draws them (preview_frame, and
+ * for looking at a pass): each output time's source frame decoded on its own, drawn,
+ * read back and written as a picture.
+ *   job  { spec, src, ffmpeg, times: [output seconds], files: [paths], width, type }
+ * type is 'image/jpeg' (default) or 'image/png'; width shrinks the frame (the plan is
+ * drawn at that size, as the editor's stage draws below export size).
+ */
+async function renderStills(job, hooks = {}) {
+  const { spec, ffmpeg } = job
+  const t0 = performance.now()
+  const pid = hooks.pid || (() => {})
+  const pts = await framePts(ffmpeg, job.src)
+  if (!pts.length) throw new Error('the recording has no video frames')
+  const map = Plan.screenFrames(spec, pts)
+  const size = decodeSize(spec)
+  const k = job.width ? Math.min(1, job.width / spec.W) : 1
+  const comp = new Compositor(spec.W * k, spec.H * k, { preserve: true })
+  const out = []
+  try {
+    if (spec.bg.kind === 'image') {
+      try { comp.setImage(spec.bg.file, await loadImage(spec.bg.file)) } catch (e) { console.warn(e.message) }
+    }
+    await loadAssets(comp, spec)
+    let cpts = null, cmap = null, csq = null
+    if (spec.cam) {
+      try { cpts = await framePts(ffmpeg, spec.cam.file); cmap = Plan.cameraFrames(spec, cpts); csq = camSquare(cpts.size, spec.cam.d) } catch { cpts = null }
+    }
+    const one = async (file, i, args, w, h) => {
+      const src = new FfmpegSource(ffmpeg, args, { pick: Int32Array.from([i]), runs: [[i, i]] }, w, h, { onPid: pid })
+      try { return await src.frameAt(0) } finally { src.close() }
+    }
+    for (let j = 0; j < job.times.length; j++) {
+      const n = Math.max(0, Math.min(spec.frames - 1, Math.round(job.times[j] * spec.fps)))
+      const i = map.pick[n]
+      if (i < 0) throw new Error('no frame of the recording at ' + job.times[j])
+      const td = performance.now()
+      const f = await one(job.src, i, decodeArgs(job.src, pts, [[i, i]], { crop: size.crop, scale: size.scale, hw: true, frames: 1 }), size.w, size.h)
+      if (process.env.FETCH_DEBUG_RENDER) console.log(`decode ${Math.round(performance.now() - td)} ms`)
+      if (!f) throw new Error('could not decode the frame at ' + job.times[j])
+      comp.uploadNV12('content', new Uint8Array(f.data), f.w, f.h, spec.src.h)
+      let cam = false
+      if (cpts && cmap.pick[n] >= 0) {
+        const ci = cmap.pick[n]
+        const cf = await one(spec.cam.file, ci, decodeArgs(spec.cam.file, cpts, [[ci, ci]], { crop: csq.crop, cover: csq.cover, hw: true, frames: 1 }), csq.side, csq.side)
+        if (cf) { comp.uploadNV12('cam', new Uint8Array(cf.data), cf.w, cf.h, cpts.size ? cpts.size[1] : 1080); cam = true }
+      }
+      const fp = Plan.framePlan(spec, n / spec.fps)
+      if (!comp.render(spec, fp, { n, cam })) throw new Error('no frame of the recording to draw')
+      const px = comp.readRGBA()
+      const cv = new OffscreenCanvas(comp.W, comp.H)
+      cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer), comp.W, comp.H), 0, 0)
+      const blob = await cv.convertToBlob({ type: job.type || 'image/jpeg', quality: 0.9 })
+      require('fs').writeFileSync(job.files[j], Buffer.from(await blob.arrayBuffer()))
+      out.push({ file: job.files[j], at: +(n / spec.fps).toFixed(3), source: i })
+      if (process.env.FETCH_DEBUG_RENDER) console.log(`still ${j} at ${job.times[j]}: ${Math.round(performance.now() - t0)} ms`)
+    }
+  } finally {
+    comp.destroy()
+  }
+  return out
+}
+
+module.exports = { renderVideo, renderStills, decodeSize, camSquare, yieldNow, loadImage, loadAssets }

@@ -28,14 +28,18 @@ const LIFT = {
   pad: 3,
   scaleBig: 1.03, scaleSmall: 1.06, bigAt: 380, smallAt: 70,
   // the page stepping back: how much light it loses, at the piece and far from it
-  dim: 0.36, dimSmall: 0.44, near: 0.4, nearPx: 110, farPx: 700,
+  // On a light UI a page dimmed by a third went a flat grey: the blur and the shadow
+  // carry the depth, the dim only steps the page back
+  dim: 0.26, dimSmall: 0.3, near: 0.35, nearPx: 110, farPx: 700,
   blur: 5,
   // key: the light above casting down; contact: where the piece still nearly touches
   key: { dy: 22, sigma: 30, alpha: 0.5 },
   keySmall: { dy: 12, sigma: 18, alpha: 0.46 },
   contact: { dy: 3, sigma: 5, alpha: 0.32 },
-  // air kept between the raised piece (and its shadow) and the edge of what is on screen
-  air: 0.04,
+  // air kept between the raised piece (its shadow and any step badge on it) and the edge
+  // of what is on screen, a share of the view: at 4 percent a card grid filled the zoom
+  // edge to edge with its badges cut by the top of the frame
+  air: 0.08,
 }
 const SPOT = { padPill: 3, pad: 12, featherPill: 6, feather: 12, dim: Overlays.SPOT_DIM, blur: 2.5 }
 
@@ -43,11 +47,13 @@ const SPOT = { padPill: 3, pad: 12, featherPill: 6, feather: 12, dim: Overlays.S
  * The shape of a lift or spotlight on the cropped recording (W x H content pixels).
  *   m      the mark, fractions of the cropped frame (prepared: fitted, radius measured)
  *   out    finished pixels per content pixel, through the zoom it is mostly seen in
+ *   o      the look: { dim } a spotlight's dim, { lift } a lift's scale when set away
+ *          from its default (1.04), which otherwise follows the element's size
  * Returns { kind, x, y, w, h, r, ... } in content pixels: the box with its pad, its
  * corners, and for a lift its scale, shadows and the page's dim and blur; for a
  * spotlight its feather, dim and blur.
  */
-function shape(m, W, H, out = 1) {
+function shape(m, W, H, out = 1, o = {}) {
   const kind = m && m.kind === 'lift' ? 'lift' : 'spotlight'
   const u = 1 / Math.max(1e-3, out)
   const bx = clamp(+m.x || 0, 0, 1) * W, by = clamp(+m.y || 0, 0, 1) * H
@@ -61,16 +67,20 @@ function shape(m, W, H, out = 1) {
   // the element's own corners where they were measured, concentric with the pad; else
   // a pill's round ends, or corners sized to the card
   const own = +m.radius > 0 ? +m.radius + pad : null
-  const r = Math.min(w / 2, h / 2, own != null ? own : pill ? h / 2 : clamp(Math.min(bw, bh) * 0.06, 8 * u, 18 * u) + pad)
+  // A lift that could not measure its corner keeps a modest one, never a pill's round
+  // ends: a table row lifted as a capsule was not the row any more
+  const r = Math.min(w / 2, h / 2, own != null ? own : pill && kind === 'spotlight' ? h / 2 : clamp(Math.min(bw, bh) * 0.06, 8 * u, 18 * u) + pad)
   if (kind === 'spotlight') {
-    return { kind, x, y, w, h, r, feather: (pill ? SPOT.featherPill : SPOT.feather) * u, dim: SPOT.dim, blur: SPOT.blur * u }
+    const dim = o.dim != null && Number.isFinite(+o.dim) ? clamp(+o.dim, 0, 0.9) : SPOT.dim
+    return { kind, x, y, w, h, r, feather: (pill ? SPOT.featherPill : SPOT.feather) * u, dim, blur: SPOT.blur * u }
   }
   const big = Math.max(bw, bh) / u
   const small = clamp((LIFT.bigAt - big) / (LIFT.bigAt - LIFT.smallAt), 0, 1)
   const key = small > 0.5 ? LIFT.keySmall : LIFT.key
   return {
     kind, x, y, w, h, r,
-    lift: +(LIFT.scaleBig + (LIFT.scaleSmall - LIFT.scaleBig) * small).toFixed(4),
+    lift: o.lift != null && Math.abs(+o.lift - 1.04) > 1e-6 && Number.isFinite(+o.lift) ? clamp(+o.lift, 1, 1.15)
+      : +(LIFT.scaleBig + (LIFT.scaleSmall - LIFT.scaleBig) * small).toFixed(4),
     dim: LIFT.dim + (LIFT.dimSmall - LIFT.dim) * small,
     near: LIFT.near, nearPx: LIFT.nearPx * u, farPx: LIFT.farPx * u,
     blur: LIFT.blur * u,
@@ -80,13 +90,15 @@ function shape(m, W, H, out = 1) {
   }
 }
 
-// How far the raised piece and its shadow reach past its box, content pixels, per side
+// How far the raised piece, its shadow and the step badges riding it (s.margin) reach
+// past its box, content pixels, per side
 function reach(s) {
   const g = s.lift ? (s.lift - 1) / 2 : 0
   const k = s.key || { dy: 0, sigma: 0 }
+  const m = s.margin || 0
   return {
-    l: s.w * g + k.sigma * 1.2, r: s.w * g + k.sigma * 1.2,
-    t: s.h * g + Math.max(0, k.sigma * 1.2 - k.dy), b: s.h * g + k.dy + k.sigma * 1.6,
+    l: Math.max(m, s.w * g + k.sigma * 1.2), r: Math.max(m, s.w * g + k.sigma * 1.2),
+    t: Math.max(m, s.h * g + Math.max(0, k.sigma * 1.2 - k.dy)), b: Math.max(m, s.h * g + k.dy + k.sigma * 1.6),
   }
 }
 
@@ -142,7 +154,7 @@ function reframe(zooms, lifts, W, H) {
 function nudge(s, view, W, H) {
   if (!s.lift) return { dx: 0, dy: 0 }
   const e = reach(s)
-  const air = LIFT.air * Math.min(view.w * W, view.h * H) * 0.6
+  const air = LIFT.air * Math.min(view.w * W, view.h * H)
   const vx0 = view.x * W + air, vx1 = (view.x + view.w) * W - air
   const vy0 = view.y * H + air, vy1 = (view.y + view.h) * H - air
   const x0 = s.x - e.l, x1 = s.x + s.w + e.r, y0 = s.y - e.t, y1 = s.y + s.h + e.b

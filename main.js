@@ -1421,6 +1421,9 @@ ipcMain.handle('read-doc', (e, src, dur) => proc.readDoc(src, dur))
 // the recorded window's own margin and corner (corner as a fraction of the frame's
 // width), so the stage trims and rounds a framed take as the export does
 ipcMain.handle('frame-gutter', (e, src, dur, crop) => proc.frameGutter(src, 0, dur || 1, crop || null).catch(() => null))
+// What the take's pixels say for an edit, for the editor's stage: the same cached work
+// the export reads (ui/compositor/prepare.js)
+ipcMain.handle('render-prepare', (e, src, opts) => require('./ui/compositor/prepare').prepareRender(src, opts || {}))
 ipcMain.handle('write-doc', (e, src, doc) => proc.writeDoc(src, doc))
 ipcMain.handle('beats-for', (e, src, dur) => proc.beatsFor(src, dur))
 

@@ -643,3 +643,14 @@ video.motion, img.motion { display:block; }
 .stage-frame[data-gl="on"] > #edVideo { opacity:0; }
 .stage-frame[data-gl="on"] > .bd-fill { display:none; }
 .stage-frame[data-gl="on"] > .cam-bubble { opacity:0; }
+
+/* The stage's canvas draws marks, captions, titles and labels itself (the compositor),
+   so the DOM stand-ins step aside while it is on; the text and caption layers stay as
+   handles to drag and double-click, drawn only as their outline */
+.stage-frame[data-gl="on"] > .ov-stage { visibility:hidden; }
+.stage-frame[data-gl="on"] > .cap-overlay span:not([data-editing="true"]),
+.stage-frame[data-gl="on"] > .cap-overlay span:not([data-editing="true"]) .w { color:transparent !important; text-shadow:none; background:none !important; }
+.ed-canvas:has(> .stage-frame[data-gl="on"]) > .txt-layer:not([data-editing="true"]),
+.ed-canvas:has(> .stage-frame[data-gl="on"]) > .txt-layer:not([data-editing="true"]) * { color:transparent !important; text-shadow:none; }
+.ed-canvas:has(> .stage-frame[data-gl="on"]) > .txt-layer:not([data-editing="true"]) { background:none; border-left-color:transparent; }
+.ed-canvas:has(> .stage-frame[data-gl="on"]) > .txt-layer[data-sel="true"]:not([data-editing="true"]) { border-color:var(--fur-1); }
