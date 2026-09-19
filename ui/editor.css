@@ -563,6 +563,42 @@ video.motion, img.motion { display:block; }
   .ed-transport { justify-content:space-between; }
 }
 
+/* ── the lasso ────────────────────────────────────────────────────────────
+   Dragging a rectangle over the picture points Biscuit at one thing on screen. Gold,
+   because the person drew it and chose it. Nothing about its geometry transitions:
+   the band snaps onto the element under it, and a box that eased into place would
+   lag the thing it is naming. */
+.ed-lasso[aria-pressed="true"] { background:rgba(240,169,60,.14); border-color:var(--fur-1); color:var(--fur-0); }
+.ed-lasso[aria-pressed="true"]:hover { background:rgba(240,169,60,.22); }
+.ed-lasso:active { background:var(--ink-4); }
+.stage-frame[data-lasso="on"] { cursor:crosshair; }
+
+.lasso-box {
+  position:absolute; z-index:5; pointer-events:none; border-radius:4px;
+  border:1.5px solid var(--fur-1); background:rgba(240,169,60,.10);
+  box-shadow:0 0 0 1px rgba(10,9,8,.6), 0 12px 34px -16px rgba(0,0,0,.85);
+}
+/* the blurred fill's sibling rule above would otherwise make this one relative */
+.stage-frame > .bd-fill ~ .lasso-box { position:absolute; z-index:5; }
+/* drawn and kept: the chip in the composer carries it now, so the band steps back */
+.lasso-box.is-set { border-color:rgba(240,169,60,.78); background:rgba(240,169,60,.06); }
+.lasso-box[hidden] { display:none; }
+
+.lasso-tag {
+  position:absolute; left:-1px; bottom:calc(100% + 5px);
+  display:inline-flex; align-items:center; gap:6px; max-width:240px;
+  height:20px; padding:0 8px; border-radius:var(--r-pill);
+  background:rgba(10,9,8,.84); color:var(--fur-0);
+  font-size:var(--t-11); letter-spacing:.01em; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+  animation:lasso-tag-in var(--dur-1) var(--ease-in);
+}
+@keyframes lasso-tag-in { from { opacity:0; } to { opacity:1; } }
+/* against the top of the frame there is no room above, so it sits just inside */
+.lasso-box.tag-in .lasso-tag { bottom:auto; top:4px; left:4px; }
+.lasso-id { color:var(--fur-1); font-size:var(--t-11); }
+.lasso-what { overflow:hidden; text-overflow:ellipsis; }
+
 /* What an agent just changed lights up for about a second: an edge, never a layout
    change, so nothing under the pointer moves. */
 .agent-flash { outline:2px solid var(--fur-1); outline-offset:-2px; }

@@ -237,7 +237,12 @@ console.log('what a lift can raise')
   try { Bridge.liftable(seen, { kind: 'lift', start: 21, end: 27, box: { ...by('E16').box } }) } catch (e) { err = e.message }
   is('and by its box', /Not lifting E16/.test(err || ''), true)
   is('the grid goes through', Bridge.liftable(seen, { kind: 'lift', start: 21, end: 27, element: 'E66' }), undefined)
-  is('a lift already in the edit is not judged again', Bridge.liftable(seen, { id: 'M9', kind: 'lift', start: 1, end: 2, box: by('E16').box }), undefined)
+  err = null
+  // moving a lift by a bare box used to skip this check, so a lift dragged onto the
+  // pane by an agent that had read its box went through without a word
+  try { Bridge.liftable(seen, { id: 'M9', kind: 'lift', start: 1, end: 2, box: by('E16').box }) } catch (e) { err = e.message }
+  is('a lift already in the edit, moved onto the pane, is judged too', /Not lifting E16/.test(err || ''), true)
+  is('and one moved onto something liftable is not', Bridge.liftable(seen, { id: 'M9', kind: 'lift', start: 1, end: 2, box: by('E66').box }), undefined)
 }
 
 console.log('when to look at what an edit placed')

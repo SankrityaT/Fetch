@@ -1132,11 +1132,14 @@ async function thumbnail(srcArg, atSec, onProgress, jobId) {
 // images uses this to place a zoom, a redaction or a step by what is on screen, so
 // it goes to a temp dir and is capped at 1280 wide: enough to read UI text, and far
 // fewer image tokens than a Retina frame.
-async function frameAt(srcArg, atSec, maxW = 1280, crop = null) {
+// `out` names the file instead. The default name is keyed on the path and the time
+// alone, so two passes at one moment write the same file: a caller that wants a
+// picture of its own says so before ffmpeg runs rather than renaming afterwards.
+async function frameAt(srcArg, atSec, maxW = 1280, crop = null, out = null) {
   const { src, meta, done } = await ensureSeekable(srcArg)
   try {
     const at = Math.min(Math.max(0, +atSec || 0), Math.max(0, (meta.duration || 1) - 0.05))
-    const dest = path.join(os.tmpdir(), `fetch-frame-${path.parse(srcArg).name}-${at.toFixed(2)}.jpg`)
+    const dest = out || path.join(os.tmpdir(), `fetch-frame-${path.parse(srcArg).name}-${at.toFixed(2)}.jpg`)
     const c = crop && crop.w > 0 && crop.h > 0 ? crop : null
     const vf = (c ? `crop=w='2*floor(iw*${c.w}/2)':h='2*floor(ih*${c.h}/2)':x='iw*${c.x}':y='ih*${c.y}',` : '') +
       `scale='min(${maxW},iw)':-2`
