@@ -471,8 +471,17 @@ const ops = {
     if (args.look && typeof args.look === 'object') doc = require('./fetchdoc').mergeDoc(doc, { look: args.look })
     // several moments in one call: the start of a move and its middle are both checked
     const times = (Array.isArray(args.at) ? args.at : [args.at]).slice(0, 6)
-    const frames = []
-    for (const t of times) frames.push(await deps.proc.previewFrame(args.path, doc, t))
+    let frames = null
+    // drawn by the renderer the export will use, so what the agent checks is the file
+    const host = require('./render-host')
+    const pick = host.pickEngine(args.path, require('./fetchdoc').toExportOpts(doc))
+    if (pick.engine === 'gl') {
+      try { frames = await host.previewFrames(args.path, doc, times) } catch (e) { console.warn('[preview] compositor failed, drawing with the classic renderer:', e && e.message) }
+    }
+    if (!frames) {
+      frames = []
+      for (const t of times) frames.push(await deps.proc.previewFrame(args.path, doc, t))
+    }
     return { image: frames[0].file, at: frames[0].at, frames: frames.map(r => ({ image: r.file, at: r.at })) }
   },
 

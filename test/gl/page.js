@@ -8,7 +8,7 @@ const path = require('path')
 const Plan = require('../../ui/compositor/plan')
 const { Compositor } = require('../../ui/compositor/gl')
 const { framePts, decodeArgs, FfmpegSource } = require('../../ui/compositor/sources')
-const { loadImage, camSquare } = require('../../ui/compositor')
+const { loadImage, camSquare, loadAssets } = require('../../ui/compositor')
 
 const ptsCache = new Map()
 async function ptsOf(ffmpeg, file) {
@@ -73,6 +73,7 @@ async function renderFrame(job) {
   const k = job.width ? Math.min(1, job.width / spec.W) : 1
   const c = compositor(spec.W * k, spec.H * k)
   if (spec.bg.kind === 'image') c.setImage(spec.bg.file, await loadImage(spec.bg.file))
+  await loadAssets(c, spec)
   const pts = await ptsOf(job.ffmpeg, job.src)
   const map = Plan.screenFrames(spec, pts)
   const n = Math.min(spec.frames - 1, job.n)

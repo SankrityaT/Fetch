@@ -97,6 +97,26 @@ app.whenReady().then(async () => {
       'fade': { opts: { backdrop: 'dusk', inset: 0.08, fadeIn: 1, look }, n: 30 },
       'border': { opts: { backdrop: 'violet', inset: 0.1, radius: 28, look: { ...look, frame: { border: 3, borderColor: '#F0A93C' } } }, n: 60 },
       'cut': { opts: { backdrop: 'dusk', inset: 0.08, cuts: [[3, 7]], look }, n: 190 },
+      // M3: what is drawn on the take and over the frame (this take goes out at 30 fps,
+      // so frame n is n / 30 seconds in)
+      'marks': { opts: { backdrop: 'ink', inset: 0.06, look, marks: [
+        { kind: 'redact', start: 0, end: 12, x: 0.05, y: 0.06, w: 0.25, h: 0.14 },
+        { kind: 'blur', start: 0, end: 12, x: 0.55, y: 0.7, w: 0.3, h: 0.2, strength: 20 },
+        { kind: 'spotlight', start: 1, end: 11, x: 0.35, y: 0.3, w: 0.3, h: 0.3 },
+        { kind: 'step', start: 1, end: 11, x: 0.35, y: 0.3 }] }, n: 150 },
+      'lift': { opts: { backdrop: 'slate', inset: 0.06, look, zooms: [{ start: 1, end: 11, scale: 1.8, x: 0.5, y: 0.5 }],
+        marks: [{ kind: 'lift', start: 2, end: 10, x: 0.35, y: 0.35, w: 0.3, h: 0.3 }, { kind: 'step', start: 3, end: 10, x: 0.35, y: 0.35 }] }, n: 180 },
+      'pointer': { opts: { backdrop: 'dusk', inset: 0.06, look, pointer: [{ t: 0.5, x: 0.2, y: 0.3 }, { t: 3, x: 0.6, y: 0.5, click: true }, { t: 6, x: 0.4, y: 0.7 }] }, n: 92 },
+      'text': { opts: { backdrop: 'dusk', inset: 0.06, look, captions: true, captionStyle: {},
+        cues: [{ start: 3, end: 6, text: 'Every row shows the key and the tempo.' }],
+        texts: [{ text: 'Fetch', subtitle: 'A test card', start: 0, end: 2, style: 'title' },
+          { text: 'Library', subtitle: 'Three hundred songs', start: 7, end: 11, style: 'lower-third' },
+          { text: 'New', start: 7, end: 11, fx: 0.7, fy: 0.3, style: 'label', box: true }] },
+        ctx: { prepared: { captions: { cues: [], busy: [], words: { words: [{ w: 'Every', t: 3 }, { w: 'row', t: 3.3 }, { w: 'shows', t: 3.6 }, { w: 'the', t: 4 },
+          { w: 'key', t: 4.2 }, { w: 'and', t: 4.6 }, { w: 'the', t: 4.8 }, { w: 'tempo.', t: 5 }] } } } }, n: 128 },
+      'title': { opts: { backdrop: 'dusk', inset: 0.06, look, texts: [{ text: 'Fetch', subtitle: 'fetch.app', start: 0, end: 2.5, style: 'title' }] }, n: 36 },
+      'lower-third': { opts: { backdrop: 'dusk', inset: 0.06, look, texts: [{ text: 'Library', subtitle: 'Three hundred songs', start: 7, end: 11, style: 'lower-third' },
+        { text: 'New', start: 7, end: 11, fx: 0.7, fy: 0.3, style: 'label', box: true }] }, n: 270 },
     }
 
     if (want('golden')) {
@@ -110,7 +130,7 @@ app.whenReady().then(async () => {
 
     if (want('parity')) {
       console.log('preview path equals export path, before encode')
-      for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'zoom-hold', 'camera']) {
+      for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'zoom-hold', 'camera', 'marks', 'lift', 'pointer', 'text']) {
         const c = cases[name]
         const r = await call('parity', { ...base, ...c })
         // A crop's first and last rows can differ at a sharp colour edge: the <video>

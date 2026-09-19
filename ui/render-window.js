@@ -4,7 +4,7 @@
 // decode, draw, readback and encode all happen here.
 'use strict'
 const { ipcRenderer } = require('electron')
-const { renderVideo } = require('./compositor')
+const { renderVideo, renderStills } = require('./compositor')
 
 const cancelled = new Set()
 ipcRenderer.on('render:cancel', (_e, id) => cancelled.add(id))
@@ -17,7 +17,7 @@ ipcRenderer.on('render:job', async (_e, job) => {
     cancelled: () => cancelled.has(id),
   }
   try {
-    const stats = await renderVideo(job, hooks)
+    const stats = job.stills ? await renderStills(job, hooks) : await renderVideo(job, hooks)
     ipcRenderer.send('render:done', { id, stats })
   } catch (err) {
     ipcRenderer.send('render:done', { id, error: String((err && err.message) || err), cancelled: !!(err && err.cancelled) })

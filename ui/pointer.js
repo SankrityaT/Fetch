@@ -849,6 +849,8 @@ function boxMoved(hit, f, rep, reg, threshold = 24) {
 
 module.exports = {
   ease, videoClock, pageToWindow, viewportBox, toFraction, normalizeTrack, asCursorData,
-  plan, positionAt, pointerAss, pointerBadge, badgeSpans, badgeOpacity, restSpot, inView, ARROW_H, BADGE, TAG, tagOpacity, LOOK,
+  plan, positionAt, pointerAss, pointerBadge, badgeSpans, badgeOpacity, restSpot, inView, ARROW, ARROW_H, BADGE, TAG, tagOpacity, LOOK,
+  // for the compositor (ui/compositor/marks.js), which draws the same cursor
+  cursorLayout, tagSpans,
   bakedCursorSpans, clearOfCursor, ringDiff, plateFit, platePixels, boxMoved, BAKED,
 }

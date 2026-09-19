@@ -15,6 +15,8 @@
 const Timeline = require('../timeline')
 const Layout = require('./layout')
 const Overlays = require('../overlays')
+const Marks = require('./marks')
+const Text = require('./text')
 const { GRADIENTS } = require('../look-schema')
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
@@ -28,24 +30,16 @@ function rgb(hex) {
 }
 
 // ── which renderer ──────────────────────────────────────────────────────
-// The compositor draws the framed look, zooms, fades, cuts and the camera. Everything
-// drawn over the take (marks, captions, titles, the agent's cursor) is still the
-// classic renderer's until M3, so an edit using any of it goes there whole rather than
-// exporting without it. ctx says what the take brings: cues (count of caption cues
-// that would burn), pointer (a cursor would be drawn), macCursor (the Mac's pointer
-// would be lifted out of the pixels).
+// The compositor draws everything an edit places (M3): the framed look, zooms, fades,
+// cuts, the camera, marks, lifts and spotlights, steps, the agent's cursor, the Mac's
+// pointer lifted out, captions, titles, labels and auto zoom (its moments worked out by
+// prepare.js). Other formats than MP4 and MOV go to the classic renderer whole.
 const GL_FORMATS = new Set(['mp4', 'mov'])
 function unsupported(opts = {}, ctx = {}) {
   const why = []
   const fmt = opts.format || 'mp4'
   if (!GL_FORMATS.has(fmt)) why.push(`${fmt} output`)
   if (opts.still != null) why.push('a still frame')
-  if ((opts.marks || []).some(m => m && +m.end > +m.start)) why.push('marks')
-  if ((opts.texts || []).some(t => t && String(t.text || '').trim())) why.push('text')
-  if (opts.captions && ctx.cues > 0) why.push('captions')
-  if (ctx.pointer) why.push('the drawn cursor')
-  if (ctx.macCursor) why.push('lifting out the Mac pointer')
-  if (opts.autoZoom && !(opts.zooms || []).length) why.push('auto zoom')
   return why
 }
 
@@ -61,6 +55,16 @@ function engineFor(opts, ctx = {}, mode = 'auto') {
   return { engine: why.length ? 'classic' : 'gl', why }
 }
 
+// The marks to draw: each lift, spotlight and step as prepare.js fitted it to the take
+// (held to its element, its box grown to the element's edge, its corner measured, a
+// step on its card's corner) when that was worked out for this very mark, else as the
+// edit has it. A mark edited since is drawn as it now is until it is read again.
+const markKey = m => [m.kind, m.start, m.end, m.x, m.y, m.w, m.h, m.n].join('|')
+function markList(marks, fitted) {
+  const byKey = new Map((fitted || []).filter(m => m && m.k0).map(m => [m.k0, m]))
+  return (marks || []).filter(Boolean).map(m => byKey.get(markKey(m)) || m)
+}
+
 // ── the plan ────────────────────────────────────────────────────────────
 /**
  * The fixed part of a render.
@@ -68,7 +72,9 @@ function engineFor(opts, ctx = {}, mode = 'auto') {
  *         inset, radius, shadow, scale, camera, fadeIn, fadeOut, look)
  *   meta  { width, height, duration, fps } of the take
  *   ctx   { gutter } the window's own margin (processor.frameGutter), { imageFile }
- *         the image backdrop's file, { fps } to override the output rate
+ *         the image backdrop's file, { fps } to override the output rate, { prepared }
+ *         what the take's pixels say (prepare.js): fitted marks, the Mac's pointer,
+ *         the agent's cursor, caption timings
  */
 function prepare(opts = {}, meta = {}, ctx = {}) {
   const srcW = meta.width || 1920, srcH = meta.height || 1080
@@ -97,7 +103,9 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   // export and the editor's layers lay them out; without it the stage's canvas drew the
   // take where the caption sits. ctx.cues overrides the count (0: none drawn here).
   const cst = opts.captionStyle || {}
-  const cues = ctx.cues != null ? ctx.cues : (opts.cues || []).length
+  const P = ctx.prepared || null
+  const cues = ctx.cues != null ? ctx.cues
+    : (opts.cues || []).length || (P && P.captions && (P.captions.cues || []).length) || 0
   const band = framed && opts.captions && cues > 0 && (!cst.position || cst.position === 'bottom') && cst.fx == null
     ? Overlays.CAP_BAND : 0
   const g = framed
@@ -157,10 +165,12 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     bg = { kind: 'gradient', c0: rgb(pair[0]), c1: rgb(pair[1]) }
   }
 
-  // Zooms on the output clock, as the classic export places them
-  const zooms = (opts.zooms || []).filter(z => z && +z.end > +z.start)
+  // Zooms on the output clock, as the classic export places them; with auto zoom and
+  // none of its own, the moments prepare.js found (already on the output clock)
+  let zooms = (opts.zooms || []).filter(z => z && +z.end > +z.start)
     .map(z => ({ start: clock(z.start), end: clock(z.end), scale: z.scale, x: z.x, y: z.y }))
     .filter(z => z.end > z.start)
+  if (!zooms.length && opts.autoZoom && P && Array.isArray(P.autoZooms)) zooms = P.autoZooms.filter(z => z && z.end > z.start)
 
   // The camera bubble, over the framed take in its own fractions, as the editor places
   // it: never zoomed with the content, never outside the take.
@@ -179,12 +189,31 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     }
   }
 
+  // What is drawn on the recording itself, placed once: sizes for the finished frame
+  // from px, the finished pixels per content pixel before any zoom
+  const px = g.vidH / (ch * inner.h)
+  const drawn = markList(opts.marks, P && P.marks)
+  const F = L('focus'), Cu = L('cursor')
+  const pm = Marks.planMarks(drawn, { W: cw, H: ch, px, clock, span, zooms, look: { dim: F.dim, lift: F.lift } })
+  const erase = P && P.erase ? Marks.planErase(P.erase.spans, P.erase.plates,
+    { src: { w: srcW, h: srcH }, crop: { x: cx, y: cy }, content: { w: cw, h: ch }, clock, end, span }) : []
+  // an empty track is the look's cursor switched off, whatever the take has
+  const raw = Array.isArray(opts.pointer) ? opts.pointer : null
+  const points = raw && !raw.length ? null : P && P.pointer ? P.pointer.points : raw
+  const pointer = points ? Marks.planPointer(points, { W: cw, H: ch, clock, crop: c, scale: P && P.pointer ? P.pointer.scale : null,
+    span, px, zooms: pm.zooms, size: Cu.size, ripple: Cu.ripple }) : null
+  const marks = { ...pm, erase, pointer }
+  const text = Text.planText(opts, { clock, span, W: g.outW, H: g.outH, box: framed ? { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH } : null,
+    prepared: P, zooms: pm.zooms })
+
   return {
     W: g.outW, H: g.outH, fps, frames, span, keep, start, end,
     src: { w: srcW, h: srcH }, crop: { x: cx, y: cy, w: cw, h: ch },
+    content: { w: cw, h: ch, px },
     framed, rect: { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH }, radius, shadow, inner,
     border: borderPx > 0 ? { px: borderPx, color: rgb(L('frame').borderColor || '#FFFFFF') } : null,
-    bg, zooms, cam,
+    bg, zooms: pm.zooms, cam, marks,
+    text: text.phrases.length || text.cards.length || text.labels.length ? text : null,
     motionBlur: clamp(num(L('treatment').motionBlur, 0), 0, 1),
     fadeIn: Math.max(0, num(opts.fadeIn, 0)), fadeOut: Math.max(0, num(opts.fadeOut, 0)),
     dither: L('grain').dither !== false,
@@ -242,7 +271,8 @@ function framePlan(spec, t) {
   const fi = spec.fadeIn > 0 ? clamp(t / spec.fadeIn, 0, 1) : 1
   const fo = spec.fadeOut > 0 ? clamp((spec.span - t) / spec.fadeOut, 0, 1) : 1
   const camT = spec.cam ? Timeline.camTime(spec.cam, s) : null
-  return { t, s, view0, view1, taps, fade: fi * fo, camT }
+  return { t, s, view0, view1, taps, fade: fi * fo, camT,
+    marks: spec.marks ? Marks.at(spec.marks, t) : null, move: Text.frameMove(spec.text, t, spec.H) }
 }
 
 // ── which source frames ─────────────────────────────────────────────────
@@ -303,4 +333,4 @@ function cameraFrames(spec, pts) {
   return frameMap(pts, spec.frames, n => Timeline.camTime(spec.cam, srcAt(spec.keep, n / spec.fps)))
 }
 
-module.exports = { prepare, framePlan, srcAt, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, cameraFrames, rgb }
+module.exports = { prepare, framePlan, srcAt, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, cameraFrames, rgb, markKey }

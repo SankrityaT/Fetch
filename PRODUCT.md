@@ -118,14 +118,24 @@ Look changes are undo steps like any other edit.
 **The compositor** (`ui/compositor/`, passes in `PASSES.md`). A WebGL2 renderer that
 draws the editor's stage and the export from one plan (`plan.js`), so the stage is the
 file's pixels: background, corners, shadow, zooms (with motion blur, `treatment.motionBlur`),
-fades, cuts and the camera bubble. An export runs it in a hidden window
-(`ui/render-host.js`, `render.html`) when it draws everything the edit uses, several
-times real time, with the sound rendered by ffmpeg alongside; an edit with marks, text,
-burned captions or the drawn cursor still goes to the classic ffmpeg renderer until those
-move over (M3), and so does a take the compositor cannot read. Activity and the MCP
-export result name the engine that drew each file (`gl` or `classic`, and why).
-Sample and hold is exact: an output frame shows the last frame the take wrote at or
-before its moment, across cuts. `FETCH_ENGINE=classic|gl` forces one.
+fades, cuts, the camera bubble, and since M3 everything placed on the take: the Mac's
+pointer lifted out, redactions, blurs, spotlights, lifts, steps, the agent's cursor with
+its ripples and Biscuit's badge, captions with the spoken word and frosted glass, title
+cards, lower thirds and labels. It is the default renderer: every MP4 or MOV export runs
+it in a hidden window (`ui/render-host.js`, `render.html`), several times real time, with
+the sound rendered by ffmpeg alongside, and `preview_frame` draws with it too. GIF and
+WebM, auto zoom without explicit zooms, and a take the compositor cannot read go to the
+classic ffmpeg renderer. Activity and the MCP export result name the engine that drew each
+file (`gl` or `classic`, and why). What only the take's pixels say (a lift's element and
+its corners, a step's card corner, the Mac's pointer and clean patches, the cursor's rests,
+toasts under the captions) is worked out once by `ui/compositor/prepare.js` and shared by
+the stage and the export. A lift raises the element's real pixels 3 to 6 percent over a
+key and a contact shadow while the page steps back (blurred, dimmed by multiplication,
+less by the piece than far from it); it starts when its element is on screen, and a zoom
+it rides is re-framed so the raised card, its badges and some air all fit, a card at the
+frame's edge coming up a little inward. Sample and hold is exact: an output frame shows
+the last frame the take wrote at or before its moment, across cuts.
+`FETCH_ENGINE=classic|gl` forces one.
 
 **MCP tools** (`mcp/index.js`), 26: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `pointer`,
 `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,

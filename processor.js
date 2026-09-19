@@ -1555,7 +1555,7 @@ async function cursorPlates(src, spans, meta, jobId) {
           p.on('close', code => code === 0 ? res() : rej(new Error('plate not written')))
           p.stdin.end(pointerLib.platePixels([G.rep], best.c, best.fit.corr, reg, { also: G.moved }))
         })
-        list.push({ a: g ? ga : s.a, b: g + 1 < groups.length ? gb : s.b, png, x: bx.x, y: bx.y })
+        list.push({ a: g ? ga : s.a, b: g + 1 < groups.length ? gb : s.b, png, x: bx.x, y: bx.y, w: bx.w, h: bx.h })
       } catch {}
     }
     if (list.length) plates[i] = list
@@ -3016,5 +3016,7 @@ module.exports = {
   readDoc, writeDoc, beatsFor,
   // for the compositor's export (ui/render-host.js)
   renderAudio, musicBed, register, unregister, run, FORMATS, imageBackdrops,
+  // what the compositor works out once per take (ui/compositor/prepare.js)
+  stepSpots, pointerRests, captionClutterTimes, ensureSeekable, FONT_FILES,
   fontList: () => Object.keys(FONT_FILES),
 }

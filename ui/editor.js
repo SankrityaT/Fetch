@@ -1672,6 +1672,8 @@ function renderTexts() {
     canvas.appendChild(n)
   })
   renderTextTrack()
+  // the stage's canvas draws the text itself, so a moved or retyped layer is redrawn there
+  if ($('edVideo') && $('edVideo').paused) paintStageGL({ fresh: true })
 }
 function renderLayerList() {
   const list = $('layerList'); list.innerHTML = ''
@@ -2588,6 +2590,28 @@ async function doExport(pick) {
 // at the first frame is not black. The Crop tab shows the whole recording, so the
 // canvas steps aside there. Without WebGL2 the old CSS stage is left as it was.
 var stageGL = null          // { comp, spec, key, clock, ready } once made; false if WebGL2 is missing
+// What the take's pixels say about the edit (ui/compositor/prepare.js: lifts fitted to
+// their element, steps on their card's corner, the Mac's pointer and its clean patches,
+// the cursor's rests, caption timings), asked of the main process once the edit settles
+// and shared with the export there. The stage draws without it until it comes.
+var stagePrep = { key: null, timer: null, data: null, v: 0 }
+
+function askPrepared(opts) {
+  const key = JSON.stringify([ed.src, opts.marks, opts.pointer, opts.hideMacCursor, opts.captions, opts.cues, opts.captionStyle,
+    opts.backdrop, opts.crop, opts.start, opts.end, opts.cuts, opts.zooms, opts.autoZoom])
+  if (key === stagePrep.key) return
+  stagePrep.key = key
+  clearTimeout(stagePrep.timer)
+  const src = ed.src
+  // the first ask for a take goes at once; edits after it wait for the hand to stop
+  stagePrep.timer = setTimeout(() => {
+    ipcRenderer.invoke('render-prepare', src, opts).then(p => {
+      if (!p || ed.src !== src || stagePrep.key !== key) return
+      stagePrep.data = p; stagePrep.v++
+      paintStageGL({ fresh: true })
+    }).catch(e => console.warn('stage: the take could not be read for marks and captions:', e && e.message))
+  }, stagePrep.data && stagePrep.data.src === src ? 350 : 0)
+}
 
 function stageGLSpec(fresh) {
   if (stageGL.spec && !fresh) return stageGL.spec
@@ -2597,8 +2621,10 @@ function stageGLSpec(fresh) {
   const Timeline = require('./ui/timeline')
   const opts = FD.toExportOpts(window.fetchDoc.get())
   const meta = { width: v.videoWidth, height: v.videoHeight, duration: ed.dur, fps: (ed.meta && ed.meta.fps) || 30 }
-  const ctx = { gutter: ed.gutter || null, imageFile: ed.backdropFile || null }
-  const key = JSON.stringify([opts, meta, ctx])
+  askPrepared(opts)
+  const prepared = stagePrep.data && stagePrep.data.src === ed.src ? stagePrep.data : null
+  const ctx = { gutter: ed.gutter || null, imageFile: ed.backdropFile || null, prepared }
+  const key = JSON.stringify([opts, meta, ctx.gutter, ctx.imageFile, prepared ? stagePrep.v : 0])
   if (key !== stageGL.key) {
     stageGL.key = key
     stageGL.spec = Plan.prepare(opts, meta, ctx)
@@ -2636,6 +2662,11 @@ function paintStageGL({ fresh = false, upload = false, t = null } = {}) {
     const comp = stageGL.comp
     if (spec.bg.kind === 'image' && spec.bg.file && !comp.images.has(spec.bg.file)) {
       require('./ui/compositor').loadImage(spec.bg.file).then(img => { comp.setImage(spec.bg.file, img); comp.bgKey = null; paintStageGL() }).catch(() => {})
+    }
+    // the clean patches under the Mac's pointer and Biscuit's badge, once each
+    if (stageGL.assets !== spec) {
+      stageGL.assets = spec
+      require('./ui/compositor').loadAssets(comp, spec).then(n => { if (n && v.paused) paintStageGL() }).catch(() => {})
     }
     const box = stageGLBox(frame, v, spec)
     if (!(box.w > 4 && box.h > 4)) return

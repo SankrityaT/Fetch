@@ -19,6 +19,7 @@ const os = require('os')
 const path = require('path')
 const proc = require('../processor')
 const Plan = require('./compositor/plan')
+const Prepare = require('./compositor/prepare')
 
 const IDLE_MS = 3 * 60 * 1000
 let win = null, ready = null, idleTimer = null
@@ -113,18 +114,18 @@ function closeWhenIdle() {
   idleTimer = setTimeout(() => { if (!jobs.size) closeWindow() }, IDLE_MS)
 }
 
-// What the take brings that only the classic renderer draws (plan.engineFor)
-function takeContext(src, opts) {
-  let cues = 0
-  if (opts.captions) cues = (Array.isArray(opts.cues) && opts.cues.length) || proc.readCues(src).length
-  const ptr = proc.pointerTrack(src, opts)
-  return { cues, pointer: !!(ptr && ptr.points.length), macCursor: proc.macCursorSpans(src, opts).length > 0 }
-}
-
 // Which engine an export would use, without running it
 function pickEngine(src, opts = {}) {
   const mode = opts.engine || process.env.FETCH_ENGINE || 'auto'
-  return Plan.engineFor(opts, takeContext(src, opts), mode)
+  return Plan.engineFor(opts, {}, mode)
+}
+
+// The plan of an edit with everything its take says worked out (prepare.js)
+async function planFor(src, opts, meta, jobId) {
+  const prepared = await Prepare.prepareRender(src, opts, { meta, jobId })
+  const camera = opts.camera && opts.camera.file && fs.existsSync(opts.camera.file) ? opts.camera : null
+  const ctx = { prepared, gutter: prepared.gutter || null, imageFile: prepared.imageFile || null }
+  return Plan.prepare({ ...opts, camera }, meta, ctx)
 }
 
 async function classic(src, opts, onProgress, jobId, why) {
@@ -157,18 +158,7 @@ async function glExport(src, opts, onProgress, jobId, why) {
   const fmtId = opts.format || 'mp4'
   const fmt = proc.FORMATS[fmtId] || proc.FORMATS.mp4
 
-  const start = Math.max(0, opts.start || 0)
-  const end = opts.end && opts.end > start ? Math.min(opts.end, meta.duration) : meta.duration
-  // no caption band: the compositor draws no captions yet (M3), so a forced gl export
-  // leaves them out rather than leaving room for them
-  const ctx = { cues: 0 }
-  if (opts.backdrop) ctx.gutter = await proc.frameGutter(src, start, end, opts.crop || null).catch(() => null)
-  if (String(opts.backdrop || '').startsWith('img:')) {
-    const hit = proc.imageBackdrops().find(b => b.id === opts.backdrop)
-    ctx.imageFile = hit ? hit.file : null
-  }
-  const camera = opts.camera && opts.camera.file && fs.existsSync(opts.camera.file) ? opts.camera : null
-  const spec = Plan.prepare({ ...opts, camera }, meta, ctx)
+  const spec = await planFor(src, opts, meta, jobId)
   if (spec.span < 0.2) throw new Error('trim range is too short')
 
   // As applyEdit: a take folder's deliverable is encoded beside itself and swapped in
@@ -210,6 +200,36 @@ async function glExport(src, opts, onProgress, jobId, why) {
   }
 }
 
+/**
+ * Frames of an edit as the compositor exports them, for looking before exporting
+ * (preview_frame). doc is the edit document; times are source seconds, as the
+ * classic processor.previewFrame takes them. Returns [{ file, at }], JPEGs 1280 wide.
+ */
+async function previewFrames(src, doc, times, { width = 1280 } = {}) {
+  const FD = require('./fetchdoc')
+  const Timeline = require('./timeline')
+  const meta = await proc.probeMeta(src)
+  const dur = meta.duration || (doc && +doc.dur) || 0
+  const d = FD.normalize(doc, src, dur)
+  if (!d.clips.length) d.clips = [{ id: 'C1', start: 0, end: dur }]
+  const opts = FD.toExportOpts(d)
+  const spec = await planFor(src, opts, { ...meta, duration: dur }, null)
+  const clock = Timeline.outClock(opts.cuts, spec.start, spec.end)
+  const at = (times || []).map(t => Math.min(Math.max(spec.start, +t || 0), Math.max(spec.start, spec.end - 0.05)))
+  const tag = `fetch-preview-${process.pid}-${Date.now().toString(36)}`
+  const files = at.map((t, i) => path.join(os.tmpdir(), `${tag}-${i}-${t.toFixed(2)}.jpg`))
+  clearTimeout(idleTimer)
+  const w = await renderWindow()
+  const id = ++seq
+  try {
+    const out = await new Promise((resolve, reject) => {
+      jobs.set(id, { resolve, reject, pids: new Set() })
+      w.webContents.send('render:job', { stills: true, id, spec, src, ffmpeg: proc.FFMPEG, times: at.map(t => clock(t)), files, width })
+    })
+    return out.map((f, i) => ({ file: f.file, at: +at[i].toFixed(2), engine: 'gl' }))
+  } finally { closeWhenIdle() }
+}
+
 // Start the window ahead of the first export, so that one does not wait for it
 function warm() {
   if (jobs.size) return
@@ -228,4 +248,4 @@ async function probe() {
   })
 }
 
-module.exports = { exportEdit, pickEngine, warm, probe, close: closeWindow }
+module.exports = { exportEdit, pickEngine, previewFrames, planFor, warm, probe, close: closeWindow }

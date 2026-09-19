@@ -50,8 +50,9 @@ function framePts(ffmpeg, file) {
  *   scale  [w, h] to scale the whole frame to with scale_vt before the crop, or null
  *   cover  a square side to cover and centre crop to (the camera bubble), instead of crop;
  *          with a crop as well, the crop is taken first and cover only scales
+ *   frames how many frames the runs hold, when ffmpeg should stop after them
  */
-function decodeArgs(file, pts, runs, { crop = null, scale = null, cover = null, hw = true } = {}) {
+function decodeArgs(file, pts, runs, { crop = null, scale = null, cover = null, hw = true, frames = 0 } = {}) {
   const eps = 0.0004
   const lo = runs.length ? pts[runs[0][0]] : 0
   const sel = runs.map(([a, b]) => `between(t,${(pts[a] - eps).toFixed(6)},${(pts[b] + eps).toFixed(6)})`).join('+')
@@ -70,6 +71,8 @@ function decodeArgs(file, pts, runs, { crop = null, scale = null, cover = null, 
   if (crop) vf.push(`crop=${crop.w}:${crop.h}:${crop.x}:${crop.y}:exact=1`)
   if (cover) vf.push(`scale=${cover}:${cover}:force_original_aspect_ratio=increase:flags=area`, `crop=${cover}:${cover}`)
   vf.push('format=nv12')
+  // a few frames on their own (a still) stop there, not at the file's end
+  if (frames > 0) a.push('-frames:v', String(frames))
   a.push('-vf', vf.join(','), '-fps_mode', 'passthrough', '-f', 'rawvideo', '-pix_fmt', 'nv12', 'tcp://127.0.0.1:0')
   return a
 }
