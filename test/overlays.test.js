@@ -287,6 +287,25 @@ is('on frost the dark cloud is lighter than without', cloudA(frosted) < cloudA(f
   // mid-zoom there is no telling what is where
   is('frames while the camera moves are not judged', O.captionClutter(toastFrames, w, h, () => null), [])
 
+  // content that is simply there never changes, so the toast test above cannot see it:
+  // a list of rows under the captions, a clear page above them
+  const rows = (top = false) => {
+    const px = new Uint8Array(w * h).fill(242)
+    for (let y = top ? 1 : 15; y < (top ? 5 : 19); y += 2) for (let x = 9; x < 32; x++) px[y * w + x] = 40
+    return px
+  }
+  const list = Array.from({ length: 8 }, (_, k) => ({ t: k / 4, px: rows() }))
+  is('a list under the captions is seen, though nothing about it ever changes',
+    [O.captionClutter(list, w, h).length, O.captionLive(list, w, h).length], [0, 8])
+  // and with the same rows at the top of the frame there is nothing to be gained
+  const both = Array.from({ length: 8 }, (_, k) => {
+    const px = rows(); const t = rows(true)
+    for (let i = 0; i < px.length; i++) px[i] = Math.min(px[i], t[i])
+    return { t: k / 4, px }
+  })
+  is('a frame as busy at the top as at the bottom does not move the caption', O.captionLive(both, w, h), [])
+  is('a plain page moves nothing either', O.captionLive([{ t: 0, px: new Uint8Array(w * h).fill(242) }], w, h), [])
+
   const mk = (a, b) => ({ start: a, end: b, words: [{ text: 'x', start: a, end: b }], lines: [1], text: 'x' })
   const phr = [mk(0, 1.5), mk(2, 3.5), mk(4, 5), mk(5.6, 6.5), mk(7, 8), mk(20, 21)]
   is('phrases over a toast go to the top, and a short stretch between two goes with them',

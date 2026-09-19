@@ -1976,19 +1976,28 @@ function assFonts(opts = {}) {
   return { dir, measure, family: name => labels[name] || null }
 }
 
-// Times (output clock) when the product put something where the captions go, a toast
-// or a bottom sheet, so those phrases can move to the top (Overlays.captionClutter).
-// A 96x54 grey copy at 4fps of the cropped picture is plenty to see a toast arrive.
+// Times (output clock) when the captions have no business at the bottom of the frame:
+// the product put something where they go, a toast or a bottom sheet
+// (Overlays.captionClutter), or the product's own content is simply there and the top
+// of the frame is clear (Overlays.captionLive). The first is a change over time, the
+// second one frame's own answer, and the union is what moves a phrase to the top.
+// A 96x54 grey copy at 4fps of the cropped picture is plenty to see either.
 // zooms are the edit's explicit zooms, so a frame is judged through the window that
 // is actually on screen; under auto zoom the window is not known here, so no dodging.
-function captionClutterTimes(src, { start, end, crop, zooms, autoZoom, clock }) {
+// zoomsOut, when the caller has it, is that window as the frame pass will really draw
+// it: the same zooms re-framed round any lift riding them, already on the output clock
+// (prepare.js, from plan.prepare). A lift widens and moves the zoom it rides, so judged
+// through the raw zoom the two zones sit over a different part of the picture than the
+// export shows, and a phrase gets carried up onto the content the dodge is avoiding.
+function captionClutterTimes(src, { start, end, crop, zooms, zoomsOut, autoZoom, clock }) {
   if (autoZoom && !(zooms && zooms.length)) return Promise.resolve([])
   const w = 96, h = 54, fps = 4
   const vf = [crop ? `crop=w='2*floor(iw*${crop.w}/2)':h='2*floor(ih*${crop.h}/2)':x='iw*${crop.x}':y='ih*${crop.y}'` : null,
     `fps=${fps}`, `scale=${w}:${h}:flags=area`, 'format=gray'].filter(Boolean).join(',')
   // the same plan the export zooms by, pans included; a frame mid-move is not judged
-  const moves = Overlays.zoomPlan((zooms || []).filter(z => z && z.end > z.start)
-    .map(z => ({ ...z, start: clock(z.start), end: clock(z.end) }))).map(m => {
+  const on = zoomsOut || (zooms || []).filter(z => z && z.end > z.start)
+    .map(z => ({ ...z, start: clock(z.start), end: clock(z.end) }))
+  const moves = Overlays.zoomPlan(on).map(m => {
     const vw = 1 / m.scale, clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
     return { ...m, win: { x: clamp(m.x - vw / 2, 0, 1 - vw), y: clamp(m.y - vw / 2, 0, 1 - vw), w: vw, h: vw } }
   })
@@ -2012,7 +2021,11 @@ function captionClutterTimes(src, { start, end, crop, zooms, autoZoom, clock }) 
         if (clock.kept && !clock.kept(t)) continue
         frames.push({ t: clock(t), px: all.subarray(k * w * h, (k + 1) * w * h) })
       }
-      try { res(Overlays.captionClutter(frames, w, h, view)) } catch { res([]) }
+      try {
+        const hit = new Set(Overlays.captionClutter(frames, w, h, view))
+        for (const t of Overlays.captionLive(frames, w, h, view)) hit.add(t)
+        res([...hit].sort((a, b) => a - b))
+      } catch { res([]) }
     })
   })
 }
@@ -2153,6 +2166,11 @@ const BACKDROPS = {
   violet:  { label: 'Violet',  c0: '0xA78BFA', c1: '0x3B1D6E' },
   slate:   { label: 'Slate',   c0: '0x64748B', c1: '0x0F172A' },
   ink:     { label: 'Ink',     c0: '0x2A2320', c1: '0x0A0908' },
+  // The Studio preset's own sweep. It is a mesh in the look, and a mesh answers with
+  // its palette's name (look.backdropId), so this renderer needs the flat pair of that
+  // name or it falls through to dusk and draws the gold the preset was moved off.
+  // Keep it the same pair as GRADIENTS.studio in ui/look-schema.js.
+  studio:  { label: 'Studio',  c0: '0x8A6A3C', c1: '0x1F1A16' },
   // The recording itself, filling the frame and Gaussian blurred, behind the framed
   // copy. Always matches the content, so it suits any product's colours.
   blur:    { label: 'Blur',    video: true },

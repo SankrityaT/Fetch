@@ -1823,6 +1823,7 @@ const BD_CSS = {
   violet: 'linear-gradient(135deg,#A78BFA,#3B1D6E)',
   slate:  'linear-gradient(135deg,#64748B,#0F172A)',
   ink:    'linear-gradient(135deg,#2A2320,#0A0908)',
+  studio: 'linear-gradient(135deg,#8A6A3C,#1F1A16)',
   blur:   '#1A1714',     // the real fill is the canvas layer below
 }
 // The blur backdrop previews as the current frame, blurred by CSS, behind the video.
@@ -2605,10 +2606,13 @@ var stageGL = null          // { comp, spec, key, clock, ready } once made; fals
 var stagePrep = { key: null, timer: null, data: null, v: 0 }
 
 function askPrepared(opts) {
-  // the look is in the key only by what prepare.js reads of it: auto level, whose two
-  // numbers it measures. Without it, turning Auto level on would leave the stage
-  // ungraded while the export, which prepares its own, drew the stretch.
-  const look = opts.look && opts.look.treatment ? [!!opts.look.treatment.autoLevel] : null
+  // the look is in the key by everything prepare.js reads of it, which is every dial
+  // that decides whether the take's own black and white points are measured. Keyed on
+  // auto level alone, switching to a look that glows or grades left the stage on the
+  // last answer, so it planned its shoulder off a take taken for a full range while the
+  // export, which prepares its own, drew the measured one.
+  const T = opts.look && opts.look.treatment
+  const look = T ? [!!T.autoLevel, +T.bloom || 0, +T.halation || 0, +T.contrast || 0, +T.brightness || 0] : null
   const key = JSON.stringify([ed.src, opts.marks, opts.pointer, opts.hideMacCursor, opts.captions, opts.cues, opts.captionStyle,
     opts.backdrop, opts.crop, opts.start, opts.end, opts.cuts, opts.zooms, opts.autoZoom, look])
   if (key === stagePrep.key) return

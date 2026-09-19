@@ -5,7 +5,7 @@
   "look": {
     "background": { "kind": "solid", "color": "#0A0908" },
     "frame": { "padding": 0.06, "radius": 10, "shadow": 0.8 },
-    "treatment": { "saturation": -1, "contrast": 0.2, "vignette": 0.35 },
+    "treatment": { "saturation": -1, "contrast": 0.2, "vignette": 0.75 },
     "grain": { "film": 0.25 }
   }
 }

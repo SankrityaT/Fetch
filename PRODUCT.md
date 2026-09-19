@@ -154,6 +154,15 @@ and a warm hairline where neither is enough. That is what keeps the promise abou
 bars true on a light product: a 20 px gutter beside a white page reads as bleed, never
 as a bar. A blur redaction and an unframed caption are drawn shapes now, a plate with a
 corner and a hairline and a plate of the caption's own glass, rather than a smudge.
+The ground is a surface rather than one number across 1920x1080: it carries three levels
+of tooth whatever luma the look chose (and less of it on a stage drawn below the file's
+size, because that is what the file's own tooth becomes there) and the app's own two
+faint warm pools in the corners `tokens.css` puts them in. The grade's shoulder and toe
+arrive carrying the slope the picture had rather than flat, so a contrast no longer
+compresses a white page's row separators into the page; the vignette dial is how many
+fall-offs rather than a share of one; and the take's hairline goes to the one warm end
+the plan picked and delivers what that tone can carry, because a line that changed ends
+under a lift swung thirty levels on a level of the picture.
 It is the default renderer:
 every MP4 or MOV export runs
 it in a hidden window (`ui/render-host.js`, `render.html`), several times real time, with
@@ -162,7 +171,10 @@ WebM, auto zoom without explicit zooms, and a take the compositor cannot read go
 classic ffmpeg renderer. Activity and the MCP export result name the engine that drew each
 file (`gl` or `classic`, and why). What only the take's pixels say (a lift's element and
 its corners, a step's card corner, the Mac's pointer and clean patches, the cursor's rests,
-toasts under the captions) is worked out once by `ui/compositor/prepare.js` and shared by
+whether the bottom of the frame is any place for a caption at all: a toast arrived there,
+or the product's own content is simply there and the top is clear, judged through the
+window the frame pass will draw and not the edit's raw zoom, since a lift re-frames the
+zoom it rides) is worked out once by `ui/compositor/prepare.js` and shared by
 the stage and the export. A lift raises the element's real pixels 3 to 6 percent over a
 key and a contact shadow while the page steps back (blurred, dimmed by multiplication,
 less by the piece than far from it); it starts when its element is on screen, and a zoom

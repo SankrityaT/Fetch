@@ -41,9 +41,13 @@ const GRADIENTS = {
   violet: ['#A78BFA', '#3B1D6E'],
   slate: ['#64748B', '#0F172A'],
   ink: ['#2A2320', '#0A0908'],
+  // A sweep rather than a colour: one warm light in the corner and a deep warm neutral
+  // everywhere else. dusk is the gold itself, which is right when somebody asks for
+  // gold and wrong under a recording, where the accent has to stay the accent.
+  studio: ['#8A6A3C', '#1F1A16'],
 }
 
-// Mesh gradients: the same six names, loosened into control points. Each point is a
+// Mesh gradients: the same seven names, loosened into control points. Each point is a
 // place in the frame (fractions), a reach, and a colour; the compositor blends them by
 // normalised Gaussian weights in sRGB, so a mesh and the flat gradient of the same name
 // are relatives rather than strangers. The middle point is always the deep, quiet one:
@@ -56,6 +60,12 @@ const MESHES = {
   violet: [[0.12, 0.10, 0.30, '#B9A2FF'], [0.88, 0.08, 0.26, '#7C5CE0'], [0.06, 0.92, 0.28, '#3B1D6E'], [0.94, 0.90, 0.30, '#200F45'], [0.50, 0.52, 0.34, '#3F2178']],
   slate: [[0.10, 0.10, 0.30, '#8494AC'], [0.92, 0.14, 0.26, '#4E5C73'], [0.08, 0.90, 0.28, '#1B2540'], [0.90, 0.94, 0.30, '#0B1120'], [0.50, 0.52, 0.34, '#26314A']],
   ink: [[0.12, 0.10, 0.30, '#3A312B'], [0.90, 0.10, 0.26, '#241F1B'], [0.08, 0.92, 0.28, '#100D0C'], [0.92, 0.90, 0.30, '#0A0908'], [0.50, 0.52, 0.34, '#161311']],
+  // The one mesh that is a light rather than a palette: a compact warm key in the top
+  // left corner, its own surround, and three deep warm neutrals carrying the rest. The
+  // light is the only place gold reaches, and it lands on the margin above and left of
+  // the take, which is where a studio sweep is brightest.
+  studio: [[0.18, 0.12, 0.20, '#C6924A'], [0.02, 0.00, 0.36, '#745C3C'], [0.92, 0.10, 0.30, '#40362C'],
+    [0.06, 0.92, 0.30, '#2E2721'], [0.94, 0.94, 0.32, '#201B17'], [0.50, 0.55, 0.34, '#332B24']],
 }
 
 const ASPECTS = ['auto', '16:9', '1:1', '9:16', '4:3', '4:5']
@@ -94,10 +104,10 @@ const FIELDS = [
     doc: 'none shows the take edge to edge. solid, gradient, mesh (a gradient loosened into control points), image and video-blur ' +
       '(the take itself, blurred and deepened) frame it with padding and a shadow.' }),
   f('background.gradient', 'enum', 'dusk', { options: Object.keys(GRADIENTS), label: 'Gradient',
-    doc: 'Which gradient: dusk (gold), ember, mint, violet, slate, ink (warm near-black).', when: { 'background.kind': 'gradient' } }),
+    doc: 'Which gradient: dusk (gold), ember, mint, violet, slate, ink (warm near-black), studio (a warm light on a deep neutral).', when: { 'background.kind': 'gradient' } }),
   f('background.color', 'color', '#1A1714', { label: 'Colour', doc: 'The solid colour, #RRGGBB.', when: { 'background.kind': 'solid' } }),
   f('background.mesh', 'enum', 'dusk', { options: Object.keys(MESHES), label: 'Mesh',
-    doc: 'Which mesh: the same six palettes as the gradients, drawn from control points instead of corner to corner.',
+    doc: 'Which mesh: the same seven palettes as the gradients, drawn from control points instead of corner to corner.',
     when: { 'background.kind': 'mesh' } }),
   f('background.image', 'asset', null, { label: 'Image',
     doc: 'An image backdrop id from list_looks backgrounds (img:...).', when: { 'background.kind': 'image' } }),
@@ -120,7 +130,8 @@ const FIELDS = [
   f('treatment.bloom', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Bloom', doc: 'Bright areas glow.', gpu: true }),
   f('treatment.halation', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Halation', doc: 'A warm film glow round highlights.', gpu: true }),
   f('treatment.aberration', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Aberration', doc: 'Colour fringes at the edges.', gpu: true, advanced: true }),
-  f('treatment.vignette', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Vignette', doc: 'Darker corners.', gpu: true }),
+  f('treatment.vignette', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Vignette',
+    doc: 'Darker corners. 1 takes about two thirds of the light off the frame\'s furthest corner, 0.3 about a fifth.', gpu: true }),
 
   // ── grain ──
   f('grain.film', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Film grain', doc: 'Moving film grain.', gpu: true }),
