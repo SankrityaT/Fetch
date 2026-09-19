@@ -14,7 +14,8 @@
 //   autoZooms auto zoom's moments (processor.zoomMoments), when the edit has no zooms
 //             of its own, on the output clock
 //   levels    the take's black and white points (levels.js), while the look asks for
-//             auto level: treatment stretches every frame between the same two
+//             auto level or for a glow: treatment stretches every frame between the
+//             same two, and the bright pass reads what is above the white one
 //
 // Times stay on the source clock except `busy`, which is on the output clock of the
 // edit it was judged for. Each part is cached on what it depends on, so moving a zoom
@@ -130,8 +131,13 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
     }
 
     // Auto level's two constants, measured once for the whole take: every frame is
-    // stretched between them, so they cannot come from the frame being drawn.
-    if (opts.look && opts.look.treatment && opts.look.treatment.autoLevel) {
+    // stretched between them, so they cannot come from the frame being drawn. A look
+    // that glows wants the white one as well, and asks for it without asking for auto
+    // level: the bright pass reads what is above the take's own white, in the same
+    // pixels levels.js measured, and with nothing measured it has to assume the take
+    // fills the range and read nothing at all.
+    const T = (opts.look && opts.look.treatment) || {}
+    if (T.autoLevel || +T.bloom > 0 || +T.halation > 0) {
       tasks.levels = memo(`lv|${id}|${JSON.stringify([start, end, crop])}`,
         () => Levels.measure(seek.src, { start, end, crop, width: W, height: H }))
     }

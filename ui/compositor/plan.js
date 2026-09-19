@@ -22,6 +22,69 @@ const { GRADIENTS, MESHES } = require('../look-schema')
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const num = (v, d) => (v != null && Number.isFinite(+v) ? +v : d)
 
+// The shoulder on the contrast line, and the same curve mirrored for its toe.
+//
+// w is what the take's own white point becomes under the straight line
+// (c - 0.5) * contrast + 0.5 + brightness. At 1 or under, nothing goes over the edge
+// and the line is left exactly as it was. Over 1, the line runs straight up to a knee
+// and a cubic takes it from there into 1.0, arriving flat: the take's white lands on
+// white and the hairline a pixel under it is still a hairline instead of clipping into
+// it. Returns [knee, run, and the curve's two terms] for gl.js's rollIn().
+//
+// The knee leaves two thirds of its run as output, which is gentle enough not to read
+// as a flattening and steep enough to land inside the range. Past a gain that would put
+// the knee below 0 the whole line is curve, and the ratio goes with it.
+function rollOff(w) {
+  if (!(w > 1.0001)) return [0, 0, 0, 0]
+  const k = Math.max(0, 3 - 2 * w)
+  const a = w - k, r = (1 - k) / a - 1
+  // f(0) = 0, f'(0) = 1 so it meets the straight line, f(a) = 1 - k and f'(a) = 0 so it
+  // arrives on the end point flat and nothing above it can clip
+  return [k, a, 1 + 3 * r, -1 - 2 * r]
+}
+
+// ── the take's edge ─────────────────────────────────────────────────────
+// The edge is a contract, not whatever the ground a look chose happens to leave. The
+// take's outermost pixels stand off the ground just outside them by at least EDGE_FLOOR
+// levels of luma, everywhere round the perimeter, and the frame pass meets that with
+// whatever is available: a hairline where the ground is the take's own tone, a shadow
+// where there is room to cast one, and a blur ground that holds near the take's own
+// mean. Four of the seven presets failed it for four different reasons before this
+// (.context/survey/fix-edge.md).
+const EDGE_FLOOR = 24 / 255
+// And the other end of it, for the one ground that is the take itself. A gutter filled
+// by the take's own blur is bleed, so it never stands further off the take than this.
+// Pressed to 30 percent luma under a 236 page it measured 183 levels, which is a black
+// bar by any other name, and PRODUCT says the output never draws one.
+const EDGE_BLEED = 64 / 255
+// Warm ink over a light ground, a warm light over a dark one (BRAND --ink-1, --text-0).
+// Never #000 or #fff: every neutral here is warmed toward the fur hue.
+const EDGE_INK = '#1A1714', EDGE_LIT = '#FBFAF8'
+const lum = c => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+/**
+ * Which warm end the hairline goes to, and which way that is: { col, sign }. Decided
+ * once from the ground a look chose, not per pixel, and that is the point. A ground can
+ * cross mid grey along one edge (every gradient does), and a line that changed ends
+ * where it crossed would put a seam down one side of the frame and would land the two
+ * decode paths on opposite sides of it. One end for the whole frame is continuous in
+ * whatever is under it, so the line fades to nothing rather than switching off.
+ *
+ * A blurred copy of the take is the take's own dark side by construction (the band in
+ * blurFill only ever holds it under the take's own mean), so the take is the light one
+ * of the pair and the line goes with it: an ink line there would close the very gap it
+ * is drawn to open. A photo can be anything, so the compositor reads the decoded
+ * picture's own mean and picks with edgeFor(); until it has, the ink end stands.
+ */
+const edgeFor = light => (light ? { col: rgb(EDGE_INK), sign: -1 } : { col: rgb(EDGE_LIT), sign: 1 })
+function edgeEnd(bg) {
+  const light = bg.kind === 'gradient' ? (lum(bg.c0) + lum(bg.c1)) / 2 > 0.5
+    : bg.kind === 'mesh' ? bg.c.reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i % 3], 0) / (bg.c.length / 3) > 0.5
+    : bg.kind === 'blur' ? false
+    : true
+  return edgeFor(light)
+}
+
 // '#F0A93C' or '0xF0A93C' to [r, g, b] in 0..1
 function rgb(hex) {
   const m = /^(?:#|0x)?([0-9a-f]{6})$/i.exec(String(hex || ''))
@@ -132,12 +195,27 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   }
 
   // The classic shadow is the frame's shape blurred by boxblur radius r, power 2: a
-  // Gaussian of that variance, hanging 0.9 r low.
+  // Gaussian of that variance, hanging 0.9 r low. Widened, because DESIGN's Elevation
+  // says wide rather than tight: on a near-black ground the classic width measured nine
+  // levels deep and gone inside 25 px, which reads as a hairline of dark rather than as
+  // elevation. A wide shadow is also the one the edge floor can measure, since the
+  // ground a pixel out and the ground three pixels out are then the same ground; a
+  // tight one is a cliff and the floor lands on whichever pixel it happened to read.
+  //
+  // Capped against the margin the frame actually leaves, though, with the drop taken
+  // out of it first. A pool that runs off the canvas is not elevation either: at two
+  // and a quarter times flat, the last row under the take was still a tenth of the way
+  // to black on four of the seven presets, so the look's own ground colour was nowhere
+  // visible and the shadow read as a vignette with a straight edge. The drop stays the
+  // classic one, so the light still comes from where it always did.
   const r = g.blur
+  const flat = Math.sqrt((4 * r * r + 4 * r) / 6)
+  const dy = Math.round(r * 0.9)
+  const margin = Math.min(g.ox, g.oy, g.outW - g.ox - g.vidW, g.outH - g.oy - g.vidH)
   const shadow = framed ? {
     alpha: clamp(num(opts.shadow, 0.6), 0, 1),
-    sigma: Math.sqrt((4 * r * r + 4 * r) / 6),
-    dy: Math.round(r * 0.9),
+    sigma: Math.max(flat, Math.min(2.25 * flat, (margin - dy) / 1.7)),
+    dy,
   } : null
   const borderPx = framed ? num(L('frame').border, 0) * g.outH / 1080 : 0
 
@@ -150,7 +228,15 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     // chroma to 80, a soft vignette. blurAmount 0.5 is exactly that.
     const fw = 2 * Math.max(8, Math.round(g.outW / 64)), fh = 2 * Math.max(5, Math.round(g.outH / 64))
     const amount = clamp(num(L('background').blurAmount, 0.5), 0, 1)
-    return { kind: 'blur', fw, fh, sigma: Math.max(2, 125 * fh / 1080) * (0.25 + 1.5 * amount) }
+    // band: this ground is the take itself, so it is held inside a band of the take's
+    // own mean at that point rather than wherever the press leaves it. The press is
+    // right for a dark take and ruinous for a bright one: under a white page it made a
+    // 20 px gutter a bar.
+    // Half again the floor at the near end, not the floor itself: a ground sitting
+    // exactly on it leaves nothing for grain and dither, and this one is wide enough
+    // to want a step rather than a line.
+    return { kind: 'blur', fw, fh, sigma: Math.max(2, 125 * fh / 1080) * (0.25 + 1.5 * amount),
+      band: [1.5 * EDGE_FLOOR, EDGE_BLEED] }
   }
   // Bokeh is the background's own defocus given an aperture's shape, so it rides on the
   // background rather than on the finished frame: an image backdrop or the take's own
@@ -229,19 +315,44 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const halation = clamp(num(T.halation, 0), 0, 1)
   const aberration = clamp(num(T.aberration, 0), 0, 1)
   const glow = Math.max(bloom, halation)
+  // The take's own white point, in the pixels the glow's bright pass reads, which are
+  // the frame before the grade: the same place levels.js measured, and prepare.js now
+  // measures it for a look that glows as well as for one that auto levels. A take
+  // nobody could measure, or one that already fills the range, ends where the range
+  // ends, and then nothing in it is above its own white.
+  const white = P && P.levels && P.levels.hi > P.levels.lo ? P.levels.hi : 1
+  // The take's ends where the grade sees them, which is after auto level: a measured
+  // take has already been stretched onto 0 and 1 by the time the grade runs, and an
+  // unmeasured one is taken to fill the range. So the shoulder and the toe land on the
+  // ends themselves, and nothing the straight line carries past them is thrown away.
+  // Pinning them to a measured pair instead would clip the tails levels.js deliberately
+  // leaves outside its 0.4 percent, which is the loss this exists to stop.
+  const line = v => (v - 0.5) * (1 + contrast) + 0.5 + bright
   const treat = lv || bright || contrast || sat || tintAmount || haze || vignette || soft || glow || aberration ? {
     level: lv,
     // the dials ffmpeg eq takes: 1 is neutral for contrast and saturation, brightness adds
     bright, contrast: 1 + contrast, sat: 1 + sat,
+    // and the two ends of that line rolled in rather than cut off. Without these a
+    // contrast over about 0.06 takes a white app page and everything near it to 255
+    // together, which is every row separator, card edge and hairline in the product
+    // gone. The toe is the same argument at the bottom, where a hairline on a dark
+    // page goes into black.
+    shoulder: rollOff(line(1)), toe: rollOff(1 - line(0)),
     tint: rgb(T.tint || '#F0A93C'), tintAmount, haze, vignette,
     // the whole frame softened: sigma in export pixels, about 26 of them at 1080 at full
     blur: soft * 0.024 * g.outH,
     bloom, halation,
-    // One dial, so it has to move the threshold as well as the strength: a light touch
-    // of bloom should only catch what is nearly white, and a heavy one should catch the
-    // bright half of the picture. Bloom and halation share the bright pass, so the
-    // louder of the two sets it.
-    glowThresh: 0.9 - 0.45 * glow,
+    // What the glow is allowed to read: what is at the take's own white point, a shade
+    // under it. The threshold used to come off the dial alone (0.9 down to 0.45), which
+    // put a page white at 254 deep inside the bright pass, so halation's warm wide end
+    // came back over every grey glyph on the page as a pink collar. It is one to four
+    // 8-bit levels under the measured white instead, one at a light touch and four at
+    // the top of the dial, and the strength is still the dial's alone. prepare.js
+    // measures that white for a look that glows and not only for one that auto levels,
+    // which is what this was missing: unmeasured it fell back to 1, so a dark-mode take,
+    // whose highlights top out well under white, had no bloom and no halation at any
+    // setting. Bloom and halation share the bright pass, so the louder of the two sets it.
+    glowThresh: clamp(white - (1 + 3 * glow) / 255, 0.05, 0.995),
     // Aberration: how far the channels part at the corners, in export pixels. 3 px at
     // 1080 at the top of the dial, so the settings anyone will actually use are a
     // fraction of a pixel and read as a fringe on an edge, not as three pictures.
@@ -257,6 +368,11 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     src: { w: srcW, h: srcH }, crop: { x: cx, y: cy, w: cw, h: ch },
     content: { w: cw, h: ch, px },
     framed, rect: { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH }, radius, shadow, inner,
+    // The edge floor, and the hairline that meets it where nothing else does: about a
+    // pixel and a quarter at 1080, scaled with the output so it stays a hairline at 4K.
+    // No ground, no contract: a take in its own shape is the whole output, and a line
+    // round that is a line round the video.
+    edge: bg.kind === 'none' ? null : { floor: EDGE_FLOOR, px: Math.max(1, g.outH * 1.25 / 1080), ...edgeEnd(bg) },
     border: borderPx > 0 ? { px: borderPx, color: rgb(L('frame').borderColor || '#FFFFFF') } : null,
     bg, zooms: pm.zooms, cam, marks,
     text: text.phrases.length || text.cards.length || text.labels.length ? text : null,
@@ -385,4 +501,4 @@ function cameraFrames(spec, pts) {
   return frameMap(pts, spec.frames, n => Timeline.camTime(spec.cam, srcAt(spec.keep, n / spec.fps)))
 }
 
-module.exports = { prepare, framePlan, srcAt, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, cameraFrames, rgb, markKey }
+module.exports = { prepare, framePlan, srcAt, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, cameraFrames, rgb, markKey, edgeFor }

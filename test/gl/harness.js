@@ -6,7 +6,8 @@
 // What it checks, against test/gl/fixtures.sh's takes:
 //   golden     one frame per pass against test/gl/golden/*.png: the frame and its
 //              grounds, what is drawn on the take, the text, each treatment effect on
-//              its own and the whole stack together, and one frame per built-in look
+//              its own, the grade held to the recording while Fetch's own furniture sits
+//              outside it, the whole stack together, and one frame per built-in look
 //   presets    every field a built-in look declares moves a pixel: the same frame with
 //              that one field back at its default has to differ
 //   parity     the editor's path (a <video>) and the export's (ffmpeg NV12) draw the
@@ -120,6 +121,14 @@ app.whenReady().then(async () => {
           { text: 'New', start: 7, end: 11, fx: 0.7, fy: 0.3, style: 'label', box: true }] },
         ctx: { prepared: { captions: { cues: [], busy: [], words: { words: [{ w: 'Every', t: 3 }, { w: 'row', t: 3.3 }, { w: 'shows', t: 3.6 }, { w: 'the', t: 4 },
           { w: 'key', t: 4.2 }, { w: 'and', t: 4.6 }, { w: 'the', t: 4.8 }, { w: 'tempo.', t: 5 }] } } } }, n: 128 },
+      // M5: a caption over the take on a look with no ground. The frame pass leaves it
+      // no band and no backdrop to sit on, so this is the one case that draws the plate
+      // (pass 11's glass plus its scrim) rather than the band, and the one the default
+      // look actually ships. The blur mark's own plate is in `marks`.
+      'caption-plate': { opts: { backdropAspect: 16 / 9, look, captions: true, captionStyle: {},
+        cues: [{ start: 3, end: 6, text: 'Every row shows the key and the tempo.' }] },
+        ctx: { prepared: { captions: { cues: [], busy: [], words: { words: [{ w: 'Every', t: 3 }, { w: 'row', t: 3.3 }, { w: 'shows', t: 3.6 }, { w: 'the', t: 4 },
+          { w: 'key', t: 4.2 }, { w: 'and', t: 4.6 }, { w: 'the', t: 4.8 }, { w: 'tempo.', t: 5 }] } } } }, n: 128 },
       'title': { opts: { backdrop: 'dusk', inset: 0.06, look, texts: [{ text: 'Fetch', subtitle: 'fetch.app', start: 0, end: 2.5, style: 'title' }] }, n: 36 },
       'lower-third': { opts: { backdrop: 'dusk', inset: 0.06, look, texts: [{ text: 'Library', subtitle: 'Three hundred songs', start: 7, end: 11, style: 'lower-third' },
         { text: 'New', start: 7, end: 11, fx: 0.7, fy: 0.3, style: 'label', box: true }] }, n: 270 },
@@ -149,6 +158,18 @@ app.whenReady().then(async () => {
       // about, so this case is in parity as well as in the goldens.
       'auto-level-hard': { opts: { backdrop: 'ink', inset: 0.06, look: { ...look, treatment: { motionBlur: 0.5, autoLevel: true, contrast: 0.3 } } },
         ctx: { prepared: { levels: { lo: 64 / 255, hi: 170 / 255 } } }, n: 150 },
+      // The grade is held to the recording and Fetch's own furniture is drawn outside it,
+      // so this case puts the two together: a look that takes every bit of colour out of
+      // the take, with a step badge and the agent's cursor on the recording and a caption
+      // on the ground. The ground has to stay the colour the look asked for, the badge and
+      // the cursor have to stay gold, and the take between them has to go grey.
+      'treat-furniture': { opts: { backdrop: 'ink', inset: 0.06, captions: true, captionStyle: {},
+        look: { ...look, treatment: { motionBlur: 0.5, saturation: -1, contrast: 0.15, vignette: 0.3 } },
+        cues: [{ start: 3, end: 6, text: 'Every row shows the key and the tempo.' }],
+        marks: [{ kind: 'step', start: 1, end: 11, x: 0.35, y: 0.3 }],
+        pointer: [{ t: 0.5, x: 0.2, y: 0.3 }, { t: 3, x: 0.6, y: 0.5, click: true }, { t: 6, x: 0.4, y: 0.7 }] },
+        ctx: { prepared: { captions: { cues: [], busy: [], words: { words: [{ w: 'Every', t: 3 }, { w: 'row', t: 3.3 }, { w: 'shows', t: 3.6 }, { w: 'the', t: 4 },
+          { w: 'key', t: 4.2 }, { w: 'and', t: 4.6 }, { w: 'the', t: 4.8 }, { w: 'tempo.', t: 5 }] } } } }, n: 128 },
       // The whole Treatment section at once, dither included, which is the frame someone
       // gets when they turn it all on. Every case above moves one part so a failure names
       // it; this one is what parity and stateless are held to, because an effect that
@@ -203,8 +224,8 @@ app.whenReady().then(async () => {
 
     if (want('parity')) {
       console.log('preview path equals export path, before encode')
-      for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'bokeh-ground', 'zoom-hold', 'camera', 'marks', 'lift', 'pointer', 'text', 'glow',
-        'auto-level', 'auto-level-hard', 'treat-all']) {
+      for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'bokeh-ground', 'zoom-hold', 'camera', 'marks', 'lift', 'pointer', 'text', 'caption-plate', 'glow',
+        'auto-level', 'auto-level-hard', 'treat-furniture', 'treat-all']) {
         const c = cases[name]
         const r = await call('parity', { ...base, ...c })
         // A crop's first and last rows can differ at a sharp colour edge: the <video>

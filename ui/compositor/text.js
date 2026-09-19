@@ -82,7 +82,14 @@ function planText(opts = {}, { clock, span, W, H, box = null, prepared = null, z
   return {
     phrases: phrases && phrases.length ? O.phraseTimes(phrases) : [],
     cards, labels, st, box, W, H, span,
-    frosted: !!box,
+    // Every caption over the product gets the plate, framed or not. Unframed is the
+    // case that needs it most: with no band to sit in, the caption fell back to the
+    // shade's own blurred cloud of glyphs, a smudge with no boundary, on the default
+    // look, at every caption. This is a divergence from the classic renderer and it is
+    // meant: that path frosts only a framed caption, because libass cannot blur what is
+    // under it and the alphamerge wants a band whose size is known exactly
+    // (processor.js). The compositor knows the frame it is drawing and does not.
+    frosted: true,
     reveal: opening ? { at: opening.b - O.cardLanding(opening), dur: O.cardLanding(opening) } : null,
     close: closing ? { at: closing.a, dur: Math.min(1.2, closing.fade + 0.5) } : null,
   }
@@ -93,6 +100,8 @@ function planText(opts = {}, { clock, span, W, H, box = null, prepared = null, z
 const CAP_IN = 0.15, CAP_OUT = 0.16, CAP_HANDOFF = 0.12
 const GLOW = { frosted: { wide: 0.3, near: 0.42 }, plain: { wide: 0.52, near: 0.66 } }
 const FROST_PAD = [0.45, 0.22], FROST_FEATHER = 0.3, FROST_JOIN = 0.3
+// how much of the plate is scrim rather than the frame's own blurred light
+const PLATE_SCRIM = 0.45
 
 function layoutFor(p, W, H, st, box, measure, role) {
   const L = O.captionLayout(W, H, p.at === 'top' && st.fx == null ? { ...st, position: 'top' } : st, box)
@@ -137,8 +146,13 @@ function captionItems(tp, t, measure, out) {
       const fout = joined ? Math.min(1, (frostEnd - t) / CAP_OUT) : Math.min(1, (p.hide - t) / fo)
       const op = clamp(Math.min(fin, fout), 0, 1)
       if (op > 0.002) {
+        // and a scrim with it: the glass is the frame's own light, and a white caption
+        // on a blurred white page is still a white caption. The scrim is the far end of
+        // the words' own colour, so ink captions get a light plate and light ones a dark
+        // plate, and the words keep their edges without the shade having to shout.
         out.frost.push({ op, x: L.x - B.lw / 2 - L.px * FROST_PAD[0], y: B.top - L.px * FROST_PAD[1],
-          w: B.lw + L.px * FROST_PAD[0] * 2, h: B.h + L.px * FROST_PAD[1] * 2, r: L.px * 0.6, feather: L.px * FROST_FEATHER })
+          w: B.lw + L.px * FROST_PAD[0] * 2, h: B.h + L.px * FROST_PAD[1] * 2, r: L.px * 0.6, feather: L.px * FROST_FEATHER,
+          scrim: inkText ? WHITE : SHADE, scrimA: PLATE_SCRIM })
       }
     }
     if (t >= p.hide) continue

@@ -142,7 +142,19 @@ vignette that falls off with the ground behind it, film grain over the top and a
 under everything. With the backgrounds those need: a mesh gradient, the photo set in
 `assets/backdrops/`, and either defocus behind the take, a Gaussian or a hexagonal
 aperture (`treatment.bokeh`). Every wide effect works at a reduced size off mip levels,
-which is what keeps the whole stack inside the speed gate. It is the default renderer:
+which is what keeps the whole stack inside the speed gate.
+Since M5 the grade is held to the recording and not to the frame: the ground keeps the
+colour the look asked for (a warm near-black stays warm, a paper ground stays paper),
+and the step badges, the agent's cursor and the captions keep theirs, because they are
+Fetch speaking over the recording rather than part of it. The take's edge is a contract
+too: its outermost pixels stand at least 24 levels of luma off the ground beside them,
+met by a shadow wide enough to be felt and narrow enough to resolve inside the gutter, a
+blur ground that holds near the take's own mean rather than pressed into a deep field,
+and a warm hairline where neither is enough. That is what keeps the promise about black
+bars true on a light product: a 20 px gutter beside a white page reads as bleed, never
+as a bar. A blur redaction and an unframed caption are drawn shapes now, a plate with a
+corner and a hairline and a plate of the caption's own glass, rather than a smudge.
+It is the default renderer:
 every MP4 or MOV export runs
 it in a hidden window (`ui/render-host.js`, `render.html`), several times real time, with
 the sound rendered by ffmpeg alongside, and `preview_frame` draws with it too. GIF and
