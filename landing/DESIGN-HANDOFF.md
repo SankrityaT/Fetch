@@ -13,7 +13,7 @@ landing page needs, plus the story.
 ## What changed: 1.x to 2.0
 
 **Fetch 1.x** was a free, local Mac screen recorder and editor. Good, and in a category
-that is already lost: Recordly is free, open source, cross platform, native capture,
+that is already lost: a free, open source, cross platform native recorder exists,
 22k stars and shipping daily. Leading with "another Mac screen recorder" loses on day
 one. **Do not pitch Fetch as a screen recorder.**
 
@@ -40,9 +40,9 @@ part, and the hard part is exactly what Fetch does.
 
 | | records | edits by | where |
 |---|---|---|---|
-| **Clueso** | a cloud browser, web apps only, needs your staging login | clicks | their cloud |
+| **A cloud-browser tool** | a cloud browser, web apps only, needs your staging login | clicks | their cloud |
 | **A simulator-first tool** | the iOS Simulator | taps | your Mac |
-| **HyperFrames** | HTML it renders itself, never a real app | code | their cloud |
+| **An HTML renderer** | HTML it renders itself, never a real app | code | their cloud |
 | **Fetch** | **any real window: native apps, terminals, editors, browsers** | **what you said** | **your Mac** |
 
 Two structural wins, both real:
@@ -113,12 +113,12 @@ feature cards (see Anti-patterns).
   without re-recording. The only feature that uses the internet, and the app says so
   where you use it. The key lives in the macOS Keychain.
 
-**The picture: one renderer, and looks that stand beside Screen Studio**
+**The picture: one renderer, and looks that stand beside the best paid editors**
 - **One WebGL2 compositor draws the editor's stage and the export from the same plan.**
   What you see is the file, proven frame by frame to within 1 to 2 colour steps out of
   255. No competitor's page claims this, because most of them cannot.
 - Seven looks: Fetch, Clean, Studio, Paper, Mono print, Noir, Film. Scored **7 to 9 out
-  of 10** by an adversarial judge working to a Screen Studio bar, on real
+  of 10** by an adversarial judge working to the bar set by the best paid editors, on real
   1080p frames of a real recording.
 - The whole treatment section: levels, tint, haze, blur, vignette, bloom, halation,
   chromatic aberration, bokeh, film grain, dither, mesh gradients and photo backdrops.
@@ -174,7 +174,7 @@ feature cards (see Anti-patterns).
 
 One demo carries the page. It must show something no competitor can produce, which
 means **not a web app and not a simulator.** A web-app demo is indistinguishable from
-Clueso and throws away the whole argument.
+a cloud-browser tool and throws away the whole argument.
 
 The sequence, as a real screen recording (no mockups):
 
@@ -227,7 +227,7 @@ See `BRAND.md`. Plain, short, a little warm. **No em dashes, anywhere.**
 
 Dark and warm: retriever gold on a warm near-black. **This is the differentiation, not a
 default.** The whole agent-tool category is light and airy (Claude, Replit),
-and the screen-recorder category is violet (Loom, Screen Studio). If the page could
+and the screen-recorder category is violet. If the page could
 belong to either, it is wrong.
 
 - Depth from tone, not borders: a raised surface is lighter, things that float cast a

@@ -5,7 +5,7 @@
 A macOS screen recorder and video editor. Screen, system audio, mic and a floating
 camera bubble, then trim, cut, caption, zoom and export, all on-device.
 
-Built because Loom costs $20/month.
+Built because the subscription recorders cost $20 a month.
 
 ## What it does
 

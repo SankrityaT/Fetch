@@ -74,7 +74,7 @@ This is the one frame that proves Fetch is not just "another screen recorder": a
 real captured clip, inset with rounded corners and a soft shadow, floating on the
 warm gold "Dusk" gradient rather than the cool violet every competitor uses, with
 a caption burned in and a text overlay on the stage. It reads as premium at
-thumbnail size and it is instantly not-Loom.
+thumbnail size and it is instantly not one of the violet ones.
 
 **Stage it exactly like this:**
 1. Record or open a short clip with clear on-screen content (a code editor or a

@@ -69,8 +69,8 @@ Errors say what happened and what to do, in one line, no blame:
 
 ## Color
 
-The category is uniformly cool violet (Loom, Screen Studio) or pure black (Mosaic).
-We go **warm**: retriever gold on a warm near-black. Instantly not-Loom.
+The category is uniformly cool violet, or pure black.
+We go **warm**: retriever gold on a warm near-black. Instantly not one of them.
 
 | token | value | use |
 |---|---|---|
@@ -102,7 +102,7 @@ Four faces, bundled locally (`assets/fonts/`) so the app renders identically off
 - **Bricolage Grotesque 800** for display. Headlines, empty states, big numbers. It has
   actual character; Inter does not.
 - **Geist 400/500/600/700** for all UI text. Neutral, excellent at 11 to 14px.
-- **Instrument Serif italic**, one accent per screen maximum. Used the way Mosaic uses
+- **Instrument Serif italic**, one accent per screen maximum. Used the way the best of them use
   it: a single italic word inside a sans headline.
 - **Geist Mono** for timecodes, durations, file sizes, anything that must not reflow.
 

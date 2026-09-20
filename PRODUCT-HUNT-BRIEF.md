@@ -17,7 +17,7 @@ direction, and submission tips (timing, hunter strategy, comment cadence, ship-d
 > Record it. Fetch it. Ship it.
 
 Origin story, useful because it is true and it sells: it started as a five-minute hack
-to record a hackathon demo video, because paying $20/month for Loom for one video was
+to record a hackathon demo video, because paying $20 a month for a subscription recorder for one video was
 absurd. It turned into a full product.
 
 ### What it actually does
@@ -26,7 +26,7 @@ absurd. It turned into a full product.
   circular camera bubble
 - **The camera bubble can be moved and resized after recording.** The camera is captured
   to its own file and composited at export rather than burned into the screen pixels.
-  This is the Screen Studio-class feature and the strongest single differentiator
+  This is the quality-bar feature and the strongest single differentiator
 - **On-device transcription** (FluidAudio / Parakeet): a 2-minute recording transcribes in about 1.4s on an M5 Pro. Editable
   cues, burn-in captions with full styling, dragged captions land where you put them
 - **Auto-zoom on cursor clicks**, driven by a cursor track sampled during the take
@@ -46,20 +46,20 @@ is true. Do not claim "no server" or "zero network", which is not.
 
 ### Pricing position
 
-Not yet decided. The obvious wedge is one-time or free versus Loom's $20/month
-subscription. Worth researching what Screen Studio's one-time pricing has done for it.
+Not yet decided. The obvious wedge is one time or free versus the incumbent's $20 a month
+subscription. Worth researching what the one-time pricing of the quality bar has done for it.
 
 ## 2. Competitors
 
-| product | pricing | angle |
+| shape of product | pricing | angle |
 |---|---|---|
-| **Loom** | ~$20/mo | The incumbent. Cloud-first, link-sharing, team features |
-| **Screen Studio** | one-time, roughly $89 to $229 | The quality bar. Automatic zoom and beautiful motion |
-| **Mosaic** | YC-backed | Newer editor, clean design language |
-| **CleanShot X** | one-time ~$29 | Screenshots first, recording second |
-| **Descript** | subscription | Transcript-driven editing, much heavier |
+| the cloud incumbent | about $20 a month | cloud first, link sharing, team features |
+| the quality bar | one time, roughly $89 to $229 | automatic zoom and beautiful motion |
+| the newer funded editor | venture backed | clean design language |
+| the screenshot tool | one time, about $29 | screenshots first, recording second |
+| the transcript editor | subscription | transcript driven, much heavier |
 
-Fetch's honest position: **Screen Studio's polish, Loom's simplicity, no subscription,
+Fetch's honest position: **the quality bar's polish, the incumbent's simplicity, no subscription,
 and nothing leaves your Mac.** Research should pressure-test that claim and find the
 sharpest framing.
 
@@ -69,7 +69,7 @@ sharpest framing.
   to state: sleeping on the idle screen, running with a film reel while exporting,
   head-tilt while thinking.
 - **Warm gold `#F0A93C` on warm near-black `#0A0908`.** The whole category is cool
-  violet or pure black, so warm is the deliberate anti-Loom signal.
+  violet or pure black, so warm is the deliberate signal against the category.
 - Type: Bricolage Grotesque for display, Geist for UI, one italic Instrument Serif word
   per screen, Geist Mono for numbers.
 - Voice: plain, short, a little warm. Never cutesy-baby, never corporate.
