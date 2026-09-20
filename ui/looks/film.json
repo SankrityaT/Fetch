@@ -2,6 +2,7 @@
   "name": "film",
   "label": "Film",
   "doc": "The take over a blurred, deepened copy of itself, with halation, bloom and grain.",
+  "for": "a teaser or a hero clip, where the take can be treated like footage",
   "look": {
     "background": { "kind": "video-blur" },
     "frame": { "padding": 0.06, "radius": 12, "shadow": 0.6 },

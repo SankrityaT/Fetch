@@ -690,3 +690,63 @@ video.motion, img.motion { display:block; }
 .ed-canvas:has(> .stage-frame[data-gl="on"]) > .txt-layer:not([data-editing="true"]) * { color:transparent !important; text-shadow:none; }
 .ed-canvas:has(> .stage-frame[data-gl="on"]) > .txt-layer:not([data-editing="true"]) { background:none; border-left-color:transparent; }
 .ed-canvas:has(> .stage-frame[data-gl="on"]) > .txt-layer[data-sel="true"]:not([data-editing="true"]) { border-color:var(--fur-1); }
+
+/* ── zooms and marks, by hand ─────────────────────────────────────────────
+   Every object on the two tracks can now be retimed by its pill, placed on the stage
+   and removed. Selection is never colour alone: the pill takes a gold edge and its
+   two grips appear, and the row in the panel takes the edge and a heavier label. */
+.tl-grip { position:absolute; top:0; bottom:0; width:9px; opacity:0; cursor:ew-resize;
+  transition:opacity var(--dur-1) var(--ease-in); }
+.tl-grip.l { left:0; } .tl-grip.r { right:0; }
+.tl-grip::before { content:''; position:absolute; top:4px; bottom:4px; width:2px;
+  border-radius:1px; background:currentColor; opacity:.7; }
+.tl-grip.l::before { left:2px; } .tl-grip.r::before { right:2px; }
+.tl-zoom:hover .tl-grip, .tl-mark:hover .tl-grip,
+.tl-zoom[data-sel="true"] .tl-grip, .tl-mark[data-sel="true"] .tl-grip { opacity:1; }
+.tl-zoom[data-sel="true"], .tl-mark[data-sel="true"] {
+  border-color:var(--fur-1); box-shadow:inset 0 0 0 1px rgba(240,169,60,.55); }
+.tl-zoom[data-sel="true"] .tl-zoom-id, .tl-mark[data-sel="true"] .tl-mark-id { color:var(--fur-1); }
+
+.obj-list { display:flex; flex-direction:column; gap:5px; margin-bottom:8px; }
+.obj-list .micro { margin:0; }
+.obj-row { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+  padding:6px 9px; border-radius:var(--r-sm); background:var(--ink-2);
+  border:1px solid transparent; color:var(--text-1); font-size:var(--t-11); }
+.obj-row:hover { border-color:var(--ink-4); color:var(--text-0); }
+.obj-row[data-sel="true"] { border-color:var(--fur-1); background:rgba(240,169,60,.10);
+  color:var(--text-0); font-weight:600; }
+.obj-id { color:var(--fur-1); font-weight:600; flex:none; }
+.obj-row[data-mark="redact"] .obj-id { color:#FDE68A; }
+.obj-what { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.obj-when { color:var(--text-2); flex:none; }
+.obj-sel-id { color:var(--fur-1); margin-right:6px; text-transform:none; letter-spacing:0; }
+.mark-add { display:flex; flex-wrap:wrap; gap:6px; }
+.input-sm { height:28px; max-width:110px; font-size:var(--t-12); }
+
+/* The selected object on the stage. Gold, like the lasso, because the person chose it.
+   A zoom is dashed and has no handles: it is re-aimed by drawing what it should frame,
+   never by nudging a window. Nothing about the geometry transitions, so the box never
+   lags the thing it stands for. */
+.aim-box { position:absolute; z-index:5; pointer-events:none; border-radius:4px;
+  border:1.5px solid var(--fur-1); background:rgba(240,169,60,.08);
+  box-shadow:0 0 0 1px rgba(10,9,8,.6); }
+.stage-frame > .bd-fill ~ .aim-box { position:absolute; z-index:5; }
+.aim-box[data-kind="zoom"] { border-style:dashed; background:none; }
+.aim-box[data-kind="redact"] { border-color:var(--warn); background:rgba(251,191,36,.12); }
+.aim-tag { position:absolute; left:-1px; bottom:calc(100% + 5px);
+  display:inline-flex; align-items:center; height:20px; padding:0 8px;
+  border-radius:var(--r-pill); background:rgba(10,9,8,.84); color:var(--fur-1);
+  font-size:var(--t-11); white-space:nowrap; }
+.aim-box.tag-in .aim-tag { bottom:auto; top:4px; left:4px; }
+.ah { position:absolute; width:11px; height:11px; border-radius:50%; pointer-events:auto;
+  background:var(--fur-1); box-shadow:0 1px 3px rgba(0,0,0,.55); }
+.aim-box[data-kind="zoom"] .ah, .aim-box[data-kind="step"] .ah,
+.aim-box[data-drawing="true"] .ah { display:none; }
+.ah.nw { left:-6px; top:-6px; cursor:nwse-resize; }
+.ah.n  { left:calc(50% - 5.5px); top:-6px; cursor:ns-resize; }
+.ah.ne { right:-6px; top:-6px; cursor:nesw-resize; }
+.ah.e  { right:-6px; top:calc(50% - 5.5px); cursor:ew-resize; }
+.ah.se { right:-6px; bottom:-6px; cursor:nwse-resize; }
+.ah.s  { left:calc(50% - 5.5px); bottom:-6px; cursor:ns-resize; }
+.ah.sw { left:-6px; bottom:-6px; cursor:nesw-resize; }
+.ah.w  { left:-6px; top:calc(50% - 5.5px); cursor:ew-resize; }

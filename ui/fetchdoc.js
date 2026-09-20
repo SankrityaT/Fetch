@@ -34,7 +34,12 @@ const r3 = n => Math.round(n * 1000) / 1000
 // Version 2 keeps the whole look in `look`, generated from ui/look-schema.js, and the
 // sound in `audio`. Version 1 spread the look over backdrop, outAspect, capStyle,
 // hideMacCursor and a bag of slider values; normalize reads it forever.
-const AUDIO_DEFAULTS = { denoise: false, loudnorm: true, gain: 0, music: null }
+// speedAudio is what the take's own sound does where a clip runs at more than 1.
+// mute is the default because the reason to speed a piece up is that nothing is being
+// said over it: a 4x typing montage with the voice pitched up and gabbling is the one
+// result nobody asked for. keep is there for the other case, a slow section someone
+// wants to hear through.
+const AUDIO_DEFAULTS = { denoise: false, loudnorm: true, gain: 0, music: null, speedAudio: 'mute' }
 
 function emptyDoc(src, dur) {
   return {
@@ -76,7 +81,8 @@ function cleanAudio(a, base = AUDIO_DEFAULTS) {
   const g = +o.gain
   const music = o.music == null || o.music === '' ? null
     : typeof o.music === 'string' ? o.music : (o.music && o.music.bed ? { bed: String(o.music.bed), ...(o.music.level != null ? { level: +o.music.level } : {}) } : null)
-  return { denoise: !!o.denoise, loudnorm: o.loudnorm !== false, gain: Number.isFinite(g) ? Math.max(-10, Math.min(10, g)) : 0, music }
+  return { denoise: !!o.denoise, loudnorm: o.loudnorm !== false, gain: Number.isFinite(g) ? Math.max(-10, Math.min(10, g)) : 0, music,
+    speedAudio: o.speedAudio === 'keep' ? 'keep' : 'mute' }
 }
 
 /**
@@ -168,11 +174,38 @@ function clipsFromTrim(inT, outT, cuts, dur) {
   return out
 }
 
+/**
+ * A clip's speed. `rate` is source seconds spent per output second: 2 plays that
+ * piece of the take twice as fast, 0.5 at half. A pair, [1, 4], is a ramp from the
+ * first to the second across the clip, and the ramp is held in output seconds so the
+ * map stays closed form with an exact inverse (ui/timeline.js).
+ *
+ * Absent or 1 is written back as nothing at all. That is the whole compatibility
+ * story: a document made before speed existed carries no rate, hands the clock no
+ * rates, and gets the ranges and the graph it always got.
+ */
+const RATE_MIN = Timeline.RATE_MIN, RATE_MAX = Timeline.RATE_MAX
+const oneRate = v => {
+  const n = +v
+  return Number.isFinite(n) && n > 0 ? Math.min(RATE_MAX, Math.max(RATE_MIN, n)) : 1
+}
+function cleanRate(rate) {
+  if (rate == null) return null
+  const pair = Array.isArray(rate) ? [oneRate(rate[0]), oneRate(rate.length > 1 ? rate[1] : rate[0])]
+    : [oneRate(rate), oneRate(rate)]
+  if (pair[0] === 1 && pair[1] === 1) return null
+  return pair
+}
+// What a clip runs at, as the two ends of its ramp; [1, 1] where it was never asked.
+const rateOf = clip => cleanRate(clip && clip.rate) || [1, 1]
+
 // The inverse, for ffmpeg. processor.js already understands "source minus these
 // ranges", so the filter graph does not have to change: clips are turned back into
-// the gaps between them at export time.
+// the gaps between them at export time. `rates` is the one thing that shape cannot
+// say, so it comes back beside the cuts as source spans the clock reads
+// (Timeline.outClock's fourth argument), and it is null unless a clip asked.
 function trimFromClips(clips) {
-  if (!clips || !clips.length) return { start: 0, end: 0, cuts: [] }
+  if (!clips || !clips.length) return { start: 0, end: 0, cuts: [], rates: null }
   const sorted = clips.slice().sort((a, b) => a.start - b.start)
   const start = sorted[0].start
   const end = sorted[sorted.length - 1].end
@@ -181,7 +214,9 @@ function trimFromClips(clips) {
     const gapA = sorted[i].end, gapB = sorted[i + 1].start
     if (gapB > gapA) cuts.push([r3(gapA), r3(gapB)])
   }
-  return { start: r3(start), end: r3(end), cuts }
+  const rates = sorted.filter(c => cleanRate(c.rate))
+    .map(c => { const [a, b] = rateOf(c); return [c.start, c.end, a, b] })
+  return { start: r3(start), end: r3(end), cuts, rates: rates.length ? rates : null }
 }
 
 /**
@@ -247,6 +282,13 @@ function normalize(doc, src, dur) {
   for (const kind of Object.keys(KINDS)) {
     out[kind] = Array.isArray(doc[kind]) ? doc[kind].filter(Boolean) : []
   }
+  // A clip's speed is written back as the pair it means, or dropped where it is 1, so
+  // a document that never asked for speed is the document it was.
+  out.clips = out.clips.map(c => {
+    const rate = cleanRate(c && c.rate)
+    if (!rate) { if (c && 'rate' in c) { const { rate: _drop, ...rest } = c; return rest } return c }
+    return { ...c, rate: rate[0] === rate[1] ? rate[0] : rate }
+  })
   out.pointer = Array.isArray(doc.pointer) ? normalizeTrack(doc.pointer) : null
   // A zoom sent with times alone gets the export's own defaults written in, so the
   // timeline, the result an agent reads back and the render all agree on it.
@@ -289,8 +331,12 @@ function normalize(doc, src, dur) {
 }
 
 // Total output length, which is what someone actually wants to know: the sum of the
-// clips, not the span they were cut from.
-const outDuration = doc => (doc.clips || []).reduce((n, c) => n + Math.max(0, c.end - c.start), 0)
+// clips, not the span they were cut from, and each one divided by the speed it runs
+// at: a 20 second clip at 4x is five seconds of the finished video.
+const outDuration = doc => (doc.clips || []).reduce((n, c) => {
+  const [r0, r1] = rateOf(c)
+  return n + Math.max(0, c.end - c.start) * 2 / (r0 + r1)
+}, 0)
 
 const byId = (doc, id) => {
   for (const kind of Object.keys(KINDS)) {
@@ -326,12 +372,17 @@ function toExportOpts(doc, extra = {}) {
     doc = normalize(doc, doc.src, doc.dur)
     if (Array.isArray(clips)) doc.clips = clips
   }
-  const { start, end, cuts } = trimFromClips(doc.clips)
+  const { start, end, cuts, rates } = trimFromClips(doc.clips)
   const L = Look.toClassic(doc.look)
   const A = cleanAudio(doc.audio)
   const at = doc.audioTrack
   return {
     start, end, cuts,
+    // the speed of each surviving piece, source spans (Timeline.outClock). null where
+    // nothing runs at anything but 1, which is what keeps an old edit's graph the same
+    rates,
+    // what a sped-up piece does with the take's own sound (cleanAudio)
+    speedAudio: A.speedAudio,
     crop: doc.crop,
     // where the page sits in a browser take, for the compositor: frame.chrome clean
     // only draws its own browser where the real one could be cropped off
@@ -377,8 +428,9 @@ function toExportOpts(doc, extra = {}) {
  */
 function toRenderSpec(doc) {
   const d = doc && doc.v === 2 ? doc : normalize(doc, doc && doc.src, doc && doc.dur)
-  const { start, end, cuts } = trimFromClips(d.clips)
-  const keep = d.clips.length ? Timeline.keepRanges(cuts, start, end) : [[0, d.dur || 0]]
+  const { start, end, cuts, rates } = trimFromClips(d.clips)
+  const keep = Timeline.applyRates(
+    d.clips.length ? Timeline.keepRanges(cuts, start, end) : [[0, d.dur || 0]], rates)
   return {
     v: 2, src: d.src, dur: d.dur,
     keep, length: +Timeline.outLength(keep).toFixed(3),
@@ -614,5 +666,6 @@ function focusAlongside(prev, doc) {
 module.exports = {
   KINDS, emptyDoc, mintId, ensureIds, normalize, fromLegacy, AUDIO_DEFAULTS, cleanAudio, lookPatchOf, chromeCrop,
   clipsFromTrim, trimFromClips, toExportOpts, toRenderSpec, outDuration, byId, mergeDoc, settleFocus,
+  cleanRate, rateOf, RATE_MIN, RATE_MAX,
   mergeMarks, adoptIds, sameItem, focusClashes, zoomClashes, focusAlongside,
 }

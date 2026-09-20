@@ -47,6 +47,17 @@
 
   let pane, list, input, sendBtn, enginePill
 
+  // What is actually true of the engine that will run this turn, which is not the same
+  // promise on both. Claude Code is spawned with its own tools removed and the Fetch
+  // server alone; Codex has no flag that drops its shell, so it runs read only with
+  // the same one server (ui/agent-chat.js). Claiming "no shell" under Codex was a lie,
+  // and a trust line that is true for one of two engines is worse than none.
+  const TRUST = {
+    claude: { label: "Fetch's tools only", tip: "Only Fetch's own tools. No shell, no files, no network." },
+    codex: { label: "Fetch's tools, read only", tip: 'Only Fetch\'s own tools, and Codex keeps its own shell. ' +
+      'It runs read only: it can look at files, it writes nothing and reaches no network.' },
+  }
+
   // ── attachments ────────────────────────────────────────────────────────
   // Paste or drop a file into either composer and it becomes a tile above the text,
   // never its filename as text. Images reach the model as images (ui/agent-chat.js);
@@ -184,7 +195,7 @@
   const faceForTool = name => {
     const t = String(name || '').replace(/^mcp__fetch__/, '')
     if (t === 'record_start') return 'record'
-    if (/^(export|remove_dead_air|enhance_audio)$/.test(t)) return 'render'
+    if (/^(export|remove_dead_air|enhance_audio|voiceover)$/.test(t)) return 'render'
     return 'read'
   }
   let faceTimer = null
@@ -301,7 +312,7 @@
         <textarea id="chatInput" rows="1" placeholder="Ask anything, or type @ to point at a recording"></textarea>
         <div class="chat-foot">
           <button type="button" class="chat-engine" id="chatEngine"></button>
-          <span class="chat-hint" data-tip="Only Fetch's own tools. No shell, no files, no network.">Fetch's tools only</span>
+          <span class="chat-hint" id="chatTrust"></span>
           <button type="button" class="chat-mic" id="chatMic"
             data-tip="Dictate. Transcribed on this Mac.">${ico('microphone', 'icon-sm')}</button>
           <button type="submit" class="chat-send" id="chatSend" aria-label="Send" disabled>${ico('arrow-right', 'icon-sm')}</button>
@@ -629,11 +640,22 @@
     if (!html) {
       enginePill.innerHTML = `<span class="chat-engine-none">No agent connected</span>`
       pane.querySelector('#chatSub').textContent = 'no agent found'
+      const t = pane.querySelector('#chatTrust')
+      if (t) { t.textContent = ''; t.removeAttribute('data-tip') }
       return
     }
     state.engine = e.id
     enginePill.innerHTML = html
     pane.querySelector('#chatSub').textContent = `on your ${e.label} plan`
+    paintTrust()
+  }
+
+  function paintTrust() {
+    const t = TRUST[state.engine] || TRUST.claude
+    const n = pane.querySelector('#chatTrust')
+    if (!n) return
+    n.textContent = t.label
+    n.setAttribute('data-tip', t.tip)
   }
 
   // Choosing a model chooses its CLI too: a Codex model runs on Codex. Each CLI keeps
@@ -741,16 +763,29 @@
       attachments: sentAtt.map(a => a.path).concat(sentRegions.map(r => r.image)), display })
   }
 
+  // The job direct wrote for this take, read from disk each turn. It is a sidecar and
+  // not part of the edit, so undoing the edit it produced leaves the plan standing.
+  const SIDE_DIR = '.fetch'
+  function jobFor(src) {
+    try {
+      const fs = require('fs'), path = require('path')
+      const f = path.join(path.dirname(src), SIDE_DIR,
+        path.basename(src).replace(/\.[^.]+$/, '') + '.job.json')
+      return JSON.parse(fs.readFileSync(f, 'utf8'))
+    } catch { return null }
+  }
+
   // Read fresh on every send, never cached: the whole point is that it is current.
   async function contextHeader(sent = []) {
     const src = contextSrc()
-    let open = null
+    let open = null, job = null
     if (src) {
       let doc = null
       try { if (window.ed && window.ed.docReady) doc = window.fetchDoc.get() } catch {}
       open = { path: src, dur: window.ed && window.ed.dur, doc }
+      job = jobFor(src)
     }
-    return Assist.contextHeader({ open, omitted: !src && ctxOff && !!currentSrc() && editorShown(), regions: sent })
+    return Assist.contextHeader({ open, omitted: !src && ctxOff && !!currentSrc() && editorShown(), regions: sent, job })
   }
 
   // ── a turn in progress ─────────────────────────────────────────────────
@@ -787,6 +822,7 @@
     if (state.busy) return
     const ok = await ipcRenderer.invoke('chat-new').catch(() => false)
     if (!ok) return
+    planNode = null
     list.innerHTML = introHtml()
     wireIntro()
     state.tools.clear()
@@ -888,6 +924,13 @@
         line: inp.query && top ? `Found ${top.id} for "${inp.query}" at ${clock(+d.at || +inp.at || 0)}`
           : `Looked for targets at ${clock(+d.at || +inp.at || 0)}`, meta: [stemOf(inp.path)] }
     }
+    // the whole edit in one picture, which is what the agent judged the take by, so it
+    // is the card rather than a row saying a file was written
+    if (tool === 'contact_sheet' && inp.path) {
+      const frames = Array.isArray(d.frames) ? d.frames.length : +d.count || 0
+      return { path: inp.path, open: 'editor', image: d.image || d.file, compact: true,
+        line: `Looked at the whole edit${frames ? `, ${plural(frames, 'frame')}` : ''}`, meta: [stemOf(inp.path)] }
+    }
     if (tool === 'preview_frame' && inp.path) {
       return { path: inp.path, open: 'editor', image: d.image, compact: true,
         line: `Checked the edit at ${(Array.isArray(d.frames) && d.frames.length ? d.frames.map(f => +f.at)
@@ -930,6 +973,48 @@
     paintUndo()                        // an older card for this take is no longer the latest
     return true
   }
+
+  // ── the plan ───────────────────────────────────────────────────────────
+  // direct writes the job, and apply_edit and review hand back where the plan stands,
+  // so the pane draws the steps from that rather than from a paragraph claiming them.
+  // One strip, always the latest: a new one per pass would be five claims in a row,
+  // the same reason the edit card replaces itself.
+  let planNode = null
+  function planStrip(d) {
+    const p = d && typeof d === 'object' ? Assist.planState(d.job || d.plan || d) : null
+    if (!p) return false
+    const glyph = { done: 'check-circle-fill', dropped: 'x' }
+    const steps = p.steps.map(s =>
+      `<li data-state="${esc(s.state)}"${p.next && s.id === p.next.id ? ' data-next' : ''}>` +
+      ico(glyph[s.state] || 'circle-fill', 'icon-xs') +
+      `<span class="mono">${esc(s.id)}</span><span class="chat-plan-what">${esc(s.what)}</span></li>`).join('')
+    const far = distanceLine(d.distance)
+    if (planNode && planNode.parentNode === list) planNode.remove()
+    planNode = add(
+      `<div class="chat-plan-top"><span>Plan</span><span class="mono">${p.done} of ${p.total}</span></div>` +
+      `<ol class="chat-plan-steps">${steps}</ol>` +
+      (far ? `<div class="chat-plan-far">${esc(far)}</div>` : ''), 'chat-plan')
+    return true
+  }
+
+  // What review made of the edit, in its own words. Drawn rather than left to the
+  // reply for the same reason as the plan: a measurement the person can see beats a
+  // paragraph claiming the work is done. The ranked items and their fixes are the
+  // agent's to act on, so only the verdict lands here.
+  function verdictRow(d) {
+    if (!d || typeof d !== 'object' || !d.verdict) return false
+    const ok = d.verdict === 'ready'
+    const n = add(ico(ok ? 'check-circle-fill' : 'warning-circle', 'icon-sm') +
+      `<span>${esc(d.summary || d.verdict)}</span>`, 'chat-verdict')
+    n.dataset.verdict = d.verdict
+    return true
+  }
+
+  // How far the edit still is from what was asked. ui/director.js measures it and
+  // already says it in words ("58.4 s against 60 asked, 1.6 s over"), and the agent
+  // reads that same sentence, so the pane repeats it rather than inventing a second
+  // wording for the same number.
+  const distanceLine = x => x && typeof x.line === 'string' ? x.line : ''
 
   function paintUndo() {
     if (!list) return
@@ -1033,6 +1118,10 @@
       toolDone(ev)
       // the card names the file, so the row's one-line summary would say it twice
       if (ev.ok && card(name, ev.data, row && row._input, replay) && row) row.querySelector('.chat-tool-sum').textContent = ''
+      // the plan and the verdict are the reply, drawn whoever asked for them and on a
+      // replay too
+      if (ev.ok) planStrip(ev.data)
+      if (ev.ok && name === 'review') verdictRow(ev.data)
       if (replay) return
       if (!ev.ok) setFace('fail')
       else {

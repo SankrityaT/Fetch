@@ -125,5 +125,49 @@ t('claude runs with Fetch tools only', () => {
   assert.ok(a[a.indexOf('--allowedTools') + 1].split(',').every(x => x.startsWith('mcp__fetch__')))
 })
 
+// The pane said "Fetch's tools only. No shell, no files, no network." whichever CLI
+// ran, and under Codex that was three quarters false: no tool restriction, no sandbox,
+// and every MCP server on the person's machine loaded. Codex has no flag that drops
+// its shell, so this is the honest half: one server, and read only.
+t('codex runs read only, on the Fetch server alone', () => {
+  const a = agentChat.argsFor('codex', 'hi', null, null)
+  assert.strictEqual(a[a.indexOf('-s') + 1], 'read-only')
+  const cfg = a.filter(x => typeof x === 'string' && x.startsWith('mcp_servers='))
+  assert.strictEqual(cfg.length, 1, 'the whole server table is replaced, not added to')
+  assert.ok(/^mcp_servers=\{fetch=\{command=".+",args=\[".+"\]\}\}$/.test(cfg[0]), cfg[0])
+})
+
+// The doctrine is the standing rules, so it goes once per conversation: Claude Code
+// takes it as a system prompt, and Codex, which has no such flag, gets it on the
+// message that opens the thread and carries it on resume from there.
+t('the doctrine is sent once, not on every message', () => {
+  const Assist = require('../ui/edit-assist')
+  const sys = Assist.systemPrompt()
+  const a = agentChat.argsFor('claude', 'hi', null, null)
+  // appended, never replacing: Claude Code's own prompt is what makes its tools work
+  assert.strictEqual(a[a.indexOf('--append-system-prompt') + 1], sys)
+  assert.ok(!a.includes('--system-prompt'))
+  assert.strictEqual(a[a.indexOf('-p') + 1], 'hi', 'the message itself stays short')
+
+  const c = agentChat.argsFor('codex', 'hi', null, null)
+  assert.strictEqual(c[c.length - 1], `${sys}\n\nhi`)
+  agentChat.translate({ type: 'thread.started', thread_id: 'th-7' }, () => {}, new Map())
+  const again = agentChat.argsFor('codex', 'now caption it', null, null)
+  assert.strictEqual(again[again.length - 1], 'now caption it', 'a resumed thread already has it')
+  assert.ok(again.includes('resume') && again.includes('th-7'))
+  agentChat.newConversation()
+})
+
+// record.pause sat in the bridge unregistered for months. test/tools.test.js proves
+// this list and the MCP server's agree; this one proves the new names are here at all.
+t('the new tools are allowed in the pane', () => {
+  for (const name of ['record_pause', 'contact_sheet', 'direct', 'review', 'fit_to_length',
+    'revert_my_edit', 'list_voices', 'voiceover']) {
+    assert.ok(agentChat.ALLOWED.includes(`mcp__fetch__${name}`), name)
+  }
+  assert.ok(agentChat.ALLOWED.every(x => x.startsWith('mcp__fetch__')))
+  assert.strictEqual(new Set(agentChat.ALLOWED).size, agentChat.ALLOWED.length, 'no name twice')
+})
+
 fs.rmSync(dir, { recursive: true, force: true })
 console.log(`\n${n} chat checks passed`)

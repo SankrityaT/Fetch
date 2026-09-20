@@ -33,96 +33,177 @@ function editFacts(doc) {
 
 const ids = list => list.length ? ` (${list.slice(0, 8).join(', ')}${list.length > 8 ? ', ...' : ''})` : ''
 
-// Sent at the top of every turn. A resumed session remembers what an earlier turn
-// said about "the latest recording", and twice answered from that memory after a new
-// take had landed. So every turn restates the present and says plainly that the past
-// is stale. The newest recording is deliberately not named: when it was, the model
-// took it as the answer and never read the library, so a take that landed a moment
-// later, or one renamed or deleted meanwhile, went unseen. Only list_recordings is
-// current by construction.
+// ── the standing doctrine ───────────────────────────────────────────────
+// This used to ride on every single message: about 600 words of instruction ahead of
+// a six word request, twenty to one. It is doctrine, not news, so it is said once per
+// conversation instead, as a system prompt (Claude Code takes one; a Codex thread gets
+// it on the message that opens the thread and its resume carries it from there).
+// What stays in the per-turn header is only what actually changed: the take, its
+// counts, the job, the lassoed areas.
+//
+// The loop is the part the tools then hold the agent to: a plan and a distance come
+// back on every apply_edit, so this is a reminder of a shape the results enforce,
+// not an honour system.
+const LOOP = [
+  'See the whole take with contact_sheet before you change it.',
+  'Write the brief and the plan with direct before the first change.',
+  'Make one step at a time and close it: apply_edit takes step, for example "P3".',
+  'Call review before you reply.',
+  'Fix what review names, or say in your reply why you did not.',
+  'Report the plan and what changed, not prose.',
+]
+
+// Aiming. An agent that eyeballed one frame zoomed on the wrong button, added a
+// spotlight nobody asked for and never looked at the result. Aim, add only what was
+// asked, check.
+const AIM = [
+  'To zoom on, spotlight, blur, redact or number something, first call find_on_screen at that ' +
+    'moment with the person\'s own words for it, and send element: its E id (or its box) for the one ' +
+    'they meant; never work out x, y and scale yourself or guess coordinates from a frame.',
+  'For something bigger than one element (a panel, a card grid, a section), use the element of kind ' +
+    'panel or grid, or the one the matching element is `in`; if none fits, search again with other ' +
+    'words rather than drawing a box.',
+  'Add only the effects that were asked for. A new lift or spotlight replaces any already on that ' +
+    'spot: remove the old one rather than stacking two.',
+  'A lift needs room round it and its whole content on screen: an element find_on_screen marks ' +
+    'no_lift is not lifted. When the person asked for a lift, lift the card or grid its no_lift names ' +
+    '(that is what they meant by the card); a spotlight is not a lift, and is only for when no_lift ' +
+    'names nothing, which you say.',
+  'Time a zoom or a mark to when the element is on screen, not to when the narration starts: a card ' +
+    'that opens mid-sentence is not there yet at the sentence\'s start. Fetch holds a new lift or ' +
+    'spotlight to the part of its span where its box shows the element (the result lists it under retimed).',
+  'When sending a list back, keep every existing item\'s id. Marks you leave out are kept; delete one ' +
+    'only by naming it in remove, and never remove a redact or blur the person did not ask about. If ' +
+    'the result lists removed or replaced ids, say which in your reply.',
+  'When fixing or re-aiming a zoom, the result lists under alongside any spotlight or lift that plays ' +
+    'with it: an earlier turn may have added it unasked. Remove it if the person complained about a ' +
+    'highlight there or never asked for one in this conversation; otherwise keep it, and either way ' +
+    'name it in your reply.',
+  'Read the result\'s warnings and fix what they name. After the edit, call preview_frame once with at ' +
+    'set to every time the result lists under check.preview_frame_at, never just one, and look at each ' +
+    'frame; if one is not on the thing they meant, or anything else dims or covers it, fix it before replying.',
+  'When the context names a lassoed area, send element: that R id on the zoom or mark. Do not call ' +
+    'find_on_screen for it, do not rank anything, and do not pick a different element: the person has ' +
+    'already pointed at it.',
+]
+
+// The library and the open edit both move under the agent's feet, and a resumed
+// session twice answered "my latest recording" from what an earlier turn had said.
+const STATE = [
+  'Recordings and edits change between messages: takes are recorded, renamed and deleted, and the ' +
+    'person edits by hand. Do not trust what an earlier turn said about them; read the current state ' +
+    'with list_recordings or get_edit before acting.',
+  'Any question about which recordings exist, or about the latest, last or newest one, needs a fresh ' +
+    'list_recordings call in this turn, even if an earlier turn already answered it; the newest is the ' +
+    'first take it lists. Name the recording you acted on in your reply.',
+  'For an edit, fill anything the person left out with a sensible default and make the change, rather ' +
+    'than asking; they can see it and undo it.',
+]
+
+// Sent once per conversation, not once per message. Plain text, since both CLIs take
+// it as a system prompt rather than as part of the thread.
+function systemPrompt() {
+  return [
+    'You are the agent inside Fetch, a Mac screen recorder, working on this person\'s own machine ' +
+      'through Fetch\'s tools.',
+    '',
+    'How a job goes, every time:',
+    ...LOOP.map(l => `- ${l}`),
+    '',
+    'Aiming:',
+    ...AIM.map(l => `- ${l}`),
+    '',
+    'What is true only right now:',
+    ...STATE.map(l => `- ${l}`),
+    '',
+    'Write replies in short plain sentences, in the house voice: plain, short, a little warm. Never ' +
+      'use an em dash; use a comma, colon, full stop or parentheses instead.',
+  ].join('\n')
+}
+
+// ── the per-turn header ─────────────────────────────────────────────────
 // An area the person drew round on the stage, as the agent reads it. The box is
 // already the frame apply_edit places things in, and the picture beside the message is
 // that area alone, so there is nothing left to search for or rank.
 function regionLines(regions) {
   const list = arr(regions).filter(r => r && r.id && r.box).slice(0, 8)
   if (!list.length) return []
-  const out = ['The person lassoed an area of the video for this message. Work on exactly that area.']
+  const out = []
   for (const r of list) {
     const px = r.px ? `, ${Math.round(r.px.w)} by ${Math.round(r.px.h)} pixels of the recording` : ''
     // the path on every bullet: a chip can outlive the editor being on screen, and
     // without it the agent has an area and no file to apply it to
     const on = r.path ? ` of ${r.path}` : ''
-    out.push(`- ${r.id} at ${(+r.at || 0).toFixed(2)} s${on}, "${r.label || 'Area'}" (${r.kind || 'free'}). ` +
-      `Box ${JSON.stringify(r.box)} of the frame after the crop${px}. The attached picture is that area only.`)
+    out.push(`Lassoed for this message, work on exactly it: ${r.id} at ${(+r.at || 0).toFixed(2)} s${on}, ` +
+      `"${r.label || 'Area'}" (${r.kind || 'free'}), box ${JSON.stringify(r.box)} of the frame after the ` +
+      `crop${px}. The attached picture is that area alone.`)
   }
-  out.push(`Send element: ${list.map(r => `'${r.id}'`).join(', ')} on the zoom or mark. Do not call find_on_screen for it, ` +
-    'do not rank anything, and do not pick a different element: the person has already pointed at it.')
   return out
 }
 
-function contextHeader({ open, omitted, regions = [] } = {}) {
-  const lines = ['<fetch_context>', 'Current as of this message.']
+// The job sidecar (.fetch/<stem>.job.json, written by direct) read once for both
+// surfaces that show it: this header and the chat pane's plan strip. Shapes vary by
+// caller, so a job, a plan object or a bare list of steps all read the same.
+function planState(job) {
+  const src = job && typeof job === 'object' ? job : null
+  const steps = arr(Array.isArray(src) ? src : src && (src.steps || src.plan || (src.job && src.job.steps)))
+    .filter(s => s && (s.id || s.what))
+    .map(s => ({ id: s.id || '', what: s.what || s.step || '', state: s.state || 'todo' }))
+  if (!steps.length) return null
+  // Closed, not finished: a step the agent dropped on purpose is closed too, and
+  // ui/director.js counts it the same way, so the header and the strip agree with the
+  // line the tool itself returns.
+  const counted = src && !Array.isArray(src) ? +src.done : NaN
+  const done = Number.isFinite(counted) && counted >= 0 && counted <= steps.length
+    ? counted : steps.filter(s => s.state !== 'todo').length
+  const next = steps.find(s => s.state === 'todo') || null
+  const brief = (src && !Array.isArray(src) && (src.brief || (src.job && src.job.brief))) || null
+  return { steps, done, total: steps.length, next, brief }
+}
+
+// A brief is a target, so it is said as one: the number to hit and where it is going.
+function briefLine(b) {
+  if (!b) return ''
+  const bits = []
+  if (+b.seconds) bits.push(`${+b.seconds} s`)
+  if (b.aspect) bits.push(String(b.aspect))
+  if (b.where) bits.push(`for ${b.where}`)
+  return bits.join(', ')
+}
+
+// The top of every turn, and only what is new since the last one: the doctrine above
+// is sent once per conversation instead. The newest recording is deliberately not
+// named here; when it was, the model took it as the answer and never read the library,
+// so a take that landed a moment later went unseen.
+function contextHeader({ open, omitted, regions = [], job = null } = {}) {
+  const lines = ['<fetch_context>', 'True as of this message only.']
   if (open && open.path) {
-    lines.push(`Open in the Fetch editor: ${open.path}${open.dur ? ` (${clock(open.dur)})` : ''}.`)
+    lines.push(`Open in the editor, and what "this" or "it" means: ${open.path}${open.dur ? ` (${clock(open.dur)})` : ''}.`)
     // no document while the take is still loading: counts from a blank edit would be wrong
     if (open.doc) {
       const f = editFacts(open.doc)
       const cap = f.captions
-        ? `captions: yes, ${plural(f.captions, 'line')}${f.burnCaps ? ', burned in on export' : ', not burned in'}`
-        : 'captions: none yet'
-      lines.push(`Its edit right now: ${plural(f.clips, 'clip')}, ${plural(f.zooms, 'zoom')}${ids(f.zoomIds)}, ` +
+        ? `captions ${plural(f.captions, 'line')}${f.burnCaps ? ', burned in' : ', not burned in'}`
+        : 'no captions'
+      lines.push(`Its edit: ${plural(f.clips, 'clip')}, ${plural(f.zooms, 'zoom')}${ids(f.zoomIds)}, ` +
         `${plural(f.marks, 'mark')}${ids(f.markIds)}, ${plural(f.texts, 'text')}${ids(f.textIds)}, ${cap}` +
-        `${f.outAspect ? `, output aspect ${f.outAspect}` : ''}${f.backdrop ? `, backdrop ${f.backdrop}` : ''}.`)
+        `${f.outAspect ? `, aspect ${f.outAspect}` : ''}${f.backdrop ? `, backdrop ${f.backdrop}` : ''}.`)
     } else lines.push('Its edit is still loading; read it with get_edit.')
-    lines.push('"This", "it" or no named recording means the one open in the editor.')
-    // A small model asked for scale and centre twice before adding a plain "zoom on
-    // the first two seconds". Every edit can be undone, so acting beats asking.
-    lines.push('For an edit, fill anything the person left out with a sensible default and make ' +
-      'the change, rather than asking; they can see it and undo it.')
   } else if (omitted) {
     lines.push('The person left the recording open in the editor out of this message, so do not assume it.')
   } else {
     lines.push('No recording is open in the editor.')
   }
-  lines.push('Recordings and edits change between messages: takes are recorded, renamed and deleted, ' +
-    'and the person edits by hand. Do not trust what an earlier turn said about them. ' +
-    'Before acting, read the current state with list_recordings or get_edit. ' +
-    'Any question or request about which recordings exist, or about the latest, last or newest one, ' +
-    'needs a fresh list_recordings call in this turn, even if an earlier turn already answered it; ' +
-    'the newest is the first take it lists. ' +
-    'Name the recording you acted on in your reply.')
-  // An agent that eyeballed one frame zoomed on the wrong button, added a spotlight
-  // nobody asked for and never looked at the result. Aim, add only what was asked, check.
-  lines.push('To zoom on, spotlight, blur, redact or number something, first call find_on_screen at that ' +
-    'moment with the person\'s own words for it, and send element: its E id (or its box) for the one they ' +
-    'meant; never work out x, y and scale yourself or guess coordinates from a frame. For something bigger than one element (a panel, a card grid, a ' +
-    'section), use the element of kind panel or grid, or the one the matching element is `in`; if none ' +
-    'fits, search again with other words rather than drawing a box. Add only the effects that were ' +
-    'asked for. A new lift or spotlight replaces any already on that spot: remove the old one rather ' +
-    'than stacking two. A lift needs room round it and its whole content on screen: an element find_on_screen ' +
-    'marks no_lift is not lifted. When the person asked for a lift, lift the card or grid its no_lift names ' +
-    '(that is what they meant by the card); a spotlight is not a lift, and is only for when no_lift names nothing, which you say. ' +
-    'Time it to when the element is on screen, not to when the narration starts: ' +
-    'a card that opens mid-sentence is not there yet at the sentence\'s start. Fetch holds a new lift ' +
-    'or spotlight to the part of its span where its box shows the element (the result lists it under ' +
-    'retimed). When sending a list back, keep every existing item\'s id. Marks you leave out are kept; ' +
-    'delete one only by naming it in remove, and never remove a redact or blur the person did not ask about. ' +
-    'If the result lists removed or replaced ids, say which in your reply. ' +
-    'When fixing or re-aiming a zoom, the result lists under alongside any spotlight or lift that plays with it: ' +
-    'an earlier turn may have added it unasked. Remove it if the person complained about a highlight there or never ' +
-    'asked for one in this conversation; otherwise keep it. Either way name it in your reply. ' +
-    'Read the result\'s warnings ' +
-    'and fix what they name. After the edit, call preview_frame once with at set to every time the result lists ' +
-    'under check.preview_frame_at (just after each new zoom or mark lands, and its middle), never just one, and ' +
-    'look at each frame; if one is not on the thing they meant, or anything else dims or covers it, fix it before replying.')
+  const p = planState(job)
+  if (p) {
+    const b = briefLine(p.brief)
+    lines.push(`Job: ${b || 'in progress'}. Plan: ${p.done} of ${p.total} done` +
+      `${p.next ? `, next ${p.next.id}${p.next.what ? ` ${p.next.what}` : ''}` : ', all closed'}.`)
+  }
   lines.push(...regionLines(regions))
-  // The brand writes no em dashes, and models reach for them by default
-  lines.push('Write replies in short plain sentences. Never use an em dash; use a comma, colon, ' +
-    'full stop or parentheses instead.')
   lines.push('</fetch_context>')
   return lines.join('\n')
 }
-
 // The brand has no em dashes on any surface, and a model writes them however it is
 // asked. A spaced or joined em dash reads as a comma; a spaced en dash is the same
 // habit. An unspaced en dash is a range (1 to 3) and stays.
@@ -293,4 +374,4 @@ function createUndo({ max = 20, gapMs = 60000 } = {}) {
   }
 }
 
-module.exports = { editFacts, contextHeader, plainDashes, suggestions, changedIds, anyChange, revert, createUndo, undoSummary }
+module.exports = { editFacts, systemPrompt, contextHeader, planState, plainDashes, suggestions, changedIds, anyChange, revert, createUndo, undoSummary }

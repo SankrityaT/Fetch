@@ -162,6 +162,42 @@
 .chat-tool-sum { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-tool-ms { flex:none; }
 
+/* The plan, as the job file has it: what was agreed, what is closed, how far the edit
+   still is from the number that was asked for. It is a reading, not a control, so it
+   stays flat and quiet and the only colour on it is the step that is next. */
+.chat-plan {
+  display:flex; flex-direction:column; gap:6px;
+  padding:10px 12px; border-radius:var(--r-md);
+  background:rgba(255,255,255,.035); border:var(--edge-soft);
+  font-size:var(--t-11);
+}
+.chat-plan-top {
+  display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-2);
+  font-size:var(--t-12); font-weight:600; color:var(--text-0);
+}
+.chat-plan-top .mono { font-weight:500; color:var(--text-2); }
+.chat-plan-steps { display:flex; flex-direction:column; gap:4px; margin:0; padding:0; list-style:none; }
+.chat-plan-steps li { display:flex; align-items:baseline; gap:6px; color:var(--text-2); line-height:1.4; }
+.chat-plan-steps li svg { flex:none; align-self:center; color:var(--ink-4); }
+.chat-plan-steps li .mono { flex:none; color:var(--text-2); }
+.chat-plan-what { min-width:0; overflow-wrap:anywhere; }
+/* done is stated by the icon and the colour together, never by colour alone */
+.chat-plan-steps li[data-state="done"] { color:var(--text-1); }
+.chat-plan-steps li[data-state="done"] svg { color:var(--good); }
+.chat-plan-steps li[data-state="dropped"] { color:var(--text-2); text-decoration:line-through; }
+/* the one step being spent on: the next one open, and the only gold on the strip */
+.chat-plan-steps li[data-next] { color:var(--text-0); }
+.chat-plan-steps li[data-next] svg { color:var(--fur-1); }
+.chat-plan-far { color:var(--text-2); }
+
+/* What review made of the edit. The icon carries the state as much as the colour. */
+.chat-verdict {
+  display:flex; align-items:center; gap:var(--s-2);
+  font-size:var(--t-12); color:var(--text-1); line-height:1.4;
+}
+.chat-verdict svg { flex:none; color:var(--warn); }
+.chat-verdict[data-verdict="ready"] svg { color:var(--good); }
+
 .chat-composer { flex:none; padding:var(--s-3); border-top:var(--edge); }
 .chat-ctx { margin-bottom:var(--s-2); }
 

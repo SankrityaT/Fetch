@@ -2,5 +2,6 @@
   "name": "fetch-default",
   "label": "Fetch",
   "doc": "The take edge to edge in its own shape, captions in the house style.",
+  "for": "any take, and the one to keep when the take already fills its frame",
   "look": {}
 }

@@ -133,7 +133,9 @@ function readLooks(dir, mine) {
     try {
       const j = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))
       const name = String(j.name || f.replace(/\.json$/, ''))
-      out.push({ name, label: j.label || name, doc: j.doc || '', look: j.look || {}, mine: !!mine })
+      // `for` is the take a look suits, in the words somebody would ask in. It is what
+      // stops a look being chosen by the sound of its name (ui/review.js reads it).
+      out.push({ name, label: j.label || name, doc: j.doc || '', for: j.for || '', look: j.look || {}, mine: !!mine })
     } catch {}
   }
   return out
@@ -264,6 +266,30 @@ function compact(look, userDir) {
   return { preset: p ? p.name : 'fetch-default', changes: diff(base, L) }
 }
 
+// ── which renderer draws it ─────────────────────────────────────────────
+// The compositor draws every field in the schema and is the renderer for MP4 and MOV,
+// so it is the default answer. GIF, WebM and a still frame go to the classic ffmpeg
+// renderer (ui/compositor/plan.js), which leaves the classic: false fields out. Asking
+// the engine rather than reading a flag is what keeps this true when the engines move.
+const GL_FORMATS = new Set(['mp4', 'mov'])
+// An export with no picture in it. A look has nothing to say about an m4a, and saying
+// that grain.film is not drawn on a sound file is noise an agent has to read past.
+const SOUND_FORMATS = new Set(['m4a', 'mp3', 'wav'])
+
+// ctx: { engine } is what render-host.pickEngine already answered; { format, still } is
+// the same question before an export exists.
+function engineOf(ctx = {}) {
+  if (ctx.engine) return String(ctx.engine) === 'classic' ? 'classic' : 'gl'
+  if (ctx.still != null) return 'classic'
+  if (ctx.format) return GL_FORMATS.has(String(ctx.format).toLowerCase()) ? 'gl' : 'classic'
+  return 'gl'
+}
+// Does that engine draw this field? Nothing draws an undrawn one, on any engine.
+const draws = (x, engine = 'gl') => !x.undrawn && (engine !== 'classic' || x.classic !== false)
+// and this value of it: some options of a drawn field are the compositor's alone
+const drawsValue = (x, v, engine = 'gl') =>
+  draws(x, engine) && !(engine === 'classic' && x.classicOptions && x.classicOptions.includes(v))
+
 // Is a field shown, given the rest of the look? when: { path: 'value' | '!value' | '>n' }
 function visible(x, look) {
   if (!x.when) return true
@@ -277,42 +303,82 @@ function visible(x, look) {
   return true
 }
 
-// The inspector's sections: the fields today's renderer draws, in schema order
-function sections({ gpu = false, hidden = false, advanced = true } = {}) {
+// The sections a person sees, in schema order: the fields the engine that will draw
+// them draws, and only the options it draws. The editor's stage is the compositor, so
+// that is the default, and the Look tab offers what the export will honour.
+// `all` keeps the ones nothing draws yet, which the agent docs still name.
+function sections({ engine = 'gl', hidden = false, advanced = true, all = false } = {}) {
   return S.SECTIONS.map(s => ({
     ...s,
-    fields: S.FIELDS.filter(x => x.section === s.id && (gpu || !x.gpu) && (hidden || !x.hidden) && (advanced || !x.advanced))
-      .map(x => gpu ? x : { ...x, options: x.options && x.gpuOptions ? x.options.filter(o => !x.gpuOptions.includes(o)) : x.options }),
+    fields: S.FIELDS.filter(x => x.section === s.id && (all || draws(x, engine)) &&
+      (hidden || !x.hidden) && (advanced || !x.advanced))
+      .map(x => (engine === 'classic' && x.options && x.classicOptions)
+        ? { ...x, options: x.options.filter(o => !x.classicOptions.includes(o)) } : x),
   })).filter(s => s.fields.length)
 }
 
-// The schema as an agent reads it: one line a field, grouped by section
-function describe({ gpu = true } = {}) {
-  const lines = []
-  for (const s of sections({ gpu, hidden: false })) {
+// Which engine a field needs, marked in as few characters as will carry it: the legend
+// below says it once, and the whole schema is read on every look job.
+const engineNote = x => x.undrawn ? ' [undrawn]'
+  : x.classic === false ? ' [gif]'
+  : x.classicOptions ? ` [gif: ${x.classicOptions.join(', ')}]` : ''
+
+// The schema as an agent reads it: one line a field, grouped by section. Every field,
+// including the two a person sets by dragging the captions on the stage.
+function describe() {
+  const lines = ['A field marked [gif] is drawn in MP4 and MOV and left out of GIF, WebM and stills, ' +
+    'which the classic renderer draws. [undrawn] is a field nothing draws yet.']
+  for (const s of sections({ hidden: true, all: true })) {
     lines.push(`${s.id}: ${s.doc}`)
     for (const x of s.fields) {
       const kind = x.type === 'number' ? `${x.min} to ${x.max}${x.unit && x.unit !== '%' ? ' ' + x.unit : ''}`
         : x.type === 'enum' ? x.options.join('|') : x.type === 'color' ? '#RRGGBB' : x.type
-      lines.push(`  ${x.path} (${kind}, default ${JSON.stringify(x.default)})${x.gpu ? ' [new renderer]' : ''}: ${x.doc}`)
+      lines.push(`  ${x.path} (${kind}, default ${JSON.stringify(x.default)})${engineNote(x)}: ${x.doc}`)
     }
   }
   return lines.join('\n')
 }
 
-// Warnings about a look as a whole: fields set that nothing draws yet, and settings
-// whose effect depends on the take. ctx: { viewport: bool, browser: bool, images: [ids] }
+// Warnings about a look as a whole: fields nothing draws yet, fields the renderer that
+// will actually run leaves out, and settings whose effect depends on the take.
+// ctx: { engine | format | still, marks, viewport: bool, browser: bool, images: [ids] }
+// With no engine and no format in ctx the compositor is the answer, because it draws
+// the stage and every MP4 and MOV. Nothing here is said about a field the engine draws.
 function warnings(look, ctx = {}) {
   const L = resolve(look), D = defaults()
+  if (ctx.format && SOUND_FORMATS.has(String(ctx.format).toLowerCase())) return []
+  const engine = engineOf(ctx)
   const out = []
-  const idle = []
+  const dead = [], left = []
   for (const x of S.FIELDS) {
+    if (!visible(x, L)) continue
     const v = getPath(L, x.path)
-    if (x.gpu && JSON.stringify(v) !== JSON.stringify(getPath(D, x.path)) && visible(x, L)) idle.push(x.path)
-    else if (!x.gpu && x.gpuOptions && x.gpuOptions.includes(v)) idle.push(`${x.path} ${v}`)
+    const set = JSON.stringify(v) !== JSON.stringify(getPath(D, x.path))
+    if (x.undrawn) { if (set) dead.push(x.path) }
+    else if (engine === 'classic') {
+      if (x.classic === false) { if (set) left.push(x.path) }
+      else if (x.classicOptions && x.classicOptions.includes(v)) left.push(`${x.path} ${v}`)
+    }
   }
-  if (idle.length) {
-    out.push(`${idle.join(', ')} ${idle.length === 1 ? 'is' : 'are'} saved but not drawn by this version of Fetch yet; the export uses the rest of the look.`)
+  if (dead.length) {
+    out.push(`${dead.join(', ')} ${dead.length === 1 ? 'is' : 'are'} saved but nothing draws ${dead.length === 1 ? 'it' : 'them'} yet; the export uses the rest of the look.`)
+  }
+  // A loupe is the compositor's alone, and it is the one mark that would simply not
+  // appear rather than appear differently, so it is named beside the look's own fields.
+  const loupes = (ctx.marks || []).filter(m => (m && m.kind ? m.kind : m) === 'loupe')
+    .map(m => (m && m.id) || 'a loupe')
+  if (engine === 'classic' && (left.length || loupes.length)) {
+    const what = ctx.format ? `${String(ctx.format).toUpperCase()} output` : ctx.still != null ? 'A still frame' : 'This export'
+    const items = left.concat(loupes.length ? [`the loupe ${loupes.join(', ')}`] : [])
+    // The remedy is only a remedy when it names a format that was not already asked
+    // for: an MP4 that fell back to the classic renderer is not fixed by asking for an
+    // MP4 again, and the export result already says under classic_because what kept
+    // the compositor off it.
+    const already = GL_FORMATS.has(String(ctx.format || '').toLowerCase())
+    out.push(`${what} is drawn by the classic renderer, which does not draw ${items.join(', ')}. ` +
+      'The rest of the look is drawn. ' + (already
+        ? 'classic_because in this result says what kept the compositor off it.'
+        : 'Export MP4 or MOV to get all of it.'))
   }
   if (L.frame.aspect !== 'auto' && L.background.kind === 'none') {
     out.push(`frame.aspect ${L.frame.aspect} with background none: the space round the take is filled with the take itself, blurred and darkened, never black bars.`)
@@ -454,8 +520,14 @@ function save(dir, name, look, label) {
   return { ...entry, mine: true }
 }
 
+// The crop shapes, one list rather than two that disagreed: the same set frame.aspect
+// offers, with the crop track's own word for auto. The editor's chips and get_edit's
+// options.cropAR both read it, so a person and an agent name the same shapes.
+const CROP_ARS = ['free', ...S.ASPECTS.filter(a => a !== 'auto')]
+
 module.exports = {
   defaults, validate, merge, resolve, diff, compact, visible, sections, describe, warnings,
   list, findPreset, save, fromV1, isV1Look, toClassic, backdropId, backgroundFromId,
   aspectOf, aspectNumber, getPath, setPath, V1_KEYS, v1Patch, luma, CROPS_CHROME,
+  engineOf, draws, drawsValue, ASPECTS: S.ASPECTS, CROP_ARS,
 }

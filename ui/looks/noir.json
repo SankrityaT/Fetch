@@ -2,6 +2,7 @@
   "name": "noir",
   "label": "Noir",
   "doc": "Black and white on warm black, strong contrast, vignette and grain.",
+  "for": "a moody teaser, or a take whose own colour is not the point",
   "look": {
     "background": { "kind": "solid", "color": "#0A0908" },
     "frame": { "padding": 0.06, "radius": 10, "shadow": 0.8 },

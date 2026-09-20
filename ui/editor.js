@@ -14,6 +14,7 @@ const ed = {
   cam: null,          // camera take: {file, x, y, size, ...} when one was recorded
   tab: 'trim',
   lasso: false,       // the lasso armed, so a drag on the stage points Biscuit at an area
+  sel: null,          // the zoom or mark being edited by hand: {kind:'zoom'|'mark', id}
 }
 
 const EDITOR_HTML = `
@@ -90,6 +91,7 @@ const EDITOR_HTML = `
     <div class="insp-tabs" id="inspTabs">
       <button data-tab="trim"     aria-selected="true"  data-tip="Trim">${ico('scissors', 'icon-sm')}</button>
       <button data-tab="crop"     aria-selected="false" data-tip="Crop">${ico('crop', 'icon-sm')}</button>
+      <button data-tab="focus"    aria-selected="false" data-tip="Zooms and marks">${ico('magnifying-glass', 'icon-sm')}</button>
       <button data-tab="text"     aria-selected="false" data-tip="Text">${ico('text-t', 'icon-sm')}</button>
       <button data-tab="captions" aria-selected="false" data-tip="Captions">${ico('closed-captioning', 'icon-sm')}</button>
       <button data-tab="look"     aria-selected="false" data-tip="Look">${ico('sparkle', 'icon-sm')}</button>
@@ -130,17 +132,53 @@ const EDITOR_HTML = `
       <!-- CROP -->
       <section class="insp-panel" data-panel="crop" hidden>
         <div><div class="insp-sec">Aspect</div>
-          <div class="aspect-chips" id="arChips">
-            <button class="chip" data-ar="free" aria-pressed="true">Free</button>
-            <button class="chip" data-ar="16:9">16:9</button>
-            <button class="chip" data-ar="9:16">9:16</button>
-            <button class="chip" data-ar="1:1">1:1</button>
-            <button class="chip" data-ar="4:3">4:3</button>
-          </div>
+          <!-- filled by renderAspects, from the same list the look's Shape field uses -->
+          <div class="aspect-chips" id="arChips"></div>
         </div>
         <div><div class="insp-sec">Frame</div>
           <button class="btn btn-sm" id="cropOn" style="width:100%">${ico('crop', 'icon-sm')} Enable crop</button>
           <button class="btn btn-sm btn-ghost" id="cropReset" style="width:100%;margin-top:6px">Reset</button>
+        </div>
+      </section>
+
+      <!-- ZOOMS AND MARKS: the hand editing of what an agent can already place -->
+      <section class="insp-panel" data-panel="focus" hidden>
+        <div><div class="insp-sec">Zooms</div>
+          <div class="obj-list" id="zoomList"></div>
+          <button class="btn btn-sm" id="addZoom" style="width:100%">
+            ${ico('plus', 'icon-sm')} Zoom at the playhead</button>
+        </div>
+
+        <div><div class="insp-sec">Marks</div>
+          <div class="mark-add" id="markAdd">
+            <button class="chip" data-kind="redact" data-tip="Destroys the area. For anything private.">Redact</button>
+            <button class="chip" data-kind="blur" data-tip="Softens the area. Never for secrets.">Blur</button>
+            <button class="chip" data-kind="lift" data-tip="Raises the element off the page">Lift</button>
+            <button class="chip" data-kind="spotlight" data-tip="Dims everything but the area">Spotlight</button>
+            <button class="chip" data-kind="step" data-tip="A numbered gold badge">Step</button>
+            <button class="chip" data-kind="loupe" data-tip="A magnified inset of a small area">Loupe</button>
+          </div>
+          <p class="micro dimmer" style="margin-top:6px">Added at the playhead. Drag it on the stage onto the thing it is for.</p>
+          <div class="obj-list" id="markList"></div>
+        </div>
+
+        <div id="objEdit" hidden>
+          <div class="insp-sec"><span class="mono obj-sel-id" id="objId"></span><span id="objWhat"></span></div>
+          <div class="row"><span class="row-lbl">Start</span><span class="mono dim" id="objStart">0:00</span>
+            <div style="flex:1"></div><button class="btn btn-sm" id="objSetIn">Set to playhead</button></div>
+          <div class="row"><span class="row-lbl">End</span><span class="mono dim" id="objEnd">0:00</span>
+            <div style="flex:1"></div><button class="btn btn-sm" id="objSetOut">Set to playhead</button></div>
+          <div class="row" id="objScaleRow" hidden><span class="row-lbl">Scale</span>
+            <input type="range" class="slider" id="objScale" min="100" max="300" value="180">
+            <span class="row-val mono" id="objScaleVal">1.8&times;</span></div>
+          <div class="row" id="objStrengthRow" hidden><span class="row-lbl">Strength</span>
+            <input type="range" class="slider" id="objStrength" min="4" max="60" value="18">
+            <span class="row-val mono" id="objStrengthVal">18</span></div>
+          <div class="row" id="objNumRow" hidden><span class="row-lbl">Number</span>
+            <input class="input input-sm" id="objNum" maxlength="3" placeholder="in order"></div>
+          <p class="micro dimmer" id="objHint"></p>
+          <button class="btn btn-sm btn-danger" id="objDel" style="width:100%;margin-top:10px">
+            ${ico('trash', 'icon-sm')} Remove</button>
         </div>
       </section>
 
@@ -450,6 +488,7 @@ async function openInEditor(src) {
   mount.innerHTML = EDITOR_HTML
 
   ed.src = src; ed.texts = []; ed.cues = []; ed.crop = null; ed.selText = null; ed.peaks = []
+  ed.sel = null                                  // nothing on the two tracks is selected in a fresh take
   ed.doc = null; ed.look = LookLib.defaults(); syncLookMirrors()   // never the last clip's look
   window.dispatchEvent(new CustomEvent('fetch:editor-open', { detail: { src } }))   // the chat's "Working on" chip
   ed.docReady = false
@@ -613,6 +652,8 @@ document.addEventListener('keydown', e => {
 function wireEditor() {
   const v = $('edVideo')
   wireLasso()
+  wireFocus()
+  renderAspects()
 
   $('inspTabs').onclick = e => {
     const b = e.target.closest('button[data-tab]'); if (!b) return
@@ -626,6 +667,7 @@ function wireEditor() {
     // the Crop tab shows the whole recording, every other tab the crop, as exported
     try { paintBackdrop(); paintCrop(); paintCaption() } catch {}
     paintOverlays()   // the zoom preview steps aside on the Crop tab
+    paintAim()        // the handles belong to the tab that owns them
   }
 
   // transport
@@ -677,7 +719,7 @@ function wireEditor() {
   $('arChips').onclick = e => {
     const b = e.target.closest('[data-ar]'); if (!b) return
     ed.cropAR = b.dataset.ar
-    document.querySelectorAll('#arChips .chip').forEach(x => x.setAttribute('aria-pressed', String(x === b)))
+    paintAspects()
     if (ed.crop) applyAspect()
   }
   $('cropOn').onclick = () => { ed.crop = ed.crop ? null : { x: .1, y: .1, w: .8, h: .8 }; applyAspect(); paintCrop() }
@@ -1059,6 +1101,7 @@ function wireEditor() {
     if (lookUI) lookUI.render()
 
     paintTrim(); renderCuts(); renderTexts(); renderCues(); renderBeats(); renderZooms(); renderMarks()
+    renderFocus()            // an agent's new zoom or mark shows up in the lists too
     try { paintBackdrop(); paintCam(); paintCrop() } catch {}
     paintCaption(); highlightBeat(); layoutTimeline()
   }
@@ -1158,6 +1201,10 @@ const seek = t => {
 // Clicking a named span is the fastest way back to a moment you remember by what was
 // said in it, which is the reason the labels exist at all.
 document.addEventListener('click', e => {
+  // the click at the end of a drag is not a seek: the pill was being moved, and
+  // jumping the playhead to where it landed is not what the hand asked for
+  const pill = e.target.closest('#tlMarks .tl-mark, #tlZooms .tl-zoom')
+  if (pill && trackAte) { trackAte = false; return }
   const mk = e.target.closest('#tlMarks .tl-mark')
   if (mk && ed.src) {
     const m = ed.marks.find(x => x.id === mk.dataset.id)
@@ -1270,10 +1317,13 @@ function renderZooms() {
   host.innerHTML = ed.zooms.map(z => {
     const left = (z.start / ed.dur) * 100
     const width = Math.max(0.6, ((z.end - z.start) / ed.dur) * 100)
-    return '<button class="tl-zoom" data-id="' + escHtml(z.id) + '" style="left:' + left + '%;width:' + width + '%" ' +
+    return '<button class="tl-zoom" data-id="' + escHtml(z.id) + '" data-sel="' + String(isSel('zoom', z.id)) + '" ' +
+      'style="left:' + left + '%;width:' + width + '%" ' +
       'title="' + escHtml(z.id) + ' zooms ' + (z.scale || 1.8).toFixed(2) + 'x">' +
+      '<i class="tl-grip l" data-grip="start"></i>' +
       '<span class="tl-zoom-id mono">' + escHtml(z.id) + '</span>' +
       '<span class="tl-zoom-x mono">' + (z.scale || 1.8).toFixed(1) + '&times;</span>' +
+      '<i class="tl-grip r" data-grip="end"></i>' +
     '</button>'
   }).join('')
   fitPills(host)
@@ -1344,6 +1394,7 @@ window.editorCloseIfGone = () => {
   const v = $('edVideo')
   if (v) { v.pause(); v.removeAttribute('src'); v.load() }
   ed.src = null; ed.docReady = false; ed.meta = null; ed.cam = null; ed.audioTrack = null
+  ed.sel = null
   setLasso(false); clearBand()
   const mount = $('editorMount')
   mount.className = 'empty'
@@ -1368,9 +1419,12 @@ function renderMarks() {
     const width = Math.max(0.6, ((m.end - m.start) / ed.dur) * 100)
     const what = m.kind === 'step' ? 'Step ' + (m.n || '') : (MARK_LABEL[m.kind] || m.kind)
     return '<button class="tl-mark" data-kind="' + escHtml(m.kind) + '" data-id="' + escHtml(m.id) + '" ' +
+      'data-sel="' + String(isSel('mark', m.id)) + '" ' +
       'style="left:' + left + '%;width:' + width + '%" title="' + escHtml(m.id + ' ' + what) + '">' +
+      '<i class="tl-grip l" data-grip="start"></i>' +
       '<span class="tl-mark-id mono">' + escHtml(m.id) + '</span>' +
       '<span class="tl-mark-kind">' + escHtml(what) + '</span>' +
+      '<i class="tl-grip r" data-grip="end"></i>' +
     '</button>'
   }).join('')
   fitPills(host)
@@ -1555,7 +1609,29 @@ function applyAspect() {
   ed.crop.h = clamp01(pxH / vr.h)
   if (ed.crop.y + ed.crop.h > 1) ed.crop.y = Math.max(0, 1 - ed.crop.h)
 }
+// The shapes a person can crop to, from the one list the look's own Shape field is
+// built from, so the chips here, the inspector's shapes and the list an agent is given
+// cannot drift apart. The crop's "free" is the look's "auto": keep the take's shape.
+// A person could pick 4:3 and never be told about 4:5; an agent was told the reverse.
+function aspectList() {
+  const L = (LookLib && LookLib.ASPECTS) || require('./ui/look-schema').ASPECTS || []
+  return ['free', ...L.filter(a => a !== 'auto')]
+}
+function renderAspects() {
+  const host = $('arChips')
+  if (!host) return
+  host.innerHTML = aspectList().map(a => '<button class="chip" data-ar="' + a + '">' +
+    (a === 'free' ? 'Free' : a) + '</button>').join('')
+  paintAspects()
+}
+function paintAspects() {
+  const host = $('arChips')
+  if (!host) return
+  host.querySelectorAll('.chip').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.ar === (ed.cropAR || 'free'))))
+}
+
 function paintCrop() {
+  paintAspects()     // an agent's crop change reaches the chips too
   const box = $('cropBox')
   if (!ed.crop) { box.hidden = true; return }
   box.hidden = ed.tab !== 'crop'
@@ -1734,6 +1810,24 @@ function setLook(patch) {
     ed.crop = d.crop
     try { paintCrop() } catch {}
   }
+  // Captions keep their own tab, and docFromEd writes that tab's copy over the look's
+  // last. Now that the inspector shows the captions section too, a change made there
+  // has to reach ed.capStyle or the autosave would put it back a moment later.
+  // The inspector sends one field at a time by its path ({'captions.scale': 1.4}), so
+  // a nested patch.captions is never what arrives from the Look tab and the mirror
+  // never ran: the person dragged Caption size, ed.look changed, and docFromEd wrote
+  // ed.capStyle back over it a moment later. Read the paths, and take a nested patch
+  // too, since apply_look and the preset picker send one.
+  const capKeys = Object.keys(patch || {}).filter(k => k === 'captions' || k.startsWith('captions.'))
+  if (capKeys.length) {
+    const C = ed.look.captions
+    ed.capStyle = { ...ed.capStyle, font: C.font, scale: C.scale, colour: C.colour, position: C.position, highlight: C.highlight }
+    if (C.fx != null && C.fy != null) { ed.capStyle.fx = C.fx; ed.capStyle.fy = C.fy } else { delete ed.capStyle.fx; delete ed.capStyle.fy }
+    const burn = $('burnCaps')
+    const showed = capKeys.includes('captions.show') || (patch.captions && typeof patch.captions === 'object' && 'show' in patch.captions)
+    if (burn && showed) burn.checked = !!C.show
+    try { paintCapHl() } catch {}
+  }
   syncLookMirrors()
   paintBackdrop()
   try { paintCaption() } catch {}
@@ -1745,7 +1839,10 @@ function mountLook() {
   lookUI = InspectorLib.create(root, {
     get: () => ed.look || LookLib.defaults(),
     set: patch => setLook(patch),
-    sections: ['frame', 'background', 'motion', 'cursor'],
+    // no allow-list of sections: it hid the whole of treatment, grain, device, captions,
+    // typography and focus from the person while an agent could set every one of them,
+    // and the renderer draws them. What a renderer cannot draw is the schema's own
+    // question now (ui/look-schema.js), asked once, in one place.
     open: ['frame', 'background', 'motion'],
     userDir: LOOK_DIR,
     ico, toast,
@@ -2647,9 +2744,25 @@ function stageGLSpec(fresh) {
   if (key !== stageGL.key) {
     stageGL.key = key
     stageGL.spec = Plan.prepare(opts, meta, ctx)
-    stageGL.clock = Timeline.outClock(opts.cuts, stageGL.spec.start, stageGL.spec.end)
+    stageGL.clock = Timeline.outClock(opts.cuts, stageGL.spec.start, stageGL.spec.end, opts.rates)
+    // what a sped piece does with the take's own sound, so play sounds like the export
+    stageGL.speedAudio = opts.speedAudio
   }
   return stageGL.spec
+}
+
+// Play the take at the speed the edit says. The stage maps source time to output time
+// for the picture, but the <video> element is what runs the clock, so a 4x stretch
+// played back at 1 and the export drew two different videos from one document. The
+// rate is read at the moment being played, which is what makes a ramp a ramp, and the
+// element is muted exactly where processor.rateMutes mutes the export's own track.
+function syncStageRate(v) {
+  if (!v || !stageGL.clock) return
+  const r = stageGL.clock.rate(v.currentTime)
+  const rate = Math.min(16, Math.max(0.0625, +r || 1))
+  if (Math.abs(v.playbackRate - rate) > 0.005) v.playbackRate = rate
+  const mute = stageGL.speedAudio !== 'keep' && rate > 1 + 1e-9
+  if (v.muted !== mute) v.muted = mute
 }
 
 // Where the output sits on the stage: the frame when the look frames the take or picks
@@ -2727,8 +2840,12 @@ function paintStageGL({ fresh = false, upload = false, t = null } = {}) {
     comp.present()
     if (frame.dataset.gl !== 'on') { frame.dataset.gl = 'on'; paintCam() }
     // the lasso's band rides the same geometry, so it follows a zoom, a title card
-    // and a resize without being told about any of them
+    // and a resize without being told about any of them, and so do the handles on
+    // whatever is selected
     paintLasso()
+    // on its own: a throw in here would land in the catch below and take the whole
+    // compositor stage down to the CSS one for the rest of the session
+    try { paintAim() } catch (err) { console.warn('stage handles:', err && err.message) }
   } catch (e) {
     // no WebGL2, or a shader this machine cannot build: the CSS stage stays
     console.warn('stage canvas off:', e && e.message)
@@ -2781,10 +2898,14 @@ function armStageGL(v) {
   v._stageGL = true
   const tick = (_now, meta) => {
     if (!v.isConnected) return
+    syncStageRate(v)
     paintStageGL({ upload: true, t: meta && meta.mediaTime })
     if (!v.paused && v.requestVideoFrameCallback) v.requestVideoFrameCallback(tick)
   }
-  v.addEventListener('play', () => { if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(tick) })
+  v.addEventListener('play', () => { syncStageRate(v); if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(tick) })
+  // back to the take's own speed and sound the moment it stops, so scrubbing and the
+  // volume control are not left holding a rate the playhead has moved off
+  v.addEventListener('pause', () => { v.playbackRate = 1; v.muted = false })
   for (const ev of ['loadeddata', 'seeked', 'pause']) v.addEventListener(ev, () => paintStageGL({ upload: true }))
   const cb = $('camBubble')
   if (cb) cb.addEventListener('seeked', () => { if (v.paused) paintStageGL() })
@@ -2820,6 +2941,7 @@ function setLasso(on) {
   clearTimeout(lassoAsk)
   if (ed.lasso) askElements()
   else if (lassoDrag) { endLasso(); clearBand() }
+  paintAim()          // the lasso owns the stage while it is armed, so the handles step aside
 }
 
 function wireLasso() {
@@ -2918,16 +3040,22 @@ function bandEl() {
 
 // A box of the cropped frame, as a rectangle inside #stageFrame. The canvas's own
 // offset and CSS size carry the stage's scale, so no device pixel ratio comes into it.
-function placeBand(g, box, tag) {
-  const el = bandEl()
-  if (!el) return
+// The lasso's band and the handles on a selected mark are both laid out from this.
+function stageRect(g, box) {
   const a = Pick.fromFrac(box, g)
   const b = Pick.fromFrac({ x: box.x + box.w, y: box.y + box.h }, g)
   const kx = g.cv.offsetWidth / g.W, ky = g.cv.offsetHeight / g.H
-  const top = g.cv.offsetTop + a.y * ky
+  return { left: g.cv.offsetLeft + a.x * kx, top: g.cv.offsetTop + a.y * ky,
+    w: Math.max(1, (b.x - a.x) * kx), h: Math.max(1, (b.y - a.y) * ky) }
+}
+
+function placeBand(g, box, tag) {
+  const el = bandEl()
+  if (!el) return
+  const r = stageRect(g, box)
+  const top = r.top
   Object.assign(el.style, {
-    left: (g.cv.offsetLeft + a.x * kx) + 'px', top: top + 'px',
-    width: Math.max(1, (b.x - a.x) * kx) + 'px', height: Math.max(1, (b.y - a.y) * ky) + 'px',
+    left: r.left + 'px', top: top + 'px', width: r.w + 'px', height: r.h + 'px',
   })
   // no room above for the label near the top of the frame, so it drops inside
   el.classList.toggle('tag-in', top < 26)
@@ -3055,3 +3183,375 @@ async function lassoUp() {
   if (el) { el.classList.add('is-set'); el.firstChild.innerHTML = bandTag(region.id, region.label) }
   if (window.fetchLasso) window.fetchLasso.add(region)
 }
+
+// ── a zoom and a mark, edited by hand ───────────────────────────────────
+// An agent could place a zoom or a mark and a person could not move one. For a
+// redaction that was a hole: the one edit where a miss ships something private could
+// only be undone whole or asked for again. So every object on the two tracks now has
+// hands on it. A pill is dragged by its ends to retime and by its middle to move; a
+// mark is dragged on the stage to place and resize; a zoom is re-aimed by drawing a
+// box over what it should frame, through Targets.boxZoom, which is the same call an
+// agent's box goes through (ui/trackedit.js, ui/fetchdoc.js).
+//
+// Nothing here writes the document itself. It changes ed.zooms and ed.marks, and the
+// autosave (:591) notices, writes and takes one undo step when the button lands, the
+// same way the trim handles and the look sliders already work.
+const TrackEdit = require('./ui/trackedit')
+
+const SNAP_PX = 6                // how near a pill's end has to land to go flush
+let trackAte = false             // a drag just ended, so the click behind it is not a seek
+
+const isSel = (kind, id) => !!(ed.sel && ed.sel.kind === kind && ed.sel.id === id)
+const objList = kind => (kind === 'zoom' ? ed.zooms : ed.marks) || []
+const objMin = kind => (kind === 'zoom' ? TrackEdit.MIN_SPAN : TrackEdit.MIN_MARK)
+const objLabel = (kind, o) => kind === 'zoom' ? 'Zoom' : o.kind === 'step' ? 'Step ' + (o.n || '') : (MARK_LABEL[o.kind] || o.kind)
+
+function selObj() {
+  if (!ed.sel) return null
+  return objList(ed.sel.kind).find(x => x && x.id === ed.sel.id) || null
+}
+
+// Selecting opens the tab the hands are on, the way clicking a text layer does.
+function selectObj(kind, id) {
+  ed.sel = kind && id ? { kind, id } : null
+  const tab = document.querySelector('#inspTabs button[data-tab="focus"]')
+  if (ed.sel && tab && ed.tab !== 'focus') tab.click()
+  renderZooms(); renderMarks(); renderFocus()
+}
+
+// One repaint after a change: the tracks, the panel, the stage and its handles.
+function afterEdit() {
+  renderZooms(); renderMarks(); renderFocus()
+}
+
+// The times a drag should land flush on: the trim, the playhead, the beats, the cuts,
+// and every other object on both tracks. A lift is meant to sit on its zoom.
+function snapTimes(id) {
+  const t = [ed.in, ed.out, ed.cur]
+  for (const b of ed.beats || []) t.push(+b.start, +b.end)
+  for (const [a, b] of ed.cuts || []) t.push(a, b)
+  for (const x of [...(ed.zooms || []), ...(ed.marks || [])]) if (x && x.id !== id) t.push(+x.start, +x.end)
+  return t
+}
+
+// Only one zoom frames the shot at once, so a zoom stops at its neighbours. Marks
+// legitimately share time (a redaction over a step), so they have the take alone.
+const objLimits = (kind, id) => kind === 'zoom'
+  ? TrackEdit.spanLimits(ed.zooms, id, { lo: 0, hi: ed.dur })
+  : { lo: 0, hi: ed.dur }
+
+// Minted from the saved edit's counter, so the id the person sees is the one an agent
+// reads back. Before there is a saved document, from the ids already on the track.
+function mintObjId(kind, letter) {
+  if (ed.doc) return require('./ui/fetchdoc').mintId(ed.doc, kind)
+  let n = 1
+  for (const x of objList(kind === 'zooms' ? 'zoom' : 'mark')) {
+    const m = new RegExp('^' + letter + '(\\d+)$').exec(String((x && x.id) || ''))
+    if (m) n = Math.max(n, +m[1] + 1)
+  }
+  return letter + n
+}
+
+function addZoom() {
+  if (!ed.src || !ed.dur) return
+  const gap = TrackEdit.freeGap(ed.zooms, ed.cur, { lo: 0, hi: ed.dur })
+  if (!gap) {
+    const here = (ed.zooms || []).find(z => ed.cur >= z.start && ed.cur < z.end)
+    return toast(escHtml((here && here.id) || 'A zoom') + ' is already zooming here. Re-aim it, or move the playhead.', 'bad')
+  }
+  const span = TrackEdit.newSpan(ed.cur, TrackEdit.WANT.zoom, { ...gap, min: TrackEdit.MIN_SPAN })
+  if (!span) return toast('There is no room for a zoom here.', 'bad')
+  const z = { id: mintObjId('zooms', 'Z'), ...span, scale: 1.8, x: 0.5, y: 0.5 }
+  ed.zooms = [...(ed.zooms || []), z].sort((a, b) => a.start - b.start)
+  selectObj('zoom', z.id)
+  toast(escHtml(z.id) + ' added. Drag a box on the stage to say what it frames.')
+}
+
+function addMark(kind) {
+  if (!ed.src || !ed.dur) return
+  const span = TrackEdit.newSpan(ed.cur, TrackEdit.WANT.mark, { lo: 0, hi: ed.dur, min: TrackEdit.MIN_MARK })
+  if (!span) return toast('There is no room for a mark here.', 'bad')
+  // no box from the lasso on purpose: the lasso points Biscuit at an area and writes
+  // nothing to the edit, so a mark made here is the person's own rectangle to place
+  const m = { id: mintObjId('marks', 'M'), ...TrackEdit.blankMark(kind, span) }
+  ed.marks = [...(ed.marks || []), m].sort((a, b) => a.start - b.start)
+  selectObj('mark', m.id)
+  toast(escHtml(m.id) + ' added. Drag it on the stage onto the thing.')
+}
+
+function removeSel() {
+  const o = selObj()
+  if (!o) return
+  const kind = ed.sel.kind, what = objLabel(kind, o).toLowerCase().trim()
+  if (kind === 'zoom') ed.zooms = TrackEdit.removeById(ed.zooms, o.id)
+  else ed.marks = TrackEdit.removeById(ed.marks, o.id)
+  ed.sel = null
+  afterEdit()
+  toast(escHtml(o.id) + ' ' + escHtml(what) + ' removed. Undo puts it back.')
+}
+
+// An end set to the playhead, held to the same rules a drag is.
+function setObjEdge(grip) {
+  const o = selObj()
+  if (!o) return
+  const from = grip === 'start' ? +o.start : +o.end
+  Object.assign(o, TrackEdit.dragSpan(o, grip, ed.cur - from, { ...objLimits(ed.sel.kind, o.id), min: objMin(ed.sel.kind) }))
+  afterEdit()
+}
+
+// ── the panel ───────────────────────────────────────────────────────────
+function renderFocus() {
+  const zl = $('zoomList'), ml = $('markList')
+  if (!zl || !ml) return
+  const row = (kind, o, detail) =>
+    '<button class="obj-row" data-kind="' + kind + '" data-id="' + escHtml(o.id) + '" ' +
+      'data-sel="' + String(isSel(kind, o.id)) + '" data-mark="' + escHtml(kind === 'mark' ? o.kind : '') + '">' +
+      '<span class="obj-id mono">' + escHtml(o.id) + '</span>' +
+      '<span class="obj-what">' + escHtml(detail) + '</span>' +
+      '<span class="obj-when mono">' + fmtTime(o.start) + ' to ' + fmtTime(o.end) + '</span>' +
+    '</button>'
+  zl.innerHTML = (ed.zooms || []).length
+    ? ed.zooms.map(z => row('zoom', z, (+z.scale || 1.8).toFixed(1) + '×')).join('')
+    : '<p class="micro dimmer">No zooms yet.</p>'
+  ml.innerHTML = (ed.marks || []).length
+    ? ed.marks.map(m => row('mark', m, objLabel('mark', m))).join('')
+    : '<p class="micro dimmer">No marks yet.</p>'
+  renderObjEdit()
+  paintAim()
+}
+
+function renderObjEdit() {
+  const box = $('objEdit')
+  if (!box) return
+  const o = selObj()
+  box.hidden = !o
+  if (!o) return
+  const kind = ed.sel.kind, zoom = kind === 'zoom'
+  $('objId').textContent = o.id
+  $('objWhat').textContent = objLabel(kind, o).trim()
+  $('objStart').textContent = fmtTime(o.start)
+  $('objEnd').textContent = fmtTime(o.end)
+  const show = (id, on) => { const n = $(id); if (n) n.hidden = !on }
+  show('objScaleRow', zoom); show('objStrengthRow', !zoom && o.kind === 'blur'); show('objNumRow', !zoom && o.kind === 'step')
+  if (zoom) {
+    const s = $('objScale'), v = $('objScaleVal')
+    s.value = Math.round((+o.scale || 1.8) * 100)
+    s.style.setProperty('--fill', ((s.value - s.min) / (s.max - s.min) * 100) + '%')
+    v.textContent = (+o.scale || 1.8).toFixed(1) + '×'
+  } else if (o.kind === 'blur') {
+    const s = $('objStrength'), v = $('objStrengthVal')
+    s.value = Math.round(+o.strength || 18)
+    s.style.setProperty('--fill', ((s.value - s.min) / (s.max - s.min) * 100) + '%')
+    v.textContent = s.value
+  } else if (o.kind === 'step') {
+    $('objNum').value = o.n != null ? o.n : ''
+  }
+  $('objHint').textContent = zoom
+    ? 'Drag a box over the stage to say what it frames. Fetch picks the scale that fits it.'
+    : o.kind === 'step' ? 'Drag on the stage to put the badge where it points.'
+    : 'Drag it on the stage to move it, a corner to resize it, or draw a new box over the stage.'
+}
+
+function wireFocus() {
+  const on = (id, fn) => { const n = $(id); if (n) n.onclick = fn }
+  on('addZoom', () => addZoom())
+  const add = $('markAdd')
+  if (add) add.onclick = e => { const b = e.target.closest('[data-kind]'); if (b) addMark(b.dataset.kind) }
+  for (const host of ['zoomList', 'markList']) {
+    const n = $(host)
+    if (n) n.onclick = e => {
+      const b = e.target.closest('.obj-row')
+      if (!b) return
+      selectObj(b.dataset.kind, b.dataset.id)
+      const o = selObj()
+      if (o) seek(+o.start)
+    }
+  }
+  on('objSetIn', () => setObjEdge('start'))
+  on('objSetOut', () => setObjEdge('end'))
+  on('objDel', () => removeSel())
+  const scale = $('objScale')
+  if (scale) scale.oninput = () => {
+    const o = selObj()
+    if (!o || ed.sel.kind !== 'zoom') return
+    o.scale = Math.round(+scale.value) / 100
+    afterEdit()
+  }
+  const strength = $('objStrength')
+  if (strength) strength.oninput = () => {
+    const o = selObj()
+    if (!o || o.kind !== 'blur') return
+    o.strength = Math.round(+strength.value)
+    afterEdit()
+  }
+  const num = $('objNum')
+  if (num) num.oninput = () => {
+    const o = selObj()
+    if (!o || o.kind !== 'step') return
+    const v = String(num.value).replace(/[^0-9A-Za-z]/g, '').slice(0, 3)
+    if (v !== num.value) num.value = v
+    o.n = v || null
+    renderZooms(); renderMarks()
+  }
+  for (const id of ['tlZooms', 'tlMarks']) { const n = $(id); if (n) n.addEventListener('mousedown', trackDown) }
+  const frame = $('stageFrame')
+  if (frame) frame.addEventListener('mousedown', aimDown)
+  renderFocus()
+}
+
+// ── dragging a pill ─────────────────────────────────────────────────────
+function trackDown(e) {
+  if (e.button !== 0 || !ed.src || !ed.dur) return
+  const pill = e.target.closest('.tl-zoom, .tl-mark')
+  if (!pill) return
+  const kind = pill.classList.contains('tl-zoom') ? 'zoom' : 'mark'
+  const host = pill.parentNode                 // the pill itself is replaced by the re-render
+  const o = objList(kind).find(x => x && x.id === pill.dataset.id)
+  if (!o || !host) return
+  const grip = (e.target.dataset && e.target.dataset.grip) || 'body'
+  selectObj(kind, o.id)
+  const perPx = ed.dur / Math.max(1, host.clientWidth)
+  const x0 = e.clientX, was = { start: +o.start, end: +o.end }
+  const o2 = { lim: objLimits(kind, o.id), min: objMin(kind), snap: snapTimes(o.id), tol: SNAP_PX * perPx }
+  let moved = false
+  const move = ev => {
+    // the mouseup was swallowed by something else: finish rather than follow a pointer
+    // with no button held, the way the lasso does
+    if (!ev.buttons) { up(); return }
+    if (!moved && Math.abs(ev.clientX - x0) < 3) return
+    moved = true
+    Object.assign(o, TrackEdit.dragSpan(was, grip, (ev.clientX - x0) * perPx,
+      { ...o2.lim, min: o2.min, snap: o2.snap, tol: o2.tol }))
+    afterEdit()
+  }
+  const up = () => {
+    window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
+    if (!moved) return
+    trackAte = true                            // the click behind this drag is not a seek
+    setTimeout(() => { trackAte = false }, 250)   // and nothing else, if no click comes
+    if (kind === 'zoom') ed.zooms = [...ed.zooms].sort((a, b) => a.start - b.start)
+    else ed.marks = [...ed.marks].sort((a, b) => a.start - b.start)
+    afterEdit()
+  }
+  window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  e.preventDefault()
+}
+
+// ── the handles on the stage ────────────────────────────────────────────
+// The same four divisions the lasso picks through (lassoGeom, ui/stage-pick.js), so a
+// box dragged here is in the frame's own fractions, which is what marks and zooms
+// speak, at whatever zoom the stage happens to be showing.
+const AIM_GRIPS = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
+const AIM_HTML = '<span class="aim-tag mono"></span>' + AIM_GRIPS.map(g => `<i class="ah ${g}" data-grip="${g}"></i>`).join('')
+
+// What the selected object covers, in fractions of the cropped frame: a mark's own
+// box, a step's badge round its point, and for a zoom the window it frames.
+function objBox(kind, o, g) {
+  if (kind === 'zoom') {
+    const s = Math.max(1, +o.scale || 1.8), k = 1 / s
+    return { x: Math.max(0, Math.min(1 - k, (+o.x || 0.5) - k / 2)), y: Math.max(0, Math.min(1 - k, (+o.y || 0.5) - k / 2)), w: k, h: k }
+  }
+  if (o.kind === 'step') {
+    const h = 0.05, w = g && g.W ? h * g.H / g.W : h
+    return { x: Math.max(0, Math.min(1 - w, (+o.x || 0) - w / 2)), y: Math.max(0, Math.min(1 - h, (+o.y || 0) - h / 2)), w, h }
+  }
+  // a mark an agent aimed by element id can reach the editor before its box is
+  // resolved: it gets a rectangle big enough to grab rather than a dot in the corner
+  if (!['x', 'y', 'w', 'h'].every(k => Number.isFinite(+o[k]))) return { x: 0.32, y: 0.36, w: 0.36, h: 0.22 }
+  return { x: +o.x, y: +o.y, w: Math.max(TrackEdit.MIN_BOX, +o.w), h: Math.max(TrackEdit.MIN_BOX, +o.h) }
+}
+
+let aimDraw = null               // the box being drawn, while it is being drawn
+
+function paintAim() {
+  const frame = $('stageFrame')
+  if (!frame) return
+  let n = frame.querySelector('.aim-box')
+  const o = selObj()
+  const g = o && ed.tab === 'focus' && !ed.lasso ? lassoGeom() : null
+  if (!g) { if (n) n.remove(); return }
+  if (!n) { n = el('div', 'aim-box', AIM_HTML); frame.appendChild(n) }
+  const kind = ed.sel.kind
+  const box = aimDraw || objBox(kind, o, g)
+  n.dataset.kind = kind === 'zoom' ? 'zoom' : o.kind
+  n.dataset.drawing = String(!!aimDraw)
+  const r = stageRect(g, box)
+  Object.assign(n.style, { left: r.left + 'px', top: r.top + 'px', width: r.w + 'px', height: r.h + 'px' })
+  n.classList.toggle('tag-in', r.top < 26)
+  n.firstChild.textContent = o.id
+}
+
+function aimDown(e) {
+  if (e.button !== 0 || ed.lasso || ed.tab !== 'focus') return
+  const o = selObj()
+  if (!o) return
+  if (e.target.closest && e.target.closest('[data-editing="true"]')) return
+  const g = lassoGeom()
+  if (!g) return
+  // a drag that runs off the take keeps going, held at the edge of the picture
+  const at = ev => {
+    const p = Pick.toOutput({ x: ev.clientX, y: ev.clientY }, g.cv.getBoundingClientRect(), g.spec)
+    return Pick.toFrac({ x: Math.min(Math.max(p.x, g.rect.x), g.rect.x + g.rect.w),
+      y: Math.min(Math.max(p.y, g.rect.y), g.rect.y + g.rect.h) }, g)
+  }
+  const from = at(e)
+  if (!from) return
+  const kind = ed.sel.kind, box0 = objBox(kind, o, g)
+  const handle = e.target.classList && e.target.classList.contains('ah') ? e.target.dataset.grip : null
+  const inside = from.x >= box0.x && from.x <= box0.x + box0.w && from.y >= box0.y && from.y <= box0.y + box0.h
+  // a zoom is re-aimed by saying what it should frame, never by nudging its window,
+  // so its gesture is always a fresh box; a mark is its box, so it moves and resizes
+  const grip = kind === 'zoom' ? null : handle || (o.kind === 'step' || inside ? 'move' : null)
+  e.preventDefault()
+  let raf = 0, last = null
+  const apply = () => {
+    raf = 0
+    if (!last) return
+    const to = at(last)
+    if (!to) return
+    if (!grip) {
+      aimDraw = Pick.clampBox(Pick.rectOf(from, to))
+      paintAim()
+      return
+    }
+    const d = { x: to.x - from.x, y: to.y - from.y }
+    if (o.kind === 'step') Object.assign(o, TrackEdit.movePoint({ x: +o.x, y: +o.y }, d))
+    else Object.assign(o, TrackEdit.placeMark(o, TrackEdit.dragBox(box0, grip, d)))
+    paintOverlays(); paintAim()
+  }
+  const move = ev => {
+    if (!ev.buttons) { up(ev); return }
+    last = ev
+    if (!raf) raf = requestAnimationFrame(apply)
+  }
+  const up = ev => {
+    window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
+    if (raf) { cancelAnimationFrame(raf); raf = 0 }
+    if (last) { last = ev; apply() }
+    const drawn = aimDraw
+    aimDraw = null
+    if (!grip && drawn && !Pick.tooSmall(drawn)) {
+      // through Targets.boxZoom, exactly as an agent's box goes: the person says what
+      // to frame and Fetch picks the scale, so both hands write the same zoom
+      if (kind === 'zoom') Object.assign(o, TrackEdit.aimZoom(o, drawn))
+      else Object.assign(o, TrackEdit.placeMark(o, drawn))
+    } else if (!grip && drawn) {
+      toast('That area is too small to work on. Drag a bigger one.', 'bad')
+    }
+    afterEdit()
+  }
+  window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+}
+
+// Escape lets a selection go; Delete removes what is selected, and Undo puts it back.
+document.addEventListener('keydown', e => {
+  if (!ed.src || !ed.sel) return
+  const view = document.querySelector('.view[data-view="editor"]')
+  if (!view || view.hidden) return
+  const t = e.target
+  if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
+  if (e.key === 'Escape') { selectObj(null); return }
+  if (e.key !== 'Delete' && e.key !== 'Backspace') return
+  e.preventDefault()
+  removeSel()
+})

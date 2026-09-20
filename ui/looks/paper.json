@@ -2,6 +2,7 @@
   "name": "paper",
   "label": "Paper",
   "doc": "A light, warm paper ground with a soft shadow and a trace of grain.",
+  "for": "a light SaaS page, a document or a design tool",
   "look": {
     "background": { "kind": "solid", "color": "#EDE6DA" },
     "frame": { "padding": 0.08, "radius": 10, "shadow": 0.35 },

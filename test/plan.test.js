@@ -162,6 +162,50 @@ console.log('time across cuts')
   is('a held zoom is one sample even with the shutter open', [s.motionBlur, mid.taps, mid.speed], [0.5, 1, 0])
 }
 
+console.log('time through a speed region')
+{
+  const m24 = { width: 1920, height: 1080, duration: 24, fps: 60 }
+  const opts = { start: 0, end: 24, rates: [[8, 16, 2, 2]], zooms: [{ start: 10, end: 14, scale: 2, x: 0.3, y: 0.4 }] }
+  const s = Plan.prepare(opts, m24)
+  is('kept ranges carry the rate', s.keep, [[0, 8], [8, 16, 2], [16, 24]])
+  is('the fast piece is half as long, so the output is 20', s.span, 20)
+  is('and the frame count follows it', s.frames, 1200)
+  is('two output seconds into a 2x piece is four source seconds in', r3(Plan.framePlan(s, 10).s), 12)
+  is('after it the clock is back to 1', r3(Plan.framePlan(s, 13).s), 17)
+  // the thing the whole feature has to not break: a zoom named a source moment, and
+  // that is still the moment the frame at the zoom's start shows
+  is('a zoom on a 2x section lands where the clock puts it', s.zooms[0].start, 9)
+  is('and the frame there shows the source moment the zoom named', r3(Plan.srcAt(s.keep, s.zooms[0].start)), 10)
+  is('and its end too', r3(Plan.srcAt(s.keep, s.zooms[0].end)), 14)
+  is('the frame plan carries the rate it is on',
+    [4, 10, 18].map(t => r3(Plan.framePlan(s, t).rate)), [1, 2, 1])
+
+  // a ramp: the rate at the ends is what was asked for, and the moment in the middle
+  // is the closed form's, not a step
+  const ramp = Plan.prepare({ start: 0, end: 12, rates: [[0, 12, 1, 3]] }, { ...m24, duration: 12 })
+  is('a 1x to 3x ramp is half as long', r3(ramp.span), 6)
+  is('it starts at 1 and ends at 3', [r3(Plan.framePlan(ramp, 0).rate), r3(Plan.framePlan(ramp, 6).rate)], [1, 3])
+  is('and three output seconds in it has spent 4.5 source seconds', r3(Plan.framePlan(ramp, 3).s), 4.5)
+
+  // a rate change with no cut behind it is not a cut
+  const split = Plan.prepare({ start: 0, end: 24, rates: [[12, 24, 4, 4]],
+    look: { motion: { cutTransition: 'dip' } } }, m24)
+  is('two pieces meeting with nothing between them', split.keep, [[0, 12], [12, 24, 4]])
+  is('and no transition where the speed changes', split.cut, null)
+
+  // a dissolve over a real cut inside a fast piece plays both sides at that piece's
+  // rate, or half the transition stalls
+  const x = Plan.prepare({ start: 0, end: 24, cuts: [[10, 12]],
+    rates: [[0, 10, 4, 4], [12, 24, 4, 4]], look: { motion: { cutTransition: 'crossfade' } } }, m24)
+  const pt = x.cut.points[0]
+  is('both sides know their rate', [pt.ra, pt.rb], [4, 4])
+  const before = Plan.srcPair(x, pt.t - pt.d / 2), after = Plan.srcPair(x, pt.t + pt.d / 2)
+  is('the outgoing side runs on at 4x', r3(after.s - before.s), r3(pt.d * 4))
+  is('and the incoming side with it', r3(after.s2 - before.s2), r3(pt.d * 4))
+  is('neither side reaches past the material the cut removed',
+    [after.s <= 12 + 1e-9, before.s2 >= 10 - 1e-9], [true, true])
+}
+
 console.log('motion blur scales with travel')
 {
   const s = Plan.prepare({ zooms: [{ start: 1, end: 5, scale: 2.4, x: 0.8, y: 0.2 }], look: { treatment: { motionBlur: 0.5 } } }, { ...meta, fps: 60 })

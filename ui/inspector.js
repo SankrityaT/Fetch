@@ -2,8 +2,10 @@
 //
 // Every control here is a field in the schema, so a field added there shows up here
 // with its label, range, unit and reset, and an agent and a person reach exactly the
-// same settings. Only fields today's renderer draws are shown (Look.sections); the
-// rest are stored and reachable over MCP but would only mislead a person here.
+// same settings. What is shown is an engine question rather than a flag: Look.sections
+// answers it for the renderer that draws the stage, which is the compositor, so the
+// Look tab offers everything the export will honour. Only the handful nothing draws
+// yet is left out, along with the two the person sets by dragging on the stage.
 //
 // Each field shows a gold dot when it differs from the look's preset, and a reset
 // that puts back the preset's value. Sliders preview live while dragged; the edit's
@@ -125,6 +127,22 @@ function create(root, o) {
 
   const presetLabel = name => { const p = Look.findPreset(name, o.userDir); return p ? p.label : name }
 
+  const head = (key, label, n, isOpen) => `<button class="lk-sec-head" aria-expanded="${isOpen}" data-sec-toggle="${esc(key)}">
+    <span class="insp-sec">${esc(label)}</span>${n ? `<span class="lk-count mono" data-tip="${n} changed from the look">${n}</span>` : ''}
+    <span style="flex:1"></span>${ico('caret-down', 'icon-sm lk-caret')}</button>`
+
+  // The dials of a section that are rarely the answer, behind one disclosure. A tilt or
+  // an aberration is a real control and belongs here, just not second in Frame; the
+  // count on the head is so a change never hides inside a closed group.
+  function advanced(s, fields, look, ref) {
+    if (!fields.length) return ''
+    const key = s.id + ':advanced'
+    const isOpen = open.has(key)
+    const n = fields.filter(x => !same(Look.getPath(look, x.path), Look.getPath(ref, x.path))).length
+    return `<div class="lk-sec" data-sec="${key}">${head(key, 'Advanced', n, isOpen)}
+      <div class="lk-fields" ${isOpen ? '' : 'hidden'}>${fields.map(x => field(x, look, ref)).join('')}</div></div>`
+  }
+
   function render() {
     const look = Look.resolve(o.get())
     const ref = base(look)
@@ -161,10 +179,10 @@ function create(root, o) {
         const n = fields.filter(x => !same(Look.getPath(look, x.path), Look.getPath(ref, x.path))).length
         const isOpen = open.has(s.id)
         return `<section class="lk-sec" data-sec="${s.id}">
-          <button class="lk-sec-head" aria-expanded="${isOpen}" data-sec-toggle="${s.id}">
-            <span class="insp-sec">${esc(s.label)}</span>${n ? `<span class="lk-count mono" data-tip="${n} changed from the look">${n}</span>` : ''}
-            <span style="flex:1"></span>${ico('caret-down', 'icon-sm lk-caret')}</button>
-          <div class="lk-fields" ${isOpen ? '' : 'hidden'}>${o.extras && o.extras[s.id] ? o.extras[s.id](look) : ''}${fields.map(x => field(x, look, ref)).join('')}</div>
+          ${head(s.id, s.label, n, isOpen)}
+          <div class="lk-fields" ${isOpen ? '' : 'hidden'}>${o.extras && o.extras[s.id] ? o.extras[s.id](look) : ''}${
+            fields.filter(x => !x.advanced).map(x => field(x, look, ref)).join('')}${
+            advanced(s, fields.filter(x => x.advanced), look, ref)}</div>
         </section>`
       }).join('')}`
     if (scroll) scroll.scrollTop = top

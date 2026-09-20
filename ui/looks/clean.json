@@ -2,6 +2,7 @@
   "name": "clean",
   "label": "Clean",
   "doc": "The take on a quiet warm near-black, soft corners and shadow.",
+  "for": "a dark app, a terminal or an editor recording",
   "look": {
     "background": { "kind": "solid", "color": "#1A1714" },
     "frame": { "padding": 0.06, "radius": 14, "shadow": 0.55 }

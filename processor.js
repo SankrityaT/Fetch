@@ -861,7 +861,7 @@ async function toGif(srcArg, opts, onProgress, jobId) {
 // save folder only ever holds what the person actually made: recordings and
 // exports. Finder hides dot-directories, so the Desktop stays clean.
 const SIDE_DIR = '.fetch'
-const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3', '.name.json']
+const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3', '.name.json', '.job.json']
 
 const sideStem = p => path.basename(p).replace(/\.[^.]+$/, '')
 function sidecarPath(mediaPath, ext) {
@@ -2407,6 +2407,76 @@ function backdropChain(vLabel, srcW, srcH, opts) {
 // window (ui/timeline.js), then trimmed and concatenated in the same pass as everything else.
 const keepRanges = Timeline.keepRanges
 
+// ── speed, as ffmpeg says it ────────────────────────────────────────────
+//
+// The maths lives in ui/timeline.js and is not repeated here; this only writes it
+// out as filters. A kept range is [a, b] at the take's own rate, [a, b, r] held at
+// one, or [a, b, r0, r1] for a ramp (Timeline).
+//
+// setpts wants the output timestamp from the input time. Held at a rate that is the
+// division the whole feature is. A ramp is the inverse of the quadratic the rate's
+// own integral makes, which is one square root: T - STARTT is the source seconds the
+// piece has spent, and STARTT is the first timestamp trim left, so the expression
+// reads the range's own clock and nothing outside it.
+function ratePts(seg) {
+  const [r0, r1] = Timeline.rateEnds(seg)
+  if (r0 === r1) return r0 === 1 ? 'setpts=PTS-STARTPTS' : `setpts=(PTS-STARTPTS)/${r0.toFixed(6)}`
+  const m = (r1 - r0) / Timeline.outSpan(seg)
+  return `setpts='(sqrt(${(r0 * r0).toFixed(6)}+${(2 * m).toFixed(6)}*(T-STARTT))-${r0.toFixed(6)})/${m.toFixed(6)}/TB'`
+}
+
+// atempo only takes half to double in one step, so anything outside that is a chain.
+// A ramp goes at its mean rate: ffmpeg has no sliding tempo, and the mean is the one
+// constant that leaves the segment exactly as long as the picture, which is what
+// keeps the sound in sync across the boundary. The pitch does not slide; a sped-up
+// section is muted by default anyway, and where it is not this is the honest
+// approximation rather than a drift that grows all the way to the end.
+function atempoChain(r) {
+  const out = []
+  const n = v => `atempo=${String(+v.toFixed(6))}`
+  let x = r
+  while (x > 2 + 1e-9) { out.push(n(2)); x /= 2 }
+  while (x < 0.5 - 1e-9) { out.push(n(0.5)); x *= 2 }
+  if (Math.abs(x - 1) > 1e-6) out.push(n(x))
+  return out
+}
+
+// One kept range of sound, exactly as long as the picture it goes with. Every segment
+// is pinned to its own output length with apad and atrim rather than trusted to come
+// out right: atempo resamples, and a few samples lost per segment is a drift that
+// only ever grows. Pinned, the error is one segment's rounding and never accumulates.
+// `mute` is the default for a piece running faster than 1 (Fetchdoc AUDIO_DEFAULTS):
+// the reason to speed a stretch up is that nothing is being said over it.
+function rateAudio(seg, { mute = false } = {}) {
+  const [r0, r1] = Timeline.rateEnds(seg)
+  const span = Timeline.outSpan(seg)
+  const bits = []
+  const mean = (seg[1] - seg[0]) / span
+  if (r0 !== 1 || r1 !== 1) {
+    bits.push(...atempoChain(mean))
+    const pin = String(+span.toFixed(6))
+    bits.push(`apad=whole_dur=${pin}`, `atrim=end=${pin}`, 'asetpts=PTS-STARTPTS')
+  }
+  if (mute) bits.push('volume=0')
+  return bits
+}
+
+// The sound's own list of ranges: the picture's, with every ramp cut into pieces one
+// atempo can cover (Timeline.rateSteps). Whether a piece plays is decided once for the
+// range it came from, so a ramp crossing 1 does not gate itself on and off mid-slide.
+function audioKeep(keep, speedAudio) {
+  const out = []
+  for (const seg of keep) {
+    const mute = rateMutes(seg, speedAudio)
+    for (const sub of Timeline.rateSteps(seg)) out.push({ seg: sub, mute })
+  }
+  return out
+}
+
+// Does this piece of the take play its own sound? Only asked where a rate was set.
+const rateMutes = (seg, speedAudio) =>
+  speedAudio !== 'keep' && (seg[1] - seg[0]) / Timeline.outSpan(seg) > 1 + 1e-9
+
 // ---- combined editor export --------------------------------------------
 // one ffmpeg pass: trim → crop → scale → text layers → captions → fades → audio
 // text positions/sizes are fractions of the (cropped) frame so they survive scaling
@@ -2493,9 +2563,17 @@ function audioGraph({ hasAudio, denoise, loudnorm, gain, fadeIn = 0, fadeOut = 0
   }
   let chain = bits.join(',') + '[extraRaw]'
   if (keep && keep.length) {
-    const parts = keep.map(([a, b], i) => `[extraSplit${i}]atrim=${a.toFixed(3)}:${b.toFixed(3)},asetpts=PTS-STARTPTS[extraCut${i}]`)
-    chain += `;[extraRaw]asplit=${keep.length}` + keep.map((_, i) => `[extraSplit${i}]`).join('') + ';' +
-      parts.join(';') + ';' + keep.map((_, i) => `[extraCut${i}]`).join('') + `concat=n=${keep.length}:v=0:a=1[extra]`
+    // An added track is laid against the take's own clock, which is what it was before
+    // speed existed: it follows the cuts, so a line stays beside the moment it was
+    // written for, and for the same reason it follows the rates. It is never muted by a
+    // rate the way the take's own sound is, because somebody put it there on purpose,
+    // but a line under a 4x montage does come out at 4x and unintelligible. Say it in
+    // the script rather than under the montage, or leave that stretch at 1.
+    const split = keep.flatMap(seg => Timeline.rateSteps(seg))
+    const parts = split.map((seg, i) => `[extraSplit${i}]atrim=${seg[0].toFixed(6)}:${seg[1].toFixed(6)},` +
+      ['asetpts=PTS-STARTPTS', ...rateAudio(seg)].join(',') + `[extraCut${i}]`)
+    chain += `;[extraRaw]asplit=${split.length}` + split.map((_, i) => `[extraSplit${i}]`).join('') + ';' +
+      parts.join(';') + ';' + split.map((_, i) => `[extraCut${i}]`).join('') + `concat=n=${split.length}:v=0:a=1[extra]`
   } else {
     chain += ';[extraRaw]anull[extra]'
   }
@@ -2513,11 +2591,15 @@ function audioGraph({ hasAudio, denoise, loudnorm, gain, fadeIn = 0, fadeOut = 0
 async function renderAudio(srcArg, opts, keep, span, meta, out, jobId) {
   const extra = opts.audioTrack && opts.audioTrack.file && fs.existsSync(opts.audioTrack.file) ? opts.audioTrack : null
   if (!meta.hasAudio && !extra) return null
-  const hasCuts = (opts.cuts || []).some(c => Array.isArray(c) && c.length === 2)
+  const hasCuts = (opts.cuts || []).some(c => Array.isArray(c) && c.length === 2) || !!(opts.rates && opts.rates.length)
   const parts = []
   if (meta.hasAudio) {
-    keep.forEach(([a, b], i) => parts.push(`[0:a]atrim=${a.toFixed(3)}:${b.toFixed(3)},asetpts=PTS-STARTPTS[ca${i}]`))
-    parts.push(keep.map((_, i) => `[ca${i}]`).join('') + `concat=n=${keep.length}:v=0:a=1[cuta]`)
+    const ak = audioKeep(keep, opts.speedAudio)
+    ak.forEach(({ seg, mute }, i) => {
+      const af = ['asetpts=PTS-STARTPTS', ...rateAudio(seg, { mute })]
+      parts.push(`[0:a]atrim=${seg[0].toFixed(6)}:${seg[1].toFixed(6)},${af.join(',')}[ca${i}]`)
+    })
+    parts.push(ak.map((_, i) => `[ca${i}]`).join('') + `concat=n=${ak.length}:v=0:a=1[cuta]`)
   }
   const fadeIn = +opts.fadeIn > 0 ? +opts.fadeIn : 0
   const fadeOut = +opts.fadeOut > 0 ? +opts.fadeOut : 0
@@ -2551,6 +2633,15 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     const end = opts.end && opts.end > start ? Math.min(opts.end, dur || opts.end) : (dur || 0)
     const outDur = end ? end - start : 0
     if (end && outDur < 0.2) throw new Error('trim range is too short')
+    // How long the finished video is once the rates are in. The fade at the end is
+    // placed on that clock, and a 60 second take at 4x is fifteen seconds: a fade
+    // written at 58 would never happen. Cuts have always been left out of this and
+    // that is its own bug, but a rate cannot be left out, so where there is one the
+    // cuts come with it.
+    const rateDur = opts.rates && opts.rates.length
+      ? Timeline.outLength(Timeline.applyRates(
+        (opts.cuts && opts.cuts.length) ? keepRanges(opts.cuts, start, end || dur) : [[start, end || dur]], opts.rates))
+      : outDur
 
     // output geometry: crop fractions × source dims, then scale to target height
     const srcH = meta.height || opts.videoH || 1080
@@ -2574,7 +2665,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     // read the clock of the trimmed output.
     // one clock for everything placed in time, so marks and zooms agree with each
     // other and with the cuts
-    const clock = outClock(opts.cuts, start, end || dur)
+    const clock = outClock(opts.cuts, start, end || dur, opts.rates)
 
     const even = n => 2 * Math.floor(n / 2)
     const frame = c ? { w: even((meta.width || 1920) * c.w), h: even((meta.height || 1080) * c.h) } : null
@@ -2795,7 +2886,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
 
     const fadeIn = +opts.fadeIn > 0 ? +opts.fadeIn : 0
     const fadeOut = +opts.fadeOut > 0 ? +opts.fadeOut : 0
-    const span = outDur || dur || 0
+    const span = rateDur || dur || 0
     // Framed, the fade takes the whole finished frame, backdrop, captions and title
     // card included, as it does unframed; on the video alone the backdrop stayed lit.
     if (fadeIn) target.push(`fade=t=in:st=0:d=${fadeIn}`)
@@ -2811,23 +2902,33 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     const camTake = opts.camera && opts.camera.file && fs.existsSync(opts.camera.file)
       ? opts.camera : null
     const hasCuts = (opts.cuts || []).filter(c => Array.isArray(c) && c.length === 2).length > 0
-    const camG = camTake ? camChain(camTake, srcW, srcH, (!hasCuts && start > 0) ? start : 0) : null
+    // A rate needs the same trim and concat graph a cut does, because setpts is per
+    // piece, so a take with speed and no cut at all still goes through it rather than
+    // through the input seek.
+    const hasRate = !!(opts.rates && opts.rates.length)
+    const camG = camTake ? camChain(camTake, srcW, srcH, (!hasCuts && !hasRate && start > 0) ? start : 0) : null
     const VSRC = camG ? '[csrc]' : '[0:v]'
 
-    // cut list: removed ranges become a trim and concat graph feeding the vf chain
+    // cut list: removed ranges become a trim and concat graph feeding the vf chain,
+    // and the rate each surviving range runs at rides the same trim as a setpts
     const cuts = (opts.cuts || []).filter(c => Array.isArray(c) && c.length === 2)
     let cutGraph = null, cutDur = 0
-    if (cuts.length) {
-      const keep = keepRanges(cuts, start, end || dur)
+    if (cuts.length || hasRate) {
+      const keep = Timeline.applyRates(
+        cuts.length ? keepRanges(cuts, start, end || dur) : [[start, end || dur]], opts.rates)
       if (!keep.length) throw new Error('those cuts remove the whole clip')
-      cutDur = keep.reduce((a, [x, y]) => a + (y - x), 0)
+      cutDur = Timeline.outLength(keep)
       const parts = []
-      keep.forEach(([a, b], i) => {
-        parts.push(`${VSRC}trim=${a.toFixed(3)}:${b.toFixed(3)},setpts=PTS-STARTPTS[cv${i}]`)
-        if (meta.hasAudio) parts.push(`[0:a]atrim=${a.toFixed(3)}:${b.toFixed(3)},asetpts=PTS-STARTPTS[ca${i}]`)
+      keep.forEach((seg, i) => {
+        parts.push(`${VSRC}trim=${seg[0].toFixed(3)}:${seg[1].toFixed(3)},${ratePts(seg)}[cv${i}]`)
+      })
+      const ak = meta.hasAudio ? audioKeep(keep, opts.speedAudio) : []
+      ak.forEach(({ seg, mute }, i) => {
+        const af = ['asetpts=PTS-STARTPTS', ...rateAudio(seg, { mute })]
+        parts.push(`[0:a]atrim=${seg[0].toFixed(6)}:${seg[1].toFixed(6)},${af.join(',')}[ca${i}]`)
       })
       parts.push(keep.map((_, i) => `[cv${i}]`).join('') + `concat=n=${keep.length}:v=1:a=0[cutv]`)
-      if (meta.hasAudio) parts.push(keep.map((_, i) => `[ca${i}]`).join('') + `concat=n=${keep.length}:v=0:a=1[cuta]`)
+      if (meta.hasAudio) parts.push(ak.map((_, i) => `[ca${i}]`).join('') + `concat=n=${ak.length}:v=0:a=1[cuta]`)
       cutGraph = parts.join(';')
     }
 
@@ -2838,7 +2939,8 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     const { af, extraGraph, extraMap } = audioGraph({
       hasAudio: meta.hasAudio, denoise: opts.denoise, loudnorm: opts.loudnorm, gain: opts.gain,
       fadeIn, fadeOut, span, extra, extraInput: 1,
-      keep: cutGraph ? keepRanges(cuts, start, end || dur) : null,
+      keep: cutGraph ? Timeline.applyRates(
+        cuts.length ? keepRanges(cuts, start, end || dur) : [[start, end || dur]], opts.rates) : null,
       base: cutGraph && meta.hasAudio ? '[cuta]' : '[0:a]',
     })
 
@@ -2856,7 +2958,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
       ? path.join(path.dirname(dest), `.${path.parse(dest).name}.partial.${fmt.ext}`) : dest
     if (out !== dest) tmpFiles.push(out)
     const args = ['-y']
-    // with cuts the trim happens inside the graph, so do not also seek the input
+    // with cuts or a rate the trim happens inside the graph, so do not also seek the input
     if (!cutGraph && start > 0) args.push('-ss', String(start))
     args.push('-i', src)
     if (extra) args.push('-i', extra.file)
@@ -3017,7 +3119,7 @@ async function previewFrame(srcArg, doc, atSec) {
   }
   // A text's style is judged on the whole edit's clock (a centred line in the first
   // second is a title), so it is settled here, where that clock is known.
-  const whole = outClock(opts.cuts, first, last), span = whole(last)
+  const whole = outClock(opts.cuts, first, last, opts.rates), span = whole(last)
   const on = t => t && t.start != null && t.end != null && t.start <= at && t.end >= at
   const texts = (opts.texts || []).filter(t => t && (t.start == null || t.start <= at + 0.05)).map(t => {
     const timed = t.start != null && t.end != null
@@ -3098,6 +3200,7 @@ module.exports = {
   setTakesRoot, takeDir, deliverablePath, exportDest, renameTake, readNameNote, writeNameNote, takeName,
   speechRegions, buildBeats, buildCues, beatsFromCursor, readCursor, readPointer, pointerTrack, macCursorSpans, cursorPlates, cursorEraseFilters,
   zoomMoments, zoomExpr, autoZoomFilter, explicitZoomFilter, focusFilters, outClock, backdropGeometry,
+  ratePts, rateAudio, audioKeep, atempoChain,
   readDoc, writeDoc, beatsFor,
   // for the compositor's export (ui/render-host.js)
   renderAudio, musicBed, register, unregister, run, FORMATS, imageBackdrops,

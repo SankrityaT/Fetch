@@ -173,7 +173,11 @@ default, which is what `treatment.motionBlur` sets and all it sets. So a fast pa
 a settle does not, and a held frame takes one sample and is byte for byte what it was.
 The shutter never sees both sides of an edit: a push jumps the view on the boundary, so
 the exposure is held to just inside its own frame's side of it, and a boundary almost
-never lands on a frame. Then a border, and the camera bubble, which rides the take rather
+never lands on a frame. It is velocity per *output* second, which is why a clip's rate
+reaches it: `plan.js` reads the rate at the moment being drawn and scales the travel by
+it, so a 4x section smears four times as far as the same pan at 1 rather than a quarter
+of the truth. The rate is read in `plan.js` and never in `gl.js`, which is what keeps
+speed out of the frozen file. Then a border, and the camera bubble, which rides the take rather
 than sitting beside it: the same scale about the frame's centre, the same drop and the
 same opacity, so it arrives with the take, leaves with it and goes with it through a dip.
 Drawn in its landed place it sat at full size over a take that had not arrived yet and
@@ -193,7 +197,12 @@ a step's card corner, the Mac's pointer and its clean patches, the cursor's rest
 the words, whether the bottom of the frame is any place for a caption: a toast arrived
 there, or the product's own content is simply there and the top is clear) is worked out
 once in the main process by `prepare.js`, cached, and shared by the editor's stage and
-the export; frames are then drawn from the plan alone.
+the export; frames are then drawn from the plan alone. Everything there that maps a
+source second to an output one takes the rates with the cuts (`Timeline.outClock`'s
+fourth argument): the auto zoom's moments, the caption dodge and its memo key, and the
+same clock in `render-host.previewFrames` and the editor's stage. Left out of any one of
+them, that surface placed its work on a clock where speed did not exist and the stage
+drew a different frame at the same output time than the export did.
 
 Sources and sinks (M0 decided, M2 measured):
 

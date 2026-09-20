@@ -64,8 +64,32 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   A model picker lists every model the installed CLIs can run (Codex's own catalogue,
   Claude Code's model ids), grouped by CLI, searchable, with the effort levels each
   model accepts. It starts on the person's own CLI default and remembers their pick.
+  The standing doctrine (the loop, the aiming rules, the house voice) goes once per
+  conversation as a system prompt rather than on every message: Claude Code takes
+  `--append-system-prompt`, and Codex, which has no such flag, gets it on the message that
+  opens the thread, after which its own resume carries it. The per-turn header fell from
+  about 580 words to about 50, which is the open take, its counts, the job and where the plan
+  stands, and the lassoed areas. The pane draws the plan rather than trusting prose: a strip
+  reading `Plan 4 of 6`, a row per step with a check on what is closed and gold on what is
+  next, the distance line verbatim from the same measurement the agent read, and a verdict row
+  carrying `review`'s own summary. The trust line is now true on both engines: Claude Code
+  gets Fetch's tools and nothing else, and Codex, which has no flag that drops its shell, runs
+  read only with the Fetch server alone and the composer says so instead of claiming otherwise.
+  A claim that is true for one of two engines is worse than no claim.
 - Editor: beats strip named from speech, zoom track (`Z1 2.0x`), marks track
-  (redact, lift, spotlight, step, loupe), trim, cuts, text, captions, look, camera, audio, voiceover.
+  (redact, lift, spotlight, step, loupe), trim, cuts, speed, text, captions, look, camera,
+  audio, voiceover.
+  Every object on those two tracks is now the person's to make, move, retime, re-aim and
+  delete by hand, from a "Zooms and marks" tab: drag a pill by either end to retime it or by
+  its middle to move it whole, snapping to the trim, the playhead, the beats, the cuts and
+  every other object; drag a mark on the stage by its middle or its eight handles; draw a box
+  anywhere over the stage to re-aim one. A zoom is never nudged by its window: its gesture is
+  a fresh box over what it should frame, and that box goes through `Targets.boxZoom` exactly
+  as an agent's does, so both hands write the same zoom. The rules (minimum span, minimum box,
+  the neighbour a zoom may not be dragged over, the free gap) are pure, in `ui/trackedit.js`.
+  Until this, a redaction in the wrong place could only be undone whole or asked for again,
+  which for the one control where a miss ships something private was the sharpest hole in the
+  product.
   A lasso in the transport, off until it is armed, draws a rectangle over the stage at
   the moment the person is paused on; while they drag it snaps to the real element under
   it, found by the same Elements pass `find_on_screen` uses, and stays exactly as drawn
@@ -85,7 +109,9 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   live in `Original/`, sidecars hidden in `.fetch/` as before. Nothing lands on the Desktop.
 - One rename (`processor.renameTake`) moves the folder, the raw take, its working
   versions, the deliverable and every sidecar together, "Name 2" when taken. The
-  Library, the editor and `rename_recording` all use it.
+  Library, the editor and `rename_recording` all use it. Every sidecar means the job file
+  as well (`.job.json`): left behind, a rename took the brief, the plan and every closed
+  step with it and the next `apply_edit` came back saying there was no brief.
 - Every take is named when it ends, window or display, from the app in front for most
   of it (sampled every 2 s, `WindowList --front`); for a browser, the product in the tab
   (`songscription-library.vercel.app` is Songscription), not the browser. A browser's own
@@ -108,6 +134,26 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
 - Version 2: `look` holds the whole Look spec and `audio` the sound (denoise, loudness,
   gain, music). Version 1 files migrate on read, forever; v1 fields sent by an agent
   (`backdrop`, `outAspect`, `capStyle`, `look.gain`...) are moved to their v2 place.
+- A clip carries a `rate`: source seconds spent per output second, `4` for a typing montage,
+  `0.5` for a slow look, `[1, 4]` for a ramp into one. It is one change of the time map and
+  nothing else: `Timeline.outClock` accumulates `(b - a) / rate` and `srcTime` inverts it in
+  closed form, so `srcTime(clock(t))` is `t` exactly rather than nearly, and everything
+  time-indexed downstream (zooms, marks, texts, cues, the pointer track, the camera) follows
+  for free because there is one clock. A ramp runs linear in output time, which integrates to
+  a quadratic whose inverse is one square root and whose mean rate is `(r0 + r1) / 2`, so the
+  length comes back for free. Absent, `1` or `[1, 1]` is written back as nothing at all, so a
+  document made before speed existed hands the clock no rates and gets the graph it always
+  got. A sped-up piece is silent by default (`audio.speedAudio`), since the reason to speed a
+  stretch up is that nothing is being said over it; `keep` chains `atempo` per segment, each
+  pinned with `apad`/`atrim` to its own output span so the error is one segment's rounding and
+  never accumulates, and a ramp's audio is a staircase of at most 0.2 output seconds a step.
+  Measured through a 24 second take: 0.08 ms of drift at the segment boundaries and no growth,
+  and every source moment in the picture within 8.1 ms of where the clock puts it. The editor
+  plays at the rate too: the stage maps source time forward for the picture, but the take's own
+  `<video>` is what runs the clock, so its `playbackRate` is set from the rate at the moment
+  being played and it is muted exactly where the export mutes it. Otherwise pressing play in a
+  sped region showed one video and the file was another, which is the preview-equals-export
+  rule pointed at the person instead of at the agent.
 
 **Looks** (`ui/look-schema.js`, `ui/look.js`). Every setting of how a video looks is one
 field in one table: type, range, default, label, a line of doc. The inspector (Look tab,
@@ -115,16 +161,19 @@ field in one table: type, range, default, label, a line of doc. The inspector (L
 frame, device, background, treatment, grain, motion, camera, cursor, captions,
 typography, focus. Seven presets ship in `ui/looks/` (Fetch, Clean, Studio, Film, Noir,
 Paper, Mono print); "Save look" keeps a person's own in `userData/looks/`. A preset
-restyles and keeps the shape, captions, motion and cursor. Fields the ffmpeg renderer
-does not draw yet are stored, hidden from the inspector, and named in `look_warnings`.
-That flag has not caught up with M4 or M5: the Treatment and grain fields, and now the
-whole device section, `frame.tilt` and `focus.loupe`, still carry it, so the inspector
-hides them and `look_warnings` calls them undrawn while every MP4 export draws them. The flag has to become "the classic renderer cannot
-draw this", said only where that renderer is the one running. `motion.cutTransition` is
-the first field to go the other way on purpose: the compositor draws it, the classic
-renderer cuts hard, and it carries no flag, because a flag that hides a working control
-from the inspector costs more than the warning is worth. The GIF and still paths are
-where that shows.
+restyles and keeps the shape, captions, motion and cursor, and each one carries a `for:` line
+naming the take it suits (Clean is a dark app or a terminal, Mono print a white SaaS page),
+which `list_looks` returns and `review` reads, so choosing a look stops being a guess at a
+name. Whether a field is drawn is a question about the engine rather than a flag about a
+release: the compositor draws every field in the schema and is the renderer for MP4 and MOV,
+so the Look tab offers all of them and `look_warnings` says nothing. GIF, WebM and stills go
+to the classic ffmpeg renderer, which leaves out the fields marked `classic: false`, and
+there the warning names them and the output that caused it. Five fields nothing draws yet
+(`frame.scale`, `frame.offsetX`, `frame.offsetY`, `cursor.smoothing`, `typography.titleFont`)
+are named whatever runs. `motion.cutTransition` carries no mark at all: the compositor draws
+it, a GIF cuts hard. The inspector shows what the engine drawing the stage draws, 56 of 63
+fields with the three subtlest behind an Advanced disclosure, which is 39 controls a person
+could not reach at all before.
 Output keeps the take's shape; a chosen shape is filled by the background, and with no
 background by a soft blur of the take, never black bars. Browser chrome is a setting:
 for a take whose agent reported the page's viewport, `frame.chrome: remove` crops to the
@@ -226,7 +275,16 @@ shows, so the inset never hangs off the side of the window.
 It is the default renderer:
 every MP4 or MOV export runs
 it in a hidden window (`ui/render-host.js`, `render.html`), several times real time, with
-the sound rendered by ffmpeg alongside, and `preview_frame` draws with it too. GIF and
+the sound rendered by ffmpeg alongside, and `preview_frame` draws with it too.
+What the encoder is told matters as much as what is drawn: at `balanced`, the quality the
+Export dialog opens on, x264's early skip probe was writing a byte copy of the previous
+macroblock for 99 percent of the ground on every frame, so a still ground was a frozen
+picture in the file whatever the compositor drew. The rate factor was never the decision, the
+preset was: at `veryfast` there is no rate-distortion mode decision at all, so the probe is
+the whole of it. `balanced` now runs at `fast` with the same grain tuning `high` has, at CRF
+23 untouched, for 22 to 36 percent more file and a slightly better picture, and the ground
+renews on every delivered frame.
+ GIF and
 WebM and a take the compositor cannot read go to the classic ffmpeg renderer; auto zoom
 is drawn here too, from the moments `prepare.js` hands over whole. Activity and the MCP export result name the engine that drew each
 file (`gl` or `classic`, and why). What only the take's pixels say (a lift's element and
@@ -243,11 +301,17 @@ frame's edge coming up a little inward. Sample and hold is exact: an output fram
 the last frame the take wrote at or before its moment, across cuts.
 `FETCH_ENGINE=classic|gl` forces one.
 
-**MCP tools** (`mcp/index.js`), 26: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `pointer`,
+**MCP tools** (`mcp/index.js`), 34: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `pointer`,
 `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
-`list_beats`, `get_edit`, `apply_edit`, `export`, `rename_recording`,
+`list_beats`, `get_edit`, `apply_edit`, `direct`, `review`, `fit_to_length`, `revert_my_edit`,
+`export`, `rename_recording`,
 `remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`, `delete_recording`,
-`get_frame`, `find_on_screen`, `preview_frame`. `get_frame` returns the image itself.
+`get_frame`, `find_on_screen`, `preview_frame`, `contact_sheet`, `list_voices`, `voiceover`.
+`test/tools.test.js` is what keeps that list one list: every op the bridge answers has a tool
+on it, every tool drives an op that exists, and the names the in-app pane allows are the names
+the server registers, both directions. `record.pause` sat in the bridge for months with no
+tool on it, so the app could hold a take and no agent could, and a feature no agent can reach
+is a feature that does not exist. `get_frame` returns the image itself.
 `find_on_screen` reads a frame on device (Vision, `Elements.swift`) and returns its
 text, chips, buttons and cards as E1, E2... with boxes, ranked against the person's
 words ("the black chip"), plus the frame with them numbered; zooms and marks take that
@@ -261,9 +325,38 @@ re-read in the crop the edit is in and held to the same lift rules as any other 
 applied edit comes back with one frame of itself to look at. `preview_frame` draws
 frames of the edit exactly as export will, several in one call; `apply_edit` lists under `check` when to look at what it placed (just after it lands, and its middle), so an agent checks where a zoom landed before it reports. Marks merge by id: one an agent leaves out stays (an edit adding a lift once dropped the blurs hiding a name), only `remove: [ids]` deletes, and the result names every id an edit took out. A lift's box is grown to the element's own hairline at export and framed evenly, so its border comes up whole. Every 1.0 option is reachable: trim and cuts as clips, crop and aspect, texts with any
 installed font, caption style and position, zooms, backdrops, camera, denoise, loudness,
-gain, fades, music (an added track, or one of three beds made in `tools/make-beds.js`, `look.music`, ducked under the voice), redaction, lift, spotlight and numbered steps. The pipeline runs with the
+gain, fades, music (an added track, or one of three beds made in `tools/make-beds.js`, `look.music`, ducked under the voice), redaction, lift, spotlight and numbered steps. `export` writes m4a, mp3 and wav as well as MP4, MOV, WebM and GIF, since the edited sound on its own is a deliverable somebody wants, and it names its quality with the three words the person sees in the Export dialog rather than three of its own. The pipeline runs with the
 window closed. Settings that decide what may be recorded, and telemetry, are refused
 to agents in code.
+
+**A job an agent can finish.** Twenty-six tools and sixty-three look fields still could not
+answer "make this a 60 second demo for my landing page", because nothing in the product knew
+what a job was: the agent started blind, had no target, kept no plan, measured nothing and
+could not recover. Five things now exist and they are the round, in the order a turn uses
+them. `contact_sheet` is sight: up to 24 frames of the finished output in one picture, evenly
+spaced, drawn by the compositor exactly as the export draws them, each with its output time
+burned into its corner and its source second returned beside it. It exists because the best
+work in this product is motion, an ease that lands and settles, a dissolve, the travel blur
+under a zoom, and every bit of that is invisible in a single frame and obvious in a row of
+them. `direct` is the target and the plan: a brief (`seconds`, `aspect`, `where`, `audience`,
+`must_keep`, `must_hide`) and up to twelve steps `P1..Pn`, kept in `.fetch/<stem>.job.json`
+beside the take and deliberately not in the edit, because the job is about the work and has to
+survive the undo of the edit it produced. `fit_to_length` hits a number from the transcript:
+the fillers first, since nobody can hear a cut "um", then the longest pauses, then whole beats
+ranked by speech density, and never half a beat; it writes `clips` on the edit rather than a
+new file, and when the next cut would take the edit further under the target than it is over,
+it stops and names what that cut would have cost rather than butchering a take to win an
+argument with arithmetic. `review` is the house rubric measured rather than asked for: fifteen
+rules over the document, the brief and the beats, ranked blocking, should and note, each item
+carrying the exact call that fixes it and the times to look at. `revert_my_edit` is the
+recovery of last resort, the same code path as the person's own undo of an agent change, so a
+zoom they dragged since stays dragged. The loop is held together by what comes back rather
+than by what descriptions ask for: every `apply_edit` and every `export` carries `plan` (what
+is left, and `apply_edit { step: 'P3' }` closes one) and `distance` (the length and shape
+against the brief), and a take with no brief carries the nudge to write one instead. `export`
+runs `review` and hands its blocking list back with the file. The export still happens:
+refusing one on somebody's own machine is rude, and being unable to say "done" without having
+been shown the list is enough.
 
 **The agent's own cursor** (`ui/pointer.js`). An agent's take is recorded without the
 Mac's pointer, which belongs to the person at the desk. The agent reports where its
@@ -310,7 +403,10 @@ arrows, more than one device in a frame, reading the project's source code.
    GUI is a feature an agent cannot use. Ship both or neither.
 8. **The network is one labelled exception.** Voiceover through ElevenLabs is the only
    thing that leaves the machine. It says so where it is used, and its key lives in the
-   Keychain. Work handed to the person's own agent CLI (the chat pane, naming takes)
+   Keychain. An agent can ask for one (`list_voices`, `voiceover`, which speaks the take's own
+   captions back when it is given no script and sets the result as the edit's audio track),
+   and it reaches the same account the person connected by hand: the key is never an argument,
+   only the script is sent, and no agent can connect an account for somebody. Work handed to the person's own agent CLI (the chat pane, naming takes)
    goes out on their plan, not Fetch's, and is labelled where it happens: naming sends
    the app, the window title and the first 80 words, and its setting says so. Anything
    else that would need the network needs the same treatment or should not ship.

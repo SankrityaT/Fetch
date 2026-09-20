@@ -23,15 +23,17 @@ const QUALITY_ALIAS = { best: 'high', fast: 'small' }
 // (`.context/survey/m5-fades.md`). Every number about it is measured on the decoded file
 // now, which is the only end of this pipe that was ever worth measuring.
 //
-// What the encoder is told, at the one rate factor that can carry it:
+// What the encoder is told, at high and at balanced:
 //
 //   psy-rd          rate-distortion that prefers a frame carrying the same amount of
 //                   texture to a frame that is merely closer in error. It is the whole
 //                   of this, and it needs subme >= 6, which is what moves the preset off
 //                   veryfast. fast runs no trellis, so the psy-trellis term is small.
 //   aq-mode 3       quantiser down into flat and dark blocks, which is where a ground
-//                   and a dark look's page are. Strength is the dial that matters: at
-//                   0.6 the ground goes back to standing still.
+//                   and a dark look's page are. Strength is the dial that matters and it
+//                   is the one to leave alone: at 0.6 the ground goes back to standing
+//                   still, and above 1.0 it is exponential, since a ground is most of the
+//                   flat area in the frame. 1.4 is three times the file and 1.8 is ten.
 //   no-dct-decimate stop x264 zeroing a block whose coefficients come to almost nothing.
 //                   A block of tooth is almost nothing, by definition.
 //   deblock -1,-1   the deblocker is a smoother and three levels of tooth is the first
@@ -40,18 +42,49 @@ const QUALITY_ALIAS = { best: 'high', fast: 'small' }
 // fast is a better preset than veryfast, so one step of rate factor pays for most of
 // what those cost and the delivered picture is the one it was: against the drawn frames,
 // mean absolute difference 1.22 levels where it was 1.25, p99 5 where it was 6, SSIM
-// 0.9853 where it was 0.9854. What changes is where the bits go. Through a 200 frame still
-// passage the ground now moves on every one of them, where it used to stand still for up
-// to seventeen, and the file is 26 to 44 percent larger.
+// 0.9853 where it was 0.9854. What changes is where the bits go.
 //
-// Only at high. A rate factor that cannot carry the tooth cannot be told into carrying
-// it: at CRF 23 the whole of a 200 frame still passage comes back as one frozen picture
-// whatever the encoder is tuned to, and the same tuning there costs a fifth of the file
-// for nothing. balanced and small keep the encoder they had.
+// The tuning was given to high alone, on the reading that a rate factor that cannot carry
+// the tooth cannot be told into carrying it, and that reading was wrong, which left the
+// quality the Export dialog opens on frozen. Measured per macroblock rather than per
+// frame, which is the size the decision is actually made at: the thing that holds a ground
+// still is x264's early skip probe, which quantises the block's own residual at the
+// block's own QP and takes P_SKIP the moment every coefficient zeroes. A block of tooth
+// zeroes. The rate factor moves that QP, which is why CRF 20 looked like the cure and CRF
+// 23 like a wall, but the preset is what decides whether anything else ever gets a say:
+// at veryfast, subme 2 means no rate-distortion mode decision at all and psy-rd is inert,
+// so the probe is the whole of the decision and the reference is copied forward until the
+// next keyframe. At balanced that was 99 percent of ground blocks held every frame and the
+// median block standing still for the whole of a hundred frame group, which is one frozen
+// picture, exactly as it reads.
+//
+// So balanced runs the same tuning at its own rate factor, CRF 23 untouched, and the rate
+// factor was left alone on purpose: what a quality name promises is a size, and this is a
+// change in where the bits go. On the Songscription tour, over a 200 frame still passage,
+// on the four looks with a ground worth measuring, no delivered frame's ground is byte for
+// byte the one before it any more (Paper was 107 of 199 pairs, Mono print 6, Noir 1, now 0
+// on all four). Per macroblock, where the loss really lives: Noir's median ground block is
+// held 28 frames where it was 101 and renews eight times as hard, at 8.1 MB where it was
+// 6.0; the default look 61 frames where it was 101, four and a half times, 7.4 MB where it
+// was 5.9. Fidelity against the drawn frames does not move (SSIM 0.9913 where it was
+// 0.9893 on Paper, 0.9819 where it was 0.9810 on Noir), and the export runs at 3.4 to 4.1
+// x real time on those four looks against a 1.0 gate.
+//
+// Paper and Mono print are the honest remainder. Their grounds carry a third to half of
+// Noir's amplitude, so per block they barely move at CRF 23, and they pay the same fifth
+// of a file as the looks that do. That is arithmetic rather than tuning, and one tuning
+// per rate factor is worth more than a table of exceptions: even at high, Paper's median
+// ground block sits for 81 frames.
+//
+// small keeps the encoder it had, measured rather than assumed. At CRF 28 the same tuning
+// costs a fifth of the file and the ground does not move at all (renewal 0.0030 to 0.0032
+// on Noir, 0.0029 to 0.0025 on the default look); fast-pskip=0 alone does move it and
+// wants ninety percent more file. A file that small is a promise about size, and a still
+// ground is what that promise buys. `.context/survey/ain-p10.md` has the whole sweep.
 const X264_GRAIN = 'psy-rd=1.5,0.15:aq-mode=3:aq-strength=1.0:no-dct-decimate=1:deblock=-1,-1'
 const CRF = { high: 20, balanced: 23, small: 28 }
-const PRESET = { high: 'fast', balanced: 'veryfast', small: 'veryfast' }
-const TUNE = { high: ['-x264-params', X264_GRAIN] }
+const PRESET = { high: 'fast', balanced: 'fast', small: 'veryfast' }
+const TUNE = { high: ['-x264-params', X264_GRAIN], balanced: ['-x264-params', X264_GRAIN] }
 
 /**
  * The encoder's arguments. W4 x H is the packed frame (W rounded up to four); the

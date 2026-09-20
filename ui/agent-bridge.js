@@ -104,6 +104,13 @@ const TITLES = {
   'look.list': 'Listed looks',
   'look.apply': 'Changed a look',
   'look.save': 'Saved a look',
+  'edit.sheet': 'Looked over the whole edit',
+  'edit.direct': 'Wrote the brief and the plan',
+  'edit.review': 'Checked the edit against the brief',
+  'edit.fit': 'Fitted the edit to a length',
+  'edit.revert': 'Took back its own last change',
+  'voice.list': 'Listed the voices',
+  'voice.speak': 'Generated a voiceover',
 }
 
 const { AGENT_PREFS, HUMAN_ONLY_PREFS } = policy
@@ -125,7 +132,10 @@ const ops = {
 
   async 'record.status'() {
     const ended = !deps.isRecording() && endedTake ? { ended: { path: endedTake.path, stopped_early: endedTake.stopped_early } } : {}
-    return { recording: deps.isRecording(), pending: !!pendingTake, ...ended }
+    // Paused counts as recording (the file is still open), so it is said separately:
+    // an agent that held a take needs to know it is still holding it.
+    const paused = deps.isRecording() ? (await recPhase()) === 'paused' : false
+    return { recording: deps.isRecording(), paused, pending: !!pendingTake, ...ended }
   },
 
   // Starts a take through the renderer so every visible affordance still happens.
@@ -224,10 +234,22 @@ const ops = {
     return deps.pointer(args)
   },
 
+  // Hold a take and let it go again, through the same hotkey the person's own Pause
+  // uses, so the camera and the cursor track lose the same stretch the screen does and
+  // the take stays one file. An agent driving a long flow that hits a login screen can
+  // wait rather than stop and start again and leave two takes behind.
   async 'record.pause'() {
-    if (!deps.isRecording()) throw new Error('not recording')
+    if (!deps.isRecording()) throw new Error('not recording. record_start begins a take.')
+    // The renderer owns the state, so the answer is read back rather than assumed: an
+    // agent that cannot tell a pause from a resume sends this twice.
+    const was = await recPhase()
     deps.toRenderer('pause')
-    return { toggled: true }
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 50))
+      const now = await recPhase()
+      if (now && now !== was) return { paused: now === 'paused', recording: now === 'recording' }
+    }
+    return { paused: was !== 'paused', recording: was === 'paused' }
   },
 
   // Discovery. Without these an agent cannot target anything: record.start takes a
@@ -284,6 +306,15 @@ const ops = {
     for (const k of ['clips', 'zooms', 'texts', 'marks', 'cues']) {
       if (args.doc[k] != null && !Array.isArray(args.doc[k])) {
         throw new Error(`${k} is a list; to delete items send remove: ['M12'] beside it in doc, not inside it`)
+      }
+    }
+    // A sound file that is not there exports in silence, and nobody finds out until
+    // the person plays the file. It merges key by key, so file: null takes it off.
+    const at = args.doc.audioTrack
+    if (at && typeof at === 'object' && at.file != null) {
+      if (typeof at.file !== 'string' || !fs.existsSync(at.file)) {
+        throw new Error(`no sound file at ${at.file}. audioTrack.file is an absolute path to an audio file on this Mac; ` +
+          'voiceover writes one and sets this for you, and audioTrack: null takes the track off.')
       }
     }
     const prev = ['marks', 'zooms', 'texts', 'remove'].some(k => Array.isArray(args.doc[k]))
@@ -350,12 +381,18 @@ const ops = {
     ...(Array.isArray(args.doc.zooms) ? FD.zoomClashes(doc.zooms) : []).map(c =>
       `${c.a} and ${c.b} are both zooms from ${c.start} to ${c.end} s, and only one frames the shot at a time. ` +
       'Re-aim or retime the one already there rather than adding a second.')]
+    const rates = rateNotes(FD, args.doc)
+    if (rates.length) warn.push(...rates)
     if (warn.length) out.warnings = (out.warnings || []).concat(warn)
     const along = FD.focusAlongside(prev, doc)
     if (along.length) {
       out.alongside = { marks: along, why: 'these still play during the zoom you changed. An earlier edit may have added them unasked: ' +
         'remove one (remove: [id]) if the person did not ask for it or complained about a highlight there, and name each in your reply' }
     }
+    // What is left of the plan and how far the edit still is from the brief, on every
+    // call. A description asking an agent to check is a suggestion; a field it is
+    // handed every time is not. step: 'P3' closes that step of the plan.
+    Object.assign(out, jobState(args.path, doc, args.step, await takeShape(args.path)))
     out.preview = await previewOf(args.path, check, args.doc, doc)
     return out
   },
@@ -367,8 +404,8 @@ const ops = {
     const Look = require('./look')
     return {
       how: 'A look is { preset, <section>: { <field>: value } }. Send only what changes: a field left out is kept, ' +
-        'null puts it back to the preset, { preset: name } starts from that look. Fields marked [new renderer] are ' +
-        'saved but not drawn by this version; apply_look warns when one is set.',
+        'null puts it back to the preset, { preset: name } starts from that look. The marks on a field say which ' +
+        'renderer draws it; apply_look warns when the export you asked for would leave one out.',
       fields: Look.describe(),
       looks: Look.list(looksDir()).map(p => p.name),
     }
@@ -377,7 +414,8 @@ const ops = {
   async 'look.list'() {
     const Look = require('./look')
     return {
-      looks: Look.list(looksDir()).map(p => ({ name: p.name, label: p.label, about: p.doc || undefined, yours: p.mine || undefined })),
+      looks: Look.list(looksDir()).map(p => ({ name: p.name, label: p.label, about: p.doc || undefined,
+        for: p.for || undefined, yours: p.mine || undefined })),
       backgrounds: { gradients: Object.keys(require('./look-schema').GRADIENTS),
         images: deps.proc.backdropList().filter(b => b.image).map(b => b.id) },
     }
@@ -435,7 +473,22 @@ const ops = {
       ? +(require('fs').statSync(r.file).size / 1e6).toFixed(1) : null
     // which renderer drew it: gl (the compositor) or classic, and what kept it classic
     const engine = r && r.engine ? { engine: r.engine, ...(r.engine === 'classic' && r.why && r.why.length ? { classic_because: r.why } : {}) } : {}
-    return { path: r && r.file, mb, seconds: +FD.outDuration(doc).toFixed(2), ...engine }
+    // What the renderer that actually drew it leaves out. A GIF goes to the classic
+    // renderer, which draws no treatment, and used to say nothing about dropping it.
+    const lw = lookWarnings(null, doc, args.path, { engine: r && r.engine, format: args.format || 'mp4' })
+    // The rubric, on the file the person now has. The export still happens: refusing
+    // one on somebody's own machine is rude. The agent is simply never handed a file
+    // without the list of what is still wrong with it.
+    let checked = null
+    try {
+      const Review = require('./review')
+      const c = Review.review({ doc, ...briefAndBeats(args.path, meta), path: args.path, looks: require('./look').list(looksDir()) })
+      checked = { verdict: c.verdict, summary: c.summary, blocking: Review.blocking(c), look_at: c.look_at }
+    } catch {}
+    return { path: r && r.file, mb, seconds: +FD.outDuration(doc).toFixed(2), ...engine,
+      ...(lw.length ? { look_warnings: lw } : {}),
+      ...(checked ? { review: checked } : {}),
+      ...jobState(args.path, doc, null, meta) }
   },
 
   // Rename through the same helper the Library uses, so sidecars (transcript, beats,
@@ -603,6 +656,147 @@ const ops = {
         start: Math.round(b.start * 100) / 100, end: Math.round(b.end * 100) / 100 }))
   },
 
+  // ── the job ────────────────────────────────────────────────────────────
+  // A brief, a plan and the distance to both. It lives in a sidecar beside the take
+  // (ui/director.js) rather than in the edit, because the job is about the work: it
+  // has to survive the undo of the edit it produced, and closing a step is not an
+  // undo level.
+  async 'edit.direct'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const Director = require('./director')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    const patch = { brief: args.brief, plan: args.plan, done: args.done, open: args.open, drop: args.drop, note: args.note }
+    if (Object.values(patch).every(v => v === undefined)) {
+      const job = Director.read(args.path)
+      if (!job) throw new Error(Director.NO_BRIEF)
+    }
+    return Director.direct(args.path, patch, { facts: editFacts(doc) })
+  },
+
+  // The house rubric, measured on the document rather than asked for in prose
+  // (ui/review.js). Pure: no ffmpeg, no frames, so it is cheap enough to call before
+  // every reply, which is the point of it.
+  async 'edit.review'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    return require('./review').review({
+      doc, ...briefAndBeats(args.path, meta), path: args.path,
+      looks: require('./look').list(looksDir()),
+    })
+  },
+
+  // A length is a decision about what to keep, so it writes clips. remove_dead_air
+  // writes a new file whose edit is empty; this leaves the take alone.
+  async 'edit.fit'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const Fit = require('./fit')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    let w = null
+    try { w = JSON.parse(fs.readFileSync(deps.proc.sidecarIn(args.path, '.words.json'), 'utf8')) } catch {}
+    // A length is chosen from what was said, so with nothing said this is a wasted
+    // turn: it would hand back the edit it was given and a sentence nobody reads.
+    if (!(w && w.words && w.words.length) && !(doc.cues || []).length && !(doc.beats || []).length) {
+      throw new Error('No transcript, so there is nothing to choose from. Call transcribe on this take, then fit_to_length again.')
+    }
+    const r = Fit.fit(doc, {
+      seconds: args.seconds, keep: args.keep, extra: args.fillers,
+      words: (w && w.words) || null, speech: (w && w.speech) || null,
+    })
+    // The clips are in the document the moment they are applied, and get_edit names
+    // them; sending them back here would be the same list twice (principle 6).
+    const { clips, spans, ...out } = r
+    if (args.apply === false || !clips.length) return { ...out, applied: false }
+    const applied = await ops['edit.apply']({ path: args.path, doc: { clips }, step: args.step })
+    return { ...out, applied: true, output: applied.output,
+      ...(applied.plan ? { plan: applied.plan } : {}), ...(applied.distance ? { distance: applied.distance } : {}),
+      ...(applied.hint ? { hint: applied.hint } : {}) }
+  },
+
+  // The whole edit as one picture, so an agent can judge motion rather than a moment.
+  // from, to and the times on the sheet are output seconds; each cell also comes back
+  // with the source second it was drawn from, which is what every other tool takes.
+  async 'edit.sheet'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    if (!fs.existsSync(args.path)) throw new Error('no such file')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    const r = await require('./render-host').contactSheet(args.path, doc,
+      { from: args.from, to: args.to, count: args.count })
+    return {
+      image: r.file, from: r.from, to: r.to, output_seconds: r.span,
+      cols: r.cols, rows: r.rows, count: r.count,
+      frames: r.frames.map(f => ({ at: f.at, source_at: f.source })),
+    }
+  },
+
+  // The agent's own last burst of changes, put back. One code path with the person's
+  // own "Undo Biscuit's change" button, which is why it is safe to hand over: it
+  // merges by id, so a zoom they dragged since stays dragged, and it never reaches
+  // their own undo history.
+  async 'edit.revert'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const before = deps.proc.readDoc(args.path, null)
+    const undone = await inEditor(args.path, `window.fetchUndo ? window.fetchUndo.undo(${JSON.stringify(args.path)}) : false`)
+    if (!undone) {
+      throw new Error('nothing of yours to take back on this take. Change the edit itself with apply_edit ' +
+        '(a zoom or a mark is fixed by re-sending it with its id, and remove: [id] deletes one).')
+    }
+    const doc = await inEditor(args.path, 'window.fetchDoc.get()')
+    deps.proc.writeDoc(args.path, doc)
+    const gone = removedIds(before, doc)
+    return { ...summarise(doc, args.path), ...(gone.length ? { removed: { ids: gone, why: 'these went back out of the edit; say so in your reply' } } : {}),
+      ...jobState(args.path, doc, null, await takeShape(args.path)) }
+  },
+
+  // ── voiceover ──────────────────────────────────────────────────────────
+  // The one part of Fetch that uses the network, through the person's own ElevenLabs
+  // account (ui/voice.js). The key is theirs, it lives in the Keychain, it is never an
+  // argument here, and only the script is sent: no audio, no video, no filenames.
+  async 'voice.list'() {
+    const voice = require('./voice')
+    const s = await voice.status()
+    if (!s.connected) throw new Error(NO_VOICE_ACCOUNT)
+    return { voices: await voice.voices(),
+      ...(s.limit != null ? { characters: { used: s.used, limit: s.limit } } : {}) }
+  },
+
+  async 'voice.speak'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    const voice = require('./voice')
+    if (!(await voice.status()).connected) throw new Error(NO_VOICE_ACCOUNT)
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    // With no script the take's own captions are the script: re-narrating what was
+    // said, in a clean voice, over the same footage, is what this is for.
+    const script = String(args.script || voice.scriptFromCues(doc.cues) || '').trim()
+    if (!script) {
+      throw new Error('nothing to say: send script, or transcribe this take first and its own words are spoken back.')
+    }
+    const list = await voice.voices()
+    const want = args.voice == null ? '' : String(args.voice).trim()
+    const pick = want
+      ? list.find(v => v.id === want || v.name.toLowerCase() === want.toLowerCase())
+      : list[0]
+    if (!pick) throw new Error(`no voice called ${want} on this account; list_voices names the ones there are`)
+    const file = deps.proc.sidecarOut(args.path, '.vo.mp3')
+    await voice.speak({ text: script, voiceId: pick.id, outPath: file,
+      settings: { stability: args.stability, similarity: args.similarity, speed: args.speed } })
+    const vm = await deps.proc.probeMeta(file).catch(() => ({}))
+    const out = { file, voice: pick.name, characters: script.length,
+      seconds: vm && vm.duration ? +vm.duration.toFixed(2) : null }
+    if (args.apply === false) return { ...out, applied: false }
+    // Into the edit through apply_edit, so the person watching sees it land and one
+    // Undo takes it back. replace mutes the take's own sound under it.
+    const name = path.parse(args.path).name + ' voiceover'
+    const applied = await ops['edit.apply']({ path: args.path, step: args.step,
+      doc: { audioTrack: { file, name, volume: 1, offset: args.offset || 0, replace: args.replace !== false } } })
+    return { ...out, applied: true, audioTrack: applied.audioTrack,
+      ...(applied.plan ? { plan: applied.plan } : {}), ...(applied.distance ? { distance: applied.distance } : {}) }
+  },
+
   async 'recordings.list'() {
     // Through the app, never through processor directly: listRecordings falls back to
     // a different, empty library index outside Electron and ignores the saveDir pref.
@@ -660,6 +854,17 @@ const ops = {
     if (args.include_text) out.text = r.text
     return out
   },
+}
+
+// Whether the take running is paused. The renderer holds it: a native take carries it
+// on recState, a MediaRecorder take on the recorder itself, and neither is mirrored
+// into this process.
+async function recPhase() {
+  const win = deps.getWindow()
+  if (!win || win.isDestroyed()) return null
+  return await win.webContents.executeJavaScript(
+    '(() => { try { return (typeof nativeTake !== "undefined" && nativeTake) ? recState ' +
+    ': (typeof rec !== "undefined" && rec ? rec.state : null) } catch { return null } })()').catch(() => null)
 }
 
 // Refuse the take if the policy says so, with a reason the agent can relay verbatim.
@@ -1051,6 +1256,31 @@ function firstChange(sent, doc) {
   return Math.min(1, (+doc.dur || 2) / 2)
 }
 
+// What a rate the agent sent is not. Fetchdoc clamps quietly, which is right for a
+// document being read back, and wrong for a call being answered: an agent that asked
+// for a freeze got normal speed and the only sign was a field missing from get_edit.
+// So the clamp is said out loud here, once, naming the range and the clip.
+function rateNotes(FD, sent) {
+  const out = []
+  for (const c of (sent && sent.clips) || []) {
+    if (!c || c.rate == null) continue
+    const ends = Array.isArray(c.rate) ? c.rate : [c.rate]
+    const name = c.id ? `${c.id}'s` : 'a clip\'s'
+    for (const v of ends) {
+      const n = +v
+      if (!Number.isFinite(n) || n <= 0) {
+        out.push(`${name} rate ${JSON.stringify(v)} is not a speed, so that clip plays at 1. rate is source seconds ` +
+          `per output second, ${FD.RATE_MIN} to ${FD.RATE_MAX}: 2 is twice speed, 0.5 is half. Fetch holds no frames, ` +
+          'so there is no rate that freezes one; to hold a moment, ask the person whether a still is what they want.')
+      } else if (n < FD.RATE_MIN || n > FD.RATE_MAX) {
+        out.push(`${name} rate ${n} was held to ${Math.min(FD.RATE_MAX, Math.max(FD.RATE_MIN, n))}, which is the fastest ` +
+          `and slowest Fetch plays: ${FD.RATE_MIN} to ${FD.RATE_MAX}. The finished length in this result is measured at what it runs at.`)
+      }
+    }
+  }
+  return out
+}
+
 // A new or moved zoom placed by centre and scale rather than by what it frames. Fine
 // for "zoom in on the first two seconds"; for a thing on screen, Fetch's own fit from
 // the box is what lands it, so the result says so.
@@ -1169,6 +1399,73 @@ function textOnOutput(doc, t) {
   return { ...t, start: at(t.start), end: at(t.end) }
 }
 
+// What the brief is measured against: the finished length and the shape it goes out
+// in. Both come off the document, so nothing is drawn to answer it.
+// What the distance is measured on: the finished length, and the shape the export will
+// actually be. 'auto' is the take's own shape, not an unanswered question, so it is
+// resolved here against the crop or the take's own pixels; reporting it as "none set"
+// made a 16:9 screen recording read as the wrong shape for a 16:9 brief forever.
+function editFacts(doc, meta) {
+  const Look = require('./look')
+  const aspect = Look.resolve(doc && doc.look).frame.aspect
+  const seconds = require('./fetchdoc').outDuration(doc || {})
+  if (aspect !== 'auto') return { seconds, aspect }
+  const c = doc && doc.crop
+  const box = c && +c.w > 0 && +c.h > 0 ? [+c.w, +c.h]
+    : meta && +meta.width > 0 && +meta.height > 0 ? [+meta.width, +meta.height] : null
+  if (!box) return { seconds, aspect: null }
+  const n = box[0] / box[1]
+  return { seconds, aspect: Look.aspectOf(n) || `${Math.round(n * 100) / 100}:1` }
+}
+
+// The plan and the distance, on every call that changes or finishes an edit. This is
+// the enforcement: a returned field an agent reads every time beats a description
+// asking it to check. `step` closes a step of the plan, which is one direct call and
+// not a second code path. A missing or broken job file is a nudge, never an error.
+// The take's own pixel size, which never changes for a file, so it is probed once per
+// path rather than once per call: apply_edit needs it only to answer "is 'auto' the
+// shape the brief asked for", and that is not worth an ffmpeg spawn every time.
+const shapeMemo = new Map()
+async function takeShape(file) {
+  if (shapeMemo.has(file)) return shapeMemo.get(file)
+  let m = null
+  try { const p = await deps.proc.probeMeta(file); if (p && p.width > 0) m = { width: p.width, height: p.height } } catch {}
+  shapeMemo.set(file, m)
+  return m
+}
+
+function jobState(file, doc, step, meta) {
+  const Director = require('./director')
+  try {
+    const facts = editFacts(doc, meta)
+    if (!step || !Director.read(file)) return Director.forEdit(file, facts)
+    const r = Director.direct(file, { done: step }, { facts })
+    return {
+      plan: r.plan, distance: r.distance,
+      ...(r.closed.length ? { closed: r.closed } : {}),
+      ...(r.unknown.length ? { unknown: r.unknown,
+        why: `no ${r.unknown.join(', ')} in the plan; direct names the steps and their ids` } : {}),
+    }
+  } catch { return null }
+}
+
+// What review reads beside the document: the brief from the job sidecar and the beats
+// from the transcript. A take with neither still reviews, and says so in its findings.
+function briefAndBeats(file, meta) {
+  let brief = null, beats = null, silent = false
+  try { brief = (require('./director').read(file) || {}).brief || null } catch {}
+  try { beats = deps.proc.beatsFor(file, meta && meta.duration) } catch {}
+  try { silent = !!meta && meta.hasAudio === false } catch {}
+  // the take's own pixels, so the rubric can tell "no shape set" from "the shape asked for"
+  return { brief, beats, silent, width: meta && meta.width, height: meta && meta.height }
+}
+
+// The key is the person's and it is entered by hand, in the editor, into the Keychain.
+// An agent cannot connect an account for somebody, so the refusal names who can.
+const NO_VOICE_ACCOUNT = 'No ElevenLabs account is connected. The person connects their own in the editor\'s ' +
+  'Voiceover tab (their key goes to the Keychain and is never an argument here). Ask them to connect it, ' +
+  'or record narration with record_start { mic: true } instead.'
+
 function summarise(doc, path) {
   const r = n => Math.round(n * 100) / 100
   const Look = require('./look')
@@ -1176,7 +1473,9 @@ function summarise(doc, path) {
   const cam = doc.camera
   return {
     duration: r(doc.dur || 0),
-    output: r((doc.clips || []).reduce((n, c) => n + (c.end - c.start), 0)),
+    // through outDuration, not a sum of the spans: a 20 second clip at 4x is five
+    // seconds of the finished video, and this number is what the brief is measured on
+    output: r(require('./fetchdoc').outDuration(doc)),
 
     clips: (doc.clips || []).map(c => ({ id: c.id, start: r(c.start), end: r(c.end) })),
     zooms: (doc.zooms || []).map(z => ({ id: z.id, start: r(z.start), end: r(z.end), scale: z.scale, x: z.x, y: z.y })),
@@ -1212,7 +1511,7 @@ function summarise(doc, path) {
       backgroundImages: deps.proc.backdropList().filter(b => b.image).map(b => b.id),
       textStyles: ['title', 'lower-third', 'label'],
       markKinds: ['redact', 'blur', 'lift', 'spotlight', 'step', 'loupe'],
-      cropAR: ['free', '16:9', '9:16', '1:1', '4:5'],
+      cropAR: require('./look').CROP_ARS,
     },
   }
 }
@@ -1226,7 +1525,7 @@ function looksDir() {
 // Warnings for a look an agent sent: values clamped or unknown (validate), then what
 // the look as a whole does on this take (Look.warnings: fields not drawn yet, a shape
 // filled rather than letterboxed, chrome that cannot be removed).
-function lookWarnings(patch, doc, file) {
+function lookWarnings(patch, doc, file, ctx) {
   const Look = require('./look')
   const out = patch ? Look.validate(patch, { userDir: looksDir() }).warnings : []
   const L = Look.resolve(doc && doc.look)
@@ -1239,7 +1538,11 @@ function lookWarnings(patch, doc, file) {
   } catch {}
   let images
   try { images = deps.proc.backdropList().filter(b => b.image).map(b => b.id) } catch {}
-  return out.concat(Look.warnings(L, { viewport: !!(doc && doc.viewport), browser, images }))
+  // Which renderer draws a field is a question about the engine, not about a release,
+  // so the engine that will draw this output is passed where it is known (the export
+  // knows both). Nothing given, the compositor answers, which is what draws the stage.
+  return out.concat(Look.warnings(L, { viewport: !!(doc && doc.viewport), browser, images,
+    engine: ctx && ctx.engine, format: ctx && ctx.format, marks: doc && doc.marks }))
 }
 
 // Point the renderer's setup at what was asked for, reusing the same state the UI
@@ -1340,6 +1643,11 @@ function logOp(op, ctx, t0, args, result, error) {
   else if (op === 'frame' && result) detail = `${result.at}s`
   else if (op === 'find' && result) detail = `${result.at}s${result.query ? `, "${result.query}"` : ''}`
   else if (op === 'edit.preview' && result) detail = (result.frames || [result]).map(f => `${f.at}s`).join(', ')
+  else if (op === 'edit.sheet' && result) detail = `${result.count} frames, ${result.from} to ${result.to}s`
+  else if (op === 'edit.direct' && result) detail = result.plan && result.plan.line
+  else if (op === 'edit.review' && result) detail = result.summary
+  else if (op === 'edit.fit' && result) detail = `${result.was}s to ${result.now}s`
+  else if (op === 'voice.speak' && result) detail = `${result.characters} characters, ${result.voice}`
   else if (op === 'edit.enhance' && result) detail = result.path
   else if (op === 'recordings.trash' && result) detail = result.trashed
   else if (op === 'settings.set' && args && args.settings) detail = Object.keys(args.settings).join(', ')
@@ -1473,6 +1781,10 @@ function stop() {
 }
 
 module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEndedAlone, stillNote, occludedTake, noteMoves, follow, checkTimes, liftable,
+  // every op this bridge answers. test/tools.test.js walks it against the tools
+  // mcp/index.js registers, because record.pause sat here unregistered for months and
+  // a feature no agent can reach is a feature that does not exist.
+  ops,
   // the lasso: main.js registers what the Elements pass found and the areas the person
   // drew, and apply_edit resolves R ids out of the same store
   noteFound, noteRegion, regionFor, forgetRegion,

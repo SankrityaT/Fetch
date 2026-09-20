@@ -25,6 +25,9 @@
 //              frame by frame off the GPU, each landing on the frame the timeline names
 //   blur       the shutter is the travel: a moving frame smears, a held one is byte for
 //              byte the frame it was at any shutter angle
+//   sheet      the contact sheet an agent sees motion in: every cell is the frame
+//              preview_frame draws at the output time burned into it, the cells move,
+//              and a cut out of the middle is nowhere on the sheet
 //   sinks      each encoder (WebCodecs, VideoToolbox through ffmpeg, x264) keeps the
 //              bars' colours, and the canvas encoder one frame per slot
 //   audio      the sound (cuts, fades, an added track, a music bed) is as long as the
@@ -583,6 +586,74 @@ app.whenReady().then(async () => {
         h[0].max === 0 && h[1].max === 0, `shut ${h[0].max} LSB, wide open ${h[1].max} LSB`)
     }
 
+    if (want('sheet')) {
+      console.log('the whole edit in one picture')
+      // A contact sheet is how an agent sees motion rather than a moment: a dozen
+      // frames of the output at once, drawn by the compositor, each with its output
+      // time on it. So what has to be true is that every cell is the frame the plan
+      // names at the time burned into it, that the cells move (a stale compositor
+      // handing back the picture before would read as an edit that never cuts), and
+      // that the sheet is the edit and not the file: a cut out of the middle is
+      // nowhere on it.
+      const keep = [[0.5, 4], [8, 11.5]]
+      const doc = {
+        v: 2, src: take, dur: meta.duration,
+        clips: keep.map(([start, end], i) => ({ id: 'C' + (i + 1), start, end })),
+        zooms: [{ id: 'Z1', start: 1, end: 3.4, scale: 1.8, x: 0.35, y: 0.4 }],
+        look: { background: { kind: 'gradient', gradient: 'dusk' }, treatment: { motionBlur: 0.5 } },
+      }
+      // Grey pixels of part of a picture, given as fractions of it, so a cell of the
+      // sheet and a still of its own size can be compared without knowing either size
+      const greyOf = (file, box, w = 192, h = 120) => {
+        const vf = `crop=iw*${box.w}:ih*${box.h}:iw*${box.x}:ih*${box.y},scale=${w}:${h}:flags=area,format=gray`
+        const r = spawnSync(ffmpeg, ['-v', 'error', '-i', file, '-vf', vf, '-frames:v', '1', '-f', 'rawvideo', '-'], { maxBuffer: 1 << 26 })
+        if (!r.stdout || r.stdout.length < w * h) throw new Error('could not read ' + file + ': ' + String(r.stderr || r.error).slice(0, 200))
+        return r.stdout.subarray(0, w * h)
+      }
+      const mad = (a, b) => { let s = 0; for (let k = 0; k < a.length; k++) s += Math.abs(a[k] - b[k]); return s / a.length }
+      const size = f => spawnSync('/opt/homebrew/bin/ffprobe', ['-v', 'error', '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height', '-of', 'csv=p=0', f]).stdout.toString().trim()
+
+      const sh = await host.contactSheet(take, doc, { count: 12, width: 1200 }, 'gl-test-sheet')
+      is('a sheet of the whole edit is one picture', sh.frames.length === 12 && sh.cols * sh.rows === 12
+        && size(sh.file) === `${sh.width},${sh.height}`, `${sh.cols}x${sh.rows}, ${size(sh.file)}, ${sh.ms} ms`)
+
+      // the label sits in the bottom of a cell, so only the top of one is compared
+      const cellBox = i => ({
+        x: (i % sh.cols) * (sh.cell.w + sh.cell.gap) / sh.width,
+        y: Math.floor(i / sh.cols) * (sh.cell.h + sh.cell.gap) / sh.height,
+        w: sh.cell.w / sh.width, h: sh.cell.h * 0.72 / sh.height,
+      })
+      const top = { x: 0, y: 0, w: 1, h: 0.72 }
+      let worst = 99, where = ''
+      for (const i of [0, 5, 11]) {
+        const [still] = await host.previewFrames(take, doc, [sh.frames[i].source], { width: Math.round(1200 / sh.cols) })
+        const p = psnr(greyOf(sh.file, cellBox(i)), greyOf(still.file, top))
+        if (p < worst) { worst = p; where = `cell ${i}, ${sh.frames[i].at}s out of ${sh.frames[i].source}s in` }
+      }
+      is('every cell is the frame preview_frame draws at the time on it', worst > 26, `worst ${worst.toFixed(1)} dB, ${where}`)
+
+      // A compositor kept between the stills of one job can hand back the picture
+      // before, and on a sheet that reads as an edit that never moves, so no two cells
+      // may be the same picture, not just no two neighbours.
+      const cells = sh.frames.map((_, i) => greyOf(sh.file, cellBox(i), 288, 180))
+      const pairs = cells.flatMap((c, i) => cells.slice(i + 1).map(d => mad(c, d)))
+      is('the cells move: no two are the same picture', Math.min(...pairs) > 1,
+        `closest pair differs by ${Math.min(...pairs).toFixed(2)} of 255`)
+
+      is('the cut is nowhere on the sheet', sh.frames.every(f => keep.some(([a, b]) => f.source >= a - 0.05 && f.source <= b + 0.05)),
+        sh.frames.map(f => f.source).join(', '))
+
+      const win = await host.contactSheet(take, doc, { from: 2, to: 5, count: 6, width: 900 }, 'gl-test-sheet-win')
+      is('from and to window the sheet, in output seconds',
+        win.frames.length === 6 && win.from === 2 && win.to === 5 && win.frames.every(f => f.at >= 2 && f.at <= 5),
+        `${win.from} to ${win.to} of ${win.span}: ${win.frames.map(f => f.at).join(', ')}`)
+
+      const big = await host.contactSheet(take, doc, { count: 40, width: 1200 }, 'gl-test-sheet-max')
+      is('never more than 24 frames', big.frames.length === 24 && big.cols * big.rows === 24,
+        `${big.frames.length} frames, ${big.cols}x${big.rows}, ${big.ms} ms`)
+    }
+
     if (want('sinks')) {
       console.log('every encoder keeps the colour')
       const bars = path.join(FIX, 'bars.mp4')
@@ -654,5 +725,11 @@ app.whenReady().then(async () => {
     console.log('  FAIL ' + (e.stack || e.message))
   }
   console.log(`\n${pass} passed, ${fail} failed`)
+  // The render host keeps a warm hidden window with a live GPU context, and since the
+  // contact sheet the harness uses it too. Exiting while it is still up aborts Electron
+  // in teardown (SIGTRAP), so a clean run reported a failing shell exit and any gate
+  // reading that code saw 192 passing checks as a failure. Put it down first.
+  try { require('../../ui/render-host').close() } catch {}
+  try { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.destroy() } catch {}
   app.exit(fail ? 1 : 0)
 })

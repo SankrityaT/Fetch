@@ -8,7 +8,7 @@
 // (test/timeline.test.js).
 //
 // Source time is seconds into the recorded take. Output time is seconds into the
-// finished video, after the trim and the cuts.
+// finished video, after the trim, the cuts and the rate each surviving piece runs at.
 
 /**
  * The ranges of [from, to] that survive once `cuts` are removed, in order. Cuts are
@@ -32,25 +32,150 @@ function keepRanges(cuts, from, to) {
   return keep
 }
 
+// ── rate ────────────────────────────────────────────────────────────────
+//
+// A kept range is [a, b] at the take's own rate, [a, b, r] held at one rate, or
+// [a, b, r0, r1] for a ramp. Rate is source seconds spent per output second, so 2
+// is twice as fast and 0.5 is half. A range that runs at 1 is written [a, b] and
+// nothing downstream can tell this code was ever here, which is why every document
+// written before speed existed still reads out byte for byte what it did.
+//
+// A ramp's rate runs linearly in OUTPUT seconds, not in source seconds, and that
+// choice is the whole reason a ramp stays a closed form. With r(tau) = r0 + m*tau,
+// the source time it has reached integrates to a quadratic, s = a + r0*tau +
+// m*tau^2/2, whose inverse is one square root. The other choice, linear in source,
+// integrates to a logarithm and reads its own inverse as an exponential, and neither
+// is worse arithmetic so much as worse to reason about at a boundary. It also hands
+// back the length for free: over a segment the mean rate is exactly (r0 + r1) / 2,
+// so a ramp's output span is 2 * (b - a) / (r0 + r1), and at r0 === r1 that is the
+// plain (b - a) / r the constant case already wanted.
+//
+// Nothing here accumulates: every answer is solved from the range and the time. That
+// is the same rule the passes keep, and it is what lets srcTime invert exactly.
+const RATE_MIN = 0.1, RATE_MAX = 20
+const rateEnds = seg => {
+  const r0 = seg.length > 2 && +seg[2] > 0 ? +seg[2] : 1
+  return [r0, seg.length > 3 && +seg[3] > 0 ? +seg[3] : r0]
+}
+// How many output seconds a kept range is worth
+function outSpan(seg) {
+  const [r0, r1] = rateEnds(seg)
+  return 2 * (seg[1] - seg[0]) / (r0 + r1)
+}
+// The source time a range has reached tau output seconds in, and the rate there
+function srcIn(seg, tau) {
+  const [a, b] = seg, [r0, r1] = rateEnds(seg)
+  if (r0 === r1) return a + tau * r0
+  const m = (r1 - r0) / outSpan(seg)
+  return a + r0 * tau + m * tau * tau / 2
+}
+function rateIn(seg, tau) {
+  const [r0, r1] = rateEnds(seg)
+  if (r0 === r1) return r0
+  return r0 + (r1 - r0) / outSpan(seg) * tau
+}
+// and the way back: the output seconds a range has spent to reach source time s
+function outIn(seg, s) {
+  const [a] = seg, [r0, r1] = rateEnds(seg)
+  const d = Math.max(0, s - a)
+  if (r0 === r1) return d / r0
+  const m = (r1 - r0) / outSpan(seg)
+  return (Math.sqrt(Math.max(0, r0 * r0 + 2 * m * d)) - r0) / m
+}
+// A sub-range of a ramp is a ramp. Rate is linear in output time and output time is
+// only shifted by the cut, so the piece keeps the rates it actually had at its ends
+// and its own closed form is the parent's, restricted.
+function slice(seg, a, b) {
+  const [r0, r1] = rateEnds(seg)
+  if (r0 === r1) return r0 === 1 ? [a, b] : [a, b, r0]
+  return [a, b, rateIn(seg, outIn(seg, a)), rateIn(seg, outIn(seg, b))]
+}
+
+/**
+ * Hand the rates the clips asked for to the ranges the cuts left. `rates` is source
+ * spans, [a, b, r0, r1] like a kept range; a kept range with none is left alone and
+ * stays a bare pair.
+ *
+ * A range is split wherever the rate changes inside it, and it has to be: two clips
+ * that meet with no gap between them leave no cut, so the whole run comes back as one
+ * range, and the second clip's speed would be thrown away. Splitting means kept ranges
+ * can now be adjacent, which they never were before, and the one thing downstream that
+ * cared is the cut transition, which is between pieces the edit actually separated
+ * (plan.js, cutPoints, skips a boundary with no gap behind it).
+ */
+function applyRates(keep, rates) {
+  if (!rates || !rates.length) return keep
+  const spans = rates.filter(r => r && r[1] > r[0]).sort((x, y) => x[0] - y[0])
+  const out = []
+  for (const k of keep) {
+    const [a, b] = k
+    let t = a
+    for (const seg of spans) {
+      const lo = Math.max(t, seg[0]), hi = Math.min(b, seg[1])
+      if (hi - lo <= 1e-9) continue
+      if (lo - t > 1e-9) out.push([t, lo])
+      out.push(slice(seg, lo, hi))
+      t = hi
+    }
+    if (b - t > 1e-9) out.push(t === a ? k : [t, b])
+  }
+  return out
+}
+
+/**
+ * A range cut into pieces short enough that one rate describes each of them.
+ *
+ * The picture does not need this: setpts takes the ramp's closed form whole. The
+ * sound does, because ffmpeg's atempo is one number and has no sliding form, so a
+ * ramp's audio is a staircase however it is written. `step` is the longest an output
+ * piece may be, and at a fifth of a second the worst a burst lands from where the
+ * picture puts it is a few milliseconds, well under the twenty or so the ear reads as
+ * out of sync. Each piece is the parent's own map restricted, so the pieces add up to
+ * exactly the parent's length and nothing accumulates across them.
+ */
+const RATE_STEP = 0.2
+function rateSteps(seg, step = RATE_STEP) {
+  const [r0, r1] = rateEnds(seg)
+  const T = outSpan(seg)
+  const n = r0 === r1 ? 1 : Math.max(1, Math.min(256, Math.ceil(T / step)))
+  if (n === 1) return [seg]
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const a = i === 0 ? seg[0] : srcIn(seg, T * i / n)
+    const b = i === n - 1 ? seg[1] : srcIn(seg, T * (i + 1) / n)
+    out.push(slice(seg, a, b))
+  }
+  return out
+}
+
 /**
  * Source time to output time, as a function. A moment inside a cut lands where the
  * cut closed (the start of the next kept range). clock.kept(t) says whether t survives
  * at all: a click inside a cut has to be dropped, not snapped, or a zoom lands on
  * something no longer on screen. clock.keep is the ranges it was built from.
+ *
+ * `rates` is what the clips asked for (Fetchdoc.trimFromClips); left out, every range
+ * runs at 1 and this is the function it always was.
  */
-function outClock(cuts, start, end) {
-  const keep = (cuts && cuts.length) ? keepRanges(cuts, start, end) : [[start, end]]
+function outClock(cuts, start, end, rates) {
+  const cut = (cuts && cuts.length) ? keepRanges(cuts, start, end) : [[start, end]]
+  const keep = applyRates(cut, rates)
   const clock = t => {
     let acc = 0
-    for (const [a, b] of keep) {
-      if (t < a) return acc
-      if (t <= b) return acc + (t - a)
-      acc += b - a
+    for (const seg of keep) {
+      if (t < seg[0]) return acc
+      if (t <= seg[1]) return acc + outIn(seg, t)
+      acc += outSpan(seg)
     }
     return acc
   }
-  clock.kept = t => keep.some(([a, b]) => t >= a && t <= b)
+  clock.kept = t => keep.some(seg => t >= seg[0] && t <= seg[1])
   clock.keep = keep
+  // The rate a source moment plays at, for anything measuring per output second
+  clock.rate = t => {
+    for (const seg of keep) if (t >= seg[0] && t <= seg[1]) return rateIn(seg, outIn(seg, t))
+    return 1
+  }
   return clock
 }
 
@@ -62,9 +187,9 @@ function outClock(cuts, start, end) {
 function srcTime(keep, tOut) {
   let acc = 0
   const t = Math.max(0, +tOut || 0)
-  for (const [a, b] of keep || []) {
-    const len = b - a
-    if (t <= acc + len) return a + (t - acc)
+  for (const seg of keep || []) {
+    const len = outSpan(seg)
+    if (t <= acc + len) return Math.min(seg[1], srcIn(seg, t - acc))
     acc += len
   }
   const last = (keep || [])[keep.length - 1]
@@ -72,7 +197,24 @@ function srcTime(keep, tOut) {
 }
 
 // Length of the output a set of kept ranges makes
-const outLength = keep => (keep || []).reduce((n, [a, b]) => n + (b - a), 0)
+const outLength = keep => (keep || []).reduce((n, seg) => n + outSpan(seg), 0)
+
+/**
+ * The rate at an OUTPUT time: source seconds per output second. What the shutter and
+ * the sound both have to ask, because both of them measure per output second and the
+ * document says rate per piece of the take.
+ */
+function rateAt(keep, tOut) {
+  let acc = 0
+  const t = Math.max(0, +tOut || 0)
+  for (const seg of keep || []) {
+    const len = outSpan(seg)
+    if (t <= acc + len) return rateIn(seg, t - acc)
+    acc += len
+  }
+  const last = (keep || [])[(keep || []).length - 1]
+  return last ? rateEnds(last)[1] : 1
+}
 
 /**
  * The rate a take's own frames arrive at, in fps, read from their presentation times;
@@ -153,4 +295,5 @@ function camTime(cam, s) {
   return c
 }
 
-module.exports = { keepRanges, outClock, srcTime, outLength, outFps, takeFps, frameAt, camTime }
+module.exports = { keepRanges, outClock, srcTime, outLength, outFps, takeFps, frameAt, camTime,
+  applyRates, outSpan, srcIn, outIn, rateIn, rateEnds, rateAt, rateSteps, RATE_MIN, RATE_MAX }

@@ -19,13 +19,77 @@ t('the header states the open take and its edit', () => {
       cues: [{ start: 0, end: 1, text: 'hi' }] }) },
   })
   assert.ok(h.startsWith('<fetch_context>') && h.endsWith('</fetch_context>'))
-  assert.ok(h.includes('Open in the Fetch editor: /m/Demo/Original/Demo.mov (0:42)'))
+  assert.ok(h.includes('/m/Demo/Original/Demo.mov (0:42)'))
+  assert.ok(/"this" or "it" means/.test(h))
   assert.ok(h.includes('2 zooms (Z1, Z2)'))
   assert.ok(h.includes('1 mark (M1)'))
   assert.ok(h.includes('0 texts'))
-  assert.ok(h.includes('captions: yes, 1 line, burned in'))
-  assert.ok(/list_recordings or get_edit/.test(h), 'says to read current state')
-  assert.ok(/Do not trust what an earlier turn said/.test(h), 'says memory is stale')
+  assert.ok(h.includes('captions 1 line, burned in'))
+})
+
+// The doctrine used to ride on every single message, about 600 words of instruction
+// ahead of a six word request. It is doctrine, not news: it goes once, as a system
+// prompt, and the header carries only what changed since the last turn.
+t('the standing doctrine is the system prompt, not the header', () => {
+  const sys = A.systemPrompt()
+  for (const line of ['contact_sheet before you change it', 'the brief and the plan with direct',
+    'apply_edit takes step', 'Call review before you reply', 'Report the plan and what changed']) {
+    assert.ok(sys.includes(line), line)
+  }
+  assert.ok(/first call find_on_screen/.test(sys), 'aiming')
+  assert.ok(/check\.preview_frame_at/.test(sys), 'checking')
+  assert.ok(/Do not trust what an earlier turn said/.test(sys), 'says memory is stale')
+  assert.ok(/fresh list_recordings call in this turn/.test(sys))
+  assert.ok(/sensible default and make the change, rather than asking/.test(sys))
+  assert.ok(/Never use an em dash/.test(sys))
+  assert.ok(!/\u2014/.test(sys))
+  // and none of it is repeated per message
+  const h = A.contextHeader({ open: { path: '/a.mov', dur: 5, doc: doc() } })
+  for (const gone of ['find_on_screen', 'preview_frame', 'list_recordings', 'em dash']) {
+    assert.ok(!h.includes(gone), `${gone} is said once, in the system prompt`)
+  }
+})
+
+t('the header is about 60 words, not 600', () => {
+  const words = h => h.split(/\s+/).filter(Boolean).length
+  const open = A.contextHeader({ open: { path: '/m/Demo.mov', dur: 42, doc: doc({ zooms: [{ id: 'Z1' }] }) } })
+  assert.ok(words(open) < 90, `${words(open)} words`)
+  assert.ok(words(A.contextHeader({ open: null })) < 20)
+})
+
+t('the header carries the job and where the plan stands', () => {
+  const job = { brief: { seconds: 60, aspect: '16:9', where: 'a landing page' },
+    steps: [{ id: 'P1', what: 'cut to the three moments', state: 'done' },
+      { id: 'P2', what: 'burn in captions', state: 'todo' }] }
+  const h = A.contextHeader({ open: { path: '/a.mov', dur: 90, doc: doc() }, job })
+  assert.ok(h.includes('Job: 60 s, 16:9, for a landing page'))
+  assert.ok(h.includes('Plan: 1 of 2 done, next P2 burn in captions'))
+  assert.ok(!/Job:/.test(A.contextHeader({ open: { path: '/a.mov', dur: 9, doc: doc() } })), 'no job, no line')
+})
+
+t('planState reads a job, a bare list of steps, or a count the tool did itself', () => {
+  const steps = [{ id: 'P1', what: 'cut', state: 'done' }, { id: 'P2', what: 'caption', state: 'todo' }]
+  const p = A.planState({ steps, brief: { seconds: 60 } })
+  assert.deepStrictEqual([p.done, p.total, p.next.id], [1, 2, 'P2'])
+  assert.strictEqual(A.planState(steps).done, 1)
+  assert.strictEqual(A.planState({ plan: steps }).total, 2)
+  // what is left of a plan, with the closed count the tool kept
+  assert.strictEqual(A.planState({ steps: [steps[1]], done: 1 }).done, 1)
+  assert.strictEqual(A.planState({ steps: [steps[1]], done: 5 }).done, 0, 'a count the list cannot hold is not believed')
+  // a step dropped on purpose is closed, the rule ui/director.js counts by
+  const dropped = A.planState([{ id: 'P1', what: 'cut', state: 'dropped' }, { id: 'P2', what: 'caption', state: 'todo' }])
+  assert.deepStrictEqual([dropped.done, dropped.next.id], [1, 'P2'])
+  assert.strictEqual(A.planState(null), null)
+  assert.strictEqual(A.planState({ steps: [] }), null)
+})
+
+t('a lassoed area is named in the header, and how to use it is in the doctrine', () => {
+  const h = A.contextHeader({ open: { path: '/a.mov', dur: 5, doc: doc() },
+    regions: [{ id: 'R1', at: 12.3, box: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }, label: 'Save button', kind: 'free', path: '/a.mov' }] })
+  assert.ok(h.includes('R1 at 12.30 s of /a.mov'))
+  assert.ok(h.includes('"Save button"'))
+  assert.ok(/work on exactly it/.test(h))
+  assert.ok(/send element: that R id/.test(A.systemPrompt()))
 })
 
 t('with nothing open the header says so, and never names a take', () => {
@@ -38,7 +102,7 @@ t('with nothing open the header says so, and never names a take', () => {
 })
 
 t('no em dashes in anything a model or a person reads', () => {
-  const all = A.contextHeader({ open: { path: '/a', dur: 3, doc: doc() } }) +
+  const all = A.systemPrompt() + A.contextHeader({ open: { path: '/a', dur: 3, doc: doc() } }) +
     A.suggestions(doc()).map(s => s.label + s.ask).join('') +
     A.suggestions(doc({ cues: [{}], zooms: [{ id: 'Z1' }], texts: [{ id: 'T1' }] })).map(s => s.label + s.ask).join('')
   assert.ok(!/\u2014/.test(all))
@@ -48,15 +112,10 @@ t('no em dashes in anything a model or a person reads', () => {
 // The header once named the newest take, and the model answered "what is my latest
 // recording?" from it without ever reading the library, so a take that landed a
 // moment earlier could be missed. The library is read by a tool call every time.
-t('the header never names the newest take, and asks for list_recordings every time', () => {
+t('the header never names the newest take, and the doctrine asks for it every time', () => {
   const h = A.contextHeader({ open: { path: '/m/Open.mov', dur: 3, doc: doc() } })
   assert.ok(!/Newest recording/.test(h))
-  assert.ok(/fresh list_recordings call in this turn/.test(h))
-  assert.ok(/even if an earlier turn already answered it/.test(h))
-})
-
-t('the header tells the model not to write em dashes', () => {
-  assert.ok(/Never use an em dash/.test(A.contextHeader({ open: null })))
+  assert.ok(/even if an earlier turn already answered it/.test(A.systemPrompt()))
 })
 
 t('plainDashes turns em dashes into commas and keeps ranges', () => {
@@ -183,14 +242,8 @@ t('an undo reports what it did, including things that are now gone', () => {
 
 t('a take still loading reports no edit rather than a blank one', () => {
   const h = A.contextHeader({ open: { path: '/a.mov', dur: 5, doc: null } })
-  assert.ok(h.includes('Open in the Fetch editor: /a.mov (0:05)'))
-  assert.ok(!h.includes('Its edit right now') && h.includes('still loading'))
-})
-
-t('with a take open, the header says to act on defaults rather than ask', () => {
-  const h = A.contextHeader({ open: { path: '/a.mov', dur: 5, doc: doc() } })
-  assert.ok(/sensible default and make the change, rather than asking/.test(h))
-  assert.ok(!/rather than asking/.test(A.contextHeader({ open: null })), 'only when there is an edit to make')
+  assert.ok(h.includes('/a.mov (0:05)'))
+  assert.ok(!h.includes('Its edit:') && h.includes('still loading'))
 })
 
 console.log(`\n${n} assist tests passed`)

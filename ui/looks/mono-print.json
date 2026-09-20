@@ -2,6 +2,7 @@
   "name": "mono-print",
   "label": "Mono print",
   "doc": "Greyscale on an off-white ground, tight corners, printed grain.",
+  "for": "a white SaaS page, a doc site, or a still for print",
   "look": {
     "background": { "kind": "solid", "color": "#F2EFE9" },
     "frame": { "padding": 0.07, "radius": 6, "shadow": 0.25 },

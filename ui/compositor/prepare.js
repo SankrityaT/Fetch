@@ -127,7 +127,7 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
       const data = tr ? Pointer.asCursorData(tr.points) : proc.readCursor(src)
       if (data && (data.display || data.windowBounds)) {
         const zo = opts.autoZoomOpts || {}
-        const moments = proc.zoomMoments(data, { ...zo, clock: Timeline.outClock(opts.cuts, start, end || dur), crop })
+        const moments = proc.zoomMoments(data, { ...zo, clock: Timeline.outClock(opts.cuts, start, end || dur, opts.rates), crop })
         // Whole, not flattened to start and end. zoomMoments had already decided inEnd,
         // outStart, the scale the click's own spread asks for and the pan; handing over
         // two of those and letting Overlays.zoomPlan re-derive the rest from a second
@@ -186,13 +186,13 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
       // only captions left at the bottom of the frame dodge; the band under a framed
       // take is off the product already (processor.applyEdit decides the same)
       const dodge = cues.length && !opts.backdrop && (!cst.position || cst.position === 'bottom') && cst.fx == null
-      const clock = Timeline.outClock(opts.cuts, start, end || dur)
+      const clock = Timeline.outClock(opts.cuts, start, end || dur, opts.rates)
       // A lift re-frames the zoom it rides, so the window the frame pass draws is not
       // the edit's own zoom and the dodge has to judge its two zones through the one
       // that will be on screen. A lift only moves a window there is one of, so nothing
       // waits on the marks being fitted unless the edit has both.
       const lifts = (opts.zooms || []).some(z => z && +z.end > +z.start) ? drawn.filter(x => x.kind === 'lift') : []
-      tasks.captions = memo(`c|${id}|${JSON.stringify([cues, dodge, dodge ? [opts.zooms, lifts, opts.autoZoom, opts.cuts, start, end, crop] : null])}`, async () => {
+      tasks.captions = memo(`c|${id}|${JSON.stringify([cues, dodge, dodge ? [opts.zooms, lifts, opts.autoZoom, opts.cuts, opts.rates, start, end, crop] : null])}`, async () => {
         // the re-framing is the plan's own (marks.planMarks), asked of it here rather
         // than worked out twice, and it needs the lifts fitted to their elements first
         let zoomsOut = null

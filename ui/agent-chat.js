@@ -7,17 +7,26 @@
 // already has. That is the whole reason this is worth building rather than wiring up
 // a provider SDK.
 //
-// Two things are deliberately narrow:
+// Two things are deliberately narrow, and the first one is not the same promise on
+// both CLIs, so the pane says which one it is keeping (ui/chat.js).
 //
-//   The tool list is explicit. The spawned agent is given Fetch's own tools and
-//   nothing else, so it cannot run a shell, read arbitrary files or reach the
-//   network through this pane. A short list of named tools is a much easier promise
-//   to keep than a sandbox.
+//   On Claude Code the tool list is explicit: Fetch's own tools and nothing else, so
+//   it cannot run a shell, read arbitrary files or reach the network through this
+//   pane. That takes three flags, not one: --allowedTools only pre-approves, it does
+//   not take anything away, so Bash and Read were still there and the person's other
+//   MCP servers (mail, calendar) were loaded too. --tools "" removes every built-in
+//   tool and --strict-mcp-config loads the Fetch server alone.
 //
-//   That takes three flags, not one: --allowedTools only pre-approves, it does not
-//   take anything away, so Bash and Read were still there and the person's other MCP
-//   servers (mail, calendar) were loaded too. --tools "" removes every built-in tool
-//   and --strict-mcp-config loads the Fetch server alone.
+//   Codex has no flag that drops its shell, so this does the two things it can: the
+//   same single Fetch server, replacing whatever the person's own config lists, and
+//   the read-only sandbox, which reaches no network and writes nothing. The shell is
+//   still there and can read files, so under Codex the composer says that instead of
+//   claiming "Fetch's tools only". A trust claim true for one of two engines is worse
+//   than no claim.
+//
+//   The standing doctrine goes once per conversation, not once per message: Claude
+//   Code takes --append-system-prompt, and Codex, which has no such flag, gets it on
+//   the message that opens the thread, after which its own resume carries it.
 
 const fs = require('fs')
 const os = require('os')
@@ -25,16 +34,20 @@ const path = require('path')
 const { spawn, spawnSync } = require('child_process')
 
 const connect = require('./agent-connect')
+const Assist = require('./edit-assist')
 
 // Exactly the tools the MCP server exposes. Kept literal rather than globbed so
 // adding a tool is a deliberate decision about what the in-app chat may do.
 const ALLOWED = [
-  'record_start', 'record_stop', 'record_status',
+  'record_start', 'record_stop', 'record_pause', 'record_status',
   'list_windows', 'list_displays', 'list_recordings',
   'probe', 'transcribe',
   'get_edit', 'apply_edit', 'list_beats', 'export', 'rename_recording',
-  'get_frame', 'find_on_screen', 'preview_frame', 'remove_dead_air', 'enhance_audio', 'get_settings', 'set_settings', 'delete_recording',
+  'get_frame', 'find_on_screen', 'preview_frame', 'contact_sheet', 'remove_dead_air', 'enhance_audio', 'get_settings', 'set_settings', 'delete_recording',
   'get_look_schema', 'list_looks', 'apply_look', 'save_look',
+  // the job: plan it, hit the length, check the result, take back what was wrong
+  'direct', 'fit_to_length', 'review', 'revert_my_edit',
+  'list_voices', 'voiceover',
 ].map(t => `mcp__fetch__${t}`)
 
 let current = null          // the one running turn, if any
@@ -88,17 +101,25 @@ function splitAttachments(list = []) {
   return { images: images.slice(0, 8), others }
 }
 
+// One MCP server for Codex too, Fetch's own, in place of whatever the person's own
+// config lists: without this the pane loaded their mail and calendar servers as well.
+// -c parses its value as TOML, and JSON.stringify writes a valid TOML basic string.
+const codexServers = () =>
+  `mcp_servers={fetch={command=${JSON.stringify(connect.nodeBin())},args=[${JSON.stringify(connect.shimPath())}]}}`
+
 function argsFor(engine, prompt, model, effort, images = []) {
   if (engine === 'codex') {
-    // Codex streams JSONL from `exec --json`. Its MCP servers come from the user's
-    // own config, which the Connect screen already wrote.
+    // Codex streams JSONL from `exec --json`.
     // Runs in Fetch's own folder (see send), which is not a git repo.
-    const a = ['exec', '--skip-git-repo-check', '--json']
+    const a = ['exec', '--skip-git-repo-check', '--json', '-s', 'read-only', '-c', codexServers()]
+    // The doctrine opens a thread and the thread keeps it, so a follow-up does not
+    // pay for it again.
+    const opening = !sessions.codex
     if (sessions.codex) a.push('resume', sessions.codex)
     if (model) a.push('--model', model)
     if (effort) a.push('-c', `model_reasoning_effort="${effort}"`)
     for (const im of images) a.push('-i', im.file)
-    a.push(prompt)
+    a.push(opening ? `${Assist.systemPrompt()}\n\n${prompt}` : prompt)
     return a
   }
   // With images the message goes in on stdin as content blocks, so the prompt is not
@@ -109,6 +130,9 @@ function argsFor(engine, prompt, model, effort, images = []) {
     '--mcp-config', mcpConfigPath(), '--strict-mcp-config',
     '--tools', '',
     '--allowedTools', ALLOWED.join(','),
+    // Appended, not replacing: Claude Code's own prompt is what makes its tool use
+    // work, and the doctrine is a house rule on top of it.
+    '--append-system-prompt', Assist.systemPrompt(),
   )
   // Carry the thread. Without this each turn starts from nothing and a follow-up
   // like "now caption that one" refers to something the agent never saw.

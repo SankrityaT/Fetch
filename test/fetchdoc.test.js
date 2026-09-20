@@ -44,9 +44,9 @@ const rt = (inT, outT, cuts, dur) => {
   const clips = d.clipsFromTrim(inT, outT, cuts, dur)
   return d.trimFromClips(clips)
 }
-is('round trip preserves the holes', rt(0, 10, [[4, 6]], 10), { start: 0, end: 10, cuts: [[4, 6]] })
-is('round trip preserves trim', rt(2, 8, [[4, 6]], 10), { start: 2, end: 8, cuts: [[4, 6]] })
-is('round trip of a single clip has no cuts', rt(0, 10, [], 10), { start: 0, end: 10, cuts: [] })
+is('round trip preserves the holes', rt(0, 10, [[4, 6]], 10), { start: 0, end: 10, cuts: [[4, 6]], rates: null })
+is('round trip preserves trim', rt(2, 8, [[4, 6]], 10), { start: 2, end: 8, cuts: [[4, 6]], rates: null })
+is('round trip of a single clip has no cuts', rt(0, 10, [], 10), { start: 0, end: 10, cuts: [], rates: null })
 
 // ---- ids ----
 {

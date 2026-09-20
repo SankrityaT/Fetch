@@ -11,12 +11,13 @@
 import { McpServer } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import * as z from 'zod/v4'
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { call, setClient } from './bridge.js'
 
 const text = obj => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] })
 
-function build() {
+export function build() {
   const server = new McpServer({ name: 'fetch', version: '0.1.0' })
 
   // Every call goes through here so Fetch can attribute it. The client names itself
@@ -88,10 +89,25 @@ function build() {
   server.registerTool(
     'record_status',
     {
-      description: 'Whether Fetch is currently recording.',
+      description:
+        'Whether Fetch is recording, whether that take is paused, and the path of a take that ended ' +
+        'on its own because the recorded window closed.',
       inputSchema: z.object({}),
     },
     async () => text(await drive('record.status')))
+
+  server.registerTool(
+    'record_pause',
+    {
+      description:
+        'Hold the take that is running, or let a held one go again. One take, one file: what ' +
+        'happens while it is paused is not in the video, and the camera and the cursor lose the same ' +
+        'stretch the screen does. Use it when the flow you are recording has to wait on something ' +
+        'nobody wants to watch, a login screen or a long build, rather than stopping and starting ' +
+        'again, which leaves two takes behind. The result says which way it went.',
+      inputSchema: z.object({}),
+    },
+    async () => text(await drive('record.pause')))
 
   // An agent take is recorded without the Mac's pointer, which belongs to the person at
   // the desk. This is how the agent's own pointer gets into the video instead, and onto
@@ -218,8 +234,13 @@ function build() {
         'an id changes that mark, one without an id is added, and every mark you leave out stays. ' +
         'To delete anything, name it: remove: [\'M12\', \'Z3\'] (any list). The result lists every ' +
         'id the edit took out under removed and replaced; tell the person.\n' +
-        '- clips [{id,start,end}]: the kept pieces in order. Trimming or cutting is ' +
-        'changing these.\n' +
+        '- clips [{id,start,end,rate}]: the kept pieces in order. Trimming or cutting is ' +
+        'changing these. rate is how fast a piece plays: 2 is twice speed, 0.5 is half, and a pair ' +
+        '[1, 4] ramps from the first to the second across it. Left out it is 1, and 0.1 to 20 is the range: ' +
+        'anything outside it is held to the nearest end and said under warnings, and there is no rate that ' +
+        'freezes a frame. A piece running faster ' +
+        'than 1 is silent unless audio.speedAudio is keep, and the finished length in the result is ' +
+        'measured at the rates set.\n' +
         '- zooms [{id,start,end,element} or {id,start,end,box} or {id,start,end,scale,x,y}]: ' +
         'element is an E id from your last find_on_screen on this recording; box {x,y,w,h} is the thing ' +
         'to frame (from find_on_screen): Fetch centres on it with room around it and picks the ' +
@@ -259,6 +280,9 @@ function build() {
         'Titles and lower thirds use the house face; font applies to labels.\n' +
         '- cues [{id,start,end,text}]: the captions. Read them with get_edit include_cues, ' +
         'correct the text, and send the whole list back.\n' +
+        '- beats [{id,start,end,label}]: the named spans of the take, from what was said in it ' +
+        '(list_beats). Send them to re-label or re-time what the timeline shows the person; leave ' +
+        'them alone to keep the ones the transcript made.\n' +
         '- pointer [{t,x,y,click}]: the cursor drawn in the video, from pointer calls during an ' +
         'agent take. Unlike everything else, x,y are fractions of the whole recording (before ' +
         'the crop), so a crop does not move it. Read it with get_edit include_pointer. [] draws ' +
@@ -271,9 +295,16 @@ function build() {
         'list_looks and apply_look. A field left out is kept, null resets it, {preset} starts from that look. ' +
         'Output keeps the take\'s shape unless frame.aspect is set, and a chosen shape is filled by the ' +
         'background, never black bars. Values out of range are clamped and listed under look_warnings, ' +
-        'with any field this version does not draw yet.\n' +
+        'with anything the renderer that will draw your export leaves out.\n' +
         '- audio {denoise, loudnorm, gain (dB, -10 to 10), music (a bed under the voice, ducked ' +
-        'while anyone speaks: warm, bright, calm, or null for none)}\n' +
+        'while anyone speaks: warm, bright, calm, or null for none), speedAudio (what a sped-up clip ' +
+        'does with the take\'s own sound: mute, the default, or keep)}\n' +
+        '- audioTrack {file, name, volume 0 to 1, offset (seconds), replace}: one sound file laid over ' +
+        'the whole take, for narration or a track the person has on disk. replace true mutes the take\'s ' +
+        'own sound under it; null takes the track off. The voiceover tool writes one and sets this for you. ' +
+        'offset and the track itself are on the recording\'s clock, not the finished video\'s, so the track ' +
+        'is cut where the edit cuts and sped where a clip is sped: do not lay a line under a stretch running ' +
+        'faster than about 1.5, it comes out gabbling.\n' +
         '- camera {on, x, y, size}: only if a camera was recorded; x,y the bubble centre, ' +
         'size 0.1 to 0.45.\n' +
         '- crop {x,y,w,h} or null to remove it; cropAR sets the crop shape.\n' +
@@ -285,10 +316,16 @@ function build() {
         'pointer, which never sees clicks a driver injects into a page (Playwright ' +
         'page.mouse, anything over CDP). pointer.autoZoomSpots in the result says how many it found; ' +
         'at 0, place zooms yourself.\n' +
-        'Returns the full edit as it now stands. The result\'s preview is a frame of the edit at that moment; look at it.',
+        'Returns the full edit as it now stands. The result\'s preview is a frame of the edit at that moment; look at it. ' +
+        'It also carries plan (what is left of the plan direct wrote) and distance (the length and shape ' +
+        'against the brief), so you can see how far the edit still is from what was asked without calling ' +
+        'anything else.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
         doc: z.record(z.string(), z.any()).describe('Only the parts of the edit you are changing.'),
+        step: z.string().optional()
+          .describe('The step of the plan this call finishes, e.g. "P3". Closes it; the result says what is left. ' +
+            'Ids come from direct, which is where the plan is written.'),
       }),
     },
     async args => {
@@ -300,23 +337,123 @@ function build() {
       return out
     })
 
+  // ── the job ────────────────────────────────────────────────────────
+  // A recording tool with 26 field tools still could not answer "make this a 60 second
+  // demo for my landing page", because nothing in it knew what a job was. These four
+  // are the job: state a target, keep a plan, hit a length, check the result.
+  server.registerTool(
+    'direct',
+    {
+      description:
+        'Write down what this edit is for and the steps you will take, before the first change, and ' +
+        'read back how far the work still is from both. Kept in a file beside the recording, so it ' +
+        'survives the undo of the edit it produced and a turn that stops halfway: call it with nothing ' +
+        'but a path to pick up a job already under way. Every apply_edit and export then carries plan ' +
+        'and distance, and apply_edit step: "P3" closes a step. Call it again to refine the brief; what ' +
+        'you send is merged, and a step whose words you leave alone keeps its id and its state.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        brief: z.object({
+          seconds: z.number().min(1).max(3600).nullable().optional().describe('How long the finished video should be. Hit within 5 percent counts as hitting it.'),
+          aspect: z.string().nullable().optional().describe('The shape it goes out in, e.g. "16:9", "9:16", "1:1".'),
+          where: z.string().nullable().optional()
+            .describe('Where it is going, in the person\'s own words: "landing page", "docs", "Product Hunt", "email", ' +
+              '"X", "YouTube". review reads this and holds the edit to what that destination needs, e.g. captions ' +
+              'burned in wherever it will autoplay muted.'),
+          audience: z.string().nullable().optional().describe('Who watches it, if the person said.'),
+          must_keep: z.array(z.string()).optional().describe('Moments or phrases that have to survive the cut.'),
+          must_hide: z.array(z.string()).optional().describe('Anything on screen that must not ship: an email address, a key, a customer name.'),
+        }).optional().describe('What was asked for. Merged with what is there; null on a field clears it.'),
+        plan: z.array(z.string()).optional()
+          .describe('The steps, in order, one short line each, up to twelve, e.g. ["cut to the three moments that matter", ' +
+            '"zoom on the editor", "burn in captions"]. They are numbered P1, P2... Sending the list again re-plans.'),
+        done: z.union([z.string(), z.array(z.string())]).optional().describe('Step ids finished, e.g. "P2" or ["P1","P2"].'),
+        open: z.union([z.string(), z.array(z.string())]).optional().describe('Step ids to reopen, when review sends one back.'),
+        drop: z.union([z.string(), z.array(z.string())]).optional().describe('Step ids you decided against. Closed, but not claimed as done.'),
+        note: z.string().optional().describe('One line worth remembering about this job, for the next turn.'),
+      }),
+    },
+    async args => text(await drive('edit.direct', args, { timeoutMs: 60000 })))
+
+  server.registerTool(
+    'review',
+    {
+      description:
+        'Check an edit against what was asked for, before you say it is done. Returns a verdict, what ' +
+        'is wrong with it ranked, and for each one the exact call that fixes it, plus the times to look ' +
+        'at with contact_sheet. Measures the output length and the shape against the brief (direct), dead ' +
+        'air still in the edit, captions and whether they are burned in, how much the camera moves, marks ' +
+        'the edit never draws, two highlights on one place, and the ground against the take\'s own ' +
+        'exposure. export runs it too, so its blocking items come back with the file. Fix what it names, ' +
+        'or tell the person why you did not.',
+      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
+    },
+    async args => text(await drive('edit.review', args, { timeoutMs: 60000 })))
+
+  server.registerTool(
+    'fit_to_length',
+    {
+      description:
+        'Choose which parts of a recording survive so the finished video is about seconds long, by ' +
+        'cutting filler words, then the long pauses, then whole beats worth the least. Writes clips on ' +
+        'the edit, so nothing new is written beside the recording and every zoom, mark, caption and look ' +
+        'is kept. Returns the length before and after, what was dropped, what is still over, and anything ' +
+        'that lost its footage. It will not butcher a take to win an argument with a number: when the ' +
+        'next cut would take it further under the target than it is over, it stops and names what that ' +
+        'cut would have cost, for you to put to the person. Needs a transcript: call transcribe first.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        seconds: z.number().min(1).max(3600).optional()
+          .describe('How long the finished video should be. Leave it out to take the fillers and the dead air ' +
+            'out and stop there. A take already shorter than this is left alone: a target is a ceiling.'),
+        keep: z.array(z.string()).optional()
+          .describe('What must survive: beat ids ("B4") or phrases matched against what was said. A term that ' +
+            'matched nothing comes back under keep.unmatched rather than being dropped quietly.'),
+        fillers: z.array(z.string()).optional()
+          .describe('Extra filler words to cut, e.g. ["like"]. The ums, uhs and you knows go by default; ' +
+            'like, so, right and actually do not, because they carry meaning often enough.'),
+        step: z.string().optional().describe('A step of the plan this finishes, e.g. "P2". Same as apply_edit\'s.'),
+        apply: z.boolean().optional().describe('Default true. False works out the cuts and returns them without changing the edit.'),
+      }),
+    },
+    async args => text(await drive('edit.fit', args, { timeoutMs: 120000 })))
+
+  server.registerTool(
+    'revert_my_edit',
+    {
+      description:
+        'Take back your own last burst of changes to an edit, when you have made it worse. The same code ' +
+        'path as the editor\'s own button for undoing an agent\'s change, so it merges by id and anything ' +
+        'the person moved by hand since stays where they put it. It reaches only your own changes: their history ' +
+        'is theirs. Most mistakes need less than this, since apply_edit merges by id (re-send a wrong zoom ' +
+        'with its id to fix it, or remove: ["Z3"] to delete one), so reach for this when a whole pass was wrong.',
+      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
+    },
+    async args => text(await drive('edit.revert', args, { timeoutMs: 90000 })))
+
   server.registerTool(
     'export',
     {
       description:
-        'Render a recording with its current edit (trim, cuts, zooms, text, captions) and ' +
+        'Render a recording with its current edit (trim, cuts, speed, zooms, marks, text, captions) and ' +
         'return the path of the result. For a take in its own folder the result is the ' +
         'deliverable at the top of that folder, <Take>/<Take>.<format>, and exporting again ' +
         'overwrites it. An older recording on the Desktop gets a -edit copy beside it. Runs ' +
         'in the background queue, one export at a time, so it can take a while for a long ' +
-        'recording. engine in the result says which renderer drew it: gl (the compositor, ' +
-        'several times real time) or classic (ffmpeg, still used for edits with marks, text, ' +
-        'captions or the drawn cursor; classic_because names them).',
+        'recording. MP4 and MOV are drawn by the compositor, several times real time; GIF, WebM ' +
+        'and the audio-only formats go to the classic ffmpeg renderer, which leaves some look ' +
+        'fields out, and look_warnings then names what it left out and what to export to get it. ' +
+        'engine in the result says which one drew it. The result also carries review, the same ' +
+        'check the review tool runs, on the file you just made: the export happens either way, ' +
+        'so read its blocking list and fix what it names before you say this is done.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
-        format: z.enum(['mp4', 'webm', 'gif', 'mov']).optional().describe('Defaults to mp4.'),
-        quality: z.enum(['fast', 'balanced', 'best']).optional()
-          .describe('best is the largest, sharpest file; fast the smallest. Defaults to balanced.'),
+        format: z.enum(['mp4', 'webm', 'gif', 'mov', 'm4a', 'mp3', 'wav']).optional()
+          .describe('Defaults to mp4. m4a, mp3 and wav write the edited sound on its own, with no picture.'),
+        quality: z.enum(['high', 'balanced', 'small', 'best', 'fast']).optional()
+          .describe('high is the largest, sharpest file; small the smallest. Defaults to balanced. These are the ' +
+            'three words the person sees in the Export dialog, so you can repeat each other; best and fast are ' +
+            'the older names for high and small and still work.'),
         resolution: z.enum(['720', '1080']).optional().describe('Omit to keep the original size.'),
       }),
     },
@@ -433,6 +570,34 @@ function build() {
       return out
     })
 
+  // One frame is a still, and the best work in this product is motion: an ease that
+  // lands and settles, a dissolve, the travel blur under a zoom. None of that is
+  // visible in a still and all of it is obvious in a row of them.
+  server.registerTool(
+    'contact_sheet',
+    {
+      description:
+        'One image of the whole edit: up to 24 frames of the finished output, evenly spaced, drawn ' +
+        'exactly as export will draw them, each with its output time in its corner. Call it before ' +
+        'the first change to see what the take contains, and after placing a zoom, a dissolve or a ' +
+        'speed change to judge the motion, which a single frame cannot show. from, to and the times ' +
+        'on the sheet are seconds of the edited output, which is shorter than the recording wherever ' +
+        'it is cut; frames[].source_at is the second of the recording each cell came from, and that ' +
+        'is what apply_edit and preview_frame take. Use preview_frame when you need one moment large.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        from: z.number().min(0).optional().describe('Start of the range, in seconds of the edited output. Default the start.'),
+        to: z.number().min(0).optional().describe('End of the range, in seconds of the edited output. Default the end.'),
+        count: z.number().int().min(1).max(24).optional().describe('How many frames, 1 to 24. Default 12.'),
+      }),
+    },
+    async args => {
+      const r = await drive('edit.sheet', args, { timeoutMs: 180000 })
+      const out = text(r)
+      try { out.content.push({ type: 'image', mimeType: 'image/jpeg', data: readFileSync(r.image).toString('base64') }) } catch {}
+      return out
+    })
+
   // Looks: the whole of how a video looks, as one spec (ui/look-schema.js)
   server.registerTool(
     'get_look_schema',
@@ -440,7 +605,8 @@ function build() {
       description:
         'Every setting of how a video looks (frame, background, captions, motion, cursor and more), ' +
         'one line each: its type or range, its default and what it does. Read it before building a look ' +
-        'by hand with apply_look or apply_edit\'s look.',
+        'by hand with apply_look or apply_edit\'s look. A font name is one of get_edit\'s options.fonts: ' +
+        'Fetch ships a handful of faces and anything else falls back to the house one without saying so.',
       inputSchema: z.object({}),
     },
     async args => text(await drive('look.schema', args)))
@@ -463,8 +629,8 @@ function build() {
         'section, e.g. {background: {kind: \'solid\', color: \'#1A1714\'}, frame: {radius: 18}}), put ' +
         'fields back (reset, e.g. [\'frame.padding\']), or all three. Fields left out are kept. The person ' +
         'sees it in the editor and one Undo takes it back. Returns the look as its preset and what differs ' +
-        'from it, and look_warnings for values clamped and fields this version does not draw yet. Check ' +
-        'the result with preview_frame.',
+        'from it, and look_warnings for values clamped and anything the renderer that will draw your export ' +
+        'leaves out. Check the result with preview_frame.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
         preset: z.string().optional().describe('A look from list_looks to start from, e.g. studio.'),
@@ -482,7 +648,7 @@ function build() {
         'shows in the editor\'s looks. Saves the look of the recording at path, or the look given.',
       inputSchema: z.object({
         name: z.string().describe('What to call it, e.g. "Launch video".'),
-        path: z.string().optional().describe('A recording whose look to save.'),
+        path: z.string().optional().describe('Absolute path to a recording whose look to save.'),
         look: z.record(z.string(), z.any()).optional().describe('A look to save instead, by section.'),
       }),
     },
@@ -492,10 +658,12 @@ function build() {
     'remove_dead_air',
     {
       description:
-        'Cut the silent gaps out of a recording and write a new file beside it. The ' +
-        'original is not changed. Returns the new path, how many segments were kept and ' +
-        'the percentage of time removed. Fails if the recording has no audio. For cuts ' +
-        'you want to keep editing, use apply_edit with clips instead.',
+        'Cut the silent gaps out of a recording and write a NEW file beside it. The original is ' +
+        'not changed, and the new file starts with an empty edit, so every zoom, mark, caption and ' +
+        'look on the take you were editing is lost. Returns the new path, how many segments were ' +
+        'kept and the percentage of time removed. Fails if the recording has no audio. To tighten a ' +
+        'take you are editing, or to hit a length, use fit_to_length, which writes clips on the edit ' +
+        'instead and keeps everything else.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording.'),
         min_silence: z.number().min(0.2).max(5).optional()
@@ -517,6 +685,46 @@ function build() {
       inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
     },
     async args => text(await drive('edit.enhance', args, { timeoutMs: 20 * 60 * 1000 })))
+
+  // The one part of Fetch that uses the network, and it is the person's own ElevenLabs
+  // account: their key lives in the macOS Keychain, it is never an argument here, and
+  // only the script leaves the Mac. No audio, no video, no filenames.
+  server.registerTool(
+    'list_voices',
+    {
+      description:
+        'The voices on the person\'s own ElevenLabs account, with the id voiceover takes, plus what is ' +
+        'left of their character allowance. Fails when no account is connected, which only the person can ' +
+        'do, in the editor\'s Voiceover tab.',
+      inputSchema: z.object({}),
+    },
+    async () => text(await drive('voice.list', {}, { timeoutMs: 60000 })))
+
+  server.registerTool(
+    'voiceover',
+    {
+      description:
+        'Speak a script in a studio voice and lay it over the recording, for a take worth keeping whose ' +
+        'narration is not. Writes an mp3 beside the recording and sets it as the edit\'s audio track, so ' +
+        'the person sees it land and one Undo takes it back. With no script the take\'s own captions are ' +
+        'spoken back, which is what "redo this walkthrough with a clean narration" means: transcribe ' +
+        'first, fix the words with apply_edit cues, then call this. Sends the script over the network to ' +
+        'ElevenLabs, on the person\'s own account and nothing else: not the video, not the audio, not the ' +
+        'filename. Check the length it returns against the edit, and cut or fit the video to match it.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        script: z.string().optional().describe('What to say. Left out, the take\'s own captions are the script.'),
+        voice: z.string().optional().describe('A voice id or name from list_voices. Left out, the first voice on the account.'),
+        stability: z.number().min(0).max(1).optional().describe('0 to 1, default 0.5. Lower is more expressive and less even.'),
+        similarity: z.number().min(0).max(1).optional().describe('0 to 1, default 0.75. How closely it holds to the original voice.'),
+        speed: z.number().min(0.7).max(1.2).optional().describe('0.7 to 1.2, default 1. How fast it speaks.'),
+        offset: z.number().min(0).optional().describe('Seconds into the recording the narration starts. Default 0.'),
+        replace: z.boolean().optional().describe('Default true: the take\'s own sound is muted under it. False keeps both.'),
+        apply: z.boolean().optional().describe('Default true. False writes the mp3 and leaves the edit alone.'),
+        step: z.string().optional().describe('A step of the plan this finishes, e.g. "P4".'),
+      }),
+    },
+    async args => text(await drive('voice.speak', args, { timeoutMs: 10 * 60 * 1000 })))
 
   server.registerTool(
     'get_settings',
@@ -623,4 +831,13 @@ function build() {
 
 // Dual-era on purpose. Claude Code opens stdio connections with the older handshake
 // unless the user opts in, so refusing legacy would break the largest client.
-serveStdio(build)
+//
+// Only when this file is the program. Imported instead (test/tools.test.js, which walks
+// the tool list against the app's ops), build hands back the server and nothing reads
+// stdin. Anything unexpected about argv means this was run, not imported, and it starts.
+function isTheProgram() {
+  // node always names the program in argv[1]; without one this was imported.
+  if (!process.argv[1]) return false
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch { return true }
+}
+if (isTheProgram()) serveStdio(build)

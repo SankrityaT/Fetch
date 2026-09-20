@@ -304,7 +304,7 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const fps = ctx.fps || Timeline.outFps(meta)
   const start = Math.max(0, +opts.start || 0)
   const end = opts.end && opts.end > start ? Math.min(opts.end, dur || opts.end) : dur
-  const clock = Timeline.outClock(opts.cuts, start, end)
+  const clock = Timeline.outClock(opts.cuts, start, end, opts.rates)
   const keep = clock.keep
   const span = Timeline.outLength(keep)
   const frames = Math.max(1, Math.round(span * fps))
@@ -665,13 +665,19 @@ const CUT_HALF = 0.1, PUSH_AFTER = 0.35, PUSH_AMOUNT = 0.06
  * falls; what no instant of the output clock can speak for is a mark that begins inside
  * the removed material, and the window stops short of those.
  */
-function cutRoom(hidden, a, b) {
+// ra and rb are the rates the two sides run at. Every length here is output seconds
+// and every span of material is source seconds, so the two are only ever compared
+// through the rate: a dissolve on a 4x section eats four source seconds of the gap
+// for each output second it lasts, and given the same gap it may last a quarter as
+// long. Without that division a fast section would reach for material the cut did not
+// remove and show the viewer a moment twice.
+function cutRoom(hidden, a, b, ra, rb) {
   let room = Infinity
   for (const [h0, h1] of hidden || []) {
     // the outgoing side plays on from a, so nothing may begin hiding inside its reach
-    if (h0 >= a && h0 <= b) room = Math.min(room, h0 - a)
+    if (h0 >= a && h0 <= b) room = Math.min(room, (h0 - a) / ra)
     // and the incoming side starts before b, so nothing may stop hiding inside its reach
-    if (h1 >= a && h1 <= b) room = Math.min(room, b - h1)
+    if (h1 >= a && h1 <= b) room = Math.min(room, (b - h1) / rb)
   }
   return room
 }
@@ -680,14 +686,21 @@ function cutPoints(keep, kind, fps, hidden) {
   const points = []
   let acc = 0
   for (let i = 0; i + 1 < keep.length; i++) {
-    acc += keep[i][1] - keep[i][0]
+    acc += Timeline.outSpan(keep[i])
     const gap = keep[i + 1][0] - keep[i][1]
-    const lenA = keep[i][1] - keep[i][0], lenB = keep[i + 1][1] - keep[i + 1][0]
+    // Two ranges meeting with nothing between them are one piece of the take that a
+    // speed change split (Timeline.applyRates), not a cut. Nothing was removed there,
+    // so there is nothing to transition across and a dip would be a flicker in the
+    // middle of a continuous shot.
+    if (!(gap > 1e-6)) continue
+    const ra = Timeline.rateEnds(keep[i])[1], rb = Timeline.rateEnds(keep[i + 1])[0]
+    const lenA = Timeline.outSpan(keep[i]), lenB = Timeline.outSpan(keep[i + 1])
     const want = kind === 'zoom' ? Math.min(PUSH_AFTER, lenB)
-      : Math.min(CUT_HALF, lenA / 2, lenB / 2, kind === 'crossfade' ? Math.min(gap, cutRoom(hidden, keep[i][1], keep[i + 1][0])) : Infinity)
+      : Math.min(CUT_HALF, lenA / 2, lenB / 2, kind === 'crossfade'
+        ? Math.min(gap / Math.max(ra, rb), cutRoom(hidden, keep[i][1], keep[i + 1][0], ra, rb)) : Infinity)
     const f = Math.floor(want * fps + 1e-6)
     if (f < 2) continue
-    points.push({ t: acc, d: f / fps, a: keep[i][1], b: keep[i + 1][0] })
+    points.push({ t: acc, d: f / fps, a: keep[i][1], b: keep[i + 1][0], ra, rb })
   }
   return points.length ? { kind, points } : null
 }
@@ -714,8 +727,10 @@ function srcPair(spec, t) {
   if (!c) return { s: srcAt(spec.keep, t), s2: null, mix: 0 }
   const dt = t - c.b.t
   // before the boundary the outgoing side is what srcAt already says; after it, that
-  // same piece carried on into the gap
-  return { s: c.b.a + dt, s2: c.b.b + dt, mix: S(c.p) }
+  // same piece carried on into the gap. Each side carries on at its own piece's rate,
+  // or a dissolve out of a 4x montage plays that half of itself at 1x and the cut is
+  // the one place in the edit that visibly stalls.
+  return { s: c.b.a + dt * (c.b.ra || 1), s2: c.b.b + dt * (c.b.rb || 1), mix: S(c.p) }
 }
 
 // The cut's push, as a magnification and its rate: the piece after a cut lands a little
@@ -779,16 +794,25 @@ function takeMove(spec, t) {
 
 // The take's time output time t shows. Ranges are half open here: the frame at the
 // instant a cut closes shows the moment after the cut, not the last moment before it
-// (Timeline.srcTime keeps range ends inclusive for its round trip).
+// (Timeline.srcTime keeps range ends inclusive for its round trip). A range carrying a
+// rate walks its own closed form, so a 4x piece advances four source seconds an output
+// second and every frame still solves from t alone.
 function srcAt(keep, t) {
   let acc = 0
   for (let i = 0; i < keep.length; i++) {
-    const [a, b] = keep[i], len = b - a
-    if (t < acc + len - 1e-9 || i === keep.length - 1) return Math.min(b, a + Math.max(0, t - acc))
+    const seg = keep[i], len = Timeline.outSpan(seg)
+    if (t < acc + len - 1e-9 || i === keep.length - 1) {
+      return Math.min(seg[1], Timeline.srcIn(seg, Math.max(0, t - acc)))
+    }
     acc += len
   }
   return t
 }
+
+// How fast the take itself is running at output time t, source seconds per output
+// second. The cut window and the dissolve both measure in output seconds and both
+// read source material, so both have to ask.
+const rateAt = (keep, t) => Timeline.rateAt(keep, t)
 
 // What a zoom shows at output time t, as fractions of the cropped frame, with the cut's
 // push over it. The push tightens the window about its own centre, so what it asks for
@@ -859,6 +883,14 @@ function framePlan(spec, t) {
   // to be turned up. Nothing at rest blurs, because the ease leaves and arrives with
   // zero velocity, so every held frame stays byte for byte what it was. A cut's push
   // moves the picture with no zoom in the edit at all, so it opens the shutter too.
+  //
+  // Speed does not need a second dial here, and that is worth saying because it looks
+  // like it should. What the shutter must see is velocity per OUTPUT second, and every
+  // zoom was placed on the output clock before this ran (prepare, clock(z.start)), so a
+  // zoom inside a 4x piece is already a quarter as long in output seconds and its ease
+  // already runs four times as fast. Read the rate here as well and the blur would be
+  // scaled twice. The rate is on the frame plan (fp.rate) for anything that measures in
+  // source seconds, and the one thing that genuinely does is the dissolve (srcPair).
   const moving = spec.zooms.length > 0 || (spec.cut && spec.cut.kind === 'zoom')
   const speed = moving ? travelRate(spec, t) : 0
   if (spec.motionBlur > 0 && moving) {
@@ -884,7 +916,7 @@ function framePlan(spec, t) {
   const xd = mix > 0 ? cutAt(spec, t, 'crossfade') : null
   const marks = spec.marks ? Marks.at(spec.marks, xd ? Math.min(t, xd.b.t - CUT_EPS) : t) : null
   const marks2 = spec.marks && xd ? Marks.at(spec.marks, Math.max(t, xd.b.t)) : null
-  return { t, s, s2, mix, view0, view1, taps, speed, fade: fi * fo, camT,
+  return { t, s, s2, mix, view0, view1, taps, speed, rate: rateAt(spec.keep, t), fade: fi * fo, camT,
     marks, ...(marks2 ? { marks2 } : {}), move: takeMove(spec, t) }
 }
 
@@ -951,4 +983,4 @@ function cameraFrames(spec, pts) {
   return frameMap(pts, spec.frames, n => Timeline.camTime(spec.cam, srcAt(spec.keep, n / spec.fps)))
 }
 
-module.exports = { prepare, framePlan, srcAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL }
+module.exports = { prepare, framePlan, srcAt, rateAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL }

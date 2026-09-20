@@ -625,5 +625,64 @@ console.log('everything that arrives has a way to leave')
   is('and still leaves rather than cutting', qOp(q0.hide - 0.005) < 0.2, true)
 }
 
+// ── the shutter through a speed region ──────────────────────────────────────
+// The claim speed has to keep is that what smears is velocity per OUTPUT second. It
+// is kept without the blur ever asking the rate, and that is worth a test rather than
+// a comment: the zooms were placed on the output clock before framePlan ran, so a
+// zoom inside a fast piece is already shorter and already faster, and a second scaling
+// here would square it.
+console.log('the shutter opens in output seconds')
+{
+  const m24 = { width: 1920, height: 1080, duration: 24, fps: 60 }
+  const aim = { scale: 2.4, x: 0.8, y: 0.2 }
+  const look = { treatment: { motionBlur: 0.5 } }
+  // four source seconds of a 2x piece are two output seconds
+  const fast = Plan.prepare({ start: 0, end: 24, rates: [[0, 24, 2, 2]],
+    zooms: [{ start: 4, end: 12, ...aim }], look }, m24)
+  const plain = Plan.prepare({ start: 0, end: 12, zooms: [{ start: 2, end: 6, ...aim }], look },
+    { ...m24, duration: 12 })
+  is('the two are the same length of output', [fast.span, plain.span], [12, 12])
+  const bad = []
+  for (let n = 0; n <= 12 * 60; n++) {
+    const a = Plan.framePlan(fast, n / 60), b = Plan.framePlan(plain, n / 60)
+    const key = p => JSON.stringify([p.view0.map(v => r(v, 9)), p.view1.map(v => r(v, 9)), p.taps, r(p.speed, 6)])
+    if (key(a) !== key(b)) bad.push(n)
+  }
+  is('every frame of a zoom on a 2x piece is the frame a half-length zoom draws', bad, [])
+
+  // and read against the same zoom at 1x it is twice as fast on the output, which is
+  // the unit the shutter measures in. Short enough that its own length is what sets
+  // the ramp: a long zoom rides a ramp of a fixed number of seconds and then holds,
+  // so it would cross at the same speed either way and would prove nothing.
+  const brief = { start: 4, end: 4.6, scale: 1.35, x: 0.5, y: 0.5 }
+  const fastBrief = Plan.prepare({ start: 0, end: 24, rates: [[0, 24, 2, 2]], zooms: [brief], look }, m24)
+  const slow = Plan.prepare({ start: 0, end: 24, zooms: [brief], look }, m24)
+  // read off a grid ten times finer than the frames, because the peak of an ease is
+  // where it is and not where a frame happens to land
+  const peakSpeedFine = spec => {
+    let m = 0
+    for (let i = 0; i <= Math.round(spec.span * 600); i++) m = Math.max(m, Plan.framePlan(spec, i / 600).speed)
+    return m
+  }
+  const peakTaps = spec => {
+    let m = 0
+    for (let n = 0; n <= Math.round(spec.span * 60); n++) m = Math.max(m, Plan.framePlan(spec, n / 60).taps)
+    return m
+  }
+  const ratio = peakSpeedFine(fastBrief) / peakSpeedFine(slow)
+  is('the same zoom on a 2x piece travels twice as far an output second', r(ratio, 2), 2)
+  is('and takes exactly twice the samples of the shutter for it',
+    [peakTaps(fastBrief), peakTaps(slow)], [26, 13])
+  // sample and hold doing what it always did, through a clock that now has a rate in it
+  const four = Plan.prepare({ start: 0, end: 24, rates: [[0, 24, 4, 4]] }, m24)
+  const pts = Array.from({ length: 24 * 30 }, (_, i) => i / 30)
+  const map = Plan.screenFrames(four, pts)
+  // the take's frames are 1/30 apart and the output runs at 60, so a 4x piece steps
+  // two of them per output frame
+  is('a 4x piece steps four source seconds of frames an output second',
+    [1, 2, 3].map(n => map.pick[n] - map.pick[n - 1]), [2, 2, 2])
+  is('and the frame count is the output\'s, not the take\'s', map.pick.length, four.frames)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

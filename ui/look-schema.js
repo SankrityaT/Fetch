@@ -11,10 +11,14 @@
 // Paths are section.name. Spatial values are fractions of the output frame unless a
 // unit says otherwise, so a look means the same at 720p and at 4K.
 //
-// gpu: true marks a field the new compositor draws and today's ffmpeg renderer does
-// not. It is stored and validated like any other (an agent can set it, and it survives
-// round trips), but the inspector hides it and apply_look warns that it is not drawn
-// yet, rather than letting a setting silently do nothing.
+// Whether a field is drawn is a question about the engine, not a flag about a release.
+// The compositor draws every field here and is the renderer for MP4 and MOV, which is
+// nearly every export. classic: false means the classic ffmpeg renderer, which draws
+// GIF, WebM and stills, leaves that field out; it is said only where that renderer is
+// the one running (Look.warnings, Look.describe, Look.sections all take the engine).
+// classicOptions is the same answer for some options of a field the classic renderer
+// otherwise draws. undrawn: true is the unconditional one: nothing draws it yet, on any
+// engine, so it is named whatever runs and no inspector offers it.
 //
 // Pure: no Electron, no filesystem, no DOM.
 
@@ -71,7 +75,8 @@ const MESHES = {
 const ASPECTS = ['auto', '16:9', '1:1', '9:16', '4:3', '4:5']
 
 // f(path, type, default, extra): extra carries min, max, step, unit, options, label,
-// doc, when (a condition on other fields), advanced, gpu, hidden.
+// doc, when (a condition on other fields), advanced, classic, classicOptions,
+// undrawn, hidden.
 const f = (path, type, def, extra = {}) => ({ path, type, default: def, section: path.split('.')[0], ...extra })
 
 const FIELDS = [
@@ -87,24 +92,24 @@ const FIELDS = [
   f('frame.chrome', 'enum', 'remove', { options: ['keep', 'remove', 'clean'], label: 'Browser chrome',
     doc: 'A browser take\'s tabs and toolbar. remove crops them off where Fetch knows the page\'s place ' +
       '(an agent recorded it by reporting its pointer with viewport); keep leaves them; clean crops the same way and draws a frame of Fetch\'s own round the page.',
-    gpuOptions: ['clean'] }),
-  f('frame.scale', 'number', 1, { min: 0.5, max: 1.2, step: 0.01, unit: 'x', label: 'Scale', doc: 'Size of the framed take.', gpu: true, advanced: true }),
-  f('frame.offsetX', 'number', 0, { min: -0.5, max: 0.5, step: 0.01, unit: '%', label: 'Offset X', doc: 'Moves the framed take across.', gpu: true, advanced: true }),
-  f('frame.offsetY', 'number', 0, { min: -0.5, max: 0.5, step: 0.01, unit: '%', label: 'Offset Y', doc: 'Moves the framed take down.', gpu: true, advanced: true }),
-  f('frame.tilt', 'number', 0, { min: -20, max: 20, step: 0.5, unit: 'deg', label: 'Tilt', doc: 'A 3D tilt of the framed take.', gpu: true, advanced: true }),
-  f('frame.border', 'number', 0, { min: 0, max: 12, step: 0.5, unit: 'px', label: 'Border', doc: 'A hairline border round the take, in pixels at 1080p.', gpu: true }),
-  f('frame.borderColor', 'color', '#FFFFFF', { label: 'Border colour', doc: 'Colour of the border.', gpu: true, when: { 'frame.border': '>0' } }),
+    classicOptions: ['clean'] }),
+  f('frame.scale', 'number', 1, { min: 0.5, max: 1.2, step: 0.01, unit: 'x', label: 'Scale', doc: 'Size of the framed take.', undrawn: true, advanced: true }),
+  f('frame.offsetX', 'number', 0, { min: -0.5, max: 0.5, step: 0.01, unit: '%', label: 'Offset X', doc: 'Moves the framed take across.', undrawn: true, advanced: true }),
+  f('frame.offsetY', 'number', 0, { min: -0.5, max: 0.5, step: 0.01, unit: '%', label: 'Offset Y', doc: 'Moves the framed take down.', undrawn: true, advanced: true }),
+  f('frame.tilt', 'number', 0, { min: -20, max: 20, step: 0.5, unit: 'deg', label: 'Tilt', doc: 'A 3D tilt of the framed take.', classic: false, advanced: true }),
+  f('frame.border', 'number', 0, { min: 0, max: 12, step: 0.5, unit: 'px', label: 'Border', doc: 'A hairline border round the take, in pixels at 1080p.', classic: false }),
+  f('frame.borderColor', 'color', '#FFFFFF', { label: 'Border colour', doc: 'Colour of the border.', classic: false, when: { 'frame.border': '>0' } }),
 
   // ── device ──
   f('device.kind', 'enum', 'none', { options: ['none', 'browser', 'window', 'laptop', 'phone'], label: 'Device',
     doc: 'A drawn frame round the take: generic shapes, never a real product. frame.chrome clean draws the browser one on its own.',
-    gpu: true, gpuOptions: ['browser', 'window', 'laptop', 'phone'] }),
+    classic: false }),
   f('device.title', 'string', '', { label: 'Address',
     doc: 'The address a browser frame shows, or a window frame\'s title. Fetch records no page address, so an empty one leaves the bar blank.',
-    gpu: true, when: { 'device.kind': '!none' } }),
+    classic: false, when: { 'device.kind': '!none' } }),
   f('device.theme', 'enum', 'auto', { options: ['auto', 'light', 'dark'], label: 'Device tone',
     doc: 'The shell\'s own tone. auto steps in from the ground: graphite on a dark one, bone on a light one.',
-    gpu: true, when: { 'device.kind': '!none' } }),
+    classic: false, when: { 'device.kind': '!none' } }),
 
   // ── background ──
   f('background.kind', 'enum', 'none', { options: ['none', 'solid', 'gradient', 'mesh', 'image', 'video-blur'], label: 'Background',
@@ -118,32 +123,32 @@ const FIELDS = [
     when: { 'background.kind': 'mesh' } }),
   f('background.image', 'asset', null, { label: 'Image',
     doc: 'An image backdrop id from list_looks backgrounds (img:...).', when: { 'background.kind': 'image' } }),
-  f('background.imageBlur', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Image blur', doc: 'Softens the image.', gpu: true, when: { 'background.kind': 'image' } }),
-  f('background.imageDim', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Image dim', doc: 'Darkens the image.', gpu: true, when: { 'background.kind': 'image' } }),
+  f('background.imageBlur', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Image blur', doc: 'Softens the image.', classic: false, when: { 'background.kind': 'image' } }),
+  f('background.imageDim', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Image dim', doc: 'Darkens the image.', classic: false, when: { 'background.kind': 'image' } }),
   f('background.blurAmount', 'number', 0.5, { min: 0, max: 1, step: 0.05, label: 'Blur amount',
-    doc: 'How far the take is blurred behind itself.', gpu: true, when: { 'background.kind': 'video-blur' } }),
+    doc: 'How far the take is blurred behind itself.', classic: false, when: { 'background.kind': 'video-blur' } }),
 
   // ── treatment ──
   f('treatment.motionBlur', 'number', 0.5, { min: 0, max: 1, step: 0.05, label: 'Shutter',
-    doc: 'How long the shutter stays open, in frames: 0.5 is the film standard 180 degrees, 1 is 360, 0 closes it and nothing blurs. How far a zoom smears is its own speed at that instant, not this, so a fast pass smears and a settle does not.', gpu: true }),
-  f('treatment.autoLevel', 'bool', false, { label: 'Auto level', doc: 'Evens the take\'s exposure.', gpu: true }),
-  f('treatment.brightness', 'number', 0, { min: -1, max: 1, step: 0.05, label: 'Brightness', doc: 'Lighter or darker.', gpu: true }),
-  f('treatment.contrast', 'number', 0, { min: -1, max: 1, step: 0.05, label: 'Contrast', doc: 'More or less contrast.', gpu: true }),
-  f('treatment.saturation', 'number', 0, { min: -1, max: 1, step: 0.05, label: 'Saturation', doc: '-1 is black and white.', gpu: true }),
-  f('treatment.tint', 'color', '#F0A93C', { label: 'Tint', doc: 'A colour laid over the frame.', gpu: true }),
-  f('treatment.tintAmount', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Tint amount', doc: 'How strong the tint is.', gpu: true }),
-  f('treatment.haze', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Haze', doc: 'Lifted blacks, like a soft lens.', gpu: true }),
-  f('treatment.blur', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Blur', doc: 'Softens the whole frame.', gpu: true, advanced: true }),
-  f('treatment.bokeh', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Bokeh', doc: 'The background defocused through an aperture, so highlights open into its shape. Needs an image or video-blur background.', gpu: true }),
-  f('treatment.bloom', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Bloom', doc: 'Bright areas glow.', gpu: true }),
-  f('treatment.halation', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Halation', doc: 'A warm film glow round highlights.', gpu: true }),
-  f('treatment.aberration', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Aberration', doc: 'Colour fringes at the edges.', gpu: true, advanced: true }),
+    doc: 'How long the shutter stays open, in frames: 0.5 is the film standard 180 degrees, 1 is 360, 0 closes it and nothing blurs. How far a zoom smears is its own speed at that instant, not this, so a fast pass smears and a settle does not.', classic: false }),
+  f('treatment.autoLevel', 'bool', false, { label: 'Auto level', doc: 'Evens the take\'s exposure.', classic: false }),
+  f('treatment.brightness', 'number', 0, { min: -1, max: 1, step: 0.05, label: 'Brightness', doc: 'Lighter or darker.', classic: false }),
+  f('treatment.contrast', 'number', 0, { min: -1, max: 1, step: 0.05, label: 'Contrast', doc: 'More or less contrast.', classic: false }),
+  f('treatment.saturation', 'number', 0, { min: -1, max: 1, step: 0.05, label: 'Saturation', doc: '-1 is black and white.', classic: false }),
+  f('treatment.tint', 'color', '#F0A93C', { label: 'Tint', doc: 'A colour laid over the frame.', classic: false }),
+  f('treatment.tintAmount', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Tint amount', doc: 'How strong the tint is.', classic: false }),
+  f('treatment.haze', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Haze', doc: 'Lifted blacks, like a soft lens.', classic: false }),
+  f('treatment.blur', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Blur', doc: 'Softens the whole frame.', classic: false, advanced: true }),
+  f('treatment.bokeh', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Bokeh', doc: 'The background defocused through an aperture, so highlights open into its shape. Needs an image or video-blur background.', classic: false }),
+  f('treatment.bloom', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Bloom', doc: 'Bright areas glow.', classic: false }),
+  f('treatment.halation', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Halation', doc: 'A warm film glow round highlights.', classic: false }),
+  f('treatment.aberration', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Aberration', doc: 'Colour fringes at the edges.', classic: false, advanced: true }),
   f('treatment.vignette', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Vignette',
-    doc: 'Darker corners. 1 takes about two thirds of the light off the frame\'s furthest corner, 0.3 about a fifth.', gpu: true }),
+    doc: 'Darker corners. 1 takes about two thirds of the light off the frame\'s furthest corner, 0.3 about a fifth.', classic: false }),
 
   // ── grain ──
-  f('grain.film', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Film grain', doc: 'Moving film grain.', gpu: true }),
-  f('grain.dither', 'bool', true, { label: 'Dither', doc: 'Breaks up banding in gradients.', gpu: true }),
+  f('grain.film', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Film grain', doc: 'Moving film grain.', classic: false }),
+  f('grain.dither', 'bool', true, { label: 'Dither', doc: 'Breaks up banding in gradients.', classic: false }),
 
   // ── motion ──
   f('motion.zoomDepth', 'number', 1.7, { min: 1.2, max: 2.4, step: 0.1, unit: 'x', label: 'Auto zoom depth',
@@ -158,16 +163,16 @@ const FIELDS = [
     doc: 'Where a cut joins two pieces. none is a hard cut, and right for dead air: the two sides are the same shot a moment apart, so a dissolve is invisible there and a dip only announces the edit. crossfade dissolves, out of the frames the cut removed; dip takes the take through the ground and back; zoom lands the next piece tight and settles it out. A fifth of a second each; a GIF cuts hard.' }),
 
   // ── camera ──
-  f('camera.shape', 'enum', 'circle', { options: ['circle', 'rounded'], label: 'Bubble shape', doc: 'The camera bubble\'s shape.', gpu: true }),
-  f('camera.ring', 'bool', true, { label: 'Ring', doc: 'A light ring round the bubble.', gpu: true }),
+  f('camera.shape', 'enum', 'circle', { options: ['circle', 'rounded'], label: 'Bubble shape', doc: 'The camera bubble\'s shape.', classic: false }),
+  f('camera.ring', 'bool', true, { label: 'Ring', doc: 'A light ring round the bubble.', classic: false }),
 
   // ── cursor ──
   f('cursor.show', 'bool', true, { label: 'Show cursor', doc: 'Draw the agent\'s cursor from the take\'s pointer track.' }),
   f('cursor.hideSystem', 'enum', 'auto', { options: ['auto', 'hide', 'keep'], label: 'Mac pointer',
     doc: 'The Mac\'s own pointer where the take has it in the pixels. auto lifts it out only when the drawn cursor replaces it.' }),
-  f('cursor.size', 'number', 1, { min: 0.6, max: 2, step: 0.05, unit: 'x', label: 'Cursor size', doc: 'Size of the drawn cursor.', gpu: true }),
-  f('cursor.smoothing', 'number', 0.5, { min: 0, max: 1, step: 0.05, label: 'Smoothing', doc: 'How much the cursor\'s path is smoothed.', gpu: true }),
-  f('cursor.ripple', 'bool', true, { label: 'Click ripple', doc: 'A gold ripple on each click.', gpu: true }),
+  f('cursor.size', 'number', 1, { min: 0.6, max: 2, step: 0.05, unit: 'x', label: 'Cursor size', doc: 'Size of the drawn cursor.', classic: false }),
+  f('cursor.smoothing', 'number', 0.5, { min: 0, max: 1, step: 0.05, label: 'Smoothing', doc: 'How much the cursor\'s path is smoothed.', undrawn: true }),
+  f('cursor.ripple', 'bool', true, { label: 'Click ripple', doc: 'A gold ripple on each click.', classic: false }),
 
   // ── captions ──
   f('captions.show', 'bool', true, { label: 'Burn in captions', doc: 'Burn the transcript into the video when there is one.' }),
@@ -182,13 +187,13 @@ const FIELDS = [
   f('captions.fy', 'number', null, { min: 0, max: 1, nullable: true, hidden: true, label: 'Caption y', doc: 'Dragged caption centre, down.' }),
 
   // ── typography ──
-  f('typography.titleFont', 'string', 'house', { label: 'Title face', doc: 'Face for title cards and lower thirds; house is Fetch\'s own.', gpu: true }),
+  f('typography.titleFont', 'string', 'house', { label: 'Title face', doc: 'Face for title cards and lower thirds; house is Fetch\'s own.', undrawn: true }),
 
   // ── focus ──
-  f('focus.dim', 'number', 0.5, { min: 0, max: 0.9, step: 0.05, label: 'Spotlight dim', doc: 'How dark the frame goes round a spotlight.', gpu: true }),
-  f('focus.lift', 'number', 1.04, { min: 1, max: 1.15, step: 0.01, unit: 'x', label: 'Lift', doc: 'How far a lifted element rises.', gpu: true }),
+  f('focus.dim', 'number', 0.5, { min: 0, max: 0.9, step: 0.05, label: 'Spotlight dim', doc: 'How dark the frame goes round a spotlight.', classic: false }),
+  f('focus.lift', 'number', 1.04, { min: 1, max: 1.15, step: 0.01, unit: 'x', label: 'Lift', doc: 'How far a lifted element rises.', classic: false }),
   f('focus.loupe', 'number', 2.2, { min: 1.4, max: 4, step: 0.1, unit: 'x', label: 'Loupe',
-    doc: 'How far a loupe magnifies its area. The inset sits beside that area, or under it where there is no room beside.', gpu: true }),
+    doc: 'How far a loupe magnifies its area. The inset sits beside that area, or under it where there is no room beside.', classic: false }),
 ]
 
 const BY_PATH = new Map(FIELDS.map(x => [x.path, x]))
