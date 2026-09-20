@@ -301,17 +301,26 @@ frame's edge coming up a little inward. Sample and hold is exact: an output fram
 the last frame the take wrote at or before its moment, across cuts.
 `FETCH_ENGINE=classic|gl` forces one.
 
-**MCP tools** (`mcp/index.js`), 34: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `pointer`,
+**MCP tools** (`mcp/index.js`), 35: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `pointer`,
 `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
 `list_beats`, `get_edit`, `apply_edit`, `direct`, `review`, `fit_to_length`, `revert_my_edit`,
 `export`, `rename_recording`,
 `remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`, `delete_recording`,
-`get_frame`, `find_on_screen`, `preview_frame`, `contact_sheet`, `list_voices`, `voiceover`.
+`get_frame`, `find_on_screen`, `preview_frame`, `contact_sheet`, `list_voices`, `voiceover`, `remember`.
 `test/tools.test.js` is what keeps that list one list: every op the bridge answers has a tool
 on it, every tool drives an op that exists, and the names the in-app pane allows are the names
 the server registers, both directions. `record.pause` sat in the bridge for months with no
 tool on it, so the app could hold a take and no agent could, and a feature no agent can reach
-is a feature that does not exist. `get_frame` returns the image itself.
+is a feature that does not exist. The server also says **how to work** before anything calls
+it: `mcp/index.js` sets MCP's `instructions` to what Fetch is, the six line loop the in-app
+agent is handed word for word (see the job below), aim at a box and never at a coordinate,
+read the state that comes back rather than calling again to find it, write down what is still
+true next week, and never an em dash. It is the shape of a job and nothing about any one tool,
+because what a tool takes and gives back belongs in that tool's own description where it
+cannot fall out of step with the tool. For a whole round that loop reached the pane's agent
+and nobody else, so Claude Code, Codex, Cursor and Zed each worked it out or did not.
+`test/tools.test.js` holds the instructions to `EditAssist`'s own `LOOP` line for line, and
+fails if they name a tool this server does not register. `get_frame` returns the image itself.
 `find_on_screen` reads a frame on device (Vision, `Elements.swift`) and returns its
 text, chips, buttons and cards as E1, E2... with boxes, ranked against the person's
 words ("the black chip"), plus the frame with them numbered; zooms and marks take that
@@ -325,7 +334,7 @@ re-read in the crop the edit is in and held to the same lift rules as any other 
 applied edit comes back with one frame of itself to look at. `preview_frame` draws
 frames of the edit exactly as export will, several in one call; `apply_edit` lists under `check` when to look at what it placed (just after it lands, and its middle), so an agent checks where a zoom landed before it reports. Marks merge by id: one an agent leaves out stays (an edit adding a lift once dropped the blurs hiding a name), only `remove: [ids]` deletes, and the result names every id an edit took out. A lift's box is grown to the element's own hairline at export and framed evenly, so its border comes up whole. Every 1.0 option is reachable: trim and cuts as clips, crop and aspect, texts with any
 installed font, caption style and position, zooms, backdrops, camera, denoise, loudness,
-gain, fades, music (an added track, or one of three beds made in `tools/make-beds.js`, `look.music`, ducked under the voice), redaction, lift, spotlight and numbered steps. `export` writes m4a, mp3 and wav as well as MP4, MOV, WebM and GIF, since the edited sound on its own is a deliverable somebody wants, and it names its quality with the three words the person sees in the Export dialog rather than three of its own. The pipeline runs with the
+gain, fades, music (an added track, or one of three beds made in `tools/make-beds.js`, `look.music`, ducked under the voice), redaction, lift, spotlight, loupe, numbered steps and arrows (a gold arrow that stands outside the box it aims at and points at the middle of its nearest edge, so the thing is never under it; it is sized and sided against what the zoom shows at its own hold, so a half second push somewhere else in its life never shrinks it and a box outside the window gets no arrow rather than one pointing at unrelated content). The camera bubble takes `keys` as well as a corner: where it is, how big it is and what shape it is over the take, a span like `{start: 12, end: 20.4, size: 0.1}` saying "small while the lift is up" and putting it back after, and the editor carries that track through a round trip rather than dropping it on the way back in. `export` writes m4a, mp3 and wav as well as MP4, MOV, WebM and GIF, since the edited sound on its own is a deliverable somebody wants, and it names its quality with the three words the person sees in the Export dialog rather than three of its own. The pipeline runs with the
 window closed. Settings that decide what may be recorded, and telemetry, are refused
 to agents in code.
 
@@ -343,20 +352,68 @@ them. `direct` is the target and the plan: a brief (`seconds`, `aspect`, `where`
 beside the take and deliberately not in the edit, because the job is about the work and has to
 survive the undo of the edit it produced. `fit_to_length` hits a number from the transcript:
 the fillers first, since nobody can hear a cut "um", then the longest pauses, then whole beats
-ranked by speech density, and never half a beat; it writes `clips` on the edit rather than a
+ranked by speech density, and never half a beat. All three passes cut around the work rather
+than through it: a title card over the head silence and a closing URL card over the tail
+silence used to be taken whole by the pause pass and reported afterwards under `orphans`, which
+is exactly the damage a checker is supposed to prevent. It writes `clips` on the edit rather than a
 new file, and when the next cut would take the edit further under the target than it is over,
 it stops and names what that cut would have cost rather than butchering a take to win an
-argument with arithmetic. `review` is the house rubric measured rather than asked for: fifteen
+argument with arithmetic. Asked for **more** than the take holds it cuts nothing and slows the
+moments the edit is already dwelling on instead, a zoom holding or a card up with nobody
+talking over it, one gentle rate for all of them and never past half speed or over speech. Half
+speed is a promise about the rate the viewer sees rather than about the factor, so a hold the
+person already set to 0.8x is taken to 0.5x and no further, which keeps `reach` a number the
+tool can actually arrive at. `stretch.reach` is the longest that edit can honestly be, and past it it refuses and says to
+record more. A stretch is one change to the time map, so every zoom, mark and caption keeps
+the footage it was placed on. `review` is the house rubric measured rather than asked for:
 rules over the document, the brief and the beats, ranked blocking, should and note, each item
-carrying the exact call that fixes it and the times to look at. `revert_my_edit` is the
+carrying the exact call that fixes it and the times to look at. It is safe to follow, which it
+was not: no clips list it hands over costs the edit its own work (a card, a lift, a step, a
+loupe, an arrow, a `must_keep` phrase, which is matched against the cues joined across their
+neighbours so a phrase said over a cue boundary is held and one nobody said is named), at most
+one item retimes the edit so two fixes can never undo each other, it shares
+`Director.tolerance` so one number has one judge, a silence a card or a fade is covering is not
+dead air to be cut, and every cut it sizes is sized in the seconds the finished video spends
+rather than in the seconds the recording ran, so a speed region no longer walks the edit under
+the number it just promised. An edit too short for its brief is answered with
+`fit_to_length { seconds: target }`, which slows only what is already holding, rather than with
+a rate over the narration. A finding the agent judged and wrote down
+(`review { declined: ['dead-air'] }`, the reason in `direct`'s note) stops holding the verdict
+at "nearly" for ever, and that is as far as it goes: a blocking item declined drops to `should`
+and stays on the list, and a missing redaction does not move at all, because an agent that
+could turn "not ready" into "ready" on its own say-so is marking its own paper. It scores out
+of ten. `revert_my_edit` is the
 recovery of last resort, the same code path as the person's own undo of an agent change, so a
 zoom they dragged since stays dragged. The loop is held together by what comes back rather
 than by what descriptions ask for: every `apply_edit` and every `export` carries `plan` (what
 is left, and `apply_edit { step: 'P3' }` closes one) and `distance` (the length and shape
 against the brief), and a take with no brief carries the nudge to write one instead. `export`
-runs `review` and hands its blocking list back with the file. The export still happens:
-refusing one on somebody's own machine is rude, and being unable to say "done" without having
-been shown the list is enough.
+runs `review` and hands its blocking list back with the file, and its score. The export still
+happens: refusing one on somebody's own machine is rude, and being unable to say "done"
+without having been shown the list is enough.
+
+**What is still true next week** (`ui/memory.js`, `remember`). A brief lives in the job file
+and dies with the job. Everything else the person says about themselves and their software
+used to die with the conversation, so "new chat" wiped it and the agent asked the same four
+questions every week. Three drawers, because facts have three lifetimes: `G` for the person
+across every product, `F` for one product across every take (both in `<userData>/memory.json`),
+`N` for one recording, in that take's own sidecar so a rename carries it and a delete trashes
+it. Ids are the handle, the way `Z1` and `P2` are, and the letter says which drawer to name in
+`forget F3`. It refuses three things and keeps everything else: a secret, found by the shape of
+the value and never by the word beside it, handed back as the same sentence with the value
+taken out for you to send again; passing chatter, including a brief, which belongs in
+`.job.json` and would otherwise be two records of one decision that can disagree; and something
+already in there, which supersedes rather than doubles: half the content words shared is a
+restatement, and so is a second sentence naming the same thing, so "it is called Lyricly now"
+replaces "the product is called Songscription" instead of leaving recall printing a dead name
+as a current fact. Nothing is summarised and nothing ages
+out on a clock: a fact is superseded or evicted when its drawer fills, weakest first, and a
+pinned one outlives an unpinned one. Every call returns the memory block as the next
+conversation will see it, so the agent reads what its own write did rather than the word
+"saved". It is read as well as written: the block opens every in-app conversation under its own
+heading in the system prompt, and `direct` and `apply_edit` carry it back beside `plan` and
+`distance`, so an outside client that never saw that prompt still knows what it was told last
+week.
 
 **The agent's own cursor** (`ui/pointer.js`). An agent's take is recorded without the
 Mac's pointer, which belongs to the person at the desk. The agent reports where its

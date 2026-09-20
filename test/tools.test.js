@@ -121,6 +121,65 @@ async function main() {
     }
   })
 
+  // ── the doctrine, for the clients that are not this app ──────────────────
+  // Everything the product knows about how to work reached the in-app agent, through
+  // --append-system-prompt, and nobody else: mcp/index.js set no instructions, which is
+  // the one field MCP has for it. These three hold the fix in place and hold it honest.
+  t('the server tells an agent that never opened this app how a job goes', () => {
+    const say = server.server._instructions || ''
+    assert.ok(say.length > 200, 'no instructions on the server, so every outside client starts from nothing')
+    // Short enough to be read rather than skipped. This is the shape of a job; what a
+    // tool takes and gives back belongs in that tool's own description, where it cannot
+    // fall out of step with the tool.
+    assert.ok(say.length < 2000, `${say.length} characters is a manual, not a doctrine`)
+    assert.ok(!/[\u2014\u2013]/.test(say), 'an em dash in the instructions')
+    assert.ok(!/biscuit/i.test(say), 'the instructions name the mascot at a model')
+  })
+
+  t('the outside agent and the in-app one are handed the same loop', () => {
+    // Two copies of one doctrine is one copy quietly going wrong. The pane's agent gets
+    // EditAssist's LOOP as a system prompt and the server carries it word for word;
+    // this is the only thing that would notice if either moved.
+    const prompt = require('../ui/edit-assist').systemPrompt().split('\n')
+    const head = prompt.indexOf('How a job goes, every time:')
+    assert.ok(head >= 0, 'ui/edit-assist.js no longer heads its loop "How a job goes, every time:"')
+    const loop = prompt.slice(head, prompt.indexOf('', head))
+    assert.ok(loop.length >= 7, `${loop.length} lines of loop found, heading and all`)
+    const say = server.server._instructions || ''
+    for (const line of loop) {
+      assert.ok(say.includes(line), `the pane's agent is told "${line}" and an outside agent is not`)
+    }
+  })
+
+  t('the instructions name no tool this server does not register', () => {
+    // The one way a sentence there rots is by naming a tool that was renamed or taken
+    // out. Anything shaped like a tool name has to be one.
+    const say = server.server._instructions || ''
+    for (const word of new Set(say.match(/\b[a-z]+_[a-z_]+\b/g) || [])) {
+      assert.ok(registered.includes(word), `the instructions name ${word}, which this server does not register`)
+    }
+    // and the ones named by a plain English word, which no pattern picks out of prose:
+    // listed here so a rename breaks this rather than the sentence
+    for (const name of ['direct', 'review', 'remember']) {
+      assert.ok(registered.includes(name), `the instructions say to call ${name}, which is not registered`)
+      assert.ok(new RegExp(`\\b${name}\\b`).test(say), `${name} is listed here and the instructions no longer name it`)
+    }
+  })
+
+  t('this round\'s work reached the tool surface', () => {
+    // Each of these is a thing the app can now do that no outside agent would find,
+    // because the only place it is written down is the description beside it.
+    const doc = name => SRC.split(`'${name}',`)[1] || ''
+    const edit = doc('apply_edit')
+    assert.ok(/camera \{on, x, y, size, keys\}/.test(edit), 'apply_edit does not name the camera\'s keys')
+    assert.ok(/\barrow\b/.test(edit), 'apply_edit does not name the arrow mark kind')
+    const fit = doc('fit_to_length')
+    assert.ok(/stretch\.reach/.test(fit), 'fit_to_length still reads as a tool that can only remove')
+    assert.ok(!/a target is a ceiling/.test(fit), 'fit_to_length still calls a target a ceiling')
+    assert.ok(/declined: z\.array/.test(doc('review')), 'review takes no declined, so a call the agent made on purpose holds the verdict for ever')
+    assert.ok(typeof bridge.ops['memory.remember'] === 'function', 'nothing answers memory.remember')
+  })
+
   t('every tool that works on a recording takes an absolute path', () => {
     for (const { name } of source) {
       const chunk = SRC.split(`'${name}',`)[1] || ''
@@ -155,6 +214,21 @@ async function main() {
         assert.ok(named.test(msg), `${op} refuses without naming a way forward: ${msg}`)
       }
     }
+  })
+
+  // Beats are worked out from the take rather than stored on the document, so an op
+  // that ranks or drops them has to ask for them. edit.fit read doc.beats alone and
+  // got an empty list, so its whole-beat stage had nothing to drop and it stopped 8.7 s
+  // over its target while review, which calls beatsFor, saw them fine. This is a source
+  // check like the refusal one above: it cannot run the op, but it can insist that
+  // whatever hands a document to Fit has fetched the beats first.
+  t('an op that fits a length fetches the beats itself', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+    const from = src.indexOf("async 'edit.fit'")
+    assert.ok(from > 0, 'edit.fit is gone from the bridge')
+    const body = src.slice(from, from + src.slice(from).indexOf('\n  },'))
+    assert.ok(/Fit\.fit\(/.test(body), 'edit.fit no longer calls Fit.fit')
+    assert.ok(/beatsFor\(/.test(body), 'edit.fit hands Fit a document whose beats it never fetched')
   })
 
   fs.rmSync(dir, { recursive: true, force: true })

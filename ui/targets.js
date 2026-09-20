@@ -58,10 +58,13 @@ function colourName(hex) {
 
 // ── elements ────────────────────────────────────────────────────────────────
 const area = b => b.w * b.h
-function iou(a, b) {
+const overlap = (a, b) => {
   const x = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x))
   const y = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y))
-  const i = x * y
+  return x * y
+}
+function iou(a, b) {
+  const i = overlap(a, b)
   return i ? i / (area(a) + area(b) - i) : 0
 }
 const inside = (p, b, slack = 0.004) => p.x >= b.x - slack && p.y >= b.y - slack &&
@@ -617,13 +620,18 @@ function zoomFit(zoom, box) {
 }
 
 const LABEL_MAX = 40
+const LABEL_TOUCH = 0.1   // below this the box only clips an edge, which is not aiming at it
 const trim = s => String(s || '').replace(/\s+/g, ' ').trim()
 const short = s => s.length <= LABEL_MAX ? s : trim(s.slice(0, LABEL_MAX - 1)) + '…'
 const capital = s => s ? s[0].toUpperCase() + s.slice(1) : ''
 
 /**
  * What to call the area someone lassoed, in their own screen's words: the element it
- * snapped to, or the longest thing written inside it, or just "Area".
+ * snapped to, or what the drawn box is around, in, or across, or just "Area".
+ *
+ * Only asking what the box holds the middle of is too strict. A tight box round a few
+ * words, or a box drawn inside a card, holds no element's middle and used to come back
+ * unnamed, which is the commonest way to lasso anything.
  */
 function regionLabel(box, elements, element) {
   const all = (elements || []).filter(e => e && e.box)
@@ -632,11 +640,20 @@ function regionLabel(box, elements, element) {
   if (el) return short(trim(el.text) || capital(el.kind) || 'Area')
   const b = cleanBox(box)
   if (b) {
-    const inIt = all.filter(e => {
+    const said = all.filter(e => trim(e.text))
+    // Drawn round things: the longest of them, because that is the one being shown.
+    const held = said.filter(e => {
       const c = centre(e.box)
       return c.x >= b.x && c.x <= b.x + b.w && c.y >= b.y && c.y <= b.y + b.h
-    }).map(e => trim(e.text)).filter(Boolean).sort((p, q) => q.length - p.length)
-    if (inIt.length) return short(inIt[0])
+    }).map(e => trim(e.text)).sort((p, q) => q.length - p.length)
+    if (held.length) return short(held[0])
+    // Drawn inside one thing or across two: the element the box shares the most with.
+    // Overlap alone also answers "the smallest element containing it": every element
+    // holding the whole box scores the box's area over its own, so the tightest wins.
+    const over = said.filter(e => overlap(e.box, b) >= LABEL_TOUCH * Math.min(area(e.box), area(b)))
+      .map(e => ({ e, v: round(iou(e.box, b)) }))
+      .sort((p, q) => q.v - p.v || bySize(p.e, q.e))
+    if (over.length) return short(trim(over[0].e.text))
   }
   return 'Area'
 }
@@ -655,7 +672,9 @@ function liftNeedsBox(mark) {
   const start = Number.isFinite(+m.start) ? +m.start : 0
   const span = Number.isFinite(+m.end) && +m.end > start ? +m.end - start : 0
   const aim = Math.round((start + Math.min(1, span / 3)) * 100) / 100
-  const what = m.kind === 'loupe' ? 'A loupe needs the box of the area it magnifies' : 'A lift needs the box of the thing it raises'
+  const what = m.kind === 'loupe' ? 'A loupe needs the box of the area it magnifies'
+    : m.kind === 'arrow' ? 'An arrow needs the box of the thing it points at'
+    : 'A lift needs the box of the thing it raises'
   return what + ', and this one has only a time.\n' +
     `Call find_on_screen at ${aim} s and send element: its E id, or ask the person to lasso ` +
     'the area in the editor and send element: its R id.'

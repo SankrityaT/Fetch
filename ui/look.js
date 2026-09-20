@@ -363,13 +363,15 @@ function warnings(look, ctx = {}) {
   if (dead.length) {
     out.push(`${dead.join(', ')} ${dead.length === 1 ? 'is' : 'are'} saved but nothing draws ${dead.length === 1 ? 'it' : 'them'} yet; the export uses the rest of the look.`)
   }
-  // A loupe is the compositor's alone, and it is the one mark that would simply not
-  // appear rather than appear differently, so it is named beside the look's own fields.
-  const loupes = (ctx.marks || []).filter(m => (m && m.kind ? m.kind : m) === 'loupe')
-    .map(m => (m && m.id) || 'a loupe')
+  // A loupe and an arrow are the compositor's alone, and they are the marks that would
+  // simply not appear rather than appear differently, so they are named beside the
+  // look's own fields.
+  const loupes = (ctx.marks || []).map(m => ({ k: (m && m.kind ? m.kind : m), id: m && m.id }))
+    .filter(m => m.k === 'loupe' || m.k === 'arrow')
+    .map(m => (m.id ? `${m.k} ${m.id}` : `a ${m.k}`))
   if (engine === 'classic' && (left.length || loupes.length)) {
     const what = ctx.format ? `${String(ctx.format).toUpperCase()} output` : ctx.still != null ? 'A still frame' : 'This export'
-    const items = left.concat(loupes.length ? [`the loupe ${loupes.join(', ')}`] : [])
+    const items = left.concat(loupes.length ? [`the ${loupes.join(', ')}`] : [])
     // The remedy is only a remedy when it names a format that was not already asked
     // for: an MP4 that fell back to the classic renderer is not fixed by asking for an
     // MP4 again, and the export result already says under classic_because what kept

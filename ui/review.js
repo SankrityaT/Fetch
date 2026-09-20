@@ -16,8 +16,33 @@
 // sent back exactly as it was read. An output length says so by name (seconds, target),
 // and look_at carries both, because contact_sheet reads the output and preview_frame
 // reads the recording.
+//
+// Safe to follow, which is the whole of this round's work here. A checker that damages
+// the edit is worse than no checker, and the round before this one had review rank a
+// cut that deleted a closing URL card and four fifths of a title card, then hand over
+// two calls that undid each other. Three rules hold now, in code rather than in wording:
+//
+//   the work    a card, a lift, a phrase the brief named: `work` computes them, `damage`
+//               measures what a proposed clips list would cost them, and a fix that
+//               costs any of it is not offered at all
+//   one call    the length, the silence and the work put back all move the same number,
+//               so `decide` returns at most one finding that retimes the edit. Two calls
+//               that both retime it are two halves of a choice, and an agent handed both
+//               walks in a circle
+//   no overshoot  a fix asked to reach 60 s lands on 60 s. Every cut is sized against
+//               the target and the last one is trimmed to the second rather than taken
+//               whole
+//
+// Where more than one answer is defensible the item carries `choices` and `fix` is the
+// safest of them, so an agent that applies `fix` without reading cannot be made worse
+// off by doing so.
 
 const Timeline = require('./timeline')
+// One judge for one number. The tolerance that decides a length has been hit is
+// Director's own, imported rather than restated: two modules with two tolerances is how
+// one edit got told "4.5 s under the brief" and "the length is near enough" at once, and
+// the sentence that would have ended that job sat behind the wider of the two.
+const Director = require('./director')
 
 const arr = v => (Array.isArray(v) ? v : [])
 const r2 = n => Math.round(n * 100) / 100
@@ -34,9 +59,25 @@ const ZOOM_EVERY = 8
 // luma off the ground beside them. The same 24 levels are what a ground and a take's own
 // measured end need between them before the edge is carried by the hairline alone.
 const EDGE = 24 / 255
-// How far off the asked-for length still counts as hitting it. A 60 second demo at 63
-// seconds is a 60 second demo; at 78 it is not the thing that was asked for.
-const NEAR = { share: 0.08, floor: 2 }
+// Marks that are the point of a moment rather than decoration on it, so cutting into
+// one costs the edit the thing it was for. A redaction is not on the list: dropping the
+// footage hides more than blurring it ever did.
+const WORK = ['lift', 'spotlight', 'step', 'loupe', 'arrow']
+// How much of a card or a lift has to survive a cut before it is still that card. Under
+// a fifth of a 2.7 s title card left on screen is a flash, not a title.
+const WHOLE = 0.8
+// Breath left either side of a cut in the silence. remove_dead_air and fit_to_length
+// both leave 0.15, so a cut review works out sounds like a cut they make.
+const PAD = 0.15
+// Below this a cut is a flicker rather than an edit; below MIN_PIECE ui/timeline.js
+// drops the sliver a cut would leave anyway.
+const MIN_CUT = 0.4
+const MIN_PIECE = 0.05
+// Room round a phrase put back, so the word is not clipped at its attack.
+const BREATH = 0.3
+// What review grades itself by. A fix is meant to raise this number and the test that
+// applies every fix in order and reviews again is what proves each one does.
+const PENALTY = { blocking: 2.5, should: 1, note: 0.25 }
 
 // A look field with its default, without asking look.js to resolve the whole spec:
 // review is handed whatever document exists, including one written by hand.
@@ -151,9 +192,14 @@ function kept(doc) {
     .filter(c => c && +c.end > +c.start)
     .map(c => ({ id: c.id || null, start: Math.max(0, +c.start), end: +c.end, rate: rateEndsOf(c) }))
     .sort((a, b) => a.start - b.start)
-  const src = cs.length ? cs : (dur > 0 ? [{ id: null, start: 0, end: dur, rate: [1, 1] }] : [])
+  return retime(cs.length ? cs : (dur > 0 ? [{ id: null, start: 0, end: dur, rate: [1, 1] }] : []))
+}
+
+// Pieces on the output clock. Every proposed edit below goes through this, so what a
+// fix would produce is measured by exactly the arithmetic the edit it came from was.
+function retime(pieces) {
   let t = 0
-  return src.map(c => {
+  return pieces.map(c => {
     // the kept range as the clock reads it, so a sped clip is as long here as it is in
     // the file: 60 s at 2x is 30 s of output, which is what get_edit and export say
     const seg = [c.start, c.end, c.rate[0], c.rate[1]]
@@ -177,6 +223,24 @@ function mergeSpans(spans) {
   }
   return out
 }
+
+// One span list with another taken out of it. The silence minus the cards, the take
+// minus what is kept, a cut minus the piece it may not touch: it is the same sum.
+function minus(spans, cuts) {
+  let out = spans.map(x => [x[0], x[1]])
+  for (const [a, b] of mergeSpans(cuts)) {
+    const next = []
+    for (const [s, e] of out) {
+      if (b <= s || a >= e) { next.push([s, e]); continue }
+      if (a > s) next.push([s, a])
+      if (b < e) next.push([b, e])
+    }
+    out = next
+  }
+  return out
+}
+
+const sumSpans = list => arr(list).reduce((n, g) => n + (g.end - g.start), 0)
 
 // Where a moment of the recording lands in the export, or null when the edit cut it out.
 function outAt(k, t) {
@@ -274,10 +338,242 @@ function handAimed(zooms) {
   })
 }
 
+
+// ── the work, and what no fix may take off it ───────────────────────────────
+/**
+ * What this edit is for, as spans of the recording: the title card, the closing card
+ * with the address, the lift the whole demo builds to, and any phrase the brief named.
+ * These are the work. No call review hands over may shorten one of them.
+ *
+ * A text is always on the list, drawn or not: somebody typed those words, and a card a
+ * cut deleted is the deletion worth reporting rather than clutter worth removing. A
+ * lift or a step is on it only while the edit still draws it, because a mark left
+ * behind on material already cut away is clutter, and the never-drawn rule says so.
+ *
+ * `restore` is the difference between the two when one has already been cut into. A
+ * card and a phrase the brief named are put back, material and all. A mark is aimed at
+ * material rather than the other way round, so a clipped one is retimed onto what the
+ * edit kept, which is the spans-a-cut rule below and not this one.
+ */
+function work(doc, brief, k, cues) {
+  const out = []
+  const dur = +doc.dur > 0 ? +doc.dur : (k.length ? k[k.length - 1].end : 0)
+  const add = (id, what, from, to, promised, restore = true) => {
+    // clamped to the take: a span running past the end could never be put back, and a
+    // finding no call can clear is a loop with better manners
+    const start = Math.max(0, from), end = Math.min(dur || to, to)
+    if (!(end > start)) return
+    const drawn = r2(across(k, start, end).reduce((n, p) => n + p.seconds, 0))
+    out.push({ id: id || null, what, start: r2(start), end: r2(end), drawn, promised: !!promised, restore })
+  }
+  for (const t of arr(doc.texts)) {
+    if (!t) continue
+    const words = String(t.text || '').replace(/\s+/g, ' ').trim()
+    add(t.id, words ? `the card "${words.slice(0, 40)}"` : 'a card', +t.start, +t.end, false)
+  }
+  for (const m of arr(doc.marks)) {
+    if (!m || !WORK.includes(m.kind) || !(+m.end > +m.start)) continue
+    if (!across(k, +m.start, +m.end).length) continue
+    add(m.id, `the ${m.kind}${m.id ? ` ${m.id}` : ''}`, +m.start, +m.end, false, false)
+  }
+  // A phrase is matched against the cues joined across their neighbours, never inside
+  // one cue alone: "the pricing page" split over "here is the pricing" and "page and
+  // then we are done" matched nothing, so the span the brief named was protected by
+  // nothing and review reported the brief as naming nothing at all.
+  const said = arr(cues).filter(c => c && +c.end > +c.start).sort((a, b) => +a.start - +b.start)
+  const joined = (a, b) => said.slice(a, b + 1)
+    .map(c => String(c.text || '').toLowerCase().replace(/\s+/g, ' ').trim()).filter(Boolean).join(' ')
+  const unmatched = []
+  for (const phrase of arr(brief && brief.must_keep).filter(Boolean).slice(0, 6)) {
+    const needle = String(phrase).toLowerCase().trim()
+    if (!needle) continue
+    let hit = false
+    for (let i = 0; i < said.length; i++) {
+      let j = i
+      while (j < said.length && j < i + JOIN && !joined(i, j).includes(needle)) j++
+      if (j >= said.length || j >= i + JOIN) continue
+      // the shortest run of cues that still holds the phrase, so a phrase inside one
+      // cue protects that cue alone and not the quiet one before it
+      let a = i
+      while (a < j && joined(a + 1, j).includes(needle)) a++
+      add(said[a].id, `"${phrase}"`, +said[a].start, +said[j].end, true)
+      hit = true
+      i = j                            // one run per phrase per place it was said
+    }
+    if (!hit) unmatched.push(String(phrase))
+  }
+  out.unmatched = unmatched
+  return out
+}
+
+// How many cues a must_keep phrase may run across. A phrase nobody would call a phrase
+// is not worth joining half the transcript to find.
+const JOIN = 4
+
+// The moment of the recording that lands at this second of the export: outAt the other
+// way round, for the rules written in output seconds. A fade is one of those.
+function srcAt(k, o) {
+  let left = Math.max(0, o)
+  for (const c of k) {
+    if (left <= c.span + 1e-6) return Math.min(c.end, Timeline.srcIn(c.seg, left))
+    left -= c.span
+  }
+  return k.length ? k[k.length - 1].end : 0
+}
+
+// Silence with something on the picture is not dead air: a title card is read, not
+// waited through, and a fade from black is the video starting. Measuring dead air from
+// the soundtrack alone is what had review ask an agent to delete its own opener.
+function covered(look, k, keeps, seconds) {
+  const out = keeps.map(w => [w.start, w.end])
+  if (!k.length) return mergeSpans(out)
+  const inFade = +field(look, 'motion.fadeIn', 0) || 0
+  const outFade = +field(look, 'motion.fadeOut', 0) || 0
+  if (inFade > 0) out.push([k[0].start, srcAt(k, Math.min(seconds, inFade))])
+  if (outFade > 0) out.push([srcAt(k, Math.max(0, seconds - outFade)), k[k.length - 1].end])
+  return mergeSpans(out)
+}
+
+// The gaps once the picture is taken into account. What is left of a gap has to still
+// read as dead air on its own, or it is a pause somebody would not notice.
+function uncovered(dead, cover, k) {
+  const out = []
+  for (const [s, e] of minus(dead.map(g => [g.start, g.end]), cover)) {
+    if (e - s >= DEAD_GAP) out.push({ start: r2(s), end: r2(e), out: outAt(k, s) })
+  }
+  return out.sort((a, b) => a.start - b.start)
+}
+
+// A piece as apply_edit takes it, carrying the id and the rate it came with. A fix that
+// handed back bare spans would quietly reset every speed region the edit had, which is
+// a destroyed edit under another name.
+function clipOf(p) {
+  const [r0, r1] = p.rate
+  const rate = r0 === r1 ? (r0 === 1 ? null : r2(r0)) : [r2(r0), r2(r1)]
+  return { ...(p.id ? { id: p.id } : {}), start: r2(p.start), end: r2(p.end), ...(rate === null ? {} : { rate }) }
+}
+const ramped = p => p.rate[0] !== p.rate[1]
+
+// The kept pieces with `cuts` taken out. Only the first piece of a split keeps the id,
+// the way ui/fit.js does it: two clips answering to C2 is worse than a gap in the ids.
+function without(k, cuts) {
+  const out = []
+  for (const c of k) {
+    minus([[c.start, c.end]], cuts)
+      .filter(([a, b]) => b - a > MIN_PIECE)
+      .forEach(([a, b], i) => out.push({ ...c, id: i === 0 ? c.id : null, start: a, end: b }))
+  }
+  return retime(out)
+}
+
+// The kept pieces with `spans` put back. Restored material is its own clip at 1x and is
+// never merged into one carrying a rate: material handed back at somebody else's speed
+// is not the material that was asked for.
+function including(k, spans, dur) {
+  const held = k.map(p => [p.start, p.end])
+  const top = dur > 0 ? dur : (k.length ? k[k.length - 1].end : 0)
+  const add = minus(mergeSpans(spans).map(([a, b]) => [Math.max(0, a), Math.min(top, b)]), held)
+    .filter(([a, b]) => b - a > MIN_PIECE)
+    .map(([a, b]) => ({ id: null, start: a, end: b, rate: [1, 1] }))
+  const all = [...k.map(p => ({ id: p.id, start: p.start, end: p.end, rate: p.rate })), ...add]
+    .sort((a, b) => a.start - b.start)
+  const out = []
+  for (const p of all) {
+    const last = out[out.length - 1]
+    // two neighbours at the same plain speed are one clip; a rate is a seam that stays
+    const joins = last && !ramped(last) && !ramped(p) && last.rate[0] === p.rate[0] && p.start <= last.end + 1e-6
+    // the clip that was already there keeps its id through a join, so a person's undo
+    // and a later merge by id still find the piece they were pointing at
+    if (joins) { last.end = Math.max(last.end, p.end); last.id = last.id || p.id }
+    else out.push({ ...p })
+  }
+  return retime(out)
+}
+
+// The material nearest the cuts, put back until the edit reaches the number and then
+// not a second more. The old advice was to restore the whole take and cut it again,
+// which is two calls, the first of which throws away every cut made on purpose.
+function fillTo(k, dur, target) {
+  let pieces = k
+  for (const [a, b] of minus([[0, dur]], k.map(p => [p.start, p.end]))) {
+    const need = target - outLength(pieces)
+    if (need <= 0.05) break
+    const take = Math.min(b - a, need)
+    if (take < MIN_PIECE) continue
+    pieces = including(pieces, [[a, a + take]], dur)
+  }
+  return pieces
+}
+
+/**
+ * Cuts taken from the silence, longest first, with not a second of them inside the
+ * work or inside a ramp. `want` is how many output seconds to take and `slack` is how
+ * much past that the caller can still afford: a gap that overshoots by less than the
+ * slack is taken whole, because leaving a second and a half of nothing behind is a
+ * pause an agent has to come back for. Past that the last cut is trimmed, from the end
+ * nobody speaks at, so the breath beside the words is the part that survives.
+ *
+ * `free` is what the silence could pay if it were all spent, which tells a caller
+ * whether a target is reachable without cutting into what was said.
+ */
+function silenceCuts(k, dead, keeps, want, slack = 0) {
+  const block = mergeSpans([...keeps.map(w => [w.start, w.end]), ...k.filter(ramped).map(p => [p.start, p.end])])
+  // Breath is left where a cut meets speech. Where it meets the end of a kept piece
+  // there is nothing to breathe from and padding would leave a sliver of a clip.
+  const edge = t => k.some(p => Math.abs(p.start - t) < 0.02 || Math.abs(p.end - t) < 0.02)
+  // What a gap is worth is what the edit spends on it, not how long the recording ran
+  // there: a hold at 0.655x pays out half as much again. `want` and `slack` are output
+  // seconds, so every gap is measured in them too, and the last cut is trimmed in the
+  // recording's own seconds at that gap's own rate. Sized the other way, review
+  // promised a 33 s edit and handed over a 30.4 s one, then called it short.
+  const free = minus(dead.map(g => [edge(g.start) ? g.start : g.start + PAD, edge(g.end) ? g.end : g.end - PAD]), block)
+    .filter(([a, b]) => b - a >= MIN_CUT)
+    .map(([a, b]) => ({ a, b, out: outSeconds(k, a, b) }))
+    .filter(g => g.out > 0)
+  free.sort((x, y) => y.out - x.out)
+  const cuts = []
+  let left = Number.isFinite(want) ? want : Infinity
+  for (const g of free) {
+    if (left < MIN_CUT) break
+    if (g.out <= left + slack) { cuts.push([g.a, g.b]); left -= g.out; continue }
+    // the end of a piece has nothing speaking after it, so the seconds come off there
+    const src = left * (g.b - g.a) / g.out
+    cuts.push(edge(g.b) ? [r2(g.b - src), g.b] : [g.a, r2(g.a + src)])
+    left = 0
+  }
+  return { cuts: mergeSpans(cuts), free: r2(free.reduce((n, g) => n + g.out, 0)) }
+}
+
+// The seconds the finished video spends on a stretch of the recording. `across` counts
+// the recording's own, which is the right unit for "how much of this card is drawn" and
+// the wrong one for "how much shorter does cutting this make the video".
+const outSeconds = (k, a, b) => across(k, a, b)
+  .reduce((n, p) => n + p.seconds * 2 / (p.piece.rate[0] + p.piece.rate[1]), 0)
+
+// What a proposed edit would cost the work. Every clips list review hands over is
+// measured by this before it leaves, and one that costs a second of a card is not
+// offered: by construction nothing here chooses such a cut, so this is the net under
+// the arithmetic rather than a decision of its own.
+function damage(keeps, pieces) {
+  const out = []
+  for (const w of keeps) {
+    const drawn = across(pieces, w.start, w.end).reduce((n, p) => n + p.seconds, 0)
+    const lost = r2(Math.min(w.drawn, w.end - w.start) - drawn)
+    if (lost > 0.05) out.push({ ...w, lost })
+  }
+  return out
+}
+
+// The output seconds the work itself takes up: the floor under any length this edit can
+// be asked for and still be the thing it is for.
+const workSeconds = (keeps, k) => r2(mergeSpans(keeps.map(w => [w.start, w.end]))
+  .reduce((n, [a, b]) => n + across(k, a, b)
+    .reduce((m, p) => m + p.seconds * 2 / (p.piece.rate[0] + p.piece.rate[1]), 0), 0))
+
 // ── the rubric ──────────────────────────────────────────────────────────────
 // Rank inside a severity. The order is what a person would fix first: the promise they
 // made (what must be hidden, the shape, the words), then the length, then the clutter.
-const RANK = ['redactions', 'aspect', 'captions', 'burn-in', 'must-keep', 'length',
+const RANK = ['redactions', 'aspect', 'captions', 'burn-in', 'must-keep', 'clipped', 'length',
   'dead-air', 'never-drawn', 'spans-a-cut', 'focus-clash', 'zoom-density', 'hand-aimed',
   'ground', 'no-zooms', 'no-brief']
 const WEIGHT = { blocking: 0, should: 1, note: 2 }
@@ -295,9 +591,15 @@ const WEIGHT = { blocking: 0, should: 1, note: 2 }
  *   looks   list_looks' entries, each { name, label, for, look }, so a look is named by
  *           what it is for rather than guessed at by its name
  *   path    the recording, so every fix is a call that can be made as it stands
+ *   declined  rule names the agent has judged and written off through direct's note.
+ *           They stay in the list, marked, and stop counting towards the verdict, so a
+ *           correct refusal does not hold an edit at "nearly" for ever.
  *
- * Returns { verdict, summary, items, look_at, measured }. Every item carries
- * { rule, severity, what, at, fix: { tool, args, why } }.
+ * Returns { verdict, score, summary, items, look_at, measured }. Every item carries
+ * { rule, severity, what, at, fix: { tool, args, why } }, and an item whose decision
+ * has more than one defensible answer also carries `choices`, of which `fix` is the
+ * one that is safe to apply without reading the others. `score` is out of ten and is
+ * what a fix has to raise.
  */
 function review(input = {}) {
   const doc = input.doc || {}
@@ -312,11 +614,21 @@ function review(input = {}) {
   // would read as one long silence and both the finding and the number under it would
   // be a measurement with no evidence. The captions rule says the real thing instead.
   const heard = speech.length > 0
-  const dead = heard ? deadAir(k, speech) : []
   const zooms = arr(doc.zooms)
   const marks = arr(doc.marks)
   const redactions = marks.filter(m => m && (m.kind === 'redact' || m.kind === 'blur'))
   const cues = arr(doc.cues)
+  // What the edit is for, worked out before anything is measured about it, because
+  // every call below is checked against it.
+  const keeps = work(doc, brief, k, cues)
+  // Dead air with the picture switched on, for any set of pieces: a gap a card or a
+  // lift or a fade covers is a beat to be read, not a silence to be cut.
+  const deadOn = pieces => (heard
+    ? uncovered(deadAir(pieces, speech), covered(look, pieces, keeps, outLength(pieces)), pieces)
+    : [])
+  const dead = deadOn(k)
+  const deadTotal = r2(sumSpans(dead))
+  const deadCovered = heard ? r2(sumSpans(deadAir(k, speech)) - deadTotal) : null
   const aspect = field(look, 'frame.aspect', 'auto')
   // 'auto' is not "no shape": it is the take's own, and the take's own is often exactly
   // what was asked for. Calling it wrong made every edit nobody had set a shape on
@@ -396,65 +708,15 @@ function review(input = {}) {
       call('apply_look', { look: { captions: { show: true } } }, 'burned captions are drawn on the picture itself'))
   }
 
-  // A phrase the brief said to keep, cut out of the edit.
-  const keepers = arr(brief && brief.must_keep).filter(Boolean)
-  for (const phrase of keepers.slice(0, 6)) {
-    const needle = String(phrase).toLowerCase().trim()
-    const hits = cues.filter(c => c && String(c.text || '').toLowerCase().includes(needle))
-    if (!hits.length) continue                                 // never said: not a cut
-    if (hits.some(c => across(k, +c.start, +c.end).length)) continue
-    const at = r2(+hits[0].start)
-    // fit_to_length only ever removes material, so handing it back here was a call that
-    // could not clear its own finding. Put the span back first: clips is the whole list,
-    // so the fix is what is kept now plus the piece the phrase is in.
-    const from = r2(Math.max(0, +hits[0].start - 0.3))
-    const to = r2(Math.min(+doc.dur || +hits[hits.length - 1].end, +hits[hits.length - 1].end + 0.3))
-    const clips = mergeSpans([...k.map(c => [c.start, c.end]), [from, to]])
-      .map(([a, b]) => ({ start: r2(a), end: r2(b) }))
-    add('must-keep', 'should', `"${phrase}" is in the take at ${secs(at)} and the edit cuts it out.`,
-      call('apply_edit', { doc: { clips } },
-        `this puts ${secs(from)} to ${secs(to)} back in; fit_to_length with keep: ["${phrase}"] then takes the length out of elsewhere`), at)
-  }
-
-  // The length asked for.
-  if (target) {
-    const room = Math.max(NEAR.floor, target * NEAR.share)
-    const off = seconds - target
-    if (Math.abs(off) > room) {
-      const far = Math.abs(off) > target * 0.25
-      if (off > 0) {
-        add('length', far ? 'blocking' : 'should',
-          `The edit runs ${secs(seconds)} against the ${secs(target)} asked for, ${secs(r2(off))} long.`,
-          call('fit_to_length', { seconds: target, ...(keepers.length ? { keep: keepers } : {}) },
-            'it cuts from the beats and the silences and writes clips, so the edit stays editable'))
-      } else {
-        const spare = r2((+doc.dur || 0) - seconds)
-        add('length', far ? 'blocking' : 'should',
-          `The edit runs ${secs(seconds)} against the ${secs(target)} asked for, ${secs(r2(-off))} short.` +
-          (spare > 1 ? ` There is ${secs(spare)} of the take not in it.` : ' The whole take is already in it.'),
-          spare > 1
-            ? call('apply_edit', { doc: { clips: [{ start: 0, end: r2(+doc.dur || 0) }] } },
-              'put the take back whole, then cut to the length with fit_to_length')
-            : call('direct', { brief: { seconds: Math.round(seconds) } },
-              'the take is not long enough for the brief: change the target, or record more'))
-      }
-    }
-  }
-
-  // Dead air the edit still carries.
-  const deadTotal = r2(dead.reduce((n, g) => n + (g.end - g.start), 0))
-  if (dead.length && (!spec || spec.tight) && deadTotal >= DEAD_GAP) {
-    const worst = dead.slice().sort((a, b) => (b.end - b.start) - (a.end - a.start))[0]
-    add('dead-air', 'should',
-      `${secs(deadTotal)} of the edit has nobody speaking, in ${plural(dead.length, 'gap')}, the longest ` +
-      `${secs(r2(worst.end - worst.start))} at ${secs(worst.start)}.`,
-      // Never the brief's own length: fit_to_length is a ceiling, so a 45 s edit asked to
-      // fit 60 s drops nothing and the finding comes back word for word on the next
-      // review. The target is what the edit is once the silence is out of it.
-      call('fit_to_length', { seconds: Math.max(1, Math.round(seconds - deadTotal)) },
-        'it cuts the silences first, and writes clips rather than a new file'),
-      worst.start)
-  }
+  // The work put back, the length, the silence: all three move the same number, so
+  // they are one decision and review hands over one call for it. Two calls that each
+  // retime the edit are two halves of a choice the agent was never shown, and a pair of
+  // them walked a real job in a circle.
+  const one = decide({
+    doc, k, seconds, target, keeps, dead, deadTotal, deadOn, spec, call, cues,
+    phrases: arr(brief && brief.must_keep).filter(Boolean), beats: arr(input.beats),
+  })
+  if (one) items.push(one)
 
   // Objects the export never draws, because the edit cut their moment away.
   for (const z of zooms) {
@@ -478,11 +740,18 @@ function review(input = {}) {
   for (const m of marks) {
     if (!m || !m.id || !FOCUS.includes(m.kind) || !(+m.end > +m.start)) continue
     const parts = across(k, +m.start, +m.end)
-    if (parts.length < 2) continue
+    if (!parts.length) continue
+    const held = parts.reduce((n, p) => n + p.seconds, 0)
+    // Two pieces means the frame under it changes at the join. One piece and a short
+    // measure means the cut took the rest of its span away, which the orphan check
+    // never saw because the mark was not orphaned, only shortened.
+    if (parts.length < 2 && held >= (+m.end - +m.start) * WHOLE - 0.01) continue
     const best = parts.slice().sort((a, b) => b.seconds - a.seconds)[0]
     const start = r2(Math.max(+m.start, best.piece.start)), end = r2(Math.min(+m.end, best.piece.end))
     add('spans-a-cut', 'should',
-      `${m.id} (${m.kind}) runs across a cut, so its element is only under it for part of the span.`,
+      parts.length > 1
+        ? `${m.id} (${m.kind}) runs across a cut, so its element is only under it for part of the span.`
+        : `${m.id} (${m.kind}) is drawn for ${secs(r2(held))} of its ${secs(r2(+m.end - +m.start))}: the edit cuts the rest of its span away.`,
       call('apply_edit', { doc: { marks: [{ id: m.id, start, end }] } },
         'marks merge by id, so this retimes that one and leaves the rest alone'),
       r2(+m.start))
@@ -541,20 +810,46 @@ function review(input = {}) {
     }
   }
 
+  // A judgement the agent made and wrote down closes a `should`. Without this a finding
+  // it correctly refuses holds the verdict at "nearly" for ever, so "review is clean" is
+  // a state that job can never reach and the word stops carrying information.
+  //
+  // It does not close a blocking one, and the agent saying so is exactly why: an agent
+  // that can turn "not ready" into "ready" on its own say-so is marking its own paper,
+  // and "ready" has to keep meaning an edit with nothing blocking left in it. A blocking
+  // item declined drops to `should` and carries `lowered`, so the judgement counts for
+  // something and the finding is still on the list. A redaction the brief asked for does
+  // not move at all: it is the one failure that ships something private.
+  const NEVER_DECLINED = ['redactions']
+  const declined = arr(input.declined).map(x => String(x).trim().toLowerCase())
+  for (const i of items) {
+    if (!declined.includes(i.rule) || NEVER_DECLINED.includes(i.rule)) continue
+    if (i.severity === 'blocking') { i.severity = 'should'; i.lowered = true }
+    else i.declined = true
+  }
+
   items.sort((a, b) => (WEIGHT[a.severity] - WEIGHT[b.severity]) ||
     (RANK.indexOf(a.rule) - RANK.indexOf(b.rule)) || ((a.at || 0) - (b.at || 0)))
 
-  const bad = items.filter(i => i.severity === 'blocking').length
-  const should = items.filter(i => i.severity === 'should').length
+  const live = items.filter(i => !i.declined)
+  const off = items.length - live.length
+
+  const bad = live.filter(i => i.severity === 'blocking').length
+  const should = live.filter(i => i.severity === 'should').length
   const verdict = bad ? 'not ready' : should ? 'nearly' : 'ready'
-  const summary = bad || should
+  // Review's own measure, so a fix can be shown to have helped rather than said to
+  // have: ten is nothing the rubric can name, and applying a fix has to move it up.
+  const score = r2(Math.max(0, 10 - live.reduce((n, i) => n + (PENALTY[i.severity] || 0), 0)))
+  const summary = (bad || should
     ? `${verdict === 'not ready' ? 'Not ready' : 'Nearly'}: ` +
       [bad ? `${plural(bad, 'thing')} to fix` : '', should ? `${plural(should, 'thing')} worth fixing` : '']
         .filter(Boolean).join(', ') + '.'
-    : `Ready: ${secs(seconds)}${target ? ` against the ${secs(target)} asked for` : ''}, nothing the rubric can name.`
+    : `Ready: ${secs(seconds)}${target ? ` against the ${secs(target)} asked for` : ''}, nothing the rubric can name.`) +
+    (off ? ` ${plural(off, 'item')} declined.` : '')
 
   return {
     verdict,
+    score,
     summary,
     items,
     look_at: lookAt(items, k, input.beats, seconds),
@@ -572,10 +867,235 @@ function review(input = {}) {
       redactions_drawn: drawnHides.length,
       captions: cues.length,
       captions_burned: burn,
-      dead_air: heard ? { seconds: deadTotal, gaps: dead.slice(0, 4) } : { seconds: null, gaps: [], why: 'nothing says where anybody spoke: no captions and no beats' },
+      // `gaps` is the head of the list and `more` says how much of it is not shown: a
+      // truncated list that does not say so is a sentence and a table disagreeing.
+      dead_air: heard
+        ? { seconds: deadTotal, covered: deadCovered, gaps: dead.slice(0, 6), more: Math.max(0, dead.length - 6) }
+        : { seconds: null, covered: null, gaps: [], more: 0, why: 'nothing says where anybody spoke: no captions and no beats' },
+      // The work, and how much of each of it this edit actually draws. An agent that
+      // wants to check review kept its promise reads this and nothing else.
+      must_keep: keeps.map(w => ({ id: w.id, what: w.what, seconds: r2(w.end - w.start), drawn: w.drawn })),
+      // A phrase the brief named that nobody said is a promise nothing is holding, and
+      // silence about it reads as "the brief named nothing".
+      must_keep_unmatched: arr(keeps.unmatched),
       ground: ground === null ? null : r2(ground),
       take_levels: lv && Number.isFinite(+lv.lo) ? { lo: r2(+lv.lo), hi: r2(+lv.hi) } : null,
     },
+  }
+}
+
+
+// ── the one call that retimes the edit ──────────────────────────────────────
+/**
+ * The single finding that changes what the edit keeps. Putting the work back, the
+ * length, the silence: every one of them moves the same number, so review decides
+ * between them once instead of handing over two calls that pull opposite ways.
+ *
+ * Three rules hold over every answer below. Nothing it offers shortens a span in
+ * `keeps`, and `damage` is what says so rather than the wording. Nothing it offers
+ * takes the edit past the number it was asked to reach: cuts are sized against the
+ * target and the last one is trimmed to the second. And where more than one answer is
+ * defensible it says so in `choices`, with `fix` set to the one that is safe to apply
+ * without reading the rest.
+ *
+ * Returns the one item, or null when nothing about the length or the silence is worth
+ * a call.
+ */
+function decide(c) {
+  const { doc, k, seconds, target, keeps, dead, deadTotal, deadOn, spec, call, phrases, beats } = c
+  const dur = +doc.dur > 0 ? +doc.dur : (k.length ? k[k.length - 1].end : 0)
+  const near = target ? Director.tolerance(target) : 0
+  const tight = !spec || spec.tight
+  const lost = keeps.filter(w => w.restore && w.drawn < (w.end - w.start) * WHOLE - 0.01)
+  // What fit_to_length has to be told to keep: the phrases the brief named and the id
+  // of every beat holding a piece of the work, which is the one argument fit reads.
+  const guard = [...phrases.map(String),
+    ...beats.filter(b => b && b.id && keeps.some(w => Math.min(+b.end, w.end) - Math.max(+b.start, w.start) > 0.1))
+      .map(b => b.id)]
+
+  // 1. The work, cut out or cut into. Nothing else is decided until it is back: an edit
+  //    missing its closing card is not a short edit, it is the wrong video.
+  if (lost.length) {
+    const gone = lost.filter(w => w.drawn <= 0.01)
+    const head = gone.length ? gone : lost
+    const detail = head.slice(0, 3).map(w => (gone.length
+      ? `${w.what}, which is in the take at ${secs(w.start)}`
+      : `${w.what}: ${secs(w.drawn)} of its ${secs(r2(w.end - w.start))} is drawn`)).join(', ')
+    const rest = lost.length > head.length
+      ? ` ${lost.length - head.length} more of the work is clipped by the same cuts.` : ''
+    let pieces = including(k, lost.map(w => [w.start - BREATH, w.end + BREATH]), dur)
+    let tail = ''
+    // Putting it back makes the edit longer, and the silence is what pays for that.
+    if (target && outLength(pieces) > target + near) {
+      const { cuts } = silenceCuts(pieces, deadOn(pieces), keeps, r2(outLength(pieces) - target), near)
+      const cut = without(pieces, cuts)
+      if (!damage(keeps, cut).length) pieces = cut
+      const now = r2(outLength(pieces))
+      tail = now > target + near
+        ? ` With it back the edit runs ${secs(now)}, still over the ${secs(target)} asked for: fit_to_length is the next call, and keep names what has to survive it.`
+        : ` What it costs comes out of the silence, so the edit lands on ${secs(now)}.`
+    }
+    return {
+      rule: gone.length ? 'must-keep' : 'clipped',
+      severity: lost.some(w => w.promised) ? 'blocking' : 'should',
+      what: `${gone.length ? 'This edit does not draw' : 'A cut leaves only part of'} ${detail}.${rest}${tail}`,
+      at: r2(lost[0].start),
+      fix: call('apply_edit', { doc: { clips: pieces.map(clipOf) } },
+        'clips is the whole list, so this is the edit exactly as it stands with the work put back'),
+    }
+  }
+
+  // 2. Longer than the brief asked for. The silence pays first, and it pays exactly
+  //    what is owed: the old advice cut an edit eleven seconds past its own target.
+  if (target && seconds - target > near) {
+    const over = r2(seconds - target)
+    const far = over > target * 0.25
+    const { cuts, free } = silenceCuts(k, dead, keeps, over, near)
+    const floor = workSeconds(keeps, k)
+    if (free >= over - 0.01 && cuts.length) {
+      const pieces = without(k, cuts)
+      if (!damage(keeps, pieces).length) {
+        return {
+          rule: 'length', severity: far ? 'blocking' : 'should',
+          what: `The edit runs ${secs(seconds)} against the ${secs(target)} asked for, ${secs(over)} long, and ` +
+            `${secs(free)} of it is silence nobody is speaking over.`,
+          at: r2(cuts[0][0]),
+          fix: call('apply_edit', { doc: { clips: pieces.map(clipOf) } },
+            `this takes ${secs(over)} out of the pauses, nothing out of the cards, the lifts or the words, and lands on ${secs(r2(outLength(pieces)))}`),
+        }
+      }
+    }
+    // The target cannot be reached without cutting into the work itself. That is a
+    // choice somebody has to make, not a cut review makes quietly on their behalf.
+    if (target < floor + 1) {
+      const room = Math.ceil(floor + 1)
+      const move = call('direct', { brief: { seconds: room } },
+        `${secs(room)} is the shortest this edit can be and still be what it is for`)
+      // The cheapest thing to give up if the number is the thing that cannot move: the
+      // shortest piece of the work, named, because "cut into them" is not a call.
+      const cheapest = keeps.filter(w => w.id).sort((a, b) => (a.end - a.start) - (b.end - b.start))[0]
+      return {
+        rule: 'length', severity: 'should',
+        what: `The edit runs ${secs(seconds)} against the ${secs(target)} asked for, and ${secs(floor)} of it is the cards, ` +
+          `the lifts and the words the brief named. ${secs(target)} cannot be reached without cutting into them, so this is ` +
+          'one decision and not two: move the target, or say which of them may go.',
+        at: null,
+        fix: move,
+        ...(cheapest ? { choices: [
+          { what: `move the target to ${secs(room)}`, fix: move },
+          { what: `hold the target and give up ${cheapest.what}`,
+            fix: call('apply_edit', { doc: { remove: [cheapest.id] } },
+              'take out the one you are willing to lose, then ask for the length again') },
+        ] } : {}),
+      }
+    }
+    return {
+      rule: 'length', severity: far ? 'blocking' : 'should',
+      what: `The edit runs ${secs(seconds)} against the ${secs(target)} asked for, ${secs(over)} long. ` +
+        `${secs(free)} of that can come out of the silence and the rest has to come out of what is said.`,
+      at: null,
+      fix: call('fit_to_length', { seconds: target, ...(guard.length ? { keep: guard } : {}) },
+        'it cuts the fillers and the pauses first, then whole beats, and keep names what has to survive the cut'),
+    }
+  }
+
+  // 3. Shorter than the brief asked for. Only material can answer this, and the take
+  //    either has some or it does not.
+  if (target && target - seconds > near) {
+    const short = r2(target - seconds)
+    const spare = r2(Math.max(0, dur - k.reduce((n, p) => n + (p.end - p.start), 0)))
+    if (spare > 1) {
+      const pieces = fillTo(k, dur, target)
+      const now = r2(outLength(pieces))
+      return {
+        rule: 'length', severity: short > target * 0.25 ? 'blocking' : 'should',
+        what: `The edit runs ${secs(seconds)} against the ${secs(target)} asked for, ${secs(short)} short. ` +
+          `There is ${secs(spare)} of the take not in it.`,
+        at: null,
+        fix: call('apply_edit', { doc: { clips: pieces.map(clipOf) } },
+          `this puts back the material nearest the cuts and lands on ${secs(now)}, rather than restoring the whole take and cutting it again`),
+      }
+    }
+    // The whole take is in and it is still short. Nothing can cut its way to the
+    // number, so either the target moves or the take is played slower, and the first of
+    // those is the one that cannot be wrong.
+    const accept = call('direct', { brief: { seconds: Math.round(seconds) } },
+      'the take is not long enough for the brief: change the target, record more, or hold the number with ' +
+      'fit_to_length as far as the stretch.reach it names')
+    // The old second choice was a rate on every clip, which slows the narration, and
+    // slowing a voice is the one thing fit refuses to do. fit_to_length slows the
+    // moments already holding with nobody speaking over them and nothing else, and it
+    // says in stretch.reach how far that honestly goes, so a target past it comes back
+    // as "record more" rather than as a drawled demo.
+    const hold = call('fit_to_length', { seconds: target, ...(guard.length ? { keep: guard } : {}) },
+      'this spends the missing seconds on the moments already holding still, never on the words; ' +
+      'stretch.reach in its result is the longest this edit can honestly be')
+    return {
+      rule: 'length', severity: 'should',
+      what: `The edit runs ${secs(seconds)} against the ${secs(target)} asked for, ${secs(short)} short, and the whole take ` +
+        'is already in it. Nothing can cut its way to the number, so either the target moves or the moments ' +
+        'already holding still hold longer.',
+      at: null,
+      fix: accept,
+      choices: [
+        { what: `take ${secs(r2(seconds))} as the length`, fix: accept },
+        { what: `hold the ${secs(target)} by dwelling longer on what is already holding`, fix: hold },
+      ],
+    }
+  }
+
+  // 4. The length is what was asked for, or nobody asked. What is left is the silence,
+  //    and what can come out of it is what the number can spare.
+  if (!dead.length || !tight || deadTotal < DEAD_GAP) return null
+  // The edge of the tolerance, not the target itself: silence the length can afford to
+  // lose comes out now, and not one second past that. Cutting past this edge is how a
+  // 60 second demo came back at 44.8 s on review's own advice.
+  const budget = target ? r2(seconds - (target - near)) : Infinity
+  const { cuts, free } = silenceCuts(k, dead, keeps, budget)
+  const worst = dead.slice().sort((a, b) => (b.end - b.start) - (a.end - a.start))[0]
+  const line = `${secs(deadTotal)} of the edit has nobody speaking, in ${plural(dead.length, 'gap')}, the longest ` +
+    `${secs(r2(worst.end - worst.start))} at ${secs(worst.start)}.`
+  if (cuts.length) {
+    const pieces = without(k, cuts)
+    if (!damage(keeps, pieces).length) {
+      const after = r2(outLength(pieces))
+      const took = r2(seconds - after)
+      const left = r2(free - took)
+      return {
+        rule: 'dead-air', severity: 'should',
+        what: line + (target && left >= MIN_CUT
+          ? ` ${secs(took)} of it can come out with the edit still on the ${secs(target)} asked for, and the last ${secs(left)} only if the target moves with it.`
+          : ''),
+        at: worst.start,
+        fix: call('apply_edit', { doc: { clips: pieces.map(clipOf) } },
+          `this takes ${secs(took)} of silence out and leaves ${secs(after)}; the cards, the lifts and the words are untouched`),
+      }
+    }
+  }
+  // Nothing can come out and leave the length where the brief wants it. Silence worth
+  // less than the tolerance is not a decision at all, and a rubric that keeps naming
+  // one is a rubric an agent learns to ignore.
+  if (!target || free <= near) return null
+  // So the silence and the length are one decision, and saying so is what stops the
+  // pair of calls that used to walk an edit back and forth for ever.
+  const all = without(k, silenceCuts(k, dead, keeps, Infinity).cuts)
+  const bottom = r2(outLength(all))
+  // Rounded up, never down: a target under what the silence can pay for is a target the
+  // next call cannot reach without cutting into what was said.
+  const move = call('direct', { brief: { seconds: Math.ceil(bottom) } },
+    `${secs(bottom)} is what this edit is once the silence is out of it; set that and the cut is the next call`)
+  return {
+    rule: 'dead-air', severity: 'note',
+    what: `${line} Taking it out leaves ${secs(bottom)}, ${secs(r2(target - bottom))} under the ${secs(target)} asked for, ` +
+      'so the silence and the length are one decision: move the target with the cut, or leave the silence in and say why.',
+    at: worst.start,
+    fix: move,
+    choices: [
+      { what: `tighten to ${secs(bottom)} and move the target with it`, fix: move },
+      { what: 'leave the silence in',
+        fix: call('direct', { note: 'the pauses are the demo breathing and stay' },
+          'a judgement written down closes the item; review is handed it as declined and the verdict stops turning on it') },
+    ],
   }
 }
 
@@ -616,6 +1136,7 @@ function lookAt(items, k, beats, seconds) {
 }
 
 /** The items an export result carries: what has to be fixed before this is the thing asked for. */
-const blocking = r => (r && arr(r.items).filter(i => i.severity === 'blocking')) || []
+const blocking = r => (r && arr(r.items).filter(i => i.severity === 'blocking' && !i.declined)) || []
 
-module.exports = { review, blocking, whereSpec, WHERE, kept, outAt, outLength, deadAir, focusClashes, handAimed, luma, DEAD_GAP, ZOOM_EVERY }
+module.exports = { review, blocking, whereSpec, WHERE, kept, outAt, outLength, deadAir, focusClashes, handAimed,
+  luma, work, damage, covered, silenceCuts, without, including, DEAD_GAP, ZOOM_EVERY, WHOLE, PENALTY }

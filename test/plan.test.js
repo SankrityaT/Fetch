@@ -272,6 +272,21 @@ console.log('the camera on its own clock')
   is('camera frames follow camTime', m.pick[180], Plan.holdIndex(cpts, T.camTime(cam, 3)))
   is('a camera that starts after the screen shows nothing yet',
     Plan.frameMap([0.5, 1], 3, n => T.camTime({ camStartedAt: 2000, screenStartedAt: 1000 }, n)).pick[0], -1)
+
+  // The bubble's track, off the GPU. A span is the state at `start` and whatever the
+  // bubble had before it at `end`, so one entry is the whole of "keep the camera small
+  // while the lift is up".
+  const kc = { ...cam, keys: [{ start: 2, end: 4, size: 0.1 }] }
+  const sk = Plan.prepare({ camera: kc, backdrop: 'dusk' }, { width: 1920, height: 1080, duration: 6, fps: 60 })
+  is('a span is two keys and the base', sk.cam.track.length, 3)
+  is('the camera decodes at the biggest the bubble gets', sk.cam.d, 2 * Math.round(0.2 * sk.rect.w / 2))
+  is('the bubble opens where the editor put it', r3(Plan.camAt(sk.cam, 0).d), r3(sk.cam.d))
+  is('and is at the key once the move has landed', Plan.camAt(sk.cam, 3.5).d < sk.cam.d * 0.6, true)
+  is('and is between the two in the middle of the move',
+    Plan.camAt(sk.cam, 2.3).d < sk.cam.d && Plan.camAt(sk.cam, 2.3).d > Plan.camAt(sk.cam, 3.5).d, true)
+  is('never outside the take, at rest or in flight',
+    [0, 2.3, 3.5, 4.4, 5].every(t => { const b = Plan.camAt(sk.cam, t)
+      return b.x >= sk.rect.x - 0.01 && b.x + b.d <= sk.rect.x + sk.rect.w + 0.01 }), true)
 }
 
 console.log('a caption over live content, and the shade that used to travel with it')

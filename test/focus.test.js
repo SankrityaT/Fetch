@@ -217,5 +217,46 @@ console.log('the loupe')
   is('the inset grows the last of the way in as it arrives', at(2.1).scale < at(5).scale, true)
 }
 
+// ── arrows ──────────────────────────────────────────────────────────────────
+// The light way to point at something: it stands outside the box, so the three ways it
+// can go wrong are all about where it is and how big, never about what it covers.
+console.log('an arrow')
+{
+  const plan = (m, o = {}) => Marks.planMarks([{ kind: 'arrow', start: 2, end: 9, ...m }],
+    { W, H, px, clock, span: 60, zooms: [], look: {}, ...o }).arrow
+  const box = { x: 0.45, y: 0.4, w: 0.14, h: 0.1 }
+
+  // the dial the look schema advertises reaches this far or it is connected to nothing
+  const plain = plan(box)[0]
+  const big = plan(box, { look: { arrow: 1.8 } })[0]
+  is('focus.arrow makes the arrow longer', r2(big.len / plain.len), 1.8)
+
+  // Sized by the window it is seen in at its own hold, not by the deepest zoom anywhere
+  // in its life: a half second push at 4x used to draw a seven second arrow at a quarter
+  // size for all seven seconds.
+  const flash = plan(box, { zooms: [{ start: 2, end: 2.5, scale: 4, x: 0.5, y: 0.5 }] })[0]
+  is('a zoom that has gone by the arrow\'s hold does not shrink it', r2(flash.len), r2(plain.len))
+  const held = plan(box, { zooms: [{ start: 0, end: 20, scale: 2, x: 0.5, y: 0.5 }] })[0]
+  is('and a zoom it is actually seen through does', r2(held.len * 2), r2(plain.len))
+
+  // The tip has to be inside what is on screen, along the way it points and across it.
+  // Picked on the room behind the tip alone, an arrow on a box outside a 2x window was
+  // drawn entirely off the window, or clamped 500 px away from the box it aimed at.
+  is('a box below what a zoom shows gets no arrow rather than one pointing at nothing',
+    plan({ x: 0.5, y: 0.92, w: 0.06, h: 0.05 }, { zooms: [{ start: 0, end: 20, scale: 2, x: 0.5, y: 0.2 }] }).length, 0)
+  is('and a box off the side of it gets none either',
+    plan({ x: 0.9, y: 0.5, w: 0.06, h: 0.05 }, { zooms: [{ start: 0, end: 20, scale: 2, x: 0.2, y: 0.5 }] }).length, 0)
+
+  // and the ordinary case still points at the middle of the box's nearest edge
+  is('the tip stands off the box it points at, outside it',
+    [plain.dir, plain.tip.x < box.x * W, r2(plain.tip.y)], ['left', true, r2((box.y + box.h / 2) * H)])
+  const inside = plan({ x: 0.28, y: 0.42, w: 0.08, h: 0.06 },
+    { zooms: [{ start: 0, end: 20, scale: 2, x: 0.5, y: 0.5 }] })[0]
+  const v = O.zoomView([{ start: 0, end: 20, scale: 2, x: 0.5, y: 0.5 }], 5.5)
+  is('a box hard against the left of a window is pointed at from a side with room',
+    [inside.dir, inside.tip.x >= v.x * W, inside.tip.x <= (v.x + v.w) * W,
+      inside.tip.y >= v.y * H, inside.tip.y <= (v.y + v.h) * H], ['top', true, true, true, true])
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

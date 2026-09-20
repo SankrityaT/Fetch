@@ -131,5 +131,158 @@ console.log('\nstage-pick: a point on the canvas, into the recording')
   is('nothing drawn is too small', P.tooSmall(null), true)
 }
 
-console.log(`\n${pass} passed, ${fail} failed`)
-process.exit(fail ? 1 : 0)
+// ── the lasso catches up with the Elements pass ─────────────────────────
+// Section 2 of the lasso contract: the timing, not the arithmetic. The pass that
+// names what is under the band lands about a second after it is asked for, and a
+// person who arms the tool and drags straight away is done before it. Everything
+// below is the shipped block of ui/editor.js run for real: the file is the editor's
+// DOM shell and cannot be required outside Electron, so its lasso section is lifted
+// whole and given a stage, a canvas and an ipcRenderer to talk to.
+const fs = require('fs')
+const path = require('path')
+const vm = require('vm')
+
+const EDITOR = fs.readFileSync(path.join(__dirname, '..', 'ui', 'editor.js'), 'utf8')
+function lassoSource() {
+  const a = EDITOR.indexOf('// \u2500\u2500 the lasso \u2500')
+  const b = EDITOR.indexOf('\n// \u2500\u2500 ', a + 20)
+  if (a < 0 || b < 0) throw new Error('the lasso block moved in ui/editor.js: move this test with it')
+  // the block keeps its own scope, so what the test drives is handed out by name
+  return EDITOR.slice(a, b) + `
+;globalThis.out = { setLasso, lassoDown, lassoMove, lassoUp,
+  get drag() { return lassoDrag }, get band() { return lassoBand } }
+`
+}
+
+const OUT = 1000                 // a square export at stage size, so a client pixel is an output pixel
+// one card on screen, and a drag that misses its edges by a few pixels either way
+const CARD = { id: 'E1', kind: 'card', text: 'Sign in', box: { x: 0.3, y: 0.3, w: 0.4, h: 0.2 } }
+const DRAG = { from: [310, 305], to: [690, 495] }
+const DRAWN = { x: 0.31, y: 0.305, w: 0.38, h: 0.19 }
+
+function fakeEl() {
+  const el = { style: {}, hidden: true, isConnected: true, innerHTML: '', firstChild: { innerHTML: '' } }
+  const on = new Set()
+  el.classList = { add: c => on.add(c), remove: c => on.delete(c), contains: c => on.has(c),
+    toggle: (c, want) => (want ? on.add(c) : on.delete(c)) }
+  el.remove = () => { el.isConnected = false }
+  el.on = on
+  return el
+}
+
+// A take on the stage with the lasso armed, and the Elements pass held in the test's
+// hand. `cap` stands in for the 2 s the real wait is bounded by.
+function armed({ cap = 400 } = {}) {
+  const calls = []
+  const regions = []
+  let land = null
+  const video = { currentTime: 3, paused: true, addEventListener() {} }
+  const frame = { dataset: { gl: 'on' }, appendChild() {}, addEventListener() {} }
+  const canvas = { offsetLeft: 0, offsetTop: 0, offsetWidth: OUT, offsetHeight: OUT,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: OUT, height: OUT }) }
+  const ctx = {
+    console,
+    setTimeout: (fn, ms) => setTimeout(fn, ms >= 1000 ? cap : ms),
+    clearTimeout,
+    ed: { src: '/x/Take.mov', lasso: false, tab: 'focus' },
+    stageGL: { clock: t => t,
+      spec: { W: OUT, H: OUT, inner: { x: 0, y: 0, w: 1, h: 1 }, rect: { x: 0, y: 0, w: OUT, h: OUT } } },
+    $: id => ({ stageFrame: frame, edVideo: video, stageGL: canvas }[id] || null),
+    escHtml: v => String(v),
+    toast: () => {},
+    seek: () => {},
+    paintAim: () => {},
+    document: { addEventListener() {}, removeEventListener() {}, createElement: () => fakeEl() },
+    window: { addEventListener() {}, fetchLasso: { add: r => regions.push(r), onDrop() {} } },
+    ipcRenderer: {
+      invoke(ch, args) {
+        calls.push({ ch, args })
+        // the pass is held: nothing lands until the test says so, which is the window
+        // a quick drag lives inside
+        if (ch === 'lasso-elements') return new Promise(done => { land = done })
+        return Promise.resolve({ id: 'R1', path: args.path, at: args.at, box: args.box,
+          element: args.element, kind: args.kind, label: args.label })
+      },
+    },
+    require: name => (name === './ui/compositor/plan'
+      ? { framePlan: () => ({ move: null }), viewAt: () => [0, 0, 1, 1] }
+      : require(path.join(__dirname, '..', name.replace(/^\.\//, '')))),
+  }
+  vm.createContext(ctx)
+  vm.runInContext(lassoSource(), ctx, { filename: 'ui/editor.js (the lasso)' })
+  const L = ctx.out
+  L.setLasso(true)
+  const at = (p, ev) => ({ button: 0, buttons: 1, type: ev || 'mousedown', clientX: p[0], clientY: p[1],
+    target: {}, preventDefault() {} })
+  return {
+    L, calls, regions,
+    passes: () => calls.filter(c => c.ch === 'lasso-elements').length,
+    minted: () => calls.filter(c => c.ch === 'lasso-region').map(c => c.args)[0] || null,
+    land: els => { const done = land; land = null; done({ elements: els }) },
+    down: () => L.lassoDown(at(DRAG.from)),
+    move: () => L.lassoMove(at(DRAG.to, 'mousemove')),
+    tag: () => (L.band ? L.band.firstChild.innerHTML : null),
+  }
+}
+
+const tick = () => new Promise(done => setTimeout(done, 0))
+
+async function lassoCases() {
+  {
+    // 7. The reported fault. The drag happens inside the window the pass is still out,
+    // so the band is free form and the area is called "Area". When the pass lands the
+    // rectangle is judged again, under the pointer, without another mousemove.
+    const s = armed()
+    s.down(); s.move()
+    is('a drag ahead of the pass snaps to nothing', s.L.drag.kind, 'free')
+    is('and has only the fallback name', s.L.drag.label, 'Area')
+    is('so the band says so', s.tag(), 'Free')
+    s.land([CARD])
+    await tick()
+    is('the pass landing snaps the band to the card', box4(s.L.drag.box), CARD.box)
+    is('and names it', s.L.drag.label, 'Sign in')
+    is('and the id is the one the agent aims at', s.L.drag.element, 'E1')
+    is('the band caught up under the pointer', /E1/.test(s.tag()) && /Sign in/.test(s.tag()), true)
+  }
+
+  {
+    // 8. One moment, one pass: arming asks for the frame on screen and the mousedown
+    // behind it lands on the same key, so the drag rides the answer already coming.
+    const s = armed()
+    s.down(); s.move()
+    is('the moment is asked for once', s.passes(), 1)
+  }
+
+  {
+    // 9. Quicker than the pass: the button is up before any answer exists. The chip is
+    // minted once, so this is the last moment the name can be got right.
+    const s = armed()
+    s.down(); s.move()
+    const up = s.L.lassoUp()
+    is('nothing is minted while the answer is still out', s.minted(), null)
+    s.land([CARD])
+    await up
+    const sent = s.minted()
+    is('release waits for the pass and mints the element', sent && sent.element, 'E1')
+    is('with the element box, not the hand-drawn one', box4(sent && sent.box), CARD.box)
+    is('and the name the person can read', sent && sent.label, 'Sign in')
+    is('the chip in the composer carries it', s.regions.length && s.regions[0].label, 'Sign in')
+  }
+
+  {
+    // 10. A pass that never lands costs its say and not the gesture: the area still
+    // reaches the composer, free form and under the fallback name.
+    const s = armed({ cap: 1 })
+    s.down(); s.move()
+    await s.L.lassoUp()
+    const sent = s.minted()
+    is('a pass that hangs still mints the area', box4(sent && sent.box), DRAWN)
+    is('free form', sent && sent.kind, 'free')
+    is('under the fallback name', sent && sent.label, 'Area')
+  }
+}
+
+lassoCases().then(() => {
+  console.log(`\n${pass} passed, ${fail} failed`)
+  process.exit(fail ? 1 : 0)
+}, err => { console.error(err); process.exit(1) })

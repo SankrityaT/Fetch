@@ -6,9 +6,9 @@
   "scripts": {
     "start": "electron .",
     "fixtures": "./test/fixtures.sh",
-    "test:gl": "bash test/gl/fixtures.sh && FETCH_GL_TESTS=1 electron test/gl/harness.js",
+    "test:gl": "bash test/gl/fixtures.sh && node test/gl/run.js",
     "bench:gl": "FETCH_GL_TESTS=1 electron test/gl/bench.js",
-    "test": "node test/policy.test.js && node test/fetchdoc.test.js && node test/look.test.js && node test/levels.test.js && node test/timeline.test.js && node test/plan.test.js && node test/fit.test.js && node test/director.test.js && node test/review.test.js && node test/trackedit.test.js && node test/focus.test.js && node test/beats.test.js && node test/naming.test.js && node test/zoom.test.js && node test/overlays.test.js && node test/zoomview.test.js && node test/motion.test.js && node test/stage-pick.test.js && node test/targets.test.js && node test/lasso.test.js && node test/pointer.test.js && node test/chat.test.js && node test/assist.test.js && node test/takes.test.js && node test/recorder.test.js && node test/library.test.js && node test/engine.test.js /tmp/fetch-test/test.webm && node test/formats.test.js && node test/tools.test.js"
+    "test": "node test/policy.test.js && node test/fetchdoc.test.js && node test/look.test.js && node test/levels.test.js && node test/timeline.test.js && node test/plan.test.js && node test/fit.test.js && node test/director.test.js && node test/review.test.js && node test/memory.test.js && node test/trackedit.test.js && node test/focus.test.js && node test/beats.test.js && node test/naming.test.js && node test/zoom.test.js && node test/overlays.test.js && node test/zoomview.test.js && node test/motion.test.js && node test/stage-pick.test.js && node test/targets.test.js && node test/lasso.test.js && node test/pointer.test.js && node test/chat.test.js && node test/assist.test.js && node test/takes.test.js && node test/recorder.test.js && node test/library.test.js && node test/engine.test.js /tmp/fetch-test/test.webm && node test/formats.test.js && node test/tools.test.js"
   },
   "devDependencies": {
     "electron": "^33.2.0"

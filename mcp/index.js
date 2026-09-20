@@ -17,8 +17,48 @@ import { call, setClient } from './bridge.js'
 
 const text = obj => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] })
 
+// What every client is handed before it calls anything. MCP has one field for this and
+// it was empty, so the loop this product is built around reached the agent inside the
+// app and nobody else: every outside client started from nothing and worked it out, or
+// did not. Costing one argument to the constructor, that was the cheapest thing in the
+// product left undone.
+//
+// The shape of a job, not a manual. What a tool takes and what it gives back belongs in
+// that tool's own description, so a tool can change without a word of this going stale.
+// The job lines are EditAssist's LOOP word for word (ui/edit-assist.js), the same
+// doctrine the in-app agent gets: one copy, said twice, would be one copy quietly going
+// wrong. test/tools.test.js fails if the two ever differ, and fails if a tool named
+// anywhere below is not one this server registers.
+const INSTRUCTIONS = [
+  'Fetch records this Mac\'s screen and edits what it recorded. The work happens in the Fetch app on ' +
+    'the person\'s own machine; these tools are its hands.',
+  '',
+  'How a job goes, every time:',
+  '- See the whole take with contact_sheet before you change it.',
+  '- Write the brief and the plan with direct before the first change.',
+  '- Make one step at a time and close it: apply_edit takes step, for example "P3".',
+  '- Call review before you reply.',
+  '- Fix what review names, or say in your reply why you did not.',
+  '- Report the plan and what changed, not prose.',
+  '- Write down with remember anything the person tells you that will still be true next week: what ' +
+    'their product is called, who a demo is for, what must never be on screen.',
+  '',
+  'Aim at a box, never at a coordinate: call find_on_screen at that moment in the person\'s own words ' +
+    'and send the id it hands back. A zoom or a mark placed from numbers read off a picture lands on ' +
+    'the wrong thing, and the result will say so after the fact.',
+  '',
+  'Every result carries the state it changed: the plan that is left, how far the edit still is from ' +
+    'what was asked for, a frame of it, and what is wrong with it. Read that rather than calling again ' +
+    'to find out.',
+  '',
+  'Takes, edits and settings move between turns, under the person\'s own hands as well as yours. Read ' +
+    'the current state in this turn instead of trusting what an earlier one said.',
+  '',
+  'Reply in short plain sentences, and never with an em dash.',
+].join('\n')
+
 export function build() {
-  const server = new McpServer({ name: 'fetch', version: '0.1.0' })
+  const server = new McpServer({ name: 'fetch', version: '0.1.0' }, { instructions: INSTRUCTIONS })
 
   // Every call goes through here so Fetch can attribute it. The client names itself
   // during initialize and that is the only reliable source: Claude Code, Codex and
@@ -257,11 +297,15 @@ export function build() {
         'element\'s exact box), spotlight (the same cutout without the rise: the element ' +
         'stays put, everything else dims to about half with a light blur), loupe (a magnified inset of a ' +
         'small area, drawn beside it, for a detail too small to read and too small to zoom to without ' +
-        'losing the context it sits in; needs the area\'s box), or step (a round gold badge; n is the ' +
-        'number, left out the steps count 1, 2, 3 in order). Lift and spotlight ease in and ' +
+        'losing the context it sits in; needs the area\'s box), step (a round gold badge; n is the ' +
+        'number, left out the steps count 1, 2, 3 in order), or arrow (a gold arrow that stands outside ' +
+        'the box and points at the middle of its nearest edge, so what it points at is never under it: ' +
+        'the light way to say "this one" where a zoom or a lift would be too heavy. Takes from: left, ' +
+        'top, right or bottom, the side it comes in from, and picks the side with room where you do not ' +
+        'say. It appears, points and goes, so give it 2 to 6 seconds). Lift and spotlight ease in and ' +
         'out on the zoom curve, and a zoom starting or ending within 1.2s of one, or up to ' +
         '3s inside it, carries it, so zoom and lift read as one move: to zoom on and lift ' +
-        'one thing, send the same box to both. For redact, blur, lift and spotlight x,y is the top-left corner; for step x,y is ' +
+        'one thing, send the same box to both. For redact, blur, lift, spotlight and arrow x,y is the top-left corner; for step x,y is ' +
         'the point it numbers, e.g. the corner of a card, and the badge is centred there so ' +
         'it never covers the card\'s label.\n' +
         '  Any mark also takes element (an E id from your last find_on_screen) or box {x,y,w,h} ' +
@@ -305,8 +349,14 @@ export function build() {
         'offset and the track itself are on the recording\'s clock, not the finished video\'s, so the track ' +
         'is cut where the edit cuts and sped where a clip is sped: do not lay a line under a stretch running ' +
         'faster than about 1.5, it comes out gabbling.\n' +
-        '- camera {on, x, y, size}: only if a camera was recorded; x,y the bubble centre, ' +
-        'size 0.1 to 0.45.\n' +
+        '- camera {on, x, y, size, keys}: only if a camera was recorded; x,y the bubble centre, ' +
+        'size 0.1 to 0.45. keys moves the bubble over the take, so the face is large while somebody is ' +
+        'introducing a thing and small once the thing itself is the point. Each key is ' +
+        '{start, end, x, y, size, shape} for a stretch of the take, or {t, x, y, size, shape} for one ' +
+        'moment on: fields left out keep what the bubble already had, so {start: 12, end: 20.4, size: 0.1} ' +
+        'is the whole of "keep the camera small while the lift is up" and the bubble goes back to where it ' +
+        'was at 20.4. shape is circle or rounded. Times are the recording\'s, like a zoom\'s; moving ' +
+        'between keys takes the look\'s own zoom easing.\n' +
         '- crop {x,y,w,h} or null to remove it; cropAR sets the crop shape.\n' +
         'Older fields still work and are moved into look: backdrop, outAspect, capStyle, hideMacCursor, ' +
         'and look.zoomAmt, bdInset, bdRadius, burnCaps, denoise, loudnorm, gain, fadeIn, fadeOut, music.\n' +
@@ -386,7 +436,13 @@ export function build() {
         'the edit never draws, two highlights on one place, and the ground against the take\'s own ' +
         'exposure. export runs it too, so its blocking items come back with the file. Fix what it names, ' +
         'or tell the person why you did not.',
-      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        declined: z.array(z.string()).optional()
+          .describe('Rule names you have judged and written off, e.g. ["dead-air"], with the reason kept in ' +
+            'direct\'s note. They are still measured and still reported, and they stop holding the verdict ' +
+            'back: a call you made on purpose is not an open finding.'),
+      }),
     },
     async args => text(await drive('edit.review', args, { timeoutMs: 60000 })))
 
@@ -395,7 +451,11 @@ export function build() {
     {
       description:
         'Choose which parts of a recording survive so the finished video is about seconds long, by ' +
-        'cutting filler words, then the long pauses, then whole beats worth the least. Writes clips on ' +
+        'cutting filler words, then the long pauses, then whole beats worth the least. Asked for more ' +
+        'than the take holds it cuts nothing and slows the moments it is already dwelling on instead, a ' +
+        'zoom holding or a card up with nobody talking over it, never past half speed and never over ' +
+        'speech; stretch.reach is the longest that edit can honestly be, and past it this refuses and ' +
+        'says to record more. Writes clips on ' +
         'the edit, so nothing new is written beside the recording and every zoom, mark, caption and look ' +
         'is kept. Returns the length before and after, what was dropped, what is still over, and anything ' +
         'that lost its footage. It will not butcher a take to win an argument with a number: when the ' +
@@ -405,7 +465,8 @@ export function build() {
         path: z.string().describe('Absolute path to the recording.'),
         seconds: z.number().min(1).max(3600).optional()
           .describe('How long the finished video should be. Leave it out to take the fillers and the dead air ' +
-            'out and stop there. A take already shorter than this is left alone: a target is a ceiling.'),
+            'out and stop there. A take shorter than this is stretched by slowing the moments it is already ' +
+            'dwelling on, as far as stretch.reach and no further.'),
         keep: z.array(z.string()).optional()
           .describe('What must survive: beat ids ("B4") or phrases matched against what was said. A term that ' +
             'matched nothing comes back under keep.unmatched rather than being dropped quietly.'),
@@ -430,6 +491,42 @@ export function build() {
       inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
     },
     async args => text(await drive('edit.revert', args, { timeoutMs: 90000 })))
+
+  // What a person says about their own software outlives the chat it was said in. The
+  // job file (direct) holds this edit's brief; this holds everything that is still true
+  // next week, which is the half that used to be asked for again every Monday.
+  server.registerTool(
+    'remember',
+    {
+      description:
+        'Write down something durable the person told you about themselves or their product, so the ' +
+        'next conversation still knows it. What it is called and how the name is said, who a demo is ' +
+        'for, what must never be on screen, how they always want their videos. Not what to do to this ' +
+        'edit, which is direct, and not a secret: a key, a token or a password is refused and the ' +
+        'sentence handed back with the value taken out, for you to send again. The result carries the ' +
+        'memory as the next conversation will see it, so you read what your own call did rather than ' +
+        'the word saved. Call it once, as soon as the person says the thing, not in a batch at the end ' +
+        'of a turn.',
+      inputSchema: z.object({
+        fact: z.string().optional()
+          .describe('The sentence, in the person\'s own words. Left out only when forgetting.'),
+        path: z.string().optional()
+          .describe('Absolute path to the recording, when the fact is about that one take. It also names ' +
+            'the product, so a fact about the product needs no `about`.'),
+        scope: z.enum(['global', 'product', 'take']).optional()
+          .describe('Which drawer: global is the person across every product, product is one product ' +
+            'across every take, take is this recording alone and dies with it. Worked out from the ' +
+            'sentence when you leave it out.'),
+        about: z.string().optional().describe('The product, when no path says it.'),
+        key: z.string().optional()
+          .describe('A short topic handle, e.g. "product-name". A later fact with the same key replaces ' +
+            'this one exactly, which is the reliable way to correct something.'),
+        pin: z.boolean().optional().describe('Never dropped when the drawer fills. For the two or three that matter most.'),
+        forget: z.string().optional()
+          .describe('An id from the memory block (e.g. "F3"), or a key. Drops it instead of writing.'),
+      }),
+    },
+    async args => text(await drive('memory.remember', args)))
 
   server.registerTool(
     'export',

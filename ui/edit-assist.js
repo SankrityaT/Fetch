@@ -51,6 +51,8 @@ const LOOP = [
   'Call review before you reply.',
   'Fix what review names, or say in your reply why you did not.',
   'Report the plan and what changed, not prose.',
+  'Write down with remember anything the person tells you that will still be true next week: what ' +
+    'their product is called, who a demo is for, what must never be on screen.',
 ]
 
 // Aiming. An agent that eyeballed one frame zoomed on the wrong button, added a
@@ -102,7 +104,13 @@ const STATE = [
 
 // Sent once per conversation, not once per message. Plain text, since both CLIs take
 // it as a system prompt rather than as part of the thread.
-function systemPrompt() {
+//
+// `memory` is ui/memory.js's own block, already capped and already ordered general to
+// specific. It rides here rather than in the per-turn header because it is not news:
+// what the product is called was true last week and will be true next week, and paying
+// for it on every message is what the header was split off to stop.
+function systemPrompt({ memory = '' } = {}) {
+  const known = String(memory || '').trim()
   return [
     'You are the agent inside Fetch, a Mac screen recorder, working on this person\'s own machine ' +
       'through Fetch\'s tools.',
@@ -116,6 +124,8 @@ function systemPrompt() {
     'What is true only right now:',
     ...STATE.map(l => `- ${l}`),
     '',
+    // nothing at all when the store is empty, rather than a heading over a blank
+    ...(known ? ['What this person has already told you, from earlier conversations:', known, ''] : []),
     'Write replies in short plain sentences, in the house voice: plain, short, a little warm. Never ' +
       'use an em dash; use a comma, colon, full stop or parentheses instead.',
   ].join('\n')

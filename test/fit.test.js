@@ -201,9 +201,11 @@ console.log('fitting')
 {
   const t = take()
   const r = F.fit(t.doc, { seconds: 120, words: t.words, speech: t.speech })
-  is('already under the target, nothing is dropped', r.clips.length, 1)
-  is('and it says so', r.short, true)
-  ok('the line says a target is a ceiling', /ceiling/.test(r.why))
+  is('nothing is dropped to reach a longer target', r.clips.length, 1)
+  is('a take with nothing to dwell on stays short', r.short, true)
+  ok('and it is not called a hit', r.hit === false)
+  ok('the line says there is nothing holding still to slow', /nothing to slow/.test(r.why))
+  ok('and it says what to do instead', /record more/.test(r.why))
 }
 {
   const r = F.fit({ dur: 30, clips: [], beats: [], cues: [] }, { seconds: 10 })
@@ -230,6 +232,159 @@ console.log('fitting')
   ok('dead air it did not need is reported, not taken', r.cut.dead.left >= 0)
 }
 
+// ── reaching a longer target ────────────────────────────────────────────────
+// 30 seconds, talking from 3 to 10 and from 20 to 27. A title card opens it, a zoom
+// holds over the silence in the middle, and a lift sits under the second sentence: the
+// first two are moments to dwell on and the third is not, because somebody is talking
+// over it.
+function slowable() {
+  return {
+    doc: {
+      dur: 30, clips: [], beats: [],
+      texts: [{ id: 'T1', start: 0, end: 3, text: 'Fetch' }],
+      zooms: [{ id: 'Z1', start: 11, end: 19, scale: 2, x: 0.5, y: 0.5 }],
+      marks: [{ id: 'M1', kind: 'lift', start: 21, end: 26, x: 0.2, y: 0.2, w: 0.5, h: 0.4 }],
+      cues: [],
+    },
+    speech: [[3, 10], [20, 27]],
+  }
+}
+
+console.log('the moments worth dwelling on')
+{
+  const t = slowable()
+  const d = F.dwellSpans(t.doc, { speech: t.speech })
+  is('two moments, and not the one under speech', d.map(m => m.on.join('+')), ['T1', 'Z1'])
+  is('a card is clear of its own fade, and of the speech after it', [d[0].start, d[0].end], [0.6, 2.4])
+  is('a zoom is clear of its own travel', [d[1].start, d[1].end], [11.8, 18.2])
+  is('and each one says what is holding there', d.map(m => m.what), ['card', 'zoom'])
+}
+{
+  const t = slowable()
+  t.doc.zooms.push({ id: 'Z2', start: 11.5, end: 18, scale: 3, x: 0.2, y: 0.2 })
+  const d = F.dwellSpans(t.doc, { speech: t.speech })
+  is('two things aimed at one moment is one moment', d.length, 2)
+  is('and both are named', d[1].on, ['Z1', 'Z2'])
+}
+{
+  const t = slowable()
+  t.doc.zooms = [{ id: 'Z1', start: 12, end: 13.5, scale: 2 }]
+  is('a hold too short to dwell in is not one', F.dwellSpans(t.doc, { speech: t.speech }).length, 1)
+}
+{
+  const t = slowable()
+  t.doc.marks = [{ id: 'M2', kind: 'redact', start: 11, end: 19, x: 0.1, y: 0.1, w: 0.2, h: 0.2 }]
+  t.doc.zooms = []
+  is('a redaction is not something to dwell on', F.dwellSpans(t.doc, { speech: t.speech }).map(m => m.on.join('+')), ['T1'])
+}
+{
+  const t = slowable()
+  const d = F.dwellSpans(t.doc, { speech: [[0, 30]] })
+  is('talking the whole way through leaves nothing to slow', d.length, 0)
+}
+
+console.log('stretching to a longer target')
+{
+  const t = slowable()
+  const before = JSON.stringify(t.doc)
+  const r = F.fit(t.doc, { seconds: 34, speech: t.speech })
+  is('the document is not touched', JSON.stringify(t.doc), before)
+  ok('it lands on the number', r.hit && Math.abs(r.now - 34) <= r.tolerance + 0.001)
+  is('nothing was cut', [r.cut.fillers.count, r.cut.dead.count, r.cut.beats.length], [0, 0, 0])
+  is('every source second is still there', r.clips.reduce((n, c) => n + (c.end - c.start), 0), 30)
+  is('and in one unbroken run', r.clips.every((c, i) => i === 0 || c.start === r.clips[i - 1].end), true)
+  is('only the dwelling moments carry a rate', r.clips.filter(c => c.rate).map(c => [c.start, c.end]), [[0.6, 2.4], [11.8, 18.2]])
+  is('one rate everywhere, the gentlest that reaches it', new Set(r.clips.filter(c => c.rate).map(c => c.rate)).size, 1)
+  ok('the clips add up to what it says', Math.abs(F.outLength(r.clips) - r.now) < 0.001)
+  ok('it is no longer short', r.short === false && r.under_by === 0)
+  ok('the same call twice gives the same clips', JSON.stringify(F.fit(t.doc, { seconds: 34, speech: t.speech }).clips) === JSON.stringify(r.clips))
+}
+{
+  const t = slowable()
+  const r = F.fit(t.doc, { seconds: 34, speech: t.speech })
+  is('the line says what it slowed and that it cut nothing', /slowed to .*x, .*added. Nothing was cut/.test(r.why), true)
+  is('the moments are reported with what each is worth', r.stretch.moments.map(m => m.seconds), [1.8, 6.4])
+  is('and the longest this edit can honestly be', r.stretch.reach, 38.2)
+}
+{
+  // exactly at the floor: every dwelling moment at half speed and not a frame slower
+  const t = slowable()
+  const r = F.fit(t.doc, { seconds: 38.2, speech: t.speech })
+  is('the floor is half speed', r.stretch.rate, 0.5)
+  ok('which is where reach comes from', Math.abs(r.now - r.stretch.reach) < 0.001)
+  ok('and it counts as hit', r.hit)
+}
+{
+  const t = slowable()
+  const r = F.fit(t.doc, { seconds: 45, speech: t.speech })
+  ok('past reach it refuses', r.stretch.rate === null && r.hit === false && r.short === true)
+  is('and changes nothing', r.clips.length, 1)
+  is('it says how far it is', r.under_by, 15)
+  ok('the line names the reach and says record more', r.why.includes('38.2') && /record more/.test(r.why))
+}
+{
+  // words but no speech runs: nothing says where the voice is, so nothing is slowed
+  const t = slowable()
+  const r = F.fit(t.doc, { seconds: 34, words: W('this is the whole take', 4, 0.5) })
+  ok('with no speech runs it slows nothing', r.stretch.rate === null && r.clips.length === 1)
+  ok('and says to transcribe rather than guessing', /transcribe this take/.test(r.why))
+}
+{
+  const t = slowable()
+  const r = F.fit(t.doc, { seconds: 34, speech: t.speech, slow: false })
+  ok('slowing can be turned off', !r.stretch && r.now === 30 && r.short)
+  ok('and then it says so rather than pretending', /slowing was turned off/.test(r.why))
+}
+{
+  // a target inside the tolerance is already met, so nothing is slowed for it
+  const t = slowable()
+  const r = F.fit(t.doc, { seconds: 30.4, speech: t.speech })
+  ok('a target within tolerance changes nothing', !r.stretch && r.now === 30 && r.hit)
+}
+{
+  // a clip that already runs fast is slowed relative to itself, never to 1
+  const t = slowable()
+  t.doc.clips = [{ id: 'C1', start: 0, end: 30, rate: 2 }]
+  const r = F.fit(t.doc, { seconds: 18, speech: t.speech })
+  is('it starts from what the rate left', r.was, 15)
+  ok('the fast pieces still run fast', r.clips.filter(c => c.rate === 2).length === 3)
+  ok('a slowed piece is slowed against the speed it had, never down to 1',
+    r.clips.filter(c => c.rate !== 2).every(c => c.rate > 1 && c.rate < 2))
+  ok('and it lands', r.hit && Math.abs(r.now - 18) <= r.tolerance + 0.001)
+}
+{
+  // one clock. fit does its own arithmetic to stay pure, so it has to agree with the
+  // clock the stage and the export read, or a stretch is two lengths for one edit.
+  const Timeline = require('../ui/timeline')
+  const Fetchdoc = require('../ui/fetchdoc')
+  const t = slowable()
+  const r = F.fit(t.doc, { seconds: 34, speech: t.speech })
+  const seg = c => (Array.isArray(c.rate) ? [c.start, c.end, c.rate[0], c.rate[1]]
+    : c.rate ? [c.start, c.end, c.rate] : [c.start, c.end])
+  ok('the timeline reads the same length off the same clips',
+    Math.abs(r.clips.reduce((n, c) => n + Timeline.outSpan(seg(c)), 0) - F.outLength(r.clips)) < 1e-9)
+  const kept = Fetchdoc.normalize({ ...t.doc, clips: r.clips }).clips
+  is('and the document keeps every rate as written, unclamped',
+    kept.map(c => c.rate), r.clips.map(c => c.rate))
+  ok('so the document agrees on the length too',
+    Math.abs(Fetchdoc.outDuration({ clips: kept }) - F.outLength(r.clips)) < 1e-9)
+}
+{
+  // a ramp keeps its shape: both ends slowed by the same factor
+  const t = slowable()
+  t.doc.clips = [{ id: 'C1', start: 0, end: 30, rate: [1, 3] }]
+  const r = F.fit(t.doc, { seconds: 20, speech: t.speech })
+  const ramped = r.clips.filter(c => Array.isArray(c.rate))
+  ok('a slowed piece of a ramp is still a ramp', ramped.length > 0 && ramped.every(c => c.rate[0] < c.rate[1]))
+  ok('and the whole thing still adds up', Math.abs(F.outLength(r.clips) - r.now) < 0.001)
+}
+{
+  // shorter still works the way it always did: a target under the length only cuts
+  const t = take()
+  const r = F.fit(t.doc, { seconds: 30, words: t.words, speech: t.speech })
+  ok('a shorter target is still a cut and never a stretch', !r.stretch && r.clips.every(c => !c.rate))
+}
+
 console.log('fillers on their own')
 {
   const t = take()
@@ -247,6 +402,49 @@ console.log('ranking')
   is('least first', rank.beats.map(b => b.id), ['B4', 'B2', 'B5', 'B6', 'B3', 'B1'])
   ok('the ends carry a bonus', rank.beats[5].id === 'B1')
   ok('fillers are not counted as words', rank.beats.find(b => b.id === 'B2').words === 9)
+}
+
+// ── the cheap cuts stop going through the work ──────────────────────────────
+// The judged take, in shape: a 55.55 s tour with a title card over the head silence
+// and a closing URL card over the tail silence. Asked for 45 s, both used to go, and
+// the only word about it was orphans.texts.
+console.log('a card over silence is not a pause')
+{
+  const cards = {
+    dur: 55.55,
+    clips: [{ id: 'C1', start: 0, end: 55.55 }],
+    texts: [{ id: 'T1', text: 'Songscription', start: 0, end: 2.7 },
+      { id: 'T2', text: 'songscription-library.vercel.app', start: 53.85, end: 55.55 }],
+    marks: [{ id: 'M1', kind: 'lift', start: 20, end: 24, x: 0.3, y: 0.3, w: 0.2, h: 0.2 }],
+    beats: Array.from({ length: 5 }, (_, i) => ({ id: 'B' + (i + 1), start: 3 + i * 10, end: 13 + i * 10 })),
+    cues: Array.from({ length: 5 }, (_, i) => ({ start: 3 + i * 10, end: 12 + i * 10, text: 'talking' })),
+  }
+  const speech = cards.cues.map(c => [c.start, c.end])
+  const r = F.fit(cards, { seconds: 45, speech })
+  const drawn = (a, b) => r.clips.reduce((n, c) => n + Math.max(0, Math.min(b, c.end) - Math.max(a, c.start)), 0)
+  is('the opening card is drawn whole', r2(drawn(0, 2.7)), 2.7)
+  is('and the closing URL card is still there', r2(drawn(53.85, 55.55)), 1.7)
+  is('no card is orphaned', r.orphans.texts, [])
+  ok('and the seconds come out of the pauses and a beat instead', r.hit && r.cut.dead.count > 0)
+  // the same rule for a mark somebody aimed: a lift is the point of its moment
+  is('a lift is not cut through either', r2(drawn(20, 24)), 4)
+}
+
+// ── half speed is a promise about the rate, not about the factor ────────────
+console.log('a hold the person already slowed')
+{
+  const doc = {
+    dur: 30,
+    clips: [{ id: 'C1', start: 0, end: 10 }, { id: 'C2', start: 10, end: 16, rate: 0.8 }, { id: 'C3', start: 16, end: 30 }],
+    texts: [{ id: 'T1', text: 'Fetch', start: 11, end: 15 }],
+    cues: [{ start: 0, end: 9, text: 'talking' }, { start: 17, end: 29, text: 'talking' }],
+  }
+  const speech = [[0, 9], [17, 29]]
+  const reach = F.fit(doc, { seconds: 999, speech }).stretch.reach
+  const r = F.fit(doc, { seconds: reach, speech })
+  const slowest = Math.min(...r.clips.map(c => Math.min(...[].concat(c.rate == null ? 1 : c.rate))))
+  ok('nothing is slowed past half speed, whatever speed it was already at', slowest >= F.SLOW_MIN - 1e-9)
+  ok('and reach is a number it can actually arrive at', Math.abs(r.now - reach) <= r.tolerance)
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`)

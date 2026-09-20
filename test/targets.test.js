@@ -312,5 +312,36 @@ console.log('when a box holds its element')
   is('a box that never holds one picture says so', T.presentSpan(churn.map((x, i) => ({ ...x, v: pic((i * 37) % 255) })), 0, 4).present, false)
 }
 
+console.log('what to call an area whose middle holds nothing')
+// Reported from the app: a box drawn tight round a few words read "Area". Only the
+// elements whose middle the box held could name it, and a tight box holds none.
+{
+  const SCREEN = [
+    { id: 'E1', kind: 'panel', text: 'Library', box: { x: 0.04, y: 0.06, w: 0.62, h: 0.72 } },
+    { id: 'E2', kind: 'card', text: 'Details', box: { x: 0.08, y: 0.5, w: 0.3, h: 0.2 } },
+    { id: 'E3', kind: 'text', text: 'Recently played 132', box: { x: 0.1, y: 0.12, w: 0.24, h: 0.024 } },
+    { id: 'E4', kind: 'chip', text: 'Export', box: { x: 0.42, y: 0.12, w: 0.12, h: 0.05 } },
+    { id: 'E5', kind: 'chip', text: 'Share', box: { x: 0.7, y: 0.12, w: 0.1, h: 0.05 } },
+    { id: 'E6', kind: 'chip', text: 'Delete', box: { x: 0.82, y: 0.12, w: 0.1, h: 0.05 } },
+  ]
+  const label = b => T.regionLabel(b, SCREEN, null)
+  is('a box drawn inside a card is that card', label({ x: 0.15, y: 0.56, w: 0.06, h: 0.04 }), 'Details')
+  // the card is inside the panel, and both hold the whole box: the tighter one is meant
+  is('not the panel the card sits in', label({ x: 0.15, y: 0.56, w: 0.06, h: 0.04 }) === 'Library', false)
+  // a line of words is never snapped to, but it is exactly what a box round it is called
+  is('a box round part of a line of text is that line', label({ x: 0.12, y: 0.122, w: 0.05, h: 0.02 }), 'Recently played 132')
+  is('a box across two chips is the one it covers more of', label({ x: 0.76, y: 0.13, w: 0.09, h: 0.03 }), 'Share')
+  is('and the answer does not turn on the order the elements arrive in',
+    T.regionLabel({ x: 0.76, y: 0.13, w: 0.09, h: 0.03 }, [...SCREEN].reverse(), null), 'Share')
+  is('a box over nothing at all is still Area', label({ x: 0.75, y: 0.86, w: 0.1, h: 0.08 }), 'Area')
+  is('and a box that only clips two edges is too', label({ x: 0.795, y: 0.165, w: 0.06, h: 0.05 }), 'Area')
+  // what it could already do, unchanged
+  is('a box drawn round things is the longest of them', label({ x: 0.06, y: 0.1, w: 0.52, h: 0.12 }), 'Recently played 132')
+  is('a box snapped to an element is that element', T.regionLabel(SCREEN[3].box, SCREEN, 'E4'), 'Export')
+  const quiet = [{ id: 'E1', kind: 'panel', text: '', box: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 } }]
+  is('a box inside something with nothing written on it stays honest', T.regionLabel({ x: 0.2, y: 0.2, w: 0.05, h: 0.05 }, quiet, null), 'Area')
+  is('a box that is not a box is Area', T.regionLabel({ x: 0.2, y: 0.2, w: 0, h: 0.05 }, SCREEN, null), 'Area')
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

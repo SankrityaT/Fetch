@@ -760,6 +760,9 @@
     // a region's picture is an image like any other, so it rides the path attachments
     // already take rather than inventing a second one
     ipcRenderer.send('chat-send', { engine: state.engine, model: pick.model, effort: pick.effort, prompt,
+      // the open take names the product, so the memory block that opens a conversation is
+      // the one about the thing being edited
+      take: contextSrc() || null,
       attachments: sentAtt.map(a => a.path).concat(sentRegions.map(r => r.image)), display })
   }
 

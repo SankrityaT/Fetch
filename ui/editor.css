@@ -582,6 +582,9 @@ video.motion, img.motion { display:block; }
 .stage-frame > .bd-fill ~ .lasso-box { position:absolute; z-index:5; }
 /* drawn and kept: the chip in the composer carries it now, so the band steps back */
 .lasso-box.is-set { border-color:rgba(240,169,60,.78); background:rgba(240,169,60,.06); }
+/* the button is up and the Elements pass is a beat behind the box: the name it is
+   about to get is not the name showing, so the tag stands down rather than lie */
+.lasso-box.is-reading .lasso-tag { opacity:.5; }
 .lasso-box[hidden] { display:none; }
 
 .lasso-tag {

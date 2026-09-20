@@ -35,6 +35,22 @@ const { spawn, spawnSync } = require('child_process')
 
 const connect = require('./agent-connect')
 const Assist = require('./edit-assist')
+const Memory = require('./memory')
+
+let electronApp
+try { ({ app: electronApp } = require('electron')) } catch {}
+
+// What the person has already said about themselves and this product, as one block,
+// read off disk at the moment the conversation opens. A new chat used to be a stranger
+// every time; this is the one place the doctrine can carry it without paying for it on
+// every message. A store that cannot be read costs the turn nothing.
+function memoryText(take) {
+  try {
+    const root = process.env.FETCH_CHAT_DIR || (electronApp ? electronApp.getPath('userData') : null)
+    if (!root) return ''
+    return Memory.recallFor({ root, take: take || null }).text || ''
+  } catch { return '' }
+}
 
 // Exactly the tools the MCP server exposes. Kept literal rather than globbed so
 // adding a tool is a deliberate decision about what the in-app chat may do.
@@ -47,6 +63,8 @@ const ALLOWED = [
   'get_look_schema', 'list_looks', 'apply_look', 'save_look',
   // the job: plan it, hit the length, check the result, take back what was wrong
   'direct', 'fit_to_length', 'review', 'revert_my_edit',
+  // what the person said that is still true next week, so a new chat is not a stranger
+  'remember',
   'list_voices', 'voiceover',
 ].map(t => `mcp__fetch__${t}`)
 
@@ -107,7 +125,7 @@ function splitAttachments(list = []) {
 const codexServers = () =>
   `mcp_servers={fetch={command=${JSON.stringify(connect.nodeBin())},args=[${JSON.stringify(connect.shimPath())}]}}`
 
-function argsFor(engine, prompt, model, effort, images = []) {
+function argsFor(engine, prompt, model, effort, images = [], take = null) {
   if (engine === 'codex') {
     // Codex streams JSONL from `exec --json`.
     // Runs in Fetch's own folder (see send), which is not a git repo.
@@ -119,7 +137,7 @@ function argsFor(engine, prompt, model, effort, images = []) {
     if (model) a.push('--model', model)
     if (effort) a.push('-c', `model_reasoning_effort="${effort}"`)
     for (const im of images) a.push('-i', im.file)
-    a.push(opening ? `${Assist.systemPrompt()}\n\n${prompt}` : prompt)
+    a.push(opening ? `${Assist.systemPrompt({ memory: memoryText(take) })}\n\n${prompt}` : prompt)
     return a
   }
   // With images the message goes in on stdin as content blocks, so the prompt is not
@@ -132,7 +150,7 @@ function argsFor(engine, prompt, model, effort, images = []) {
     '--allowedTools', ALLOWED.join(','),
     // Appended, not replacing: Claude Code's own prompt is what makes its tool use
     // work, and the doctrine is a house rule on top of it.
-    '--append-system-prompt', Assist.systemPrompt(),
+    '--append-system-prompt', Assist.systemPrompt({ memory: sessions.claude ? '' : memoryText(take) }),
   )
   // Carry the thread. Without this each turn starts from nothing and a follow-up
   // like "now caption that one" refers to something the agent never saw.
@@ -165,9 +183,9 @@ function checked(engine, model, effort) {
   return { model: m.id, effort: m.efforts.includes(effort) ? effort : null }
 }
 
-function send({ engine = 'claude', model = null, effort = null, prompt, attachments = [], retried = false }, onEvent) {
+function send({ engine = 'claude', model = null, effort = null, prompt, attachments = [], take = null, retried = false }, onEvent) {
   if (current) throw new Error('already working on something')
-  const again = { engine, model, effort, prompt, attachments, retried: true }
+  const again = { engine, model, effort, prompt, attachments, take, retried: true }
   const resumed = sessions[engine === 'codex' ? 'codex' : 'claude']
 
   const bin = connect.binFor(engine)
@@ -181,7 +199,7 @@ function send({ engine = 'claude', model = null, effort = null, prompt, attachme
   }
   const images = att.images.map(prepareImage)
   const viaStdin = engine !== 'codex' && images.length > 0
-  const child = spawn(bin, argsFor(engine, prompt, pick.model, pick.effort, images), {
+  const child = spawn(bin, argsFor(engine, prompt, pick.model, pick.effort, images, take), {
     stdio: [viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     // Claude Code files its sessions under the working directory, so a --resume from
     // wherever Fetch happened to be launched found nothing after a restart. One fixed

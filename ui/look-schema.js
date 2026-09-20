@@ -33,7 +33,7 @@ const SECTIONS = [
   { id: 'cursor', label: 'Cursor', doc: 'The drawn cursor and the Mac\'s own pointer.' },
   { id: 'captions', label: 'Captions', doc: 'Burned-in captions and their style.' },
   { id: 'typography', label: 'Typography', doc: 'Faces for titles and labels.' },
-  { id: 'focus', label: 'Focus', doc: 'How spotlights, lifts and steps are drawn.' },
+  { id: 'focus', label: 'Focus', doc: 'How spotlights, lifts, loupes, steps and arrows are drawn.' },
 ]
 
 // The gradient backgrounds the renderer ships, and the colours they run between. The
@@ -163,8 +163,13 @@ const FIELDS = [
     doc: 'Where a cut joins two pieces. none is a hard cut, and right for dead air: the two sides are the same shot a moment apart, so a dissolve is invisible there and a dip only announces the edit. crossfade dissolves, out of the frames the cut removed; dip takes the take through the ground and back; zoom lands the next piece tight and settles it out. A fifth of a second each; a GIF cuts hard.' }),
 
   // ── camera ──
-  f('camera.shape', 'enum', 'circle', { options: ['circle', 'rounded'], label: 'Bubble shape', doc: 'The camera bubble\'s shape.', classic: false }),
-  f('camera.ring', 'bool', true, { label: 'Ring', doc: 'A light ring round the bubble.', classic: false }),
+  // The shape the bubble opens in. Where it is, how big it is and what shape it is are
+  // keyframed on the edit's own camera (camera.keys), because they are the shot and not
+  // the look: the same look over a take where the face leads and one where it does not
+  // wants the bubble in two different places.
+  f('camera.shape', 'enum', 'circle', { options: ['circle', 'rounded'], label: 'Bubble shape',
+    doc: 'The camera bubble\'s shape, where no camera key says otherwise.', classic: false }),
+  f('camera.ring', 'bool', true, { label: 'Ring', doc: 'A light ring round the bubble; it grows and shrinks with the bubble.', classic: false }),
 
   // ── cursor ──
   f('cursor.show', 'bool', true, { label: 'Show cursor', doc: 'Draw the agent\'s cursor from the take\'s pointer track.' }),
@@ -194,6 +199,8 @@ const FIELDS = [
   f('focus.lift', 'number', 1.04, { min: 1, max: 1.15, step: 0.01, unit: 'x', label: 'Lift', doc: 'How far a lifted element rises.', classic: false }),
   f('focus.loupe', 'number', 2.2, { min: 1.4, max: 4, step: 0.1, unit: 'x', label: 'Loupe',
     doc: 'How far a loupe magnifies its area. The inset sits beside that area, or under it where there is no room beside.', classic: false }),
+  f('focus.arrow', 'number', 1, { min: 0.6, max: 1.8, step: 0.05, unit: 'x', label: 'Arrow',
+    doc: 'How large a pointing arrow is drawn. It stands outside the box it aims at and points at the nearest edge, so the thing it points at is never under it; a larger arrow needs more clear room beside that box and is shortened, or dropped, where there is none.', classic: false }),
 ]
 
 const BY_PATH = new Map(FIELDS.map(x => [x.path, x]))

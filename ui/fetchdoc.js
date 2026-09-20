@@ -47,7 +47,7 @@ function emptyDoc(src, dur) {
     src: src || null,
     dur: r3(dur || 0),
     clips: [], zooms: [], texts: [], cues: [], beats: [],
-    // redactions, lifts, spotlights and numbered steps drawn onto the frame for a stretch
+    // redactions, lifts, spotlights, numbered steps and arrows drawn onto the frame for a stretch
     marks: [],
     // The agent's own cursor, [{t, x, y, click}] (see ui/pointer.js). null means the
     // track recorded with the take, [] means no cursor at all. Not id'd: a track is
@@ -394,7 +394,9 @@ function toExportOpts(doc, extra = {}) {
     autoZoom: !!doc.autoZoom,
     autoZoomOpts: L.autoZoomOpts,
     zooms: (doc.zooms || []).map(z => ({ start: z.start, end: z.end, scale: z.scale, x: z.x, y: z.y })),
-    marks: (doc.marks || []).map(m => ({ kind: m.kind, start: m.start, end: m.end, x: m.x, y: m.y, w: m.w, h: m.h, n: m.n, strength: m.strength })),
+    // from is the side an arrow comes in from, and the renderer picks one where the
+    // edit does not name it. A field left out here never reaches the compositor.
+    marks: (doc.marks || []).map(m => ({ kind: m.kind, start: m.start, end: m.end, x: m.x, y: m.y, w: m.w, h: m.h, n: m.n, strength: m.strength, from: m.from })),
     // cursor.show off draws no cursor, whatever track the take has
     pointer: !L.cursor ? [] : Array.isArray(doc.pointer) ? doc.pointer : null,
     hideMacCursor: L.hideMacCursor,

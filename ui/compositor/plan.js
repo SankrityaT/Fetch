@@ -251,6 +251,134 @@ function tiltPlan(deg, box, g) {
   return { sin, m, D, fit, cx: box.x + box.w / 2, cy: box.y + box.h / 2 }
 }
 
+// ── the camera bubble's track ───────────────────────────────────────────
+//
+// The bubble used to sit in one corner at one size for a whole take. It is keyframed
+// now: where it is, how big it is and what shape it is, over time. The reason is the
+// shot and not the feature. A face should be large while somebody is introducing a
+// thing and small once the thing itself is the point, and a bubble that cannot move is
+// one of those two wrong for most of the take.
+//
+// A key is a state the bubble starts moving to at its own time, the way a zoom starts
+// pushing in at its own start rather than arriving there. Fields a key leaves out keep
+// the value the bubble already had, which is what makes this one call rather than six:
+// "keep the camera small while the lift is up" says a size and says nothing about the
+// corner the bubble never leaves.
+//
+// An entry with start and end is that same thing said once: the state at start, and
+// whatever the bubble had before it at end. That is the shape an agent reaches for,
+// because what it wants is almost never a keyframe, it is a stretch of the take where
+// the face is not the point.
+//
+// Times are the document's, source seconds, like a zoom's; clock() puts them on the
+// output. The track is a function of time alone, so any frame still draws alone.
+const CAM_SHAPES = { circle: 0.5, rounded: 0.22 }
+const CAM_MIN = 0.05, CAM_MAX = 0.6
+
+// The keys of a camera as states in fractions of the take: { t, x, y, size, rf }, the
+// first one at 0 being where the editor put the bubble.
+function camKeys(list, base, clock) {
+  const partial = e => {
+    const s = {}
+    if (Number.isFinite(+e.x)) s.x = clamp(+e.x, 0, 1)
+    if (Number.isFinite(+e.y)) s.y = clamp(+e.y, 0, 1)
+    if (Number.isFinite(+e.size)) s.size = clamp(+e.size, CAM_MIN, CAM_MAX)
+    if (CAM_SHAPES[e.shape] != null) s.rf = CAM_SHAPES[e.shape]
+    return s
+  }
+  const raw = []
+  for (const e of Array.isArray(list) ? list : []) {
+    if (!e) continue
+    const s = partial(e)
+    if (!Object.keys(s).length) continue
+    // a span if it has both ends and they are the right way round, else one moment
+    const span = Number.isFinite(+e.start) && Number.isFinite(+e.end) && +e.end > +e.start
+    const a = [span ? e.start : null, e.t, e.at, e.start].find(v => v != null && Number.isFinite(+v))
+    if (a == null) continue
+    raw.push({ a: +a, b: span ? +e.end : null, s })
+  }
+  raw.sort((p, q) => p.a - q.a)
+  // What a span puts back is what the bubble had before that span, read as the list is
+  // walked in order. A span whose whole stretch the edit cut lands both of its ends on
+  // one output instant, and the sort is stable, so the state put back is the one that
+  // survives: a bubble does not shrink for a moment that is not in the video.
+  const edges = []
+  let cur = { ...base }
+  for (const r of raw) {
+    edges.push({ t: clock(r.a), s: r.s })
+    if (r.b != null) {
+      const back = {}
+      for (const f of Object.keys(r.s)) back[f] = cur[f]
+      edges.push({ t: clock(r.b), s: back })
+    }
+    cur = { ...cur, ...r.s }
+  }
+  edges.sort((p, q) => p.t - q.t)
+  const keys = [{ ...base, t: 0 }]
+  let st = { ...base }
+  for (const e of edges) {
+    st = { ...st, ...e.s }
+    const t = Math.max(0, e.t)
+    // two keys on one instant are one key, the last of them
+    if (t <= keys[keys.length - 1].t) keys[keys.length - 1] = { ...st, t: keys[keys.length - 1].t }
+    else keys.push({ ...st, t })
+  }
+  return keys
+}
+
+// The same track in the pixels of the output, each key a centre, a diameter and a
+// corner, plus how long the move into it takes.
+//
+// The lengths are the zooms' own measures, because a bubble easing differently from the
+// frame it sits in reads as two takes cut together: octaves of size through easeSpan,
+// bubble widths travelled through panSpan, and the longer of the two. Never longer than
+// the gap to the key after it, so a move always lands before the next one leaves.
+function camPlan(keys, rect, ease) {
+  const out = keys.map(st => {
+    // the size is a share of the take's width, and never more of it than the take's
+    // short side: a bubble wider than the take it lies on has nowhere to be put
+    const d = 2 * Math.round(Math.min(Math.max(24, st.size * rect.w), Math.min(rect.w, rect.h)) / 2)
+    return {
+      t: st.t, d, rf: st.rf,
+      // never outside the take, at every key and so at every instant between two of
+      // them: the centre and its room are both affine in the ease, and no ease here
+      // overshoots, so a move between two bubbles that fit is made of bubbles that fit
+      cx: clamp(rect.x + st.x * rect.w, rect.x + d / 2, rect.x + rect.w - d / 2),
+      cy: clamp(rect.y + st.y * rect.h, rect.y + d / 2, rect.y + rect.h - d / 2),
+      T: 0,
+    }
+  })
+  for (let i = 1; i < out.length; i++) {
+    const a = keys[i - 1], b = keys[i]
+    const grow = Overlays.easeSpan(1, Math.max(a.size, b.size) / Math.max(1e-4, Math.min(a.size, b.size)), ease)
+    const px = Math.hypot((b.x - a.x) * rect.w, (b.y - a.y) * rect.h)
+    const wide = px > 0 ? Overlays.panSpan(px / Math.max(1, (a.size + b.size) / 2 * rect.w), ease) : 0
+    const gap = i + 1 < out.length ? out[i + 1].t - out[i].t : Infinity
+    out[i].T = Math.max(1 / 240, Math.min(Math.max(grow, wide), gap))
+  }
+  return out
+}
+
+/**
+ * Where the bubble is at output time t: { x, y, d, round, ring }, x and y its top left
+ * in output pixels. At a key and before the first one it is that key exactly, so a take
+ * with no keys draws the bubble it always drew, byte for byte.
+ */
+function camAt(cam, t) {
+  const ks = cam.track
+  let i = 0
+  while (i + 1 < ks.length && ks[i + 1].t <= t) i++
+  const b = ks[i]
+  const e = i === 0 || !(b.T > 0) ? 1 : Overlays.easeAt((t - b.t) / b.T, cam.ease)
+  const a = i === 0 ? b : ks[i - 1]
+  const m = (p, q) => (e >= 1 ? q : p + (q - p) * e)
+  const d = m(a.d, b.d)
+  // The shape is the corner as a share of the diameter, so circle to rounded is a
+  // morph the frame pass already knows how to draw rather than a switch on a frame.
+  return { x: m(a.cx, b.cx) - d / 2, y: m(a.cy, b.cy) - d / 2, d, round: d * m(a.rf, b.rf),
+    ring: cam.ringOn ? Math.max(2, Math.round(d * 0.016)) : 0 }
+}
+
 // ── which renderer ──────────────────────────────────────────────────────
 // The compositor draws everything an edit places (M3): the framed look, zooms, fades,
 // cuts, the camera, marks, lifts and spotlights, steps, the agent's cursor, the Mac's
@@ -444,20 +572,27 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   if (!zooms.length && opts.autoZoom && P && Array.isArray(P.autoZooms)) zooms = P.autoZooms.filter(z => z && z.end > z.start)
 
   // The camera bubble, over the framed take in its own fractions, as the editor places
-  // it: never zoomed with the content, never outside the take.
+  // it: never zoomed with the content, never outside the take. Keyframed, so where it
+  // is, how big it is and what shape it is are all functions of time (camKeys, camAt).
   let cam = null
   const k = opts.camera
   if (k && k.file && k.on !== false) {
+    const C = L('camera')
     // its fractions are of the take, so under a device frame it sits on the screen and
     // not on the bezel
-    const d = 2 * Math.round(Math.max(24, clamp(num(k.size, 0.22), 0.05, 0.6) * rect.w) / 2)
-    const cxp = clamp(rect.x + num(k.x, 0.82) * rect.w, rect.x + d / 2, rect.x + rect.w - d / 2)
-    const cyp = clamp(rect.y + num(k.y, 0.78) * rect.h, rect.y + d / 2, rect.y + rect.h - d / 2)
-    const C = L('camera')
+    const base = { x: clamp(num(k.x, 0.82), 0, 1), y: clamp(num(k.y, 0.78), 0, 1),
+      size: clamp(num(k.size, 0.22), CAM_MIN, CAM_MAX), rf: CAM_SHAPES[C.shape] != null ? CAM_SHAPES[C.shape] : 0.5 }
+    const track = camPlan(camKeys(k.keys, base, clock), rect, L('motion').zoomEase)
+    const k0 = track[0]
     cam = {
-      file: k.file, x: cxp - d / 2, y: cyp - d / 2, d,
-      round: C.shape === 'rounded' ? d * 0.22 : d / 2,
-      ring: C.ring === false ? 0 : Math.max(2, Math.round(d * 0.016)),
+      file: k.file, track, ease: L('motion').zoomEase, ringOn: C.ring !== false,
+      // Where the bubble opens, which is the whole of it on a take with no keys.
+      x: k0.cx - k0.d / 2, y: k0.cy - k0.d / 2, round: k0.d * k0.rf,
+      ring: C.ring === false ? 0 : Math.max(2, Math.round(k0.d * 0.016)),
+      // What the camera take is decoded at (compositor/index.js, camSquare): the
+      // biggest the bubble ever gets, so a key that grows it is drawn from the camera's
+      // own pixels rather than upscaled from the size the take opened on.
+      d: Math.max(...track.map(q => q.d)),
       camStartedAt: k.camStartedAt, screenStartedAt: k.screenStartedAt, gaps: k.gaps || [],
     }
   }
@@ -468,7 +603,7 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const drawn = markList(opts.marks, P && P.marks)
   const F = L('focus'), Cu = L('cursor')
   const pm = Marks.planMarks(drawn, { W: cw, H: ch, px, clock, span, zooms, ease: L('motion').zoomEase,
-    look: { dim: F.dim, lift: F.lift, loupe: F.loupe } })
+    look: { dim: F.dim, lift: F.lift, loupe: F.loupe, arrow: F.arrow } })
   const erase = P && P.erase ? Marks.planErase(P.erase.spans, P.erase.plates,
     { src: { w: srcW, h: srcH }, crop: { x: cx, y: cy }, content: { w: cw, h: ch }, clock, end, span }) : []
   // an empty track is the look's cursor switched off, whatever the take has
@@ -904,6 +1039,9 @@ function framePlan(spec, t) {
   const fi = spec.fadeIn > 0 ? clamp(t / spec.fadeIn, 0, 1) : 1
   const fo = spec.fadeOut > 0 ? clamp((spec.span - t) / spec.fadeOut, 0, 1) : 1
   const camT = spec.cam ? Timeline.camTime(spec.cam, s) : null
+  // Where the bubble is this frame. On the output clock, like the zooms: the bubble is
+  // a thing placed in the video, not a moment of the camera take.
+  const bubble = spec.cam ? camAt(spec.cam, t) : null
   // Each side of a dissolve reads the marks at its own side of the cut. Both sides are
   // playing inside the material the cut removed, and a mark is placed on the output
   // clock, where that material has no time at all: a redaction keyed to output time has
@@ -916,7 +1054,7 @@ function framePlan(spec, t) {
   const xd = mix > 0 ? cutAt(spec, t, 'crossfade') : null
   const marks = spec.marks ? Marks.at(spec.marks, xd ? Math.min(t, xd.b.t - CUT_EPS) : t) : null
   const marks2 = spec.marks && xd ? Marks.at(spec.marks, Math.max(t, xd.b.t)) : null
-  return { t, s, s2, mix, view0, view1, taps, speed, rate: rateAt(spec.keep, t), fade: fi * fo, camT,
+  return { t, s, s2, mix, view0, view1, taps, speed, rate: rateAt(spec.keep, t), fade: fi * fo, camT, bubble,
     marks, ...(marks2 ? { marks2 } : {}), move: takeMove(spec, t) }
 }
 
@@ -983,4 +1121,4 @@ function cameraFrames(spec, pts) {
   return frameMap(pts, spec.frames, n => Timeline.camTime(spec.cam, srcAt(spec.keep, n / spec.fps)))
 }
 
-module.exports = { prepare, framePlan, srcAt, rateAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL }
+module.exports = { prepare, framePlan, camAt, srcAt, rateAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL }

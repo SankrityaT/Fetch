@@ -16,6 +16,11 @@
 // seconds, taken by actually subtracting the span and summing what is left, which is
 // what keeps it honest once a clip can carry a rate.
 //
+// A target above the take's own length is the other direction, and it has one answer:
+// spend longer on the moments the video is already dwelling on. Not the take, not the
+// speech, not a move while it travels. See "the moments worth dwelling on" below, which
+// is where that rule and the limit past which fit refuses are written down.
+//
 // Pure: no filesystem, no DOM, no Electron. The caller reads the document and the word
 // timings and hands them in. test/fit.test.js is the whole of the proof.
 
@@ -221,9 +226,187 @@ function clipsOf(doc) {
 
 const overlaps = (a, b, x, y) => Math.min(b, y) - Math.max(a, x)
 
+// ── what the cheap cuts may not go through ──────────────────────────────────
+// The beat pass has always ranked around the work: a beat something is aimed at is
+// worth twice as much and a beat named in `keep` is never dropped at all. The filler
+// and the pause passes read none of it, so they took the head and the tail silence
+// whole, which is exactly where a title card and a closing URL card live, and said so
+// only afterwards under orphans.texts. A 55 s take asked for 45 s came back without
+// either card. Same judgement, now made by all three passes.
+//
+// A card's fade lives inside its own span (ui/overlays.js, cards: the fade is capped
+// at a third of the span), so the span is the whole of what has to survive.
+function drawnSpans(doc = {}) {
+  return merge([
+    ...(doc.texts || []),
+    ...(doc.marks || []).filter(m => m && AIMED.includes(m.kind)),
+  ].filter(x => x && num(x.end) > num(x.start))
+    .map(x => ({ start: num(x.start), end: num(x.end) })))
+}
+
+// One candidate cut with the protected stretches taken out of it: nothing, one piece
+// or two, each still long enough to be an edit rather than a flash.
+function clearOf(span, blocked) {
+  let parts = [{ ...span, start: num(span.start), end: num(span.end) }]
+  for (const b of blocked) {
+    const next = []
+    for (const p of parts) {
+      if (b.end <= p.start || b.start >= p.end) { next.push(p); continue }
+      if (b.start > p.start) next.push({ ...p, end: r3(b.start) })
+      if (b.end < p.end) next.push({ ...p, start: r3(b.end) })
+    }
+    parts = next
+  }
+  return parts.filter(p => p.end - p.start >= MIN_CUT)
+}
+
+// ── the moments worth dwelling on ───────────────────────────────────────────
+
+// Reaching a number above the take's own length means spending longer on something, and
+// almost everything is the wrong thing to spend it on. Slowing a whole take is slow
+// motion; slowing speech makes a person sound drunk; slowing a move changes the move
+// somebody composed. What is left is the moment a move has already arrived at and
+// nobody is talking over: a zoom holding, a lift open with its chips on screen, a title
+// card up. The picture is still, so a slower rate there is not read as an effect, it is
+// read as the frame getting the beat it deserved. Both halves of the rule carry weight:
+// something aimed at, holding, and silence over it. A silence with nothing on screen is
+// dead air, and stretching dead air is the embarrassing version of this feature.
+//
+// Half speed is the floor. PRODUCT.md already calls 0.5 "a slow look", one atempo pass
+// covers it without moving pitch, and under it a held frame stops reading as a hold that
+// lasts longer and starts reading as slow motion nobody asked for. So the longest an
+// edit can honestly become is its own length plus what its dwelling moments are worth at
+// that floor, which is `stretch.reach`, and past `reach` fit refuses and says the take is
+// too short rather than slowing something that should not be slowed.
+const SLOW_MIN = 0.5
+
+// How far from its own ends a moment has to sit before it counts as holding. A zoom, a
+// lift, a spotlight and a loupe travel to get where they are going, and the longest of
+// those eases is Overlays.easeSpan at 4x, 0.8 s. A card or a step chip is drawn over a
+// picture that is not moving and only fades, capped at 0.6 s (ui/overlays.js, cards). A
+// rate that changes this far inside is a rate that changes while nothing travels, which
+// is the whole reason the change cannot be seen.
+const HOLD_MOVE = 0.8, HOLD_DRAW = 0.6
+
+// A hold shorter than this is not worth the change: even at the floor it is under a
+// second, and a beat that short reads as a hitch rather than as dwelling.
+const MIN_DWELL = 0.4
+
+// Room left around speech, the same 0.15 the pause pass keeps, because the ends of a
+// speech run are the recogniser's opinion and a slowed syllable is exactly the thing
+// this must never produce.
+const QUIET_PAD = 0.15
+
+// Fetchdoc.cleanRate clamps a rate into this, and a rate fit reported that the document
+// would not keep is two lengths for one edit.
+const RATE_FLOOR = 0.1
+
+// A step chip and a card are drawn, not flown; everything else here moves the picture.
+const holdOf = what => (what === 'card' || what === 'step' ? HOLD_DRAW : HOLD_MOVE)
+
+// Where nobody is speaking, speech padded out by QUIET_PAD at both ends.
+function quietRuns(speech, dur, pad = QUIET_PAD) {
+  const said = merge((speech || []).map(x => ({ start: num(x && x[0]) - pad, end: num(x && x[1]) + pad })))
+  const out = []
+  let t = 0
+  for (const r of said) {
+    if (r.start > t) out.push([t, Math.min(r.start, dur)])
+    t = Math.max(t, r.end)
+  }
+  if (dur > t) out.push([t, dur])
+  return out.filter(([a, b]) => b > a)
+}
+
+/**
+ * The moments this edit could dwell on: [{start, end, on, what}] in source seconds,
+ * each one a stretch where something Fetch aimed is holding still and nobody is
+ * speaking over it. `on` is every id holding there, because two things aimed at one
+ * moment is still one moment.
+ *
+ * A redaction is not something to dwell on and is not in AIMED, which is the same call
+ * the beat ranking makes for the same reason.
+ */
+function dwellSpans(doc = {}, o = {}) {
+  const dur = num(o.dur, num(doc.dur))
+  const aimed = [
+    ...(doc.zooms || []).map(z => ({ ...z, what: 'zoom' })),
+    ...(doc.marks || []).filter(m => m && AIMED.includes(m.kind)).map(m => ({ ...m, what: m.kind })),
+    ...(doc.texts || []).map(t => ({ ...t, what: 'card' })),
+  ].filter(x => x && num(x.end) > num(x.start))
+  if (!aimed.length || dur <= 0) return []
+  const quiet = quietRuns(o.speech, dur)
+  const parts = []
+  for (const x of aimed) {
+    const h = holdOf(x.what)
+    const a = num(x.start) + h, b = num(x.end) - h
+    if (b - a < MIN_DWELL) continue
+    for (const [qa, qb] of quiet) {
+      const s0 = Math.max(a, qa), e0 = Math.min(b, qb)
+      if (e0 - s0 >= MIN_DWELL) parts.push({ start: r3(s0), end: r3(e0), on: x.id || null, what: x.what })
+    }
+  }
+  return merge(parts).map(m => ({
+    start: m.start, end: m.end, what: m.what, why: 'dwell',
+    on: [...new Set(parts.filter(p => overlaps(m.start, m.end, p.start, p.end) > 0).map(p => p.on).filter(Boolean))],
+  }))
+}
+
+// A piece of a ramp slowed by k is the same ramp with both ends slowed: rate runs
+// linearly in output seconds either way, so the shape survives and only the clock under
+// it stretches.
+function slowRate(c, a, b, k) {
+  const [r0, r1] = rateEnds({ rate: sliceRate(c, a, b) })
+  // Half speed is a promise about the rate the viewer sees, not about the factor: a
+  // clip the person already set to 0.8x taken to half of that plays at 0.4x, past the
+  // floor this file says it never crosses, and it made `reach` a number the tool could
+  // not honestly reach. Never slower than the floor, and never faster than the clip
+  // already was, so a hold someone deliberately put under it is left alone.
+  const lo = r => (k < 1 ? Math.max(RATE_FLOOR, Math.min(r, SLOW_MIN)) : RATE_FLOOR)
+  const s0 = Math.max(lo(r0), r3(r0 * k)), s1 = Math.max(lo(r1), r3(r1 * k))
+  if (Math.abs(s0 - s1) < 1e-6) return Math.abs(s0 - 1) < 1e-6 ? undefined : s0
+  return [s0, s1]
+}
+
+/**
+ * The clips again with `spans` running at `k` times the speed they ran at before.
+ * Nothing is removed and nothing moves in source time, so every zoom, mark, caption and
+ * beat keeps the footage it was placed on: a stretch is one change to the time map.
+ */
+function slowInside(clips, spans, k) {
+  const zones = merge(spans)
+  if (!zones.length || !(k > 0) || Math.abs(k - 1) < 1e-6) return (clips || []).map(c => ({ ...c }))
+  const out = []
+  for (const c of clips || []) {
+    const s = num(c.start), e = num(c.end)
+    let pieces = [[s, e, false]]
+    for (const z of zones) {
+      // A remainder too short to be a piece is not one, so the zone takes the clip's
+      // own edge instead of leaving a sliver at a different rate beside it.
+      const za = z.start - s < MIN_PIECE ? s : z.start
+      const zb = e - z.end < MIN_PIECE ? e : z.end
+      const next = []
+      for (const piece of pieces) {
+        const [a, b, slow] = piece
+        if (slow || zb <= a || za >= b) { next.push(piece); continue }
+        if (za > a) next.push([a, za, false])
+        next.push([Math.max(a, za), Math.min(b, zb), true])
+        if (zb < b) next.push([zb, b, false])
+      }
+      pieces = next
+    }
+    pieces.filter(([a, b]) => b > a).forEach(([a, b, slow], i) => {
+      const { id, ...rest } = c
+      const rate = slow ? slowRate(c, a, b, k) : sliceRate(c, a, b)
+      if (rate === undefined) delete rest.rate; else rest.rate = rate
+      out.push(i === 0 && id ? { ...rest, id, start: r3(a), end: r3(b) } : { ...rest, start: r3(a), end: r3(b) })
+    })
+  }
+  return out
+}
+
 // ── which beat is worth the least ───────────────────────────────────────────
 
-const AIMED = ['lift', 'spotlight', 'step', 'loupe']
+const AIMED = ['lift', 'spotlight', 'step', 'loupe', 'arrow']
 
 /**
  * The beats ranked by what they are worth, least first. Worth is speech density: real
@@ -284,7 +467,26 @@ function line(res) {
   const s = n => `${r2(n)}s`
   if (res.why) return res.why
   if (res.target == null) return `${s(res.was)} to ${s(res.now)}.`
-  if (res.short) return `This edit is ${s(res.was)}, already under ${s(res.target)}. Nothing was dropped: a target is a ceiling, not a stretch.`
+  const st = res.stretch
+  if (st && st.rate) {
+    const n = st.moments.length
+    return `${s(res.was)} to ${s(res.now)} against ${s(res.target)}: ${n} moment${n === 1 ? '' : 's'} ` +
+      `already holding still ${n === 1 ? 'was' : 'were'} slowed to ${st.rate}x, ${s(st.seconds)} added. Nothing was cut.`
+  }
+  if (st) {
+    if (!st.heard) {
+      return `This edit is ${s(res.was)} and ${s(res.target)} is not in it. Nothing here says where the ` +
+        `talking is, and slowing a voice is the one thing this must not do: transcribe this take, ` +
+        `or ask for ${s(res.was)} or less.`
+    }
+    return st.moments.length
+      ? `This edit is ${s(res.was)} and ${s(res.target)} is not in it: the most it can honestly hold is ` +
+        `${s(st.reach)}, from ${st.moments.length} moment${st.moments.length === 1 ? '' : 's'} worth dwelling on, ` +
+        `and nothing is slowed past ${st.floor}x. Ask for ${s(st.reach)} or less, or record more.`
+      : `This edit is ${s(res.was)} and ${s(res.target)} is not in it: nothing in it is holding still with ` +
+        `nobody talking over it, so there is nothing to slow. Ask for ${s(res.was)} or less, or record more.`
+  }
+  if (res.short) return `This edit is ${s(res.was)}, already under ${s(res.target)}, and slowing was turned off. Nothing was changed.`
   const took = []
   if (res.cut.fillers.count) took.push(`${res.cut.fillers.count} filler${res.cut.fillers.count === 1 ? '' : 's'}`)
   if (res.cut.dead.count) took.push(`${res.cut.dead.count} pause${res.cut.dead.count === 1 ? '' : 's'}`)
@@ -309,6 +511,10 @@ function line(res) {
  * runs the caption spans stand in, so a document alone is enough to find the pauses.
  * `o.keep` is a list of beat ids or phrases that must survive, and a term that matched
  * nothing comes back under `keep.unmatched` rather than being quietly ignored.
+ *
+ * A target above the edit's own length cuts nothing and slows the moments it is already
+ * dwelling on instead (`o.slow: false` turns that off). It comes back under `stretch`,
+ * with `reach`, the longest this edit can honestly be, whether it got there or not.
  *
  * Nothing here mutates `doc`.
  */
@@ -345,12 +551,16 @@ function fit(doc = {}, o = {}) {
   const cut = { fillers: { count: 0, seconds: 0, words: [] }, dead: { count: 0, seconds: 0, left: 0 }, beats: [] }
   let why = null
 
+  // The cards and the emphasis marks, which the two cheap passes carve their candidate
+  // cuts around rather than through.
+  const blocked = drawnSpans(doc)
+
   // 1. The fillers. Cheapest cut in the product: the sentence is unchanged. All of them
   // go once the pass runs at all, because half the ums left in is worse than either end
   // of that choice.
   const wantFillers = o.fillers != null ? !!o.fillers : true
   if (wantFillers && room() && W.length) {
-    for (const s of fillerSpans(W, { ...o, dur })) {
+    for (const s of fillerSpans(W, { ...o, dur }).flatMap(s => clearOf(s, blocked))) {
       const g = gainOf(s)
       if (g <= 0) continue
       if (!allows(s)) continue
@@ -367,6 +577,7 @@ function fit(doc = {}, o = {}) {
   const wantDead = o.deadAir != null ? !!o.deadAir : true
   if (wantDead && room()) {
     const dead = deadSpans(speech, { dur, minSilence: o.minSilence, pad: o.padding != null ? o.padding : o.pad })
+      .flatMap(s => clearOf(s, blocked))
       .sort((a, b) => (b.end - b.start) - (a.end - a.start))
     for (const s of dead) {
       const g = gainOf(s)
@@ -419,8 +630,34 @@ function fit(doc = {}, o = {}) {
     }
   }
 
-  const clips = subtract(clips0, spans)
+  // 4. The other direction. Asked for more than the take holds, nothing is cut: the
+  // moments that are already dwelling are slowed, all of them by the same factor, and
+  // that factor is the gentlest one that reaches the number. One rate everywhere keeps
+  // the take's own rhythm, and choosing which hold deserves more than another is a
+  // judgement the product has no ground to make.
+  const wantSlow = o.slow != null ? !!o.slow : true
+  let clips = subtract(clips0, spans)
+  let stretch = null
+  if (target != null && was < target - tol && wantSlow) {
+    // Without speech runs there is no evidence of where the talking is, and a stretch
+    // that guesses wrong is a slowed voice. Nothing is dwelt on until something says.
+    const heard = speech.length > 0
+    const dwell = heard ? dwellSpans(doc, { dur, speech }) : []
+    // Measured, never predicted: the moments are worth what the clips actually come
+    // out at with them slowed, which is how the rest of this file counts seconds.
+    const worth = m => r3(outLength(slowInside(clips, [m], SLOW_MIN)) - was)
+    const moments = dwell.map(m => ({ ...m, seconds: worth(m) })).filter(m => m.seconds > 0)
+    const most = moments.reduce((n, m) => n + m.seconds, 0)
+    const reach = r3(was + most)
+    // gain(k) is most * (1 / k - 1), so the rate that lands on the number is exact.
+    const rate = most > 0 && target <= reach + tol
+      ? Math.max(SLOW_MIN, r3(most / (most + (target - was)))) : null
+    if (rate) clips = slowInside(clips, moments, rate)
+    stretch = { rate, seconds: 0, reach, floor: SLOW_MIN, heard, moments }
+  }
+
   const now = outLength(clips)
+  if (stretch) stretch.seconds = r3(now - was)
   const keptRanges = clips.map(c => [num(c.start), num(c.end)])
   // What no longer has any frames to play over. The caller is told, never quietly left
   // with a zoom on footage that went.
@@ -441,15 +678,25 @@ function fit(doc = {}, o = {}) {
   // reads as success.
   const floored = held > 0
 
+  // Short means short after the stretch, not before it: the field is what the caller
+  // has to act on, and a take that reached the number by dwelling has nothing left to
+  // act on. Reported short, the answer is a smaller number or more footage.
+  const startedShort = target != null && was < target - tol
+  const stillShort = startedShort && now < target - tol
   const res = {
     target, tolerance: r3(tol),
     was: r3(was), now: r3(now),
-    short: target != null && was < target - tol,
+    short: stillShort,
     // A cut the floor refused means the edit is sitting on the floor rather than on
-    // the number, and calling that a hit is how an agent ships an empty video.
-    hit: target == null ? !held : now <= target + tol && (!held || was < target - tol),
+    // the number, and calling that a hit is how an agent ships an empty video. Four and
+    // a half seconds under the number is not a hit either, which is what this used to
+    // report for every take too short to reach the brief.
+    hit: target == null ? !held
+      : startedShort ? now >= target - tol && now <= target + tol
+      : now <= target + tol && !held,
     over_by: target == null ? 0 : r3(Math.max(0, now - target)),
-    clips, cut, next,
+    under_by: target == null ? 0 : r3(Math.max(0, target - now)),
+    clips, cut, next, ...(stretch ? { stretch } : {}),
     ...(floored ? { held_back: held } : {}),
     keep: { matched: rank.matched, unmatched: rank.unmatched },
     spans: merge(spans).map(s => [s.start, s.end]),
@@ -465,4 +712,4 @@ function fit(doc = {}, o = {}) {
  */
 const cutFillers = (doc = {}, o = {}) => fit(doc, { ...o, seconds: null, fillers: true, deadAir: false, beats: false })
 
-module.exports = { FILLERS, fillerSpans, deadSpans, rankBeats, fit, cutFillers, subtract, outLength, merge }
+module.exports = { FILLERS, SLOW_MIN, fillerSpans, deadSpans, dwellSpans, rankBeats, fit, cutFillers, subtract, slowInside, outLength, merge }

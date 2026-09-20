@@ -1614,17 +1614,22 @@ class Compositor {
       uFrame: tn, uTooth: Math.min(1, k) * (spec.tooth != null ? spec.tooth : 1),
     }
     if (cam) {
+      // Where the bubble is this frame (plan.js, camAt): its track is keyframed, so its
+      // place, its size and its corner are all a function of the output time. A caller
+      // that built a frame plan without one gets where the bubble opens, which on a take
+      // with no keys is the only place it ever is.
+      const cb = fp.bubble || spec.cam
       // The bubble rides the take: the same scale about the frame's own centre and the
       // same drop, since it is a thing lying on the picture rather than beside it. Drawn
       // in its landed place it stayed full size and full opacity while the take was
       // still rising, and a dip left it lit over bare ground.
-      const ccx = r0.x + r0.w / 2, ccy = r0.y + r0.h / 2, cd = spec.cam.d * mv.k
-      const cx = ccx + (spec.cam.x + spec.cam.d / 2 - ccx) * mv.k - cd / 2
-      const cy = ccy + (spec.cam.y + spec.cam.d / 2 - ccy) * mv.k - cd / 2 + mv.dy
+      const ccx = r0.x + r0.w / 2, ccy = r0.y + r0.h / 2, cd = cb.d * mv.k
+      const cx = ccx + (cb.x + cb.d / 2 - ccx) * mv.k - cd / 2
+      const cy = ccy + (cb.y + cb.d / 2 - ccy) * mv.k - cd / 2 + mv.dy
       u.uCamRect = [cx * k, cy * k, cd * k, cd * k]
       u.uCamUV = src.camUV || [0, 0, 1, 1]
-      u.uCamRound = spec.cam.round * mv.k * k
-      u.uCamRing = spec.cam.ring * mv.k * k
+      u.uCamRound = cb.round * mv.k * k
+      u.uCamRing = cb.ring * mv.k * k
     }
     this.draw('frame', this.scene, u, { uBg: this.bg, uFill: this.fillA || this.dummy, uContent: marked ? marked.tex : c.rgba, uCamTex: cam ? this.slots.cam.rgba : this.dummy })
     if (spec.device) this.devicePass(spec, this.moved(spec.device.extent, r0, mv), k, tilt, mv.alpha)
@@ -1799,7 +1804,7 @@ class Compositor {
    * Returns { tex, size } to sample in place of the source, or null when nothing shows.
    */
   contentPass(spec, M, cropUV) {
-    const any = M.erase.length || M.redact.length || M.blur.length || M.focus.length || M.steps.length || M.pointer || M.loupe.length
+    const any = M.erase.length || M.redact.length || M.blur.length || M.focus.length || M.steps.length || M.pointer || M.loupe.length || M.arrow.length
     if (!any) return null
     const c = this.slots.content
     const tw = Math.max(2, Math.round(c.w * cropUV[2])), th = Math.max(2, Math.round(c.h * cropUV[3]))
@@ -1873,10 +1878,61 @@ class Compositor {
       }, { uSrc: cur })
       cur = C
     }
+    for (const a of M.arrow) this.arrowSprite(cur, a, sx, sy)
     for (const s of M.steps) this.stepSprite(cur, s, sx)
     if (M.pointer) this.pointerSprites(cur, M.pointer, spec.marks.pointer, sx, sy)
-    if (cur !== A || M.steps.length || M.pointer) this.mip(cur)
+    if (cur !== A || M.steps.length || M.arrow.length || M.pointer) this.mip(cur)
     return { tex: cur, size: [tw, th] }
+  }
+
+  // An arrow: a gold shaft of one weight with a round tail and a plain head, a white
+  // keyline round the whole of it and a soft shadow under it, which is the step badge's
+  // own furniture in a different shape (marks.js ARROW). Drawn once per size and
+  // direction, pointing the way it points, and scaled about its tip so the pop and the
+  // leave move the tail and never the point.
+  //
+  // Carved out of the recording's mask like the badge: the gold is Fetch's, and a look
+  // that drains the colour out of a take has no business greying out its own arrow.
+  arrowSprite(dst, a, kx, ky) {
+    const len = a.len * kx, head = a.head * kx, half = a.half * kx, t = a.thick * kx / 2
+    const bord = Math.max(0.8, a.hair * kx), rj = Math.max(0.5, t * 0.34)
+    const p = this.pic(`arrow-mark|${a.dir}|${len.toFixed(2)}|${head.toFixed(2)}|${half.toFixed(2)}|${t.toFixed(2)}|${bord.toFixed(2)}`, () => {
+      const blur = Math.max(0.9, t * 0.75), drop = t * 0.5
+      const m = Math.ceil(bord + rj + blur * 2 + drop)
+      // the picture is the arrow's own bounding box plus that margin, laid out along
+      // the way it points, so the tip is a corner of it and the tail the far end
+      const flat = !a.uy
+      const wd = Math.ceil((flat ? len : 2 * half) + 2 * m), ht = Math.ceil((flat ? 2 * half : len) + 2 * m)
+      const cv = canvas(wd, ht), g = cv.getContext('2d')
+      // the tip, in the picture
+      const tx = a.ux > 0 ? wd - m : a.ux < 0 ? m : wd / 2
+      const ty = a.uy > 0 ? ht - m : a.uy < 0 ? m : ht / 2
+      // d runs along the way it points, c across it, both from the tip
+      const P = (d, c) => g.lineTo(tx + a.ux * d - a.uy * c, ty + a.uy * d + a.ux * c)
+      const ang = Math.atan2(a.uy, a.ux)
+      const path = () => {
+        g.beginPath()
+        g.moveTo(tx, ty)
+        P(-head, -half); P(-head, -t); P(-(len - t), -t)
+        // the round tail: the arc from one side of the shaft to the other, round the
+        // back of it rather than across it
+        g.arc(tx - a.ux * (len - t), ty - a.uy * (len - t), t, ang - Math.PI / 2, ang + Math.PI / 2, true)
+        P(-head, t); P(-head, half)
+        g.closePath()
+      }
+      g.lineJoin = 'round'; g.lineCap = 'round'
+      // the shadow, the same drop the badge and the cursor have
+      g.save(); g.filter = `blur(${blur.toFixed(2)}px)`; g.translate(0, drop)
+      path(); g.fillStyle = g.strokeStyle = 'rgba(0,0,0,0.42)'; g.lineWidth = 2 * (bord + rj); g.stroke(); g.fill(); g.restore()
+      // the keyline, half of it outside the shape, then the gold over the inner half.
+      // The gold is stroked as well as filled, which is what rounds the head's corners
+      // and the shaft's shoulders: the shape is geometric, the joins are not sharp.
+      path(); g.strokeStyle = '#FBFAF8'; g.lineWidth = 2 * (bord + rj); g.stroke()
+      g.strokeStyle = g.fillStyle = Text.GOLD; g.lineWidth = 2 * rj; g.stroke(); g.fill()
+      return { canvas: cv, x: -tx, y: -ty, w: wd, h: ht }
+    })
+    const x = a.x * kx, y = a.y * ky, k = a.grow
+    this.sprite(dst, p, [x + p.x * k, y + p.y * k, p.w * k, p.h * k], a.op, 0, null, true)
   }
 
   // A numbered step: a gold disc in a thin white ring over a soft shadow, the number in

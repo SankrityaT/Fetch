@@ -157,6 +157,7 @@ const EDITOR_HTML = `
             <button class="chip" data-kind="spotlight" data-tip="Dims everything but the area">Spotlight</button>
             <button class="chip" data-kind="step" data-tip="A numbered gold badge">Step</button>
             <button class="chip" data-kind="loupe" data-tip="A magnified inset of a small area">Loupe</button>
+            <button class="chip" data-kind="arrow" data-tip="Points at the thing from outside it">Arrow</button>
           </div>
           <p class="micro dimmer" style="margin-top:6px">Added at the playhead. Drag it on the stage onto the thing it is for.</p>
           <div class="obj-list" id="markList"></div>
@@ -1083,7 +1084,9 @@ function wireEditor() {
         on: c.on !== false,
         x: c.x != null ? Math.max(0, Math.min(1, +c.x)) : ed.cam.x,
         y: c.y != null ? Math.max(0, Math.min(1, +c.y)) : ed.cam.y,
-        size: c.size != null ? Math.max(0.1, Math.min(0.45, +c.size)) : ed.cam.size }
+        size: c.size != null ? Math.max(0.1, Math.min(0.45, +c.size)) : ed.cam.size,
+        // the bubble's track, as plan.js reads it: a list the editor carries whole
+        keys: Array.isArray(c.keys) ? c.keys.map(q => ({ ...q })) : ed.cam.keys || null }
     }
     ed.crop = doc.crop; ed.cropAR = doc.cropAR || 'free'
     const C = ed.look.captions
@@ -1408,7 +1411,7 @@ window.editorCloseIfGone = () => {
 
 // Marks as their own track. A redaction in particular must be visible before export:
 // it is the one edit where missing it means something private ships.
-const MARK_LABEL = { redact: 'Redact', blur: 'Blur', lift: 'Lift', spotlight: 'Spotlight', step: 'Step', loupe: 'Loupe' }
+const MARK_LABEL = { redact: 'Redact', blur: 'Blur', lift: 'Lift', spotlight: 'Spotlight', step: 'Step', loupe: 'Loupe', arrow: 'Arrow' }
 function renderMarks() {
   const host = $('tlMarks')
   if (!host) return
@@ -2924,6 +2927,7 @@ const Targets = require('./ui/targets')
 
 const LASSO_NEAR = 0.5           // a box drawn at 12 s means nothing at 40 s
 const LASSO_ELS = 8              // moments of elements kept in hand
+const LASSO_WAIT = 2000          // a pass that hangs gives up its say, never the gesture
 
 let lassoDrag = null             // { from, to, at, box, element, kind, label } while held
 let lassoBand = null             // the rubber band, one div inside #stageFrame
@@ -2932,6 +2936,7 @@ let lassoAsk = null              // the debounce behind a settled video
 let lassoOnce = false            // window-level wiring, which outlives one open take
 let lassoBlurOnce = false        // the same, for the drag a lost mouseup would strand
 const lassoEls = new Map()       // `${path}|${at}` -> the elements at that moment
+const lassoWait = new Map()      // the same key -> the pass still out, so one moment is asked once
 
 function setLasso(on) {
   ed.lasso = !!on
@@ -2977,21 +2982,34 @@ const lassoKey = (path, at, crop) =>
 
 // The Elements pass takes about a second, so it is asked for as soon as the tool is
 // armed and again on mousedown when this moment is not in hand. A drag that starts
-// before the answer lands is free form and begins snapping the moment it arrives.
-async function askElements(at) {
+// before the answer lands is free form and begins snapping the moment it arrives:
+// the pass calls the drag back itself, rather than waiting to be asked by the next
+// mousemove, which for a quick drag never comes.
+function askElements(at) {
   const path = ed.src, v = $('edVideo')
-  if (!ed.lasso || !path || !v) return []
+  if (!ed.lasso || !path || !v) return Promise.resolve([])
   at = at != null ? at : v.currentTime
   const g = lassoGeom()
   const crop = g ? g.crop : null
   const key = lassoKey(path, at, crop)
-  if (lassoEls.has(key)) return lassoEls.get(key)
-  let r = null
-  try { r = await ipcRenderer.invoke('lasso-elements', { path, at, crop }) } catch {}
-  const els = (r && r.elements) || []
-  lassoEls.set(key, els)
-  if (lassoEls.size > LASSO_ELS) lassoEls.delete(lassoEls.keys().next().value)
-  return els
+  if (lassoEls.has(key)) return Promise.resolve(lassoEls.get(key))
+  // one moment, one pass: arming and the mousedown behind it land on the same key,
+  // and release waits on this promise rather than starting a second pass
+  if (lassoWait.has(key)) return lassoWait.get(key)
+  const out = (async () => {
+    let r = null
+    try { r = await ipcRenderer.invoke('lasso-elements', { path, at, crop }) } catch {}
+    const els = (r && r.elements) || []
+    lassoEls.set(key, els)
+    if (lassoEls.size > LASSO_ELS) lassoEls.delete(lassoEls.keys().next().value)
+    lassoWait.delete(key)
+    return els
+  })()
+  lassoWait.set(key, out)
+  // the pass calls the drag back itself, and a throw in that callback must not land as
+  // a rejection on the promise its callers are already holding
+  out.then(() => catchUpLasso(key)).catch(() => {})
+  return out
 }
 
 // What is known about the moment being drawn on. Empty until the pass lands, which
@@ -2999,7 +3017,58 @@ async function askElements(at) {
 function elementsNow(g) {
   const v = $('edVideo')
   if (!v || !ed.src) return []
-  return lassoEls.get(lassoKey(ed.src, lassoDrag ? lassoDrag.at : v.currentTime, g ? g.crop : null)) || []
+  return elsAt(lassoDrag ? lassoDrag.at : v.currentTime, g ? g.crop : null)
+}
+
+const elsAt = (at, crop) => (ed.src ? lassoEls.get(lassoKey(ed.src, at, crop)) : null) || []
+
+// The rectangle the hand drew, kept as its two corners rather than as a box, so a
+// second judgement starts from what was drawn and not from the element the first
+// judgement already jumped to.
+const drawnBox = d => (d ? Pick.clampBox(Pick.rectOf(d.from, d.to)) : null)
+
+// One judgement of a drawn rectangle against what the pass knows: the box the band
+// takes, the element under it, and the name the chip will carry. Pure and cheap, so
+// it can run again the moment the pass lands and again on release.
+function judgeLasso(drawn, els) {
+  const snap = els.length ? Targets.snapBox(drawn, els) : null
+  const got = snap && snap.box ? snap : { box: drawn, element: null, kind: 'free' }
+  const element = got.element || null
+  return { box: got.box, element, kind: got.kind || 'free',
+    label: Targets.regionLabel(got.box, els, element) }
+}
+
+const lassoTag = d => (d.element ? bandTag(d.element, d.label) : 'Free')
+
+// The pass lands about a second after it is asked for, by which time a quick drag is
+// already still or already over. Judge the rectangle again against what just arrived:
+// the band redrawing once under the pointer is the software catching up, and it beats
+// a box that stays free form over an element the app can now name.
+function catchUpLasso(key) {
+  const d = lassoDrag
+  if (!d || !ed.src || lassoKey(ed.src, d.at, d.crop) !== key) return
+  const g = lassoGeom(), drawn = drawnBox(d)
+  if (!g || !drawn) return
+  Object.assign(d, judgeLasso(drawn, elsAt(d.at, d.crop)))
+  placeBand(g, d.box, lassoTag(d))
+}
+
+// What the pass knows about the moment a drag was drawn at, waiting on it when it is
+// still out. A drag quicker than the pass has no answer at mouseup, and the chip it
+// mints carries its name for good, so this is the one place the lasso waits.
+function lassoElements(d) {
+  const key = lassoKey(ed.src || '', d.at, d.crop)
+  if (lassoEls.has(key)) return Promise.resolve(lassoEls.get(key))
+  const out = lassoWait.get(key)
+  if (!out) return Promise.resolve([])
+  const capped = new Promise(done => setTimeout(() => done(null), LASSO_WAIT))
+  return Promise.race([out, capped]).then(els => els || elsAt(d.at, d.crop), () => [])
+}
+
+// The one moment the lasso waits on the pass: the button is up, the box is drawn and
+// the name is a beat behind it. The band says so rather than standing still.
+function bandReading(on) {
+  if (lassoBand && lassoBand.isConnected) lassoBand.classList.toggle('is-reading', !!on)
 }
 
 // Where the take is on the stage at this moment: its rect (moved, if a title card has
@@ -3124,18 +3193,12 @@ function lassoMove(e) {
   const to = Pick.toFrac({ x: Math.min(Math.max(p.x, g.rect.x), g.rect.x + g.rect.w),
     y: Math.min(Math.max(p.y, g.rect.y), g.rect.y + g.rect.h) }, g)
   if (to) lassoDrag.to = to
-  const drawn = Pick.clampBox(Pick.rectOf(lassoDrag.from, lassoDrag.to))
+  const drawn = drawnBox(lassoDrag)
   if (!drawn) return
   // snapping is judged fresh on every move: the band either sits on an element or is
   // exactly what was drawn, and the jump between the two is instant
-  const els = elementsNow(g)
-  const snap = els.length ? Targets.snapBox(drawn, els) : null
-  const got = snap && snap.box ? snap : { box: drawn, element: null, kind: 'free' }
-  lassoDrag.box = got.box
-  lassoDrag.element = got.element || null
-  lassoDrag.kind = got.kind || 'free'
-  lassoDrag.label = Targets.regionLabel(got.box, els, lassoDrag.element)
-  placeBand(g, got.box, lassoDrag.element ? bandTag(lassoDrag.element, lassoDrag.label) : 'Free')
+  Object.assign(lassoDrag, judgeLasso(drawn, elementsNow(g)))
+  placeBand(g, lassoDrag.box, lassoTag(lassoDrag))
 }
 
 function lassoEscape(e) {
@@ -3162,10 +3225,27 @@ async function lassoUp() {
   const d = lassoDrag
   endLasso()
   if (!d || !d.box) { clearBand(); return }
+  const path = ed.src
+  // Judged once more against the pass, which may have landed since the last mousemove
+  // or be landing still. Without this a drag quicker than the pass mints an unsnapped
+  // area called "Area" for a moment the app can read a heartbeat later. A flick is a
+  // click and waits on nothing, so the stage keeps its ordinary clicks.
+  const drawn = drawnBox(d)
+  // Every exit from here on is after an await, so the band on screen may already belong
+  // to a drag still under the person's finger. Taking it would leave them dragging
+  // nothing until the next mousemove, so this drag only clears its own band.
+  const dropBand = () => { if (!lassoDrag) clearBand() }
+  if (drawn && !Pick.tooSmall(drawn)) {
+    bandReading(!lassoEls.has(lassoKey(path || '', d.at, d.crop)))
+    Object.assign(d, judgeLasso(drawn, await lassoElements(d)))
+    bandReading(false)
+    if (ed.src !== path) { dropBand(); return }
+    const g = lassoDrag ? null : lassoGeom()   // a drag that started meanwhile owns the band now
+    if (g) placeBand(g, d.box, lassoTag(d))
+  }
   // under two percent either way a drag was a click, which is how the stage keeps its
   // ordinary clicks
-  if (Pick.tooSmall(d.box)) { clearBand(); toast('That area is too small to work on. Drag a bigger one.', 'bad'); return }
-  const path = ed.src
+  if (Pick.tooSmall(d.box)) { dropBand(); toast('That area is too small to work on. Drag a bigger one.', 'bad'); return }
   let region = null
   try {
     region = await ipcRenderer.invoke('lasso-region',
@@ -3173,13 +3253,13 @@ async function lassoUp() {
       // a stale one off disk mid-autosave
       { path, at: d.at, box: d.box, element: d.element, kind: d.kind, label: d.label, crop: d.crop })
   } catch (err) {
-    clearBand()
+    dropBand()
     toast(escHtml(String((err && err.message) || 'that area could not be read').replace(/^.*Error: /, '')), 'bad')
     return
   }
-  if (!region || ed.src !== path) { clearBand(); return }
+  if (!region || ed.src !== path) { dropBand(); return }
   lassoShown = region
-  const el = bandEl()
+  const el = lassoDrag ? null : bandEl()       // the same: a newer drag keeps its own band
   if (el) { el.classList.add('is-set'); el.firstChild.innerHTML = bandTag(region.id, region.label) }
   if (window.fetchLasso) window.fetchLasso.add(region)
 }

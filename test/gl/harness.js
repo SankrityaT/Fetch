@@ -48,6 +48,8 @@ const only = (args.find(a => a.startsWith('--only=')) || '').slice(7)
 const FIX = '/tmp/fetch-gl'
 const GOLD = path.join(__dirname, 'golden')
 const OUT = '/tmp/fetch-gl/out'
+// what the run counted, for test/gl/run.js; see the note where it is written
+const VERDICT = '/tmp/fetch-gl/verdict.json'
 
 if (process.env.FETCH_GL_TESTS !== '1') {
   console.log('GL tests skipped: set FETCH_GL_TESTS=1 (they start a hidden Electron window)')
@@ -113,6 +115,17 @@ app.whenReady().then(async () => {
     const call = (fn, ...a) => page.webContents.executeJavaScript(`${fn}(...${JSON.stringify(a)})`)
 
     const camera = { file: cam, x: 0.84, y: 0.78, size: 0.2, camStartedAt: 1000, screenStartedAt: 1400, gaps: [] }
+    // A keyframed bubble. The first entry is the one an agent writes: a stretch of the
+    // take where the face is not the point, said as a size and a corner and nothing
+    // else, so everything it leaves out stays where the editor put it. The second is a
+    // bare key, which is a state the bubble starts moving to at its own time.
+    // Both moves take their length from the zooms' own measures (plan.js camPlan): the
+    // span's move is 1.15 s and lands at 4.15 s, the way back is clamped to the 1 s gap
+    // and lands exactly on 9 s, and the move into the last key is 1.15 s from there.
+    const camKeyed = { ...camera, keys: [
+      { start: 3, end: 8, size: 0.1, x: 0.12 },
+      { t: 9, size: 0.34, x: 0.5, y: 0.5, shape: 'rounded' },
+    ] }
     const look = { treatment: { motionBlur: 0.5 }, frame: { border: 0 }, camera: { shape: 'circle', ring: true }, grain: { dither: false } }
     const base = { ffmpeg, src: take, meta }
     const cases = {
@@ -142,6 +155,24 @@ app.whenReady().then(async () => {
       // bare ground on the one frame the take is not on screen (output frame 90 here).
       'camera-reveal': { opts: { backdrop: 'mint', inset: 0.08, camera, look }, n: 3 },
       'camera-dip': { opts: { backdrop: 'mint', inset: 0.08, camera, cuts: [[3, 7]], look: { ...look, motion: { cutTransition: 'dip' } } }, n: 90 },
+      // R6: the bubble keyframed. Three frames, because the three things that can be
+      // wrong are different: where a key puts it, where the ease puts it between two
+      // keys, and what a shape change looks like while it is happening.
+      //
+      // At a key (output frame 150, 5 s): the span is in and the move into it landed at
+      // 4.15 s, so the bubble is small and over on the left, at rest. A bubble that
+      // ignored its keys draws the large one in the right corner here.
+      'camera-key': { opts: { backdrop: 'mint', inset: 0.08, camera: camKeyed, look }, n: 150 },
+      // Between keys (frame 105, 3.5 s): 0.435 of the way through the move that started
+      // at 3 s, so the bubble is in flight and part way down in size, on the same ease
+      // the zooms use. Drawn without an ease it would be 0.435 of the way along a
+      // straight line instead, which is a different picture.
+      'camera-tween': { opts: { backdrop: 'mint', inset: 0.08, camera: camKeyed, look }, n: 105 },
+      // At a shape change (frame 285, 9.5 s): 0.435 through the move into the last key,
+      // which turns the circle into the rounded square while it grows and crosses the
+      // frame. The corner is a share of the diameter, so this is a morph rather than a
+      // switch: the golden is a squircle, neither of the two shapes the look names.
+      'camera-shape': { opts: { backdrop: 'mint', inset: 0.08, camera: camKeyed, look }, n: 285 },
       // M3: what is drawn on the take and over the frame (this take goes out at 30 fps,
       // so frame n is n / 30 seconds in)
       'marks': { opts: { backdrop: 'ink', inset: 0.06, look, marks: [
@@ -218,6 +249,39 @@ app.whenReady().then(async () => {
       // follow it. A device with it, since the two are the same plane.
       'tilt': { opts: { backdrop: 'violet', inset: 0.08, look: { ...look, frame: { border: 2, borderColor: '#F0A93C', tilt: 14 } } }, n: 150 },
       'tilt-device': { opts: { backdrop: 'studio', inset: 0.07, look: { ...look, frame: { border: 0, tilt: -11 }, device: { kind: 'laptop' } } }, n: 150 },
+      // R7: the arrow. The light way to point at something, so the take under it is the
+      // picture it was: it stands outside the box it aims at, a gap off the middle of
+      // the nearest edge. This take goes out at 30 fps, and the arrow runs 2 s to 9 s.
+      //
+      // Holding (frame 150, 5 s): full size, at rest, from the left, which is the side
+      // the eye is already travelling along and the first one with room. The box is
+      // untouched: what is under an arrow is what was recorded.
+      'arrow': { opts: { backdrop: 'ink', inset: 0.06, look, marks: [
+        { kind: 'arrow', start: 2, end: 9, x: 0.45, y: 0.4, w: 0.14, h: 0.1 }] }, n: 150 },
+      // Arriving (frame 65, 2.167 s): 0.49 through the 340 ms it lands in. It comes in
+      // along its own line from 18 percent of its length further out and grows about
+      // its tip, so the tip travels toward the thing and stops at the gap. Drawn with a
+      // badge's centre pop instead, the head would be somewhere else entirely, and one
+      // that grew from nothing would be a third of this length here.
+      'arrow-in': { opts: { backdrop: 'ink', inset: 0.06, look, marks: [
+        { kind: 'arrow', start: 2, end: 9, x: 0.45, y: 0.4, w: 0.14, h: 0.1 }] }, n: 65 },
+      // Leaving (frame 267, 8.9 s): 0.51 through the 204 ms it clears in, backing off
+      // the way it came on --ease-out while the alpha rides the S, which is the badge's
+      // own leave. A blink draws it whole here, or not at all.
+      'arrow-out': { opts: { backdrop: 'ink', inset: 0.06, look, marks: [
+        { kind: 'arrow', start: 2, end: 9, x: 0.45, y: 0.4, w: 0.14, h: 0.1 }] }, n: 267 },
+      // The same box, aimed from above: from names the side it comes in from, so this
+      // one points down. The picture is the arrow turned, not a sprite tipped over: the
+      // head, the round tail and the keyline are all drawn along the way it points.
+      'arrow-top': { opts: { backdrop: 'ink', inset: 0.06, look, marks: [
+        { kind: 'arrow', start: 2, end: 9, x: 0.45, y: 0.4, w: 0.14, h: 0.1, from: 'top' }] }, n: 150 },
+      // And a box hard against the left of what a 2x zoom shows. The side is picked
+      // inside that window rather than inside the recording, so the arrow comes down
+      // from above instead of standing off the left where the window has no room for
+      // it, and it is sized through the zoom, so it is the same arrow on screen as the
+      // one above rather than twice the size.
+      'arrow-zoom': { opts: { backdrop: 'ink', inset: 0.06, look, zooms: [{ start: 0, end: 11, scale: 2, x: 0.5, y: 0.5 }],
+        marks: [{ kind: 'arrow', start: 2, end: 9, x: 0.28, y: 0.42, w: 0.08, h: 0.06 }] }, n: 150 },
       // The loupe: a magnified inset of a small area, beside the area it magnifies. The
       // redaction is there on purpose: what the edit hides has to stay hidden inside it.
       'loupe': { opts: { backdrop: 'ink', inset: 0.06, look, marks: [
@@ -318,7 +382,7 @@ app.whenReady().then(async () => {
       // zoom-glide is here now that the shutter is open by default: it is the one case
       // that draws through the multi-tap blur, and preview and export have to agree on it
       for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'bokeh-ground', 'zoom-hold', 'zoom-glide', 'cut-dissolve', 'reveal', 'camera', 'marks', 'lift', 'pointer', 'text', 'caption-plate', 'glow',
-        'auto-level', 'auto-level-hard', 'treat-furniture', 'treat-all', 'device-browser', 'tilt-device', 'loupe']) {
+        'auto-level', 'auto-level-hard', 'treat-furniture', 'treat-all', 'device-browser', 'tilt-device', 'loupe', 'arrow']) {
         const c = cases[name]
         const r = await call('parity', { ...base, ...c })
         // A crop's first and last rows can differ at a sharp colour edge: the <video>
@@ -355,6 +419,14 @@ app.whenReady().then(async () => {
       is('a drawn device and a tilt', dv.max === 0, `max ${dv.max}`)
       const lp = await call('stateless', { ...base, ...cases['loupe'] }, [40, 250, 9])
       is('a loupe, over its own marks', lp.max === 0, `max ${lp.max}`)
+      // an arrow is a picture kept by its size and direction and placed from the frame's
+      // own output time, so a frame in the middle of its arrival comes back byte for byte
+      const ar = await call('stateless', { ...base, ...cases['arrow-in'] }, [65, 150, 267])
+      is('an arrow part way through arriving', ar.max === 0, `max ${ar.max}`)
+      // the bubble's track is read at the frame's own output time, so a frame in the
+      // middle of one of its moves is the same frame drawn out of turn
+      const cb = await call('stateless', { ...base, ...cases['camera-tween'] }, [90, 285, 20])
+      is('a camera bubble in the middle of a move', cb.max === 0, `max ${cb.max}`)
       // a dissolve draws the frame twice and mixes the two: still the frame's own time
       // and nothing else, so it comes back byte for byte after other frames
       const d = await call('stateless', { ...base, ...cases['cut-dissolve'] }, [30, 91, 200])
@@ -725,10 +797,15 @@ app.whenReady().then(async () => {
     console.log('  FAIL ' + (e.stack || e.message))
   }
   console.log(`\n${pass} passed, ${fail} failed`)
-  // The render host keeps a warm hidden window with a live GPU context, and since the
-  // contact sheet the harness uses it too. Exiting while it is still up aborts Electron
-  // in teardown (SIGTRAP), so a clean run reported a failing shell exit and any gate
-  // reading that code saw 192 passing checks as a failure. Put it down first.
+  // What the run counted, written the moment it has finished counting. The render host
+  // keeps a warm hidden window with a live GPU context, and since the contact sheet the
+  // harness uses it too; Electron sometimes aborts tearing that down on macOS (SIGTRAP,
+  // SIGSEGV) after a clean run has already printed its result, and the npm wrapper turns
+  // a signal into exit 1. test/gl/run.js reads this rather than that code, so a gate no
+  // longer sees a passing suite as a failure, and a run that dies before it has counted
+  // leaves no file here and still fails.
+  try { fs.mkdirSync(path.dirname(VERDICT), { recursive: true }) } catch {}
+  try { fs.writeFileSync(VERDICT, JSON.stringify({ pass, fail, at: Date.now() })) } catch {}
   try { require('../../ui/render-host').close() } catch {}
   try { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.destroy() } catch {}
   app.exit(fail ? 1 : 0)

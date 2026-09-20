@@ -111,6 +111,7 @@ const TITLES = {
   'edit.revert': 'Took back its own last change',
   'voice.list': 'Listed the voices',
   'voice.speak': 'Generated a voiceover',
+  'memory.remember': 'Remembered something',
 }
 
 const { AGENT_PREFS, HUMAN_ONLY_PREFS } = policy
@@ -392,7 +393,7 @@ const ops = {
     // What is left of the plan and how far the edit still is from the brief, on every
     // call. A description asking an agent to check is a suggestion; a field it is
     // handed every time is not. step: 'P3' closes that step of the plan.
-    Object.assign(out, jobState(args.path, doc, args.step, await takeShape(args.path)))
+    Object.assign(out, jobState(args.path, doc, args.step, await takeShape(args.path)), memoryState(args.path))
     out.preview = await previewOf(args.path, check, args.doc, doc)
     return out
   },
@@ -480,10 +481,12 @@ const ops = {
     // one on somebody's own machine is rude. The agent is simply never handed a file
     // without the list of what is still wrong with it.
     let checked = null
+    const lv = await takeLevels(args.path, doc, meta)
     try {
       const Review = require('./review')
-      const c = Review.review({ doc, ...briefAndBeats(args.path, meta), path: args.path, looks: require('./look').list(looksDir()) })
-      checked = { verdict: c.verdict, summary: c.summary, blocking: Review.blocking(c), look_at: c.look_at }
+      const c = Review.review({ doc, ...briefAndBeats(args.path, meta), path: args.path,
+        looks: require('./look').list(looksDir()), levels: lv })
+      checked = { verdict: c.verdict, score: c.score, summary: c.summary, blocking: Review.blocking(c), look_at: c.look_at }
     } catch {}
     return { path: r && r.file, mb, seconds: +FD.outDuration(doc).toFixed(2), ...engine,
       ...(lw.length ? { look_warnings: lw } : {}),
@@ -671,7 +674,7 @@ const ops = {
       const job = Director.read(args.path)
       if (!job) throw new Error(Director.NO_BRIEF)
     }
-    return Director.direct(args.path, patch, { facts: editFacts(doc) })
+    return { ...Director.direct(args.path, patch, { facts: editFacts(doc) }), ...memoryState(args.path) }
   },
 
   // The house rubric, measured on the document rather than asked for in prose
@@ -684,6 +687,10 @@ const ops = {
     return require('./review').review({
       doc, ...briefAndBeats(args.path, meta), path: args.path,
       looks: require('./look').list(looksDir()),
+      // a finding the agent judged and wrote down stops holding the verdict at "nearly"
+      declined: args.declined,
+      // the take's own ends, so the rule about a ground a take sinks into can run at all
+      levels: await takeLevels(args.path, doc, meta),
     })
   },
 
@@ -696,6 +703,13 @@ const ops = {
     const doc = deps.proc.readDoc(args.path, meta && meta.duration)
     let w = null
     try { w = JSON.parse(fs.readFileSync(deps.proc.sidecarIn(args.path, '.words.json'), 'utf8')) } catch {}
+    // Beats are worked out from the take, not stored on the document, so reading
+    // doc.beats alone left fit's whole-beat stage with nothing it could drop: it
+    // stopped 8.7 s over its target and named no beat, while review and list_beats,
+    // which both call beatsFor, saw the same beats fine.
+    if (!(doc.beats || []).length) {
+      try { doc.beats = deps.proc.beatsFor(args.path, meta && meta.duration) || [] } catch { doc.beats = [] }
+    }
     // A length is chosen from what was said, so with nothing said this is a wasted
     // turn: it would hand back the edit it was given and a sentence nobody reads.
     if (!(w && w.words && w.words.length) && !(doc.cues || []).length && !(doc.beats || []).length) {
@@ -749,6 +763,31 @@ const ops = {
     const gone = removedIds(before, doc)
     return { ...summarise(doc, args.path), ...(gone.length ? { removed: { ids: gone, why: 'these went back out of the edit; say so in your reply' } } : {}),
       ...jobState(args.path, doc, null, await takeShape(args.path)) }
+  },
+
+  // ── what is still true next week ───────────────────────────────────────
+  // A brief lives in the job file and dies with the job. This is the other half: what
+  // the person said about themselves and their product, which the next conversation
+  // would otherwise ask for again (ui/memory.js). Writing and forgetting are one op
+  // because they are one judgement a beat apart, and a store that can only grow ends
+  // up holding two facts that disagree.
+  async 'memory.remember'(args = {}) {
+    const Memory = require('./memory')
+    const where = { root: app ? app.getPath('userData') : require('os').tmpdir(),
+      take: args.path || null, about: args.about }
+    if (args.forget) {
+      // an id says which drawer it came out of; anything else is a key, and a key
+      // read as an id would match nothing and report success
+      const pick = String(args.forget).trim()
+      const sel = /^[GFN]\d+$/i.test(pick)
+        ? { id: pick }
+        : { key: pick, scope: args.scope, about: Memory.place(where).about }
+      const r = Memory.forget(where, sel)
+      return { ok: !!r.gone.length, dropped: r.gone, memory: r.memory,
+        ...(r.gone.length ? {} : { why: `nothing in the memory is ${pick}; the memory block below lists what is` }) }
+    }
+    if (!args.fact) throw new Error('fact is required: the sentence to write down, or forget with an id from the memory block')
+    return Memory.remember(where, args)
   },
 
   // ── voiceover ──────────────────────────────────────────────────────────
@@ -947,9 +986,9 @@ function withElements(src, doc, prev) {
   const known = new Set(((prev && prev.marks) || []).map(m => m && m.id).filter(Boolean))
   const swap = list => !Array.isArray(list) ? list : list.map(it => {
     const aimed = it && it.element ? resolveElement(src, seen, mine, crop, it) : it
-    if (aimed && (aimed.kind === 'lift' || aimed.kind === 'loupe')) {
-      // a new lift or loupe with nothing but times raises nothing and magnifies
-      // nothing, so say what to send. One that names an existing mark keeps that
+    if (aimed && (aimed.kind === 'lift' || aimed.kind === 'loupe' || aimed.kind === 'arrow')) {
+      // a new lift, loupe or arrow with nothing but times raises nothing, magnifies
+      // nothing and points at nothing, so say what to send. One that names an existing mark keeps that
       // mark's box and is only being retimed.
       if (!aimed.id || !known.has(aimed.id)) {
         const needs = T.liftNeedsBox({ ...it, kind: aimed.kind })
@@ -1434,6 +1473,18 @@ async function takeShape(file) {
   return m
 }
 
+// What the person has already said about themselves and this product, on the two
+// results an agent reads before it decides anything. An outside client never sees the
+// in-app system prompt, so without this the store is written by one agent and read by
+// none. The block only, never the fact objects: ids and text, not payloads.
+function memoryState(file) {
+  try {
+    const Memory = require('./memory')
+    const r = Memory.recallFor({ root: app ? app.getPath('userData') : require('os').tmpdir(), take: file || null })
+    return r && r.text ? { memory: r.text } : null
+  } catch { return null }
+}
+
 function jobState(file, doc, step, meta) {
   const Director = require('./director')
   try {
@@ -1458,6 +1509,26 @@ function briefAndBeats(file, meta) {
   try { silent = !!meta && meta.hasAudio === false } catch {}
   // the take's own pixels, so the rubric can tell "no shape set" from "the shape asked for"
   return { brief, beats, silent, width: meta && meta.width, height: meta && meta.height }
+}
+
+// The take's own black and white points, which review holds a solid ground against. It
+// is a demux of the keyframes, too much to pay before every reply, so it is asked for
+// only where the rule reads it (review's own test: a background of kind solid) and kept
+// per take and crop. A raw take does not change, so the answer does not either.
+const takeLevelCache = new Map()
+async function takeLevels(src, doc, meta) {
+  const L = (doc && doc.look) || {}
+  if (!L.background || L.background.kind !== 'solid') return null
+  const crop = (doc && doc.crop) || null
+  const key = `${src}|${JSON.stringify(crop)}`
+  if (takeLevelCache.has(key)) return takeLevelCache.get(key)
+  let lv = null
+  try {
+    lv = await require('./compositor/levels').measure(src, {
+      crop, width: meta && meta.width, height: meta && meta.height, timeout: 8000 })
+  } catch {}
+  takeLevelCache.set(key, lv)
+  return lv
 }
 
 // The key is the person's and it is entered by hand, in the editor, into the Keychain.
@@ -1494,7 +1565,8 @@ function summarise(doc, path) {
     crop: doc.crop, cropAR: doc.cropAR,
     ...(doc.viewport ? { viewport: doc.viewport } : {}),
     autoZoom: !!doc.autoZoom,
-    camera: cam ? { recorded: true, on: cam.on !== false, x: cam.x, y: cam.y, size: cam.size } : { recorded: false },
+    camera: cam ? { recorded: true, on: cam.on !== false, x: cam.x, y: cam.y, size: cam.size,
+      ...(Array.isArray(cam.keys) && cam.keys.length ? { keys: cam.keys } : {}) } : { recorded: false },
     audioTrack: doc.audioTrack ? { name: doc.audioTrack.name, volume: doc.audioTrack.volume,
       offset: doc.audioTrack.offset, replace: !!doc.audioTrack.replace } : null,
     // the look as the preset it came from and what differs (get_look_schema for every field)
@@ -1510,7 +1582,7 @@ function summarise(doc, path) {
       // agents the moment it exists, not when this line is edited
       backgroundImages: deps.proc.backdropList().filter(b => b.image).map(b => b.id),
       textStyles: ['title', 'lower-third', 'label'],
-      markKinds: ['redact', 'blur', 'lift', 'spotlight', 'step', 'loupe'],
+      markKinds: ['redact', 'blur', 'lift', 'spotlight', 'step', 'loupe', 'arrow'],
       cropAR: require('./look').CROP_ARS,
     },
   }
