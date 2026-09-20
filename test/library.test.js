@@ -117,5 +117,120 @@ try {
   fs.rmSync(base, { recursive: true, force: true })
 }
 
+// ── the library holds two kinds ───────────────────────────────────────────
+// ui/library.js required with no DOM: headless it draws nothing, reads none of the
+// person's folders and writes none of them, so these run anywhere.
+const Lib = require('../ui/library')
+
+const T = ms => new Date(ms).getTime()
+const NOW = new Date('2026-09-18T15:00:00-07:00')
+const DAY = 86400000
+const item = (over = {}) => ({ name: 'Demo.mov', path: '/Users/me/Movies/Fetch/Demo/Original/Demo.mov', ext: 'mov', mb: 12, mtime: NOW.getTime(), ...over })
+const g = (over = {}, derived = []) => ({ take: null, original: item(over), derived, copy: null })
+const shot = (over = {}, derived = []) => g({ name: 'Shot.png', path: '/Users/me/Movies/Fetch/Shot/Shot.png', ext: 'png', mb: 1.4, ...over }, derived)
+const reset = () => { Lib._setFolders([]); Lib._setView({ folder: 'all', kind: 'all', platform: 'all', query: '', sort: 'new' }) }
+
+console.log('=== a shot and a take are told apart by what was captured ===')
+reset()
+is('a video is a recording', Lib.kindOf(g()), 'take')
+is('a still is a screenshot', Lib.kindOf(shot()), 'shot')
+is('a JPEG too', Lib.kindOf(shot({ name: 'Shot.jpg', ext: 'jpg' })), 'shot')
+is('a styled screenshot is still a screenshot', Lib.kindOf(shot({}, [item({ name: 'Shot-styled.png', ext: 'png' })])), 'shot')
+is('an edited take is still a recording', Lib.kindOf(g({}, [item({ name: 'Demo.mp4', ext: 'mp4' })])), 'take')
+is('a capture that says what it is is believed', Lib.kindOf(g({ kind: 'shot', ext: '' })), 'shot')
+is('a bare item works as well as a card', Lib.kindOf(item({ ext: 'png' })), 'shot')
+is('no extension at all is a recording, as the library always was', Lib.kindOf(g({ name: 'Demo', ext: '' })), 'take')
+
+console.log('=== platform is a tag, and it never names a make ===')
+is('what Fetch captured came off this Mac', Lib.platformOf(shot()), 'Mac')
+is('an import claims nothing', Lib.platformOf(g({ imported: true })), null)
+is('a handset frame is a phone', Lib.platformOf(shot({ device: 'phone' })), 'Phone')
+is('a browser frame is the web', Lib.platformOf(shot({ device: 'browser' })), 'Web')
+is('the capture path has the last word', Lib.platformOf(shot({ device: 'phone', platform: 'Tablet' })), 'Tablet')
+is('one platform is listed once', Lib.platformsIn([shot(), g(), shot({ device: 'phone' })]), ['Mac', 'Phone'])
+is('a platform nobody claims is not invented', Lib.platformsIn([g({ imported: true })]), [])
+
+console.log('=== the gallery reads as days ===')
+is('today', Lib.dayLabel(NOW.getTime(), NOW), 'Today')
+is('yesterday', Lib.dayLabel(NOW.getTime() - DAY, NOW), 'Yesterday')
+is('this week says which day', Lib.dayLabel(NOW.getTime() - 3 * DAY, NOW), 'Tuesday')
+is('further back says the date', Lib.dayLabel(NOW.getTime() - 20 * DAY, NOW), 'Aug 29')
+is('another year says which', Lib.dayLabel(T(new Date('2024-09-12T10:00:00-07:00')), NOW), 'Sep 12 2024')
+is('late and early the same day are one heading',
+  Lib.dayLabel(T(new Date('2026-09-18T23:30:00-07:00')), NOW), Lib.dayLabel(T(new Date('2026-09-18T00:30:00-07:00')), NOW))
+{
+  reset()
+  const list = [shot({ mtime: NOW.getTime() }), g({ mtime: NOW.getTime() - 3600000 }), g({ mtime: NOW.getTime() - DAY })]
+  const days = Lib.byDay(Lib.filterGroups(list), NOW)
+  is('two days, newest first', days.map(d => [d.label, d.items.length]), [['Today', 2], ['Yesterday', 1]])
+  is('the spans line up with the cards', Lib.daySpans(Lib.filterGroups(list), NOW).map(d => d.n), [2, 1])
+  Lib._setView({ sort: 'name' })
+  is('sorted by name there are no day headings', Lib.byDay(Lib.filterGroups(list), NOW).map(d => d.label), [''])
+  reset()
+}
+
+console.log('=== sort and filter ===')
+{
+  const a = shot({ name: 'Alpha.png', path: '/x/Alpha.png', mtime: 300, mb: 9 })
+  const b = g({ name: 'Zulu.mov', path: '/x/Zulu.mov', mtime: 200, mb: 40 })
+  const c = g({ name: 'Mike.mov', path: '/x/Mike.mov', mtime: 100, mb: 1, device: 'phone' })
+  const all = [a, b, c]
+  const names = list => list.map(x => Lib.stemOf(x))
+  reset()
+  is('newest first by default', names(Lib.filterGroups(all)), ['Alpha', 'Zulu', 'Mike'])
+  Lib._setView({ sort: 'old' }); is('oldest first', names(Lib.filterGroups(all)), ['Mike', 'Zulu', 'Alpha'])
+  Lib._setView({ sort: 'name' }); is('by name', names(Lib.filterGroups(all)), ['Alpha', 'Mike', 'Zulu'])
+  Lib._setView({ sort: 'size' }); is('largest first', names(Lib.filterGroups(all)), ['Zulu', 'Alpha', 'Mike'])
+  reset()
+  Lib._setView({ kind: 'shot' }); is('screenshots only', names(Lib.filterGroups(all)), ['Alpha'])
+  Lib._setView({ kind: 'take' }); is('recordings only', names(Lib.filterGroups(all)), ['Zulu', 'Mike'])
+  reset()
+  Lib._setView({ platform: 'Phone' }); is('one platform', names(Lib.filterGroups(all)), ['Mike'])
+  reset()
+  Lib._setView({ query: 'ul' }); is('search matches part of a name', names(Lib.filterGroups(all)), ['Zulu'])
+  Lib._setView({ query: 'ZU' }); is('and ignores case', names(Lib.filterGroups(all)), ['Zulu'])
+  reset()
+  // a folder holds both kinds: one product, its shots and its takes together
+  Lib._setFolders([{ id: 'f1', name: 'Songscription', paths: ['/x/Alpha.png', '/x/Zulu.mov'] }])
+  Lib._setView({ folder: 'f1' })
+  is('a folder holds shots and takes alike', names(Lib.filterGroups(all)), ['Alpha', 'Zulu'])
+  Lib._setView({ folder: 'f1', kind: 'shot' })
+  is('and the kind switch cuts inside it', names(Lib.filterGroups(all)), ['Alpha'])
+  Lib._setFolders([])
+  Lib._setView({ folder: 'f1', kind: 'all' })
+  is('a folder deleted under the view falls back to everything', names(Lib.filterGroups(all)).length, 3)
+  reset()
+  is('the count says what kind of library this is', Lib.countLabel(all), '1 shot · 2 takes')
+  is('one kind on its own says only itself', Lib.countLabel([b, c]), '2 takes')
+  is('and one of them is singular', Lib.countLabel([a]), '1 shot')
+  is('an empty library still reads', Lib.countLabel([]), '0 takes')
+}
+
+console.log('=== provenance: what it came from, what came out of it ===')
+{
+  reset()
+  const take = g({ name: 'Demo.mov', path: '/x/Demo.mov', mtime: NOW.getTime() - DAY, mb: 40 })
+  const still = shot({ name: 'Tempo.png', path: '/x/Tempo.png', mb: 1.2, width: 2560, height: 1440,
+    from: { path: '/x/Demo.mov', at: 74 }, mtime: NOW.getTime() })
+  const rows = Lib.infoRows(still, [take, still], NOW)
+  const value = label => (rows.find(r => r.label === label) || {}).value
+  is('it says it is a screenshot', value('Kind'), 'Screenshot')
+  is('and what it was styled from, at the second it came from', value('Styled from'), 'Demo, at 1:14')
+  is('its real size in pixels', value('Size'), '2560 × 1440')
+  is('what it costs on disk', value('On disk'), '1.2 MB')
+  is('when the shutter went', value('Captured'), 'Sep 18, 3:00 PM')
+  is('the take says what was made from it', (Lib.infoRows(take, [take, still], NOW).find(r => r.label === 'Used to make') || {}).value, 'Tempo')
+  is('a take with no parent claims none', Lib.infoRows(take, [take], NOW).some(r => r.label === 'Cut from'), false)
+  Lib._setFolders([{ id: 'f1', name: 'Songscription', paths: ['/x/Tempo.png'] }])
+  is('and the folders it is in', (Lib.infoRows(still, [take, still], NOW).find(r => r.label === 'Folder') || {}).value, 'Songscription')
+  reset()
+  const edited = g({ name: 'Demo.mov', path: '/x/Demo.mov', mtime: NOW.getTime() - DAY, mb: 40 },
+    [item({ name: 'Demo.mp4', path: '/x/Demo.mp4', ext: 'mp4', mb: 8, mtime: NOW.getTime() })])
+  const er = Lib.infoRows(edited, [edited], NOW)
+  is('a take counts its exports on disk', (er.find(r => r.label === 'On disk') || {}).value, '48 MB')
+  is('and says when it last exported', (er.find(r => r.label === 'Last export') || {}).value, 'Sep 18, 3:00 PM')
+  reset()
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

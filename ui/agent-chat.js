@@ -56,6 +56,9 @@ function memoryText(take) {
 // adding a tool is a deliberate decision about what the in-app chat may do.
 const ALLOWED = [
   'record_start', 'record_stop', 'record_pause', 'record_status',
+  // a screenshot, which is a take of one frame: every tool below that edits a
+  // recording edits one of these too, so this is the only name stills add here
+  'take_shot',
   'list_windows', 'list_displays', 'list_recordings',
   'probe', 'transcribe',
   'get_edit', 'apply_edit', 'list_beats', 'export', 'rename_recording',

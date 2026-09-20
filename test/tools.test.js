@@ -181,6 +181,77 @@ async function main() {
     assert.ok(/source/.test(doc('can_loop')), 'can_loop does not say the recording\'s own half is the agent\'s to check')
   })
 
+  // ── a shot is a take of one frame ────────────────────────────────────────
+  // The whole of this round on the tool surface is one new tool and a set of old ones
+  // that now take a capture. These four hold that shape: they fail if stills grow a
+  // second surface, and they fail if a tool a shot can be the subject of stops saying so.
+  t('the one tool stills add is the capture', () => {
+    assert.ok(registered.includes('take_shot'), 'take_shot is not registered')
+    const drives = source.find(s => s.name === 'take_shot').ops
+    assert.deepStrictEqual(drives, ['shot.take'], 'take_shot drives ' + drives.join(', '))
+    // Everything else a shot needs is an op a take already had. A second op named for
+    // stills is the near-duplicate this round exists to avoid.
+    const shotOps = Object.keys(bridge.ops).filter(op => /^shot\./.test(op))
+    assert.deepStrictEqual(shotOps, ['shot.take'],
+      'the bridge answers ' + shotOps.join(', ') + '; a shot is another subject, not another surface')
+  })
+
+  t('every tool a shot is a subject of says so where the path is described', () => {
+    // The path argument is where an agent looks to find out what a tool takes, so a
+    // tool that quietly accepts a capture is one no agent will ever point at one.
+    for (const name of ['get_edit', 'apply_edit', 'apply_look', 'find_on_screen', 'preview_frame',
+      'review', 'export', 'contact_sheet', 'get_frame', 'direct', 'revert_my_edit']) {
+      const chunk = SRC.split(`'${name}',`)[1] || ''
+      const head = chunk.slice(0, chunk.indexOf('async args') + 1 || 4000)
+      assert.ok(/path: z\.string\(\)[\s\S]{0,140}or to a shot/.test(head),
+        `${name} takes a shot and its path does not say so`)
+    }
+  })
+
+  t('a shot is refused only where the question is about time, and never bare', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+    const from = src.indexOf('const SHOT_INSTEAD =')
+    assert.ok(from > 0, 'the bridge no longer has one sentence for what to do with a shot instead')
+    const say = src.slice(from, src.indexOf('\n', src.indexOf('notOnAShot =', from)))
+    for (const name of ['apply_look', 'apply_edit', 'preview_frame', 'export']) {
+      assert.ok(new RegExp(`\\b${name}\\b`).test(say) && registered.includes(name),
+        `the refusal on a shot does not name ${name}, or that tool is gone`)
+    }
+    // Every refusal goes through that one sentence, so none of them can be a bare no.
+    for (const m of src.matchAll(/if \(isShot\(args\.path\)\) throw ([a-zA-Z]+)/g)) {
+      assert.strictEqual(m[1], 'notOnAShot', 'a shot is refused somewhere without saying what to do instead')
+    }
+  })
+
+  t('the rubric run on a still raises nothing the tool surface has not accounted for', () => {
+    // review works on a shot by running the same rubric on the take of one frame it
+    // is. One rule there is about a clock and is named under not_judged instead of
+    // reported; the risk is a rule nobody has classified yet, which would reach an
+    // agent as a finding about a screenshot that cannot mean anything. This is what
+    // notices that.
+    const Shot = require('../ui/shot')
+    const Review = require('../ui/review')
+    const shot = Shot.normalize({ marks: [{ kind: 'lift', x: 0.2, y: 0.2, w: 0.3, h: 0.1 }],
+      look: { background: { kind: 'solid', color: '#101010' } } }, '/tmp/shot.png', { w: 2720, h: 1560 })
+    const spec = Shot.toRenderSpec(shot)
+    const doc = { ...spec, dur: Shot.SPAN, clips: [{ id: 'C1', start: 0, end: Shot.SPAN }], beats: [] }
+    const r = Review.review({ doc, path: '/tmp/shot.png', silent: true, beats: [], looks: [],
+      width: shot.w, height: shot.h,
+      brief: { seconds: 30, aspect: '16:9', must_hide: ['the email address'] } })
+    // about the picture, so they are reported; about the clock, so it is not
+    const PICTURE = ['no-brief', 'redactions', 'aspect', 'focus-clash', 'ground', 'never-drawn', 'spans-a-cut']
+    const CLOCK = ['length']
+    for (const i of r.items) {
+      assert.ok(PICTURE.includes(i.rule) || CLOCK.includes(i.rule),
+        `the rubric raised ${i.rule} on a still and ui/agent-bridge.js has not decided whether it means anything`)
+    }
+    assert.ok(r.items.some(i => i.rule === 'redactions'), 'a brief naming something to hide and nothing hiding it is not reported')
+    assert.ok(r.items.some(i => CLOCK.includes(i.rule)), 'nothing about the clock fired, so dropping it proves nothing')
+    const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+    const drop = src.slice(src.indexOf('const NOT_ABOUT_A_STILL'), src.indexOf('async function reviewShot'))
+    for (const rule of CLOCK) assert.ok(new RegExp(`\\b${rule}:`).test(drop), `${rule} is not named as a rule a still is not judged by`)
+  })
+
   // The answer path, run rather than read. A window the person could have seen, a
   // question put into it, the answer sent back the way the pane sends it, and the result
   // the tool hands the agent. Nothing here touches a real window or a real CLI.

@@ -861,7 +861,7 @@ async function toGif(srcArg, opts, onProgress, jobId) {
 // save folder only ever holds what the person actually made: recordings and
 // exports. Finder hides dot-directories, so the Desktop stays clean.
 const SIDE_DIR = '.fetch'
-const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3', '.name.json', '.job.json', '.memory.json']
+const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.fetchshot.json', '.vo.mp3', '.name.json', '.job.json', '.memory.json']
 
 const sideStem = p => path.basename(p).replace(/\.[^.]+$/, '')
 function sidecarPath(mediaPath, ext) {
@@ -924,7 +924,13 @@ const isDir = p => { try { return fs.statSync(p).isDirectory() } catch { return 
 const listDir = d => { try { return fs.readdirSync(d) } catch { return [] } }
 // The media in a folder, leaving out support files and half-written exports. A GIF
 // counts here, since it can be a take's deliverable, though nothing reads one back.
-const mediaIn = d => listDir(d).filter(f => (MEDIA_EXT.test(f) || /\.gif$/i.test(f)) && !f.startsWith('.') &&
+const STILL_EXT = /\.(png|jpe?g|heic|heif|webp|tiff?|avif)$/i
+// A still counts too, since a shot is a take of one frame. A poster sits beside its
+// take under the same name, so a picture whose stem already has a recording is that
+// take's poster and not an item of its own.
+const stillIn = (d, f) => STILL_EXT.test(f) &&
+  !listDir(d).some(o => o !== f && MEDIA_EXT.test(o) && path.parse(o).name === path.parse(f).name)
+const mediaIn = d => listDir(d).filter(f => (MEDIA_EXT.test(f) || /\.gif$/i.test(f) || stillIn(d, f)) && !f.startsWith('.') &&
   !/\.(cam\.mov|vo\.mp3|mixed\.mov)$/i.test(f))
 
 // Every folder take folders live in: the save folder, and ~/Movies/Fetch as well once
@@ -3364,6 +3370,23 @@ function writeDoc(src, doc) {
   return out
 }
 
+// ── the shot document ────────────────────────────────────────────────────────
+// The same sidecar an edit has, for a capture. ui/shot.js owns the shape, so both
+// ends normalize through one function and a hand-written file cannot poison a stage.
+function readShot(src, size) {
+  let raw = null
+  try { raw = JSON.parse(fs.readFileSync(sidecarIn(src, '.fetchshot.json'), 'utf8')) } catch {}
+  return require('./ui/shot').normalize(raw, src, size || {})
+}
+
+function writeShot(src, shot) {
+  // sidecarOut makes its folder, so a late write for a trashed shot would resurrect it
+  if (!src || !fs.existsSync(src)) throw new Error('no such shot: ' + src)
+  const out = require('./ui/shot').normalize(shot, src, { w: shot && shot.w, h: shot && shot.h })
+  fs.writeFileSync(sidecarOut(src, '.fetchshot.json'), JSON.stringify(out, null, 2))
+  return out
+}
+
 // Beats for a recording, preferring speech and falling back to the pointer. Reads
 // the persisted word timings rather than transcribing again.
 function beatsFor(src, dur) {
@@ -3388,7 +3411,7 @@ module.exports = {
   speechRegions, buildBeats, buildCues, beatsFromCursor, readCursor, readPointer, pointerTrack, macCursorSpans, cursorPlates, cursorEraseFilters,
   zoomMoments, zoomExpr, autoZoomFilter, explicitZoomFilter, focusFilters, outClock, backdropGeometry,
   ratePts, rateAudio, audioKeep, takeAudioLeft, clipAudioParts, atempoChain,
-  readDoc, writeDoc, beatsFor,
+  readDoc, writeDoc, readShot, writeShot, beatsFor,
   // for the compositor's export (ui/render-host.js)
   renderAudio, musicBed, register, unregister, run, FORMATS, imageBackdrops,
   // what the compositor works out once per take (ui/compositor/prepare.js)

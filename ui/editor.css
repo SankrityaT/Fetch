@@ -15,7 +15,8 @@
   min-width:0; min-height:0; overflow:hidden; padding:var(--s-4); gap:var(--s-3); }
 .ed-canvas { flex:1; min-height:0; position:relative; display:grid; place-items:center;
   background:var(--ink-1); border:var(--edge); border-radius:var(--r-lg); overflow:hidden; }
-.ed-canvas video { max-width:100%; max-height:100%; display:block; background:#000; border-radius:var(--r-sm); }
+.ed-canvas video,
+.ed-canvas img#edStill { max-width:100%; max-height:100%; display:block; background:#000; border-radius:var(--r-sm); }
 
 /* backdrop preview: the frame fills the stage, the video sits inset inside it */
 .stage-frame { position:relative; display:grid; place-items:center; box-sizing:border-box;
@@ -679,7 +680,8 @@ video.motion, img.motion { display:block; }
 .stage-frame > canvas.stage-gl { position:absolute; left:0; top:0; width:0; height:0; pointer-events:none; display:none; }
 .stage-frame[data-gl="on"] > canvas.stage-gl { display:block; }
 .stage-frame[data-gl="on"] { background:none !important; }
-.stage-frame[data-gl="on"] > #edVideo { opacity:0; }
+.stage-frame[data-gl="on"] > #edVideo,
+.stage-frame[data-gl="on"] > #edStill { opacity:0; }
 .stage-frame[data-gl="on"] > .bd-fill { display:none; }
 .stage-frame[data-gl="on"] > .cam-bubble { opacity:0; }
 
@@ -753,3 +755,29 @@ video.motion, img.motion { display:block; }
 .ah.s  { left:calc(50% - 5.5px); bottom:-6px; cursor:ns-resize; }
 .ah.sw { left:-6px; bottom:-6px; cursor:nesw-resize; }
 .ah.w  { left:-6px; top:calc(50% - 5.5px); cursor:ew-resize; }
+
+/* ── a shot ──────────────────────────────────────────────────────────────
+   The same editor with the clock taken out. The timeline goes, the transport's play
+   cluster becomes the Styled and Original switch, and the one in-flow picture on the
+   stage is the capture rather than the take. */
+.ed[data-mode="shot"] .ed-timeline { display:none; }
+/* two in-flow children would be two grid rows, and the stage centres one picture */
+.ed[data-mode="shot"] .stage-frame > #edVideo { display:none; }
+.ed[data-mode="shot"] #edBack,
+.ed[data-mode="shot"] #edPlay,
+.ed[data-mode="shot"] #edFwd,
+.ed[data-mode="shot"] #edTime { display:none; }
+/* the stage is the whole of the editor now, so it takes the room the timeline had */
+.ed[data-mode="shot"] .ed-stage { padding:var(--s-5) var(--s-4) var(--s-4); }
+
+/* Styled and Original, one click apart, where the play button was */
+.ed-view { flex:none; }
+.ed-view button { white-space:nowrap; }
+/* The raw capture, with nothing of Fetch's on it. The band, the handles and the crop
+   box ride the compositor's geometry and are gone with it (paintStageGL); the ground,
+   the blurred fill, the corner and the shadow are this stage's own imitation of the
+   look and go here. The picture keeps its place and its size, so flipping between the
+   two moves nothing and only the styling drops away. */
+.stage-frame[data-view="original"] { background:none !important; }
+.stage-frame[data-view="original"] > .bd-fill { display:none; }
+.stage-frame[data-view="original"] > #edStill { border-radius:0 !important; box-shadow:none !important; }

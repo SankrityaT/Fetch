@@ -30,8 +30,11 @@ const text = obj => ({ content: [{ type: 'text', text: JSON.stringify(obj, null,
 // wrong. test/tools.test.js fails if the two ever differ, and fails if a tool named
 // anywhere below is not one this server registers.
 const INSTRUCTIONS = [
-  'Fetch records this Mac\'s screen and edits what it recorded. The work happens in the Fetch app on ' +
-    'the person\'s own machine; these tools are its hands.',
+  'Fetch records this Mac\'s screen, captures stills of it, and edits what it took. The work happens in ' +
+    'the Fetch app on the person\'s own machine; these tools are its hands.',
+  '',
+  'A screenshot is a take of one frame: take_shot captures one, and the tools that style, aim at, draw ' +
+    'and export a recording take a shot too.',
   '',
   'How a job goes, every time:',
   '- See the whole take with contact_sheet before you change it.',
@@ -205,8 +208,8 @@ export function build() {
     'list_windows',
     {
       description:
-        'List the windows currently open on screen, with the id record_start takes. ' +
-        'Use this to record one application window rather than a whole display, for ' +
+        'List the windows currently open on screen, with the id record_start and take_shot take. ' +
+        'Use this to record or capture one application window rather than a whole display, for ' +
         'example a browser a test driver just opened, or the iOS Simulator.',
       inputSchema: z.object({
         app: z.string().optional()
@@ -225,10 +228,48 @@ export function build() {
   server.registerTool(
     'list_displays',
     {
-      description: 'List the displays attached, with the id record_start takes.',
+      description: 'List the displays attached, with the id record_start and take_shot take.',
       inputSchema: z.object({}),
     },
     async () => text(await drive('displays.list')))
+
+  // A screenshot. Its own tool because capturing one frame is a different act from
+  // recording, and the only one: everything that happens to it afterwards is a tool
+  // that already existed, handed a shot's path instead of a recording's.
+  server.registerTool(
+    'take_shot',
+    {
+      description:
+        'Capture one frame of this Mac as a screenshot and open it, ready to be styled. A screenshot is ' +
+        'a take of one frame, so everything after this is the tools you already have: apply_look for the ' +
+        'background, the device frame, the tilt and the grade, apply_edit for lifts, loupes, arrows, ' +
+        'numbered steps, redactions and blurs, find_on_screen to name what is on it, preview_frame to ' +
+        'look at it, review to check it, and export to write the finished PNG. ' +
+        'With neither window nor display, Fetch captures the window of the app in front (never Fetch ' +
+        'itself, never the terminal you run in), and the result names it. The person\'s own pointer is ' +
+        'left out unless you ask for it, the window\'s own drop shadow is never in the file (Fetch draws ' +
+        'its own), and anything on their never-record list is never in the frame. Depending on their ' +
+        'Recording access setting Fetch may ask them to approve it first, so this can wait on a person; ' +
+        'if they decline it fails with that reason. The raw capture is kept in the shot\'s Original/ ' +
+        'folder and never changed, so a shot can be styled again from it for ever.',
+      inputSchema: z.object({
+        window: z.string().optional()
+          .describe('Window id from list_windows. Captures that window alone, on transparency, with its own corners.'),
+        display: z.string().optional()
+          .describe('Display id from list_displays. Captures that whole screen. Only when the person asked for the whole screen.'),
+        region: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional()
+          .describe('A rectangle in macOS screen points, top left origin, captured whatever is under it. ' +
+            'Judged as a display, since no list of apps can be honoured by excluding windows from a rectangle.'),
+        cursor: z.boolean().optional()
+          .describe('Keep the person\'s own mouse pointer in the picture. Default off: a still of a page should not carry it.'),
+        name: z.string().optional()
+          .describe('Name for the shot, e.g. "Tempo row". Used as given and never replaced. Omit it and Fetch ' +
+            'names the shot from the app or the site it captured.'),
+      }),
+    },
+    // Can wait on the person approving the capture, which is a native dialog on Fetch's
+    // own window, so it gets a person's patience rather than a machine's.
+    async args => text(await drive('shot.take', args, { timeoutMs: 5 * 60 * 1000 })))
 
   // ── editing ──────────────────────────────────────────────────────────
   // Everything the editor window can do, drivable without opening it. The edit is
@@ -241,9 +282,11 @@ export function build() {
         'each with a short stable id (C1, Z1, T1, B1) and times in seconds. Use the ids ' +
         'from this when calling apply_edit. Captions are summarised as a count unless ' +
         'include_cues is set, which returns every caption with its id (S1...), times and text, ' +
-        'for correcting words the transcriber misheard (send the corrected list as cues).',
+        'for correcting words the transcriber misheard (send the corrected list as cues). ' +
+        'Given a shot\'s path it reads the shot instead: its capture size, its marks, its crop and its ' +
+        'look, and a line saying what one frame does not have.',
       inputSchema: z.object({
-        path: z.string().describe('Absolute path to the recording.'),
+        path: z.string().describe('Absolute path to the recording, or to a shot.'),
         include_cues: z.boolean().optional().describe('Include the caption text. Default false.'),
         include_pointer: z.boolean().optional().describe('Include the pointer track (pointer.track), to adjust it. Default false.'),
       }),
@@ -381,12 +424,19 @@ export function build() {
         'pointer, which never sees clicks a driver injects into a page (Playwright ' +
         'page.mouse, anything over CDP). pointer.autoZoomSpots in the result says how many it found; ' +
         'at 0, place zooms yourself.\n' +
+        'ON A SHOT (take_shot\'s path): the same call, on the half of the above that is about a picture. ' +
+        'marks (every kind, merged by id, aimed by element exactly as here), crop, cropAR, viewport and ' +
+        'look. A mark on a shot takes no start and no end, and one sent with them is dropped rather than ' +
+        'kept and ignored. clips, zooms, texts, cues, beats, pointer, camera, audio, audioTrack and ' +
+        'autoZoom are refused by name: one frame has no clock. group {gap, align, members: [{src, device}]} ' +
+        'puts up to three captures in one picture, laid out at their real relative sizes, on one ground, ' +
+        'in one light: two is a window beside a handset, not two pictures side by side.\n' +
         'Returns the full edit as it now stands. The result\'s preview is a frame of the edit at that moment; look at it. ' +
         'It also carries plan (what is left of the plan direct wrote) and distance (the length and shape ' +
         'against the brief), so you can see how far the edit still is from what was asked without calling ' +
         'anything else.',
       inputSchema: z.object({
-        path: z.string().describe('Absolute path to the recording.'),
+        path: z.string().describe('Absolute path to the recording, or to a shot.'),
         doc: z.record(z.string(), z.any()).describe('Only the parts of the edit you are changing.'),
         step: z.string().optional()
           .describe('The step of the plan this call finishes, e.g. "P3". Closes it; the result says what is left. ' +
@@ -415,9 +465,11 @@ export function build() {
         'survives the undo of the edit it produced and a turn that stops halfway: call it with nothing ' +
         'but a path to pick up a job already under way. Every apply_edit and export then carries plan ' +
         'and distance, and apply_edit step: "P3" closes a step. Call it again to refine the brief; what ' +
-        'you send is merged, and a step whose words you leave alone keeps its id and its state.',
+        'you send is merged, and a step whose words you leave alone keeps its id and its state. ' +
+        'A shot is a job like any other and takes the same call; its distance is measured on its shape ' +
+        'alone, since one frame has no length.',
       inputSchema: z.object({
-        path: z.string().describe('Absolute path to the recording.'),
+        path: z.string().describe('Absolute path to the recording, or to a shot.'),
         brief: z.object({
           seconds: z.number().min(1).max(3600).nullable().optional().describe('How long the finished video should be. Hit within 5 percent counts as hitting it.'),
           aspect: z.string().nullable().optional().describe('The shape it goes out in, e.g. "16:9", "9:16", "1:1".'),
@@ -450,9 +502,13 @@ export function build() {
         'air still in the edit, captions and whether they are burned in, how much the camera moves, marks ' +
         'the edit never draws, two highlights on one place, and the ground against the take\'s own ' +
         'exposure. export runs it too, so its blocking items come back with the file. Fix what it names, ' +
-        'or tell the person why you did not.',
+        'or tell the person why you did not. ' +
+        'On a shot it is the same rubric on the half of it that is about a picture: what the brief said to ' +
+        'hide and whether anything covers it, the shape, two highlights on one place, and the ground ' +
+        'against the capture\'s own exposure. The rules about a clock are named under not_judged rather ' +
+        'than reported as failures, since a screenshot cannot be the wrong length.',
       inputSchema: z.object({
-        path: z.string().describe('Absolute path to the recording.'),
+        path: z.string().describe('Absolute path to the recording, or to a shot.'),
         declined: z.array(z.string()).optional()
           .describe('Rule names you have judged and written off, e.g. ["dead-air"], with the reason kept in ' +
             'direct\'s note. They are still measured and still reported, and they stop holding the verdict ' +
@@ -502,8 +558,9 @@ export function build() {
         'path as the editor\'s own button for undoing an agent\'s change, so it merges by id and anything ' +
         'the person moved by hand since stays where they put it. It reaches only your own changes: their history ' +
         'is theirs. Most mistakes need less than this, since apply_edit merges by id (re-send a wrong zoom ' +
-        'with its id to fix it, or remove: ["Z3"] to delete one), so reach for this when a whole pass was wrong.',
-      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording.') }),
+        'with its id to fix it, or remove: ["Z3"] to delete one), so reach for this when a whole pass was wrong. ' +
+        'One stack, keyed by the file, so it takes back a change to a shot the same way.',
+      inputSchema: z.object({ path: z.string().describe('Absolute path to the recording, or to a shot.') }),
     },
     async args => text(await drive('edit.revert', args, { timeoutMs: 90000 })))
 
@@ -651,11 +708,18 @@ export function build() {
         'engine in the result says which one drew it. With the look\'s motion.loop set, the result also ' +
         'carries loop, the same check can_loop runs, on the file you just made. The result also carries review, the same ' +
         'check the review tool runs, on the file you just made: the export happens either way, ' +
-        'so read its blocking list and fix what it names before you say this is done.',
+        'so read its blocking list and fix what it names before you say this is done. ' +
+        'ON A SHOT (take_shot\'s path): the same call writes the finished picture beside its Original, as ' +
+        'PNG, or JPEG where the person asks for one. PNG is the default as a measurement rather than a ' +
+        'preference: a screenshot draws flat fields, one pixel hairlines and small text, and JPEG rings ' +
+        'along exactly those edges. Nothing is asked about length, quality or resolution, because a still ' +
+        'has none: it is drawn at the largest of 1x, 2x and 3x that does not enlarge the capture, and the ' +
+        'result says which. A video format on a shot is refused by name.',
       inputSchema: z.object({
-        path: z.string().describe('Absolute path to the recording.'),
-        format: z.enum(['mp4', 'webm', 'gif', 'mov', 'm4a', 'mp3', 'wav']).optional()
-          .describe('Defaults to mp4. m4a, mp3 and wav write the edited sound on its own, with no picture.'),
+        path: z.string().describe('Absolute path to the recording, or to a shot.'),
+        format: z.enum(['mp4', 'webm', 'gif', 'mov', 'm4a', 'mp3', 'wav', 'png', 'jpg']).optional()
+          .describe('Defaults to mp4 for a recording and png for a shot. m4a, mp3 and wav write the edited ' +
+            'sound on its own, with no picture. png and jpg are a shot only.'),
         quality: z.enum(['high', 'balanced', 'small', 'best', 'fast']).optional()
           .describe('high is the largest, sharpest file; small the smallest. Defaults to balanced. These are the ' +
             'three words the person sees in the Export dialog, so you can repeat each other; best and fast are ' +
@@ -692,10 +756,12 @@ export function build() {
         'screen at a moment. To place a zoom, redaction, spotlight or step, use find_on_screen ' +
         'instead, which returns the boxes to send. Positions ' +
         'in apply_edit are fractions of the frame from the top left, 0 to 1, so a point a ' +
-        'quarter across and halfway down is x 0.25, y 0.5.',
+        'quarter across and halfway down is x 0.25, y 0.5. ' +
+        'On a shot it hands back the capture itself, unstyled and with nothing extracted, because a ' +
+        'capture is already one frame; preview_frame is what draws it styled.',
       inputSchema: z.object({
-        path: z.string().describe('Absolute path to the recording.'),
-        at: z.number().min(0).describe('Seconds into the recording.'),
+        path: z.string().describe('Absolute path to the recording, or to a shot.'),
+        at: z.number().min(0).describe('Seconds into the recording. Ignored on a shot, which has one moment.'),
         cropped: z.boolean().optional().describe('Show the frame after the edit\'s crop, which is the frame ' +
           'zoom, mark and text positions are measured against. Default false: the whole recording.'),
       }),
@@ -729,10 +795,13 @@ export function build() {
         'if not, pick another by its number or search again with other words. Name the ' +
         'chosen one in apply_edit as element: \'E12\' (zooms[].element, marks[].element; ids ' +
         'from the latest search on that recording), or send its box as it is: boxes are fractions of ' +
-        'the frame after the edit\'s crop, the frame apply_edit places things in.',
+        'the frame after the edit\'s crop, the frame apply_edit places things in. ' +
+        'A shot goes through the same pass on its one frame, so pointing at part of a screenshot is this ' +
+        'call and the E id it hands back, exactly as on a recording.',
       inputSchema: z.object({
-        path: z.string().describe('Absolute path to the recording.'),
-        at: z.number().min(0).describe('Seconds into the recording, a moment the thing is fully on screen.'),
+        path: z.string().describe('Absolute path to the recording, or to a shot.'),
+        at: z.number().min(0).describe('Seconds into the recording, a moment the thing is fully on screen. ' +
+          'Ignored on a shot, which has one moment.'),
         query: z.string().optional().describe('What the person called it, in their words. Omit to list everything.'),
         cropped: z.boolean().optional().describe('Default true: measured after the edit\'s crop, as apply_edit takes ' +
           'positions. False: the whole recording.'),
@@ -755,11 +824,14 @@ export function build() {
         'apply_edit that places a zoom or a mark, with at set to the times the result lists under ' +
         'check.preview_frame_at (just after it lands and in its middle, both in one call), and look at ' +
         'every frame: the thing the person asked for should be the subject, and nothing else should ' +
-        'dim or cover it. If it is not, fix the edit and preview again before reporting back.',
+        'dim or cover it. If it is not, fix the edit and preview again before reporting back. ' +
+        'On a shot it draws the one frame there is, from the same plan and the same renderer export uses, ' +
+        'so what you look at here is the PNG made narrow rather than a second opinion of it.',
       inputSchema: z.object({
-        path: z.string().describe('Absolute path to the recording.'),
+        path: z.string().describe('Absolute path to the recording, or to a shot.'),
         at: z.union([z.number().min(0), z.array(z.number().min(0)).min(1).max(6)])
-          .describe('Seconds into the original recording: one time, or a list (up to 6), e.g. [35.9, 36.7].'),
+          .describe('Seconds into the original recording: one time, or a list (up to 6), e.g. [35.9, 36.7]. ' +
+            'Ignored on a shot, which has one moment.'),
         look: z.record(z.string(), z.any()).optional()
           .describe('A look to try on these frames without saving it, in apply_look\'s shape, e.g. {preset: \'film\'}.'),
       }),
@@ -789,9 +861,11 @@ export function build() {
         'speed change to judge the motion, which a single frame cannot show. from, to and the times ' +
         'on the sheet are seconds of the edited output, which is shorter than the recording wherever ' +
         'it is cut; frames[].source_at is the second of the recording each cell came from, and that ' +
-        'is what apply_edit and preview_frame take. Use preview_frame when you need one moment large.',
+        'is what apply_edit and preview_frame take. Use preview_frame when you need one moment large. ' +
+        'A shot is one moment, so on one this answers with that picture rather than refusing: the whole ' +
+        'of a screenshot is its frame.',
       inputSchema: z.object({
-        path: z.string().describe('Absolute path to the recording.'),
+        path: z.string().describe('Absolute path to the recording, or to a shot.'),
         from: z.number().min(0).optional().describe('Start of the range, in seconds of the edited output. Default the start.'),
         to: z.number().min(0).optional().describe('End of the range, in seconds of the edited output. Default the end.'),
         count: z.number().int().min(1).max(24).optional().describe('How many frames, 1 to 24. Default 12.'),
@@ -836,9 +910,13 @@ export function build() {
         'fields back (reset, e.g. [\'frame.padding\']), or all three. Fields left out are kept. The person ' +
         'sees it in the editor and one Undo takes it back. Returns the look as its preset and what differs ' +
         'from it, and look_warnings for values clamped and anything the renderer that will draw your export ' +
-        'leaves out. Check the result with preview_frame.',
+        'leaves out. Check the result with preview_frame. ' +
+        'A shot holds the same look a recording holds, so this is the call that puts a capture on a warm ' +
+        'dune ground in a browser frame, and a look saved off either one applies to the other unchanged. ' +
+        'What a single frame cannot mean (the fades, the arrival, the loop, the motion blur) is kept on ' +
+        'the look as sent and simply not drawn, and the result names those fields under not_drawn.',
       inputSchema: z.object({
-        path: z.string().describe('Absolute path to the recording.'),
+        path: z.string().describe('Absolute path to the recording, or to a shot.'),
         preset: z.string().optional().describe('A look from list_looks to start from, e.g. studio.'),
         look: z.record(z.string(), z.any()).optional().describe('Fields to change, by section.'),
         reset: z.array(z.string()).optional().describe('Field paths to put back to the preset, e.g. [\'frame.shadow\'].'),
@@ -851,10 +929,12 @@ export function build() {
     {
       description:
         'Save a look under a name so it can be applied to other recordings (apply_look preset) and ' +
-        'shows in the editor\'s looks. Saves the look of the recording at path, or the look given.',
+        'shows in the editor\'s looks. Saves the look of the recording at path, or the look given. ' +
+        'A shot stores the whole look, fades and all, so one saved off a screenshot is a look a recording ' +
+        'can wear.',
       inputSchema: z.object({
         name: z.string().describe('What to call it, e.g. "Launch video".'),
-        path: z.string().optional().describe('Absolute path to a recording whose look to save.'),
+        path: z.string().optional().describe('Absolute path to a recording or a shot whose look to save.'),
         look: z.record(z.string(), z.any()).optional().describe('A look to save instead, by section.'),
       }),
     },
@@ -1004,7 +1084,9 @@ export function build() {
         'count the Library shows). path is the raw take, the one to edit. A take folder ' +
         'also has take (the folder), deliverable (the file export wrote, if any), copy ' +
         '(an unedited MP4 made on stopping when Convert to MP4 is on; not an export) and ' +
-        'versions (working files such as a dead-air cut).',
+        'versions (working files such as a dead-air cut). Shots are listed here too, with kind "shot": ' +
+        'the kind is read off what was captured and never off what was exported, so styling a shot never ' +
+        'makes it a take.',
       inputSchema: z.object({}),
     },
     async () => text(await drive('recordings.list')))
@@ -1017,7 +1099,9 @@ export function build() {
         'also measures each clip of the edit in LUFS against the -14 target and hands back, for each one, ' +
         'the gain in decibels that would bring it to the rest and whether it is quiet enough to be worth ' +
         'lifting. That is the answer to "this bit is too quiet": write the gain it names onto that clip ' +
-        '(apply_edit clips, audio.gain) rather than lifting the whole take and the keyboard with it.',
+        '(apply_edit clips, audio.gain) rather than lifting the whole take and the keyboard with it. ' +
+        'On a shot it reads the capture\'s size out of its own header, and says no duration, no frame ' +
+        'rate and no audio rather than zeroes.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to a video file.'),
         loudness: z.boolean().optional()

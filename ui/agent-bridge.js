@@ -28,6 +28,7 @@ const net = require('net')
 const path = require('path')
 const policy = require('./record-policy')
 const activity = require('./activity-log')
+const Shot = require('./shot')
 
 let app, ipcMain
 try { ({ app, ipcMain } = require('electron')) } catch {}
@@ -115,7 +116,27 @@ const TITLES = {
   'voice.list': 'Listed the voices',
   'voice.speak': 'Generated a voiceover',
   'memory.remember': 'Remembered something',
+  'shot.take': 'Took a screenshot',
 }
+
+// ── a shot is a take of one frame ────────────────────────────────────────
+// So it comes through the ops a take comes through, and there is no second set of
+// them. Exactly two things differ, and these three lines are all of both: which
+// extensions are a capture, which document the window holds for one, and which moment
+// of it there is to read. Nothing here draws anything.
+const STILL_EXT = /\.(png|jpe?g|heic|heif|webp|tiff?|avif)$/i
+const isShot = p => typeof p === 'string' && STILL_EXT.test(p)
+
+// A take's document is window.fetchDoc and a shot's is window.fetchShot, and while one
+// is open the other answers null (ui/editor.js), so the file decides the name rather
+// than the caller.
+const docOf = src => (isShot(src) ? 'window.fetchShot' : 'window.fetchDoc')
+
+// A capture has one moment and it is the first. Shot.HOLD is a clock the compositor is
+// lent so that every arrival in the shared planner has landed by the frame it draws
+// (ui/shot.js), not a place in the picture: ask ffmpeg for second 2 of a PNG and it
+// hands back nothing at all.
+const SHOT_AT = 0
 
 const { AGENT_PREFS, HUMAN_ONLY_PREFS } = policy
 // Where agents run. Never the product an agent means when it records "the app in front".
@@ -167,7 +188,7 @@ const ops = {
     // Access check before anything starts. This is the enforcement point: the rule
     // lives here rather than in the MCP tool description, because a description is
     // prose and prose is a suggestion.
-    await enforceAccess(args, ctx)
+    await enforceAccess({ ...args, kind: 'take' }, ctx)
 
     // macOS sends no frames for the part of a window another covers, so a take of a
     // covered window is a frozen picture. Say so before recording anything, with the
@@ -283,6 +304,74 @@ const ops = {
     }))
   },
 
+  // ── one frame ──────────────────────────────────────────────────────────
+  // A screenshot, through the capture path a take takes: the same framework, the same
+  // never-record list applied before a pixel is read, and the same folder, so the raw
+  // capture sits in Original/ and whatever is styled from it lands beside it. This is
+  // the one op a shot needs of its own. Everything after it is a tool a take already
+  // had, pointed at a picture.
+  async 'shot.take'(args = {}, ctx) {
+    if (!deps.takeShot) {
+      throw new Error('this build of Fetch cannot take a screenshot, so there is nothing to style. ' +
+        'record_start records the screen instead.')
+    }
+    const region = args.region && typeof args.region === 'object' ? args.region : null
+    let front = null, target = null
+    if (args.window != null) target = { windowId: String(args.window) }
+    else if (region) target = { region, ...(args.display != null ? { displayId: String(args.display) } : {}) }
+    else if (args.display != null) target = { displayId: String(args.display) }
+    else {
+      // Window first, exactly as record.start chooses one: the window of the app in
+      // front, never Fetch and never the terminal the agent itself runs in.
+      const prefs = deps.getPrefs ? deps.getPrefs() : {}
+      const never = (prefs.neverRecord || policy.DEFAULT_NEVER || []).map(x => typeof x === 'string' ? x : x && x.app).filter(Boolean)
+      front = deps.frontWindow ? await deps.frontWindow([...AGENT_HOSTS, ...never]).catch(() => null) : null
+      if (!front) {
+        throw new Error('no window is in front to capture. Name one from list_windows, ' +
+          'or a whole screen from list_displays.')
+      }
+      target = { windowId: String(front.id) }
+    }
+
+    // The person's say, through the same gate a take goes through and asked once for
+    // the session. take-shot refuses an unapproved agent capture on its own, so this
+    // is the question rather than a second opinion about the policy.
+    await enforceAccess({ kind: 'shot', window: target.windowId, display: target.displayId }, ctx)
+    const got = await deps.takeShot({ ...target, by: 'agent', approved: true,
+      cursor: args.cursor === true })
+    if (!got || !got.ok) throw new Error(`Fetch took no screenshot: ${(got && got.error) || 'the capture failed'}`)
+
+    // Named from what it captured, the way a take is named from the app in front. A
+    // still has no transcript, so this is the only name it will ever get by itself,
+    // and a name the agent gave is used as it stands and never replaced.
+    let file = got.original, name = got.name
+    const naming = require('./naming')
+    const stem = args.name != null
+      ? naming.fit(naming.clean(args.name))
+      : naming.shotName({ app: got.app, title: got.title, area: region ? 'region' : target.displayId ? 'display' : 'window' })
+    if (stem) {
+      // A capture is never lost to a rename: the pixels are on disk either way.
+      try {
+        const r = await ops['recordings.rename']({ path: file, name: stem })
+        file = r.path; name = r.name
+      } catch (e) { console.warn('[shot] could not name the capture:', e && e.message) }
+    }
+    // Opened where the person can see it, the same way an agent editing a take is seen
+    // opening it, and it is the window every tool below reads the document from.
+    const shot = await inEditor(file, `${docOf(file)}.get()`).catch(() => null)
+    return {
+      path: file, name, kind: 'shot',
+      captured: { kind: got.kind, ...(got.app ? { app: got.app } : {}), ...(got.title ? { title: got.title } : {}),
+        width: got.width, height: got.height, scale: got.scale,
+        ...(got.display != null ? { display: String(got.display) } : {}),
+        ...(got.clipped ? { clipped: true } : {}),
+        ...(front ? { chosen: 'the app in front' } : {}) },
+      ...(shot ? { shot: summariseShot(shot, file) } : {}),
+      do_next: 'apply_look styles it, find_on_screen at 0 names what is on it, apply_edit places marks on it, ' +
+        'preview_frame draws it, and export writes the PNG. The capture in Original/ is never touched.',
+    }
+  },
+
   // ── editing ────────────────────────────────────────────────────────────
   // The same document the editor drives, so an agent working over MCP and a person
   // working in the window are changing one thing, not two. Every change is written to
@@ -290,6 +379,10 @@ const ops = {
   // next export reads.
   async 'edit.get'(args = {}) {
     if (!args.path) throw new Error('path is required')
+    if (isShot(args.path)) {
+      const shot = await shotOf(args.path)
+      return { ...summariseShot(shot, args.path), ...memoryState(args.path) }
+    }
     const doc = await inEditor(args.path, 'window.fetchDoc.get()')
     deps.proc.writeDoc(args.path, doc)
     const out = summarise(doc, args.path)
@@ -304,6 +397,7 @@ const ops = {
   async 'edit.apply'(args = {}) {
     if (!args.path) throw new Error('path is required')
     if (!args.doc || typeof args.doc !== 'object') throw new Error('doc is required')
+    if (isShot(args.path)) return await applyToShot(args)
     const FD = require('./fetchdoc')
     if (args.doc.remove != null && !Array.isArray(args.doc.remove)) throw new Error('remove is a list of ids, e.g. remove: [\'M12\']')
     // marks: { remove: [...] } was taken as nothing and reported as done
@@ -436,6 +530,9 @@ const ops = {
     if (args.preset) patch.preset = args.preset
     for (const p of Array.isArray(args.reset) ? args.reset : []) patch[String(p)] = null
     if (!Object.keys(patch).length) throw new Error('send preset, look or reset')
+    // A shot holds the same look an edit holds, whole and unconverted, so a preset
+    // saved off a recording lands on a capture unchanged and this is one call, not two.
+    if (isShot(args.path)) return await applyToShot({ ...args, doc: { look: patch } })
     const doc = await inEditor(args.path, `window.fetchDoc.apply(${JSON.stringify({ look: patch })})`)
     deps.proc.writeDoc(args.path, doc)
     const out = { look: Look.compact(doc.look, looksDir()) }
@@ -450,8 +547,13 @@ const ops = {
     let look = args.look && typeof args.look === 'object' ? Look.validate(args.look).look : null
     if (!look) {
       if (!args.path) throw new Error('send path (to save that recording\'s look) or look')
-      const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
-      look = deps.proc.readDoc(args.path, meta && meta.duration).look
+      // A shot stores the look untouched, fades and all, so what is saved off one is
+      // the whole look and applies to a recording unpinned.
+      if (isShot(args.path)) look = (await shotOf(args.path)).look
+      else {
+        const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+        look = deps.proc.readDoc(args.path, meta && meta.duration).look
+      }
     }
     const saved = Look.save(looksDir(), args.name, look)
     return { name: saved.name, label: saved.label, changes: saved.look }
@@ -462,6 +564,7 @@ const ops = {
   // not the clip is open, which is the point of doing it without the app.
   async 'edit.export'(args = {}) {
     if (!args.path) throw new Error('path is required')
+    if (isShot(args.path)) return await exportShot(args)
     const FD = require('./fetchdoc')
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
     const doc = deps.proc.readDoc(args.path, meta && meta.duration)
@@ -513,6 +616,13 @@ const ops = {
   async frame(args = {}) {
     if (!args.path) throw new Error('path is required')
     if (!fs.existsSync(args.path)) throw new Error('no such file')
+    // The capture is the frame. Nothing is extracted, because there is nothing to
+    // extract from: the file on disk is the one moment this take has.
+    if (isShot(args.path)) {
+      const pic = require('./render-host').pictureSize(args.path)
+      return { image: args.path, at: SHOT_AT, source_width: pic.width, source_height: pic.height, cropped: false,
+        note: 'this is the capture itself, unstyled. preview_frame draws it as the PNG will look.' }
+    }
     let crop = null
     if (args.cropped) {
       const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
@@ -528,9 +638,14 @@ const ops = {
   async find(args = {}) {
     if (!args.path) throw new Error('path is required')
     if (!fs.existsSync(args.path)) throw new Error('no such file')
-    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
-    const crop = args.cropped === false ? null : deps.proc.readDoc(args.path, meta && meta.duration).crop || null
-    const r = await deps.proc.findOnScreen(args.path, args.at, { crop, query: args.query, limit: args.limit })
+    // A capture goes through the same Elements pass a take does, at its one moment.
+    // processor.findOnScreen needed nothing for this: it asks frameAt for a picture,
+    // and a picture is already one.
+    const shot = isShot(args.path) ? await shotOf(args.path) : null
+    const meta = shot ? null : await deps.proc.probeMeta(args.path).catch(() => ({}))
+    const crop = args.cropped === false ? null
+      : shot ? shot.crop || null : deps.proc.readDoc(args.path, meta && meta.duration).crop || null
+    const r = await deps.proc.findOnScreen(args.path, shot ? SHOT_AT : args.at, { crop, query: args.query, limit: args.limit })
     // only boxes measured in apply_edit's frame (after the crop) can be named there
     const all = r.all || r.elements
     // a card, grid or panel a lift would come out wrong on says so here, with the one
@@ -555,6 +670,14 @@ const ops = {
   async 'edit.preview'(args = {}) {
     if (!args.path) throw new Error('path is required')
     if (!fs.existsSync(args.path)) throw new Error('no such file')
+    // A shot's preview is its export drawn narrow. Same plan, same compositor, same
+    // sink, so the only difference between what is checked here and the file that
+    // ships is how many pixels wide it is.
+    if (isShot(args.path)) {
+      const shot = args.doc && args.doc.kind === 'shot' ? args.doc : await shotOf(args.path)
+      const r = await drawShot(shot, args.path, { width: 1280, look: args.look })
+      return { image: r.file, at: SHOT_AT, frames: [{ image: r.file, at: SHOT_AT }], pixels: `${r.w}x${r.h}` }
+    }
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
     // args.doc is a whole document to draw in place of the saved one, which is how a
     // proposal shows an edit that has not been applied. No tool takes it: nothing is
@@ -580,6 +703,7 @@ const ops = {
 
   async 'edit.silence'(args = {}) {
     if (!args.path) throw new Error('path is required')
+    if (isShot(args.path)) throw notOnAShot('Dead air')
     const r = await deps.runOp('silence', args.path, {
       minSilence: args.min_silence, pad: args.padding,
     })
@@ -588,6 +712,7 @@ const ops = {
 
   async 'edit.enhance'(args = {}) {
     if (!args.path) throw new Error('path is required')
+    if (isShot(args.path)) throw notOnAShot('Audio')
     const r = await deps.runOp('enhance', args.path, {})
     return { path: r.file }
   },
@@ -630,7 +755,7 @@ const ops = {
       refresh()
       return { trashed: take, folder: true, recoverable: true }
     }
-    const side = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3', '.name.json']
+    const side = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.fetchshot.json', '.vo.mp3', '.name.json']
       .map(e => deps.proc.sidecarIn(args.path, e)).filter(f => f !== args.path && fs.existsSync(f))
     for (const f of [args.path, ...side]) await shell.trashItem(f)
     refresh()
@@ -665,6 +790,7 @@ const ops = {
 
   async 'edit.beats'(args = {}) {
     if (!args.path) throw new Error('path is required')
+    if (isShot(args.path)) throw notOnAShot('Beats')
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
     // Same ids the timeline prints (B1, B2, ...). They were missing here, so an agent
     // was told beats have ids and then handed `undefined`, while the person watching
@@ -682,14 +808,19 @@ const ops = {
   async 'edit.direct'(args = {}) {
     if (!args.path) throw new Error('path is required')
     const Director = require('./director')
-    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
-    const doc = withCues(args.path, deps.proc.readDoc(args.path, meta && meta.duration))
+    // The job sidecar sits beside whatever it is a job about, and a screenshot is a job
+    // like any other: a brief, steps, and the distance to both. Only the facts it is
+    // measured on differ, and a still's are its shape alone.
+    const facts = isShot(args.path)
+      ? shotFacts(await shotOf(args.path))
+      : editFacts(withCues(args.path, deps.proc.readDoc(args.path,
+        (await deps.proc.probeMeta(args.path).catch(() => ({}))).duration)))
     const patch = { brief: args.brief, plan: args.plan, done: args.done, open: args.open, drop: args.drop, note: args.note }
     if (Object.values(patch).every(v => v === undefined)) {
       const job = Director.read(args.path)
       if (!job) throw new Error(Director.NO_BRIEF)
     }
-    return { ...Director.direct(args.path, patch, { facts: editFacts(doc) }), ...memoryState(args.path) }
+    return { ...Director.direct(args.path, patch, { facts }), ...memoryState(args.path) }
   },
 
   // The house rubric, measured on the document rather than asked for in prose
@@ -697,6 +828,7 @@ const ops = {
   // every reply, which is the point of it.
   async 'edit.review'(args = {}) {
     if (!args.path) throw new Error('path is required')
+    if (isShot(args.path)) return await reviewShot(args)
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
     const doc = withCues(args.path, deps.proc.readDoc(args.path, meta && meta.duration))
     return require('./review').review({
@@ -716,6 +848,7 @@ const ops = {
   // asks "would it loop with the fades off" and gets an answer in one call.
   async 'edit.loop'(args = {}) {
     if (!args.path) throw new Error('path is required')
+    if (isShot(args.path)) throw notOnAShot('A loop')
     if (!fs.existsSync(args.path)) throw new Error('no such file')
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
     let doc = deps.proc.readDoc(args.path, meta && meta.duration)
@@ -727,6 +860,7 @@ const ops = {
   // writes a new file whose edit is empty; this leaves the take alone.
   async 'edit.fit'(args = {}) {
     if (!args.path) throw new Error('path is required')
+    if (isShot(args.path)) throw notOnAShot('A length')
     const Fit = require('./fit')
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
     const doc = withCues(args.path, deps.proc.readDoc(args.path, meta && meta.duration))
@@ -764,6 +898,16 @@ const ops = {
   async 'edit.sheet'(args = {}) {
     if (!args.path) throw new Error('path is required')
     if (!fs.existsSync(args.path)) throw new Error('no such file')
+    // The sheet exists so an agent can judge motion rather than a moment. A shot is
+    // one moment, so the whole of it is that frame: the same call answers, with the
+    // picture it has, rather than refusing the first line of the loop.
+    if (isShot(args.path)) {
+      const shot = await shotOf(args.path)
+      const r = await drawShot(shot, args.path, { width: 1440 })
+      return { image: r.file, from: SHOT_AT, to: SHOT_AT, output_seconds: 0, cols: 1, rows: 1, count: 1,
+        frames: [{ at: SHOT_AT, source_at: SHOT_AT }],
+        note: 'a shot is one frame, so the whole of it is this picture. It is the PNG export drawn narrow.' }
+    }
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
     const doc = deps.proc.readDoc(args.path, meta && meta.duration)
     const r = await require('./render-host').contactSheet(args.path, doc,
@@ -781,11 +925,21 @@ const ops = {
   // their own undo history.
   async 'edit.revert'(args = {}) {
     if (!args.path) throw new Error('path is required')
-    const before = deps.proc.readDoc(args.path, null)
+    // One undo stack, keyed by the file, so taking back a change to a shot is the same
+    // button the person has and the same call the agent already knew (ui/editor.js).
+    const shot = isShot(args.path)
+    const before = shot ? await shotOf(args.path) : deps.proc.readDoc(args.path, null)
     const undone = await inEditor(args.path, `window.fetchUndo ? window.fetchUndo.undo(${JSON.stringify(args.path)}) : false`)
     if (!undone) {
-      throw new Error('nothing of yours to take back on this take. Change the edit itself with apply_edit ' +
-        '(a zoom or a mark is fixed by re-sending it with its id, and remove: [id] deletes one).')
+      throw new Error(`nothing of yours to take back on this ${shot ? 'shot' : 'take'}. Change the ${shot ? 'shot' : 'edit'} itself with apply_edit ` +
+        `(a ${shot ? 'mark' : 'zoom or a mark'} is fixed by re-sending it with its id, and remove: [id] deletes one).`)
+    }
+    if (shot) {
+      const now = await shotOf(args.path)
+      const gone = (before.marks || []).map(m => m.id).filter(id => !(now.marks || []).some(m => m.id === id))
+      return { ...summariseShot(now, args.path),
+        ...(gone.length ? { removed: { ids: gone, why: 'these went back out of the shot; say so in your reply' } } : {}),
+        ...jobState(args.path, null, null, null, shotFacts(now)) }
     }
     const doc = await inEditor(args.path, 'window.fetchDoc.get()')
     deps.proc.writeDoc(args.path, doc)
@@ -877,6 +1031,7 @@ const ops = {
 
   async 'voice.speak'(args = {}) {
     if (!args.path) throw new Error('path is required')
+    if (isShot(args.path)) throw notOnAShot('A voiceover')
     const voice = require('./voice')
     if (!(await voice.status()).connected) throw new Error(NO_VOICE_ACCOUNT)
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
@@ -941,7 +1096,9 @@ const ops = {
       const versions = g.versions.filter(v => v !== o).map(v => v.path)
       takes.push({ mtime: o.mtime, entry: {
         name: g.take ? path.basename(g.take) : path.parse(o.path).name,
-        path: o.path, mb: o.mb, kind: o.kind, srt: o.srt,
+        // Read off what was captured, never off what was exported, so styling a shot
+        // or cutting a take never moves it to the other side of the library.
+        path: o.path, mb: o.mb, kind: isShot(o.path) ? 'shot' : o.kind, srt: o.srt,
         ...(g.take ? { take: g.take } : {}),
         ...(g.deliverable && g.deliverable !== o ? { deliverable: g.deliverable.path } : {}),
         ...(g.copy && g.copy !== o ? { copy: g.copy.path } : {}),
@@ -954,6 +1111,15 @@ const ops = {
   async probe(args = {}) {
     if (!args.path) throw new Error('path is required')
     if (!fs.existsSync(args.path)) throw new Error('no such file')
+    // A capture says its size in its own first few hundred bytes, so this costs one
+    // short read where an ffprobe costs a process, and it says no rather than zero
+    // about the things a picture does not have.
+    if (isShot(args.path)) {
+      const pic = require('./render-host').pictureSize(args.path)
+      return { kind: 'shot', width: pic.width, height: pic.height, format: pic.kind,
+        mb: +(fs.statSync(args.path).size / 1e6).toFixed(2),
+        duration: null, fps: null, hasAudio: false }
+    }
     const meta = await deps.proc.probeMeta(args.path)
     if (!args.loudness) return meta
     // Which piece of the take is under the rest, and by how many decibels, in the same
@@ -978,6 +1144,7 @@ const ops = {
 
   async transcribe(args = {}) {
     if (!args.path) throw new Error('path is required')
+    if (isShot(args.path)) throw notOnAShot('A transcript')
     const r = await deps.proc.transcribe(args.path, {}, null, 'agent:transcribe')
     // Paths and counts, not payloads: a long transcript inline is thousands of tokens
     // of an agent's context for no benefit. The text is opt-in.
@@ -1111,24 +1278,37 @@ async function enforceAccess(args, ctx) {
   const verdict = policy.decide(
     { by: 'agent', kind: args.window != null ? 'window' : 'display', app }, p)
 
-  if (!verdict.allow) throw new Error(`Fetch refused to record: ${verdict.reason}`)
+  // What the person is being asked to allow. A recording and one captured frame are
+  // different acts: one runs until something stops it and turns the menu bar icon red,
+  // the other is over before the dialog is off the screen. A yes to either is not a yes
+  // to the other, so the question, the button and the session key all carry the kind.
+  const still = args.kind === 'shot'
+  const act = still ? 'capture' : 'record'
+
+  if (!verdict.allow) throw new Error(`Fetch refused to ${act}: ${verdict.reason}`)
 
   // 'Ask' means a person approves every agent take. decide() said so all along, but
   // nothing asked: needsApproval was returned and dropped, so on the default setting
   // agents recorded without anyone saying yes. The question is a native dialog on
   // Fetch's own window, which an agent cannot answer, and saying nothing is a no.
   if (verdict.needsApproval) {
-    const key = args.window != null ? 'app:' + (app || '') : 'display'
+    const key = (still ? 'shot|' : 'take|') + (args.window != null ? 'app:' + (app || '') : 'display')
     if (sessionAllowed.has(key)) return
     const who = (ctx && ctx.client) || 'An agent'
     const what = args.window != null ? `a ${app || 'window'} window` : 'your whole screen'
-    const answer = await askPerson(`${who} wants to record ${what}.`,
+    const answer = await askPerson(
+      `${who} wants to ${still ? 'take a screenshot of' : 'record'} ${what}.`,
       (args.window != null
         ? 'Only that window is captured, in the background, even while you work in front of it.'
         : 'Apps on your never-record list are left out of the frame.') +
-      ' The menu bar icon turns red while it records.',
-      args.window != null ? `Allow ${app || 'this app'} until Fetch quits` : null)
-    if (answer === 'no') throw new Error('Fetch refused to record: the person at the Mac said no')
+      (still
+        ? ' One frame is written, now. Nothing keeps running afterwards.'
+        : ' The menu bar icon turns red while it records.'),
+      args.window != null
+        ? `Allow ${still ? 'screenshots of ' : ''}${app || 'this app'} until Fetch quits`
+        : null,
+      still)
+    if (answer === 'no') throw new Error(`Fetch refused to ${act}: the person at the Mac said no`)
     if (answer === 'session') sessionAllowed.add(key)
   }
 }
@@ -1138,9 +1318,9 @@ const sessionAllowed = new Set()
 
 // A free-standing alert rather than a sheet on Fetch's window: the question needs an
 // answer, but it should not drag the whole app in front of what the person is doing.
-async function askPerson(message, detail, sessionLabel) {
+async function askPerson(message, detail, sessionLabel, still = false) {
   const { dialog } = require('electron')
-  const buttons = ['Allow this take', ...(sessionLabel ? [sessionLabel] : []), 'Don\'t allow']
+  const buttons = [still ? 'Allow this shot' : 'Allow this take', ...(sessionLabel ? [sessionLabel] : []), 'Don\'t allow']
   const no = buttons.length - 1
   const r = await dialog.showMessageBox({
     type: 'question', message, detail, buttons, defaultId: no, cancelId: no, noLink: true,
@@ -1579,17 +1759,265 @@ async function timeFocus(src, prev, doc) {
 async function inEditor(path, expr) {
   const win = deps.getWindow()
   if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
-  const open = await win.webContents.executeJavaScript('window.fetchDoc ? window.fetchDoc.src() : null')
+  // A shot and a take are the same editor and the same openInEditor. Which of the two
+  // documents is open is the one thing the window answers differently, so the file
+  // decides which accessor is asked and nothing else here changes.
+  const src = `${docOf(path)} ? ${docOf(path)}.src() : null`
+  const open = await win.webContents.executeJavaScript(src)
   if (open !== path) {
     await win.webContents.executeJavaScript(`openInEditor(${JSON.stringify(path)})`)
     // openInEditor is async and wires the document only once the clip has loaded
     for (let i = 0; i < 60; i++) {
       await new Promise(r => setTimeout(r, 150))
-      const now = await win.webContents.executeJavaScript('window.fetchDoc ? window.fetchDoc.src() : null')
+      const now = await win.webContents.executeJavaScript(src)
       if (now === path) break
     }
   }
   return win.webContents.executeJavaScript(expr)
+}
+
+// ── a shot, everywhere a take would have been ────────────────────────────
+// Every function below is the shot half of an op above. None of them draws anything:
+// the one that produces a picture hands ui/render-host.js the options bag
+// Shot.toExportOpts builds, which is the bag an export hands it, so the stage, the
+// preview and the PNG are one renderer at three widths.
+
+// A question about time, asked of one frame. The refusal names the call that does the
+// job on a capture instead, because a refusal that only says no costs a turn.
+const SHOT_INSTEAD = 'A shot is one frame. apply_look styles it, apply_edit places marks on it, ' +
+  'preview_frame draws it and export writes the PNG.'
+const notOnAShot = what => new Error(`${what} is a question about time, and this is a shot. ${SHOT_INSTEAD}`)
+
+// The shot document, from the window that holds it. The editor is asked rather than
+// the disk because the person may be styling it at this moment and the window is where
+// their change is first; the sidecar behind it is 400 ms old at worst (ui/editor.js).
+async function shotOf(src) {
+  const shot = await inEditor(src, `${docOf(src)}.get()`)
+  if (shot && shot.kind === 'shot') return shot
+  // The window could not open it. The sidecar is the fallback, and with neither the
+  // capture is still a capture: an empty document on its own pixels.
+  if (deps.proc.readShot) {
+    try { return deps.proc.readShot(src, require('./render-host').pictureSize(src)) } catch {}
+  }
+  return Shot.normalize(null, src, require('./render-host').pictureSize(src))
+}
+
+// What the brief is measured against for a still: its shape, and no length at all. A
+// screenshot has no seconds, so `seconds` is absent rather than zero, which Director
+// reads as a length it should not report on.
+function shotFacts(shot) {
+  const Look = require('./look')
+  const aspect = Look.resolve(shot && shot.look).frame.aspect
+  if (aspect !== 'auto') return { aspect }
+  const c = shot && shot.crop
+  const box = c && +c.w > 0 && +c.h > 0 ? [+c.w * (shot.w || 1), +c.h * (shot.h || 1)]
+    : shot && shot.w > 0 && shot.h > 0 ? [shot.w, shot.h] : null
+  if (!box) return { aspect: null }
+  const n = box[0] / box[1]
+  return { aspect: Look.aspectOf(n) || `${Math.round(n * 100) / 100}:1` }
+}
+
+// The shot as an agent reads it back. Short on purpose: a document full of fields that
+// mean nothing is a worse contract than one that says what it does not have.
+function summariseShot(shot, src) {
+  const Look = require('./look')
+  return {
+    kind: 'shot', id: shot.id || null, path: src,
+    capture: { width: shot.w, height: shot.h },
+    marks: (shot.marks || []).map(m => ({ id: m.id, kind: m.kind, x: m.x, y: m.y, w: m.w, h: m.h, n: m.n,
+      ...(m.kind === 'blur' ? { strength: m.strength || 18 } : {}) })),
+    crop: shot.crop, cropAR: shot.cropAR,
+    ...(shot.viewport ? { viewport: shot.viewport } : {}),
+    ...(shot.group ? { group: { gap: shot.group.gap, align: shot.group.align,
+      members: (shot.group.members || []).map(m => ({ id: m.id, src: m.src, device: m.device, mm: m.mm })) } } : {}),
+    look: Look.compact(shot.look, looksDir()),
+    // Said outright rather than left to be found out: a still has no clock, so the
+    // fields an edit carries for one are not missing here, they do not exist.
+    no_timeline: 'one frame: no clips, zooms, captions, sound or pointer, and marks are placed and never timed. ' +
+      'The look is the same look a recording holds, and the fades, the arrival, the loop and the motion blur ' +
+      'are kept as sent and simply not drawn on one frame.',
+    options: {
+      looks: Look.list(looksDir()).map(p => p.name),
+      backgroundImages: deps.proc.backdropList().filter(b => b.image).map(b => b.id),
+      markKinds: [...Shot.KINDS],
+      cropAR: Look.CROP_ARS,
+    },
+  }
+}
+
+// apply_edit, on a capture. The patch goes through the same element resolution a
+// recording's does (E ids from find_on_screen, R ids from the person's lasso, the
+// refusal on a lift that has nothing to raise), and then through ui/shot.js, which
+// merges marks by the edit document's own rule. What a shot has no room for is refused
+// by name rather than accepted and dropped.
+const SHOT_HAS_NO = { clips: 'clips', zooms: 'zooms', texts: 'texts', cues: 'captions',
+  beats: 'beats', camera: 'a camera bubble', audio: 'sound', audioTrack: 'a sound track',
+  pointer: 'a pointer track', autoZoom: 'auto-zoom' }
+async function applyToShot(args) {
+  const patch = args.doc
+  const refused = Object.keys(SHOT_HAS_NO).filter(k => patch[k] != null)
+  if (refused.length) {
+    throw new Error(`a shot has no ${refused.map(k => SHOT_HAS_NO[k]).join(', ')}. ${SHOT_INSTEAD} ` +
+      'To put this on a recording instead, send it to that recording\'s path.')
+  }
+  if (patch.marks != null && !Array.isArray(patch.marks)) {
+    throw new Error('marks is a list; to delete one send remove: [\'M2\'] beside it in doc, not inside it')
+  }
+  if (patch.remove != null && !Array.isArray(patch.remove)) throw new Error('remove is a list of ids, e.g. remove: [\'M2\']')
+
+  const prev = await shotOf(args.path)
+  // element: 'E7' and element: 'R1' resolve here exactly as they do for a recording,
+  // so aiming at a box rather than at a coordinate is one rule and not two.
+  let doc = withElements(args.path, patch, prev)
+  let replaced = []
+  if (Array.isArray(doc.marks)) {
+    const merged = Shot.mergeMarks(prev.marks, doc.marks, doc.remove)
+    const s = Shot.settleFocus(prev.marks, merged.marks)
+    doc = { ...doc, marks: s.marks, remove: [...(doc.remove || []), ...s.replaced] }
+    replaced = s.replaced
+  }
+  const shot = await inEditor(args.path, `${docOf(args.path)}.apply(${JSON.stringify(doc)})`)
+  if (deps.proc.writeShot) { try { deps.proc.writeShot(args.path, shot) } catch {} }
+
+  const out = summariseShot(shot, args.path)
+  if (replaced.length) out.replaced = { marks: replaced, why: 'a new lift or spotlight takes the place of one it overlaps' }
+  const gone = (prev.marks || []).map(m => m.id).filter(id => !(shot.marks || []).some(m => m.id === id) && !replaced.includes(id))
+  if (gone.length) out.removed = { ids: gone, why: 'these are no longer on the shot; say so in your reply' }
+  const warn = Shot.focusClashes(shot.marks).map(c =>
+    `${c.a} (${c.kinds[0]}) and ${c.b} (${c.kinds[1]}) cover the same part of the picture, so one dims or cuts ` +
+    'across the other. Keep one of them unless the person asked for both.')
+  // A group is arranged on the document rather than in the look, because which captures
+  // are in this picture is not a style that travels to another one.
+  if (patch.group && !shot.group) {
+    warn.push('this build of Fetch keeps no group on a shot, so the second capture was not placed and the ' +
+      'picture is of the first alone. Say so rather than sending it again.')
+  }
+  if (warn.length) out.warnings = warn
+  const lw = lookWarnings(require('./fetchdoc').lookPatchOf(patch).look, shot, args.path, { engine: 'gl' })
+  if (lw.length) out.look_warnings = lw
+  // The one field a still cannot honour, said where it is set rather than found in the
+  // picture: what is stored keeps the fade, and one frame simply does not draw it.
+  const Look = require('./look')
+  const pinned = Object.keys(Shot.STILL_PINS)
+    .filter(p => Look.getPath(require('./fetchdoc').lookPatchOf(patch).look || {}, p) !== undefined)
+  if (pinned.length) {
+    out.not_drawn = { fields: pinned, why: 'these describe how a take arrives, leaves or moves, and this is one frame. ' +
+      'They are kept on the look, so saving it and using it on a recording still has them.' }
+  }
+  Object.assign(out, jobState(args.path, null, args.step, null, shotFacts(shot)), memoryState(args.path))
+  const p = await drawShot(shot, args.path, { width: 1280 }).catch(e => ({ error: (e && e.message) || String(e) }))
+  out.preview = p.error ? { error: p.error }
+    : { image: p.file, at: SHOT_AT, why: 'this is the shot as it now stands. Look at it before replying.' }
+  return out
+}
+
+// One picture of the shot, through ui/render-host.js. `width` draws the plan at an
+// exact pixel width, which is how a preview is the export made narrow rather than a
+// second opinion of it; with no width the shot is drawn at the size it ships at.
+async function drawShot(shot, src, { width, dest, format, look } = {}) {
+  const host = require('./render-host')
+  const s = look && typeof look === 'object' ? Shot.mergeShot(shot, { look }) : shot
+  const opts = Shot.toExportOpts(s)
+  // A photo backdrop is a file on this Mac, resolved the way an export resolves it.
+  try {
+    const id = opts.backdrop
+    const hit = id ? deps.proc.backdropList().find(b => b.id === id && b.image) : null
+    if (hit && hit.file) opts.imageFile = hit.file
+  } catch {}
+  return await host.renderShot(src, opts, { dest, format: format || 'png', width,
+    scale: width ? undefined : 'native' }, dest ? `agent-shot-${Date.now()}` : undefined)
+}
+
+// export, on a capture: the PNG the editor's own Export button writes, beside the
+// capture and named after its folder. A still has no length, no quality and no frame
+// rate, so nothing is asked about any of them.
+const SHOT_FORMATS = { png: 'png', jpg: 'jpg', jpeg: 'jpg' }
+async function exportShot(args) {
+  const want = String(args.format || 'png').toLowerCase()
+  const fmt = SHOT_FORMATS[want]
+  if (!fmt) {
+    throw new Error(`a shot exports as a PNG or a JPEG, not ${want}. PNG is the default because a screenshot ` +
+      'draws hairlines and small text, which is exactly what JPEG softens. To export a video, send export the ' +
+      'path of a recording.')
+  }
+  const shot = await shotOf(args.path)
+  const dest = deps.proc.exportDest(args.path, fmt === 'png' ? 'png' : 'jpg')
+  const r = await drawShot(shot, args.path, { dest, format: fmt })
+  const mb = r && r.file && fs.existsSync(r.file) ? +(fs.statSync(r.file).size / 1e6).toFixed(2) : null
+  const checked = await reviewShot({ path: args.path, shot }).catch(() => null)
+  return {
+    path: r.file, mb, pixels: `${r.w}x${r.h}`, scale: r.scale, format: fmt, engine: r.engine,
+    capture: r.capture,
+    original: 'the capture in Original/ is untouched, so this can be styled again from it',
+    ...(checked ? { review: { verdict: checked.verdict, score: checked.score, summary: checked.summary,
+      blocking: require('./review').blocking(checked) } } : {}),
+    ...jobState(args.path, null, null, null, shotFacts(shot)),
+  }
+}
+
+// review, on a capture. The same rubric, not a second one: the shot is projected as
+// the take of one frame it is, and every rule that is about a picture runs untouched
+// (what the brief said to hide and whether anything covers it, the shape, two lifts on
+// one place, a ground the capture sinks into).
+//
+// One rule is about a clock and cannot mean anything here, so it is dropped by name and
+// the result says which and why, rather than reporting that a screenshot is 26 seconds
+// short of the brief. The verdict and the score are then worked out again from the
+// rubric's own weights, because dropping an item and leaving the number that counted it
+// would be a summary that disagrees with its own list.
+const NOT_ABOUT_A_STILL = {
+  length: 'a shot has no length, so the seconds a brief asks for are not about this picture',
+}
+async function reviewShot(args) {
+  const Review = require('./review')
+  const shot = args.shot || await shotOf(args.path)
+  const spec = Shot.toRenderSpec(shot)
+  const doc = { ...spec, dur: Shot.SPAN, clips: [{ id: 'C1', start: 0, end: Shot.SPAN }], beats: [] }
+  let brief = null
+  try { brief = (require('./director').read(args.path) || {}).brief || null } catch {}
+  const r = Review.review({
+    doc, brief, path: args.path, declined: args.declined,
+    looks: require('./look').list(looksDir()),
+    // A capture carries no sound, which is a fact about the file rather than a take
+    // nobody has transcribed, so the captions rule is answered instead of skipped.
+    silent: true, beats: [], width: shot.w, height: shot.h,
+    levels: await shotLevels(shot),
+  })
+  const items = r.items.filter(i => !NOT_ABOUT_A_STILL[i.rule])
+  const dropped = r.items.filter(i => NOT_ABOUT_A_STILL[i.rule]).map(i => ({ rule: i.rule, why: NOT_ABOUT_A_STILL[i.rule] }))
+  const live = items.filter(i => !i.declined)
+  const bad = live.filter(i => i.severity === 'blocking').length
+  const should = live.filter(i => i.severity === 'should').length
+  const verdict = bad ? 'not ready' : should ? 'nearly' : 'ready'
+  const score = Math.round(Math.max(0, 10 - live.reduce((n, i) => n + (Review.PENALTY[i.severity] || 0), 0)) * 100) / 100
+  const summary = bad || should
+    ? `${bad ? 'Not ready' : 'Nearly'}: ` + [bad ? `${bad} thing${bad === 1 ? '' : 's'} to fix` : '',
+      should ? `${should} thing${should === 1 ? '' : 's'} worth fixing` : ''].filter(Boolean).join(', ') + '.'
+    : 'Ready: nothing the rubric can name on this shot.'
+  return { verdict, score, summary, items, look_at: [],
+    ...(dropped.length ? { not_judged: dropped } : {}),
+    measured: { kind: 'shot', capture: `${shot.w}x${shot.h}`, marks: (shot.marks || []).length,
+      redactions: (shot.marks || []).filter(m => m.kind === 'redact' || m.kind === 'blur').length,
+      aspect: r.measured.aspect, wanted_aspect: r.measured.wanted_aspect, ground: r.measured.ground,
+      take_levels: r.measured.take_levels } }
+}
+
+// The capture's own black and white points, so the rule about a ground it sinks into
+// can run on a shot too. Only where the look asks for a solid ground, which is the one
+// rule that reads them, and kept per capture, since a capture never changes.
+const shotLevelCache = new Map()
+async function shotLevels(shot) {
+  const L = (shot && shot.look) || {}
+  if (!L.background || L.background.kind !== 'solid' || !shot.src) return null
+  const key = `${shot.src}|${JSON.stringify(shot.crop || null)}`
+  if (shotLevelCache.has(key)) return shotLevelCache.get(key)
+  let lv = null
+  try {
+    lv = await require('./compositor/levels').measure(shot.src, {
+      crop: shot.crop || null, width: shot.w, height: shot.h, timeout: 8000 })
+  } catch {}
+  shotLevelCache.set(key, lv)
+  return lv
 }
 
 // Everything an agent can change, and what values are allowed. The earlier version
@@ -1696,10 +2124,12 @@ function memoryState(file) {
   } catch { return null }
 }
 
-function jobState(file, doc, step, meta) {
+// `facts` is passed where the caller has already worked them out, which is how a shot
+// is measured on its shape alone rather than on a length it does not have.
+function jobState(file, doc, step, meta, given) {
   const Director = require('./director')
   try {
-    const facts = editFacts(doc, meta)
+    const facts = given || editFacts(doc, meta)
     if (!step || !Director.read(file)) return Director.forEdit(file, facts)
     const r = Director.direct(file, { done: step }, { facts })
     return {
@@ -2115,6 +2545,9 @@ module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEnde
   // mcp/index.js registers, because record.pause sat here unregistered for months and
   // a feature no agent can reach is a feature that does not exist.
   ops,
+  // which files are a capture rather than a recording. One answer, so the tool surface
+  // and anything testing it agree on what a shot is.
+  isShot,
   // the lasso: main.js registers what the Elements pass found and the areas the person
   // drew, and apply_edit resolves R ids out of the same store
   noteFound, noteRegion, regionFor, forgetRegion,

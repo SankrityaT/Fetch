@@ -268,9 +268,10 @@ function compact(look, userDir) {
 
 // ── which renderer draws it ─────────────────────────────────────────────
 // The compositor draws every field in the schema and is the renderer for every format
-// with a picture in it, so it is the default answer. A sound file and a still frame go
-// to the classic ffmpeg renderer (ui/compositor/plan.js), which leaves the classic:
-// false fields out. Asking the engine rather than reading a flag is what keeps this
+// with a picture in it, so it is the default answer. A sound file, and a preview still
+// taken off the classic path, go to the classic ffmpeg renderer (ui/compositor/plan.js),
+// which leaves the classic: false fields out; a shot is the compositor's, and asks with
+// engine: 'gl'. Asking the engine rather than reading a flag is what keeps this
 // true when the engines move, and they moved this round: GIF and WebM came over.
 const GL_FORMATS = new Set(['mp4', 'mov', 'webm', 'gif'])
 // An export with no picture in it. A look has nothing to say about an m4a, and saying

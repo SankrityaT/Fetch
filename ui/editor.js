@@ -15,7 +15,47 @@ const ed = {
   tab: 'trim',
   lasso: false,       // the lasso armed, so a drag on the stage points Biscuit at an area
   sel: null,          // the zoom or mark being edited by hand: {kind:'zoom'|'mark', id}
+  shot: false,        // a take of one frame: same editor, same stage, no clock
+  view: 'styled',     // 'original' steps the compositor aside and shows the raw capture
 }
+
+// ── a shot is a take of one frame ───────────────────────────────────────
+// A capture is opened by the editor that is already here. The only thing it does not
+// have is a clock, so the timeline goes, the transport stops being a transport, and
+// the tabs that are about time step aside. Nothing else changes, and nothing else
+// draws: the stage is the same compositor the export is.
+//
+// The clock it is lent is ui/shot.js's, not one of this file's own. Everything Fetch
+// draws arrives and leaves (PASSES.md, Overlays.fadeLevel), so a mark asked for at the
+// instant it starts is drawn half arrived. Shot.SPAN is the span every mark takes and
+// Shot.HOLD is the one instant anyone draws, where nothing is arriving and nothing is
+// leaving. render-host.renderShot draws the same instant of the same plan, so the
+// stage is the PNG.
+const ShotLib = require('./ui/shot')
+// the rate render-host draws a shot at (SHOT_FPS), named here so the stage plans on
+// the same grid without reaching into the main process for a constant
+const SHOT_FPS = 30
+const shotTime = () => ShotLib.HOLD
+// what opens as a shot: the library's own idea of a still (ui/app.js isStill), so an
+// item the library shows as a shot never opens as a take
+const isShotFile = p => isStill(p)
+
+// The document the editor is driving, and where it is kept. An edit for a take, a
+// shot for a capture: the autosave, the undo history and the agent's way in all go
+// through these, so there is one of each rather than two of everything.
+const liveDoc = () => (ed.shot ? window.fetchShot : window.fetchDoc)
+const docRead = () => (ed.shot ? 'read-shot' : 'read-doc')
+const docWrite = () => (ed.shot ? 'write-shot' : 'write-doc')
+
+// The element holding the source pixels, and the moment being drawn. A take answers
+// with its <video> and the playhead, a shot with its <img> and the middle of its span.
+// Every layer on the stage is laid out against the first and drawn at the second, so
+// these two are the only place the difference lives.
+const srcEl = () => (ed.shot ? $('edStill') : null) || $('edVideo')
+const srcSize = el2 => (ed.shot
+  ? { w: (el2 && el2.naturalWidth) || 0, h: (el2 && el2.naturalHeight) || 0 }
+  : { w: (el2 && el2.videoWidth) || 0, h: (el2 && el2.videoHeight) || 0 })
+const srcTime = () => (ed.shot ? shotTime() : ($('edVideo') || {}).currentTime || 0)
 
 const EDITOR_HTML = `
 <div class="ed">
@@ -24,6 +64,7 @@ const EDITOR_HTML = `
     <div class="ed-canvas" id="edCanvas">
       <div class="stage-frame" id="stageFrame" data-bd="none">
         <video id="edVideo" preload="auto"></video>
+        <img id="edStill" alt="" hidden>
         <canvas class="stage-gl" id="stageGL" aria-hidden="true"></canvas>
         <div class="cap-overlay" id="capOverlay"><span></span></div>
         <video class="cam-bubble" id="camBubble" muted playsinline hidden></video>
@@ -35,8 +76,16 @@ const EDITOR_HTML = `
       <button class="pc main" id="edPlay">${ico('play-fill', 'icon')}</button>
       <button class="pc" id="edFwd" data-tip="Forward 5s">${ico('skip-forward', 'icon-sm')}</button>
       <span class="time mono" id="edTime">0:00 / 0:00</span>
+      <!-- a shot has no clock, so the transport carries the one thing worth flipping -->
+      <div class="seg seg-sm ed-view" id="edView" hidden>
+        <button data-view="styled" aria-selected="true" data-tip="The shot as it will be written">
+          ${ico('sparkle', 'icon-sm')} Styled</button>
+        <button data-view="original" aria-selected="false" data-tip="The raw capture. Hold Space to peek.">
+          ${ico('image', 'icon-sm')} Original</button>
+      </div>
       <span class="ed-name" id="edName"></span>
       <span class="chip chip-static" id="edOutLen">0.0s</span>
+      <span class="chip chip-static mono" id="edSize" hidden>0 x 0</span>
       <button class="pc" id="edUndo" data-tip="Undo (⌘Z)" aria-label="Undo" disabled>${ico('arrow-counter-clockwise', 'icon-sm')}</button>
       <button class="pc" id="edRedo" data-tip="Redo (⇧⌘Z)" aria-label="Redo" disabled>${ico('arrow-clockwise', 'icon-sm')}</button>
       <button class="btn btn-sm btn-ghost ed-undo-agent" id="edUndoAgent" hidden
@@ -143,7 +192,7 @@ const EDITOR_HTML = `
 
       <!-- ZOOMS AND MARKS: the hand editing of what an agent can already place -->
       <section class="insp-panel" data-panel="focus" hidden>
-        <div><div class="insp-sec">Zooms</div>
+        <div id="focusZooms"><div class="insp-sec">Zooms</div>
           <div class="obj-list" id="zoomList"></div>
           <button class="btn btn-sm" id="addZoom" style="width:100%">
             ${ico('plus', 'icon-sm')} Zoom at the playhead</button>
@@ -159,16 +208,18 @@ const EDITOR_HTML = `
             <button class="chip" data-kind="loupe" data-tip="A magnified inset of a small area">Loupe</button>
             <button class="chip" data-kind="arrow" data-tip="Points at the thing from outside it">Arrow</button>
           </div>
-          <p class="micro dimmer" style="margin-top:6px">Added at the playhead. Drag it on the stage onto the thing it is for.</p>
+          <p class="micro dimmer" id="markHint" style="margin-top:6px">Added at the playhead. Drag it on the stage onto the thing it is for.</p>
           <div class="obj-list" id="markList"></div>
         </div>
 
         <div id="objEdit" hidden>
           <div class="insp-sec"><span class="mono obj-sel-id" id="objId"></span><span id="objWhat"></span></div>
+          <div id="objTiming">
           <div class="row"><span class="row-lbl">Start</span><span class="mono dim" id="objStart">0:00</span>
             <div style="flex:1"></div><button class="btn btn-sm" id="objSetIn">Set to playhead</button></div>
           <div class="row"><span class="row-lbl">End</span><span class="mono dim" id="objEnd">0:00</span>
             <div style="flex:1"></div><button class="btn btn-sm" id="objSetOut">Set to playhead</button></div>
+          </div>
           <div class="row" id="objScaleRow" hidden><span class="row-lbl">Scale</span>
             <input type="range" class="slider" id="objScale" min="100" max="300" value="180">
             <span class="row-val mono" id="objScaleVal">1.8&times;</span></div>
@@ -211,10 +262,12 @@ const EDITOR_HTML = `
             </label></div>
           <label class="opt" style="padding:8px 0"><span class="opt-txt"><span class="opt-title">Background pill</span></span>
             <span class="switch"><input type="checkbox" id="txtBox"><span class="track"></span></span></label>
+          <div id="txtTiming">
           <div class="row"><span class="row-lbl">Timing</span>
             <button class="btn btn-sm" id="txtFrom">From playhead</button>
             <button class="btn btn-sm" id="txtTo">To playhead</button></div>
           <p class="micro dimmer" id="txtRange">Shows for the whole clip</p>
+          </div>
           <button class="btn btn-sm btn-danger" id="txtDel" style="width:100%;margin-top:8px">Delete layer</button>
         </div>
       </section>
@@ -452,21 +505,21 @@ async function undoAgentEdit(src, level) {
   // a card names the change it made; if a later one is on top, that card is stale
   if (!src || !top() || (level && top().n !== level)) return false
   if (ed.src !== src || !ed.docReady) await openInEditor(src)
-  if (ed.src !== src || !window.fetchDoc || !top() || (level && top().n !== level)) return false
+  if (ed.src !== src || !liveDoc() || !top() || (level && top().n !== level)) return false
   const entry = agentUndo.pop(src)
   agentUndo.mark()                     // whatever comes next is a change of its own
-  const was = window.fetchDoc.get()
+  const was = liveDoc().get()
   // The agent's change goes back; anything the person changed since stays, and the id
   // counter does not rewind, or "Z3" in the activity log would name two zooms.
   const { doc: back, kept } = EditAssist.revert(entry.before, entry.after, was)
-  window.fetchDoc.load(back)
-  const now = window.fetchDoc.get()
+  liveDoc().load(back)
+  const now = liveDoc().get()
   // captions burn from the .srt, so the wording has to go back there as well
-  if (JSON.stringify(was.cues) !== JSON.stringify(now.cues)) {
+  if (!ed.shot && JSON.stringify(was.cues) !== JSON.stringify(now.cues)) {
     await ipcRenderer.invoke('write-cues', src, ed.cues).catch(() => {})
     renderCues(); paintCaption()
   }
-  await ipcRenderer.invoke('write-doc', src, now).catch(() => {})
+  await ipcRenderer.invoke(docWrite(), src, now).catch(() => {})
   flashAgentChange(EditAssist.changedIds(was, now))
   paintAgentUndo()
   window.dispatchEvent(new CustomEvent('fetch:agent-edit', { detail: { src, undo: true } }))
@@ -482,11 +535,13 @@ window.fetchUndo = {
 }
 
 async function openInEditor(src) {
+  if (isShotFile(src)) return openShot(src)
   document.querySelector('#nav [data-view="editor"]').disabled = false
   show('editor')
   const mount = $('editorMount')
   mount.className = ''
   mount.innerHTML = EDITOR_HTML
+  ed.shot = false; ed.view = 'styled'
 
   ed.src = src; ed.texts = []; ed.cues = []; ed.crop = null; ed.selText = null; ed.peaks = []
   ed.sel = null                                  // nothing on the two tracks is selected in a fresh take
@@ -569,6 +624,167 @@ async function openInEditor(src) {
   })
 }
 
+// The same editor, opened on a capture. Everything that needs a clock is skipped
+// rather than branched around: no probe, no waveform, no filmstrip, no transcript,
+// no beats, no camera. What is left is the stage, the inspector and the lasso, which
+// is all a shot has ever needed.
+async function openShot(src) {
+  document.querySelector('#nav [data-view="editor"]').disabled = false
+  show('editor')
+  const mount = $('editorMount')
+  mount.className = ''
+  mount.innerHTML = EDITOR_HTML
+  ed.shot = true; ed.view = 'styled'
+
+  ed.src = src; ed.texts = []; ed.cues = []; ed.crop = null; ed.selText = null; ed.peaks = []
+  ed.sel = null; ed.cam = null; ed.audioTrack = null; ed.cuts = []; ed.beats = []
+  ed.meta = null
+  ed.doc = null; ed.look = LookLib.defaults(); syncLookMirrors()
+  window.dispatchEvent(new CustomEvent('fetch:editor-open', { detail: { src } }))
+  ed.docReady = false
+  wireEditor()
+  wireAssist()
+  paintEdName()
+  applyShotMode()
+
+  // the one frame, in the middle of the span it is lent, where everything has landed
+  ed.dur = ShotLib.SPAN; ed.in = 0; ed.out = ShotLib.SPAN; ed.cur = shotTime()
+
+  const img = $('edStill')
+  const url = 'file://' + encodeURI(src).replace(/#/g, '%23').replace(/\?/g, '%3F')
+  const loaded = new Promise(done => {
+    img.onload = done
+    img.onerror = done                          // a capture that will not decode still opens, empty
+  })
+  img.hidden = false
+  img.src = url
+  armStageStill(img)
+  await loaded
+  if (ed.src !== src) return                    // another item was opened meanwhile
+  ed.meta = { width: img.naturalWidth, height: img.naturalHeight, duration: ShotLib.SPAN, fps: 30, hasAudio: false }
+  paintShotSize()
+
+  // The shot as it was last left. A capture with no document yet is a blank shot of
+  // the right size, which is what the editor opens on the first time.
+  let saved = null
+  try { saved = await ipcRenderer.invoke('read-shot', src, { w: img.naturalWidth, h: img.naturalHeight }) } catch {}
+  if (ed.src !== src) return
+  window.fetchShot.load(saved || ShotLib.emptyShot(src, { w: img.naturalWidth, h: img.naturalHeight }))
+  ed.docReady = true
+  startDocAutosave(src)
+  ed.windowCorner = 0; ed.gutter = null
+  // a capture of a window carries the same rounded corner a recording of one does, and
+  // the same pass measures it
+  ipcRenderer.invoke('frame-gutter', src, ed.dur, ed.crop).then(g => {
+    if (ed.src !== src) return
+    ed.gutter = g || null; ed.windowCorner = (g && +g.corner) || 0; paintBackdrop()
+  }).catch(() => {})
+  ipcRenderer.send('render-warm')
+  paintBackdrop(); paintTime(); paintStageGL({ fresh: true, upload: true })
+  window.dispatchEvent(new CustomEvent('fetch:editor-ready', { detail: { src } }))
+}
+
+// What the editor is when there is nothing to scrub. One function, so the difference
+// between a take and a shot is readable in one place rather than spread over every
+// control.
+function applyShotMode() {
+  const root = document.querySelector('.ed')
+  if (root) root.dataset.mode = ed.shot ? 'shot' : 'take'
+  if (!ed.shot) return
+  // the transport keeps its shape: the play cluster becomes the Styled and Original
+  // switch, the running time becomes the size of the file that comes out
+  $('edView').hidden = false
+  $('edSize').hidden = false
+  $('edOutLen').hidden = true
+  $('edView').onclick = e => {
+    const b = e.target.closest('button[data-view]')
+    if (b) setShotView(b.dataset.view)
+  }
+  // the tabs that are about time, sound, speech or a second camera have nothing to
+  // say here. Text goes too: a shot document has no text layers to keep (ui/shot.js).
+  for (const t of ['trim', 'text', 'captions', 'audio', 'voice', 'camera']) {
+    const b = document.querySelector(`#inspTabs button[data-tab="${t}"]`)
+    if (b) b.hidden = true
+  }
+  // a still opens on Look, because the style is the whole point of styling a capture
+  const look = document.querySelector('#inspTabs button[data-tab="look"]')
+  if (look) look.click()
+  // a zoom is a move, and a move needs two moments. Framing a still is the Crop tab.
+  const zooms = $('focusZooms'); if (zooms) zooms.hidden = true
+  const timing = $('objTiming'); if (timing) timing.hidden = true
+  const txtTiming = $('txtTiming'); if (txtTiming) txtTiming.hidden = true
+  const hint = $('markHint')
+  if (hint) hint.textContent = 'Drag it on the stage onto the thing it is for, or lasso the thing and ask.'
+  const exp = $('doExport')
+  if (exp) exp.innerHTML = `${ico('export', 'icon-sm')} Export PNG`
+  setShotView('styled')
+}
+
+// Styled and Original, one click apart. Original is not a second render of anything:
+// the compositor steps aside the way it already does on the Crop tab, and what is
+// left on the stage is the file that was captured.
+function setShotView(view) {
+  ed.view = view === 'original' ? 'original' : 'styled'
+  document.querySelectorAll('#edView button').forEach(b =>
+    b.setAttribute('aria-selected', String(b.dataset.view === ed.view)))
+  const frame = $('stageFrame')
+  if (frame) frame.dataset.view = ed.view
+  paintStageGL({ upload: true })
+  paintOverlays(); paintAim()
+}
+
+// Hold Space to peek at the raw capture: there is no playback to give the key to, and
+// checking the work against what was captured is what someone does most here.
+const shotPeekable = () => {
+  if (!ed.shot || !ed.src) return false
+  const view = document.querySelector('.view[data-view="editor"]')
+  return !!view && !view.hidden
+}
+// what the peek is holding, so releasing puts back the view that was there rather
+// than assuming it was Styled
+let shotPeek = null
+const endShotPeek = () => {
+  if (shotPeek == null) return
+  const back = shotPeek; shotPeek = null
+  setShotView(back)
+}
+document.addEventListener('keydown', e => {
+  if (e.code !== 'Space' || e.repeat || shotPeek != null || !shotPeekable()) return
+  const t = e.target
+  if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
+  e.preventDefault()
+  shotPeek = ed.view
+  setShotView('original')
+})
+document.addEventListener('keyup', e => { if (e.code === 'Space') endShotPeek() })
+// a key held while the window goes away never lands its release here
+window.addEventListener('blur', endShotPeek)
+
+// What the export will write, which on a shot stands where the running time does.
+// The plan's own size times the scale the renderer picks for it (compositor shotScale:
+// the largest that does not enlarge the capture), so the chip is the file's pixels and
+// not the stage's.
+function paintShotSize() {
+  const n = $('edSize')
+  if (!n || !ed.shot) return
+  const spec = stageGL && stageGL.spec
+  let w = (ed.meta && ed.meta.width) || 0, h = (ed.meta && ed.meta.height) || 0
+  if (spec) {
+    let k = 1
+    try { k = require('./ui/compositor').shotScale(spec, 'native') } catch {}
+    w = spec.W * k; h = spec.H * k
+  }
+  n.textContent = `${Math.round(w)} x ${Math.round(h)} PNG`
+}
+
+// One redraw when the capture has decoded, and one whenever the stage changes size.
+// A shot has no frames to be called back on, so this is the whole clock it gets.
+function armStageStill(img) {
+  if (!img || img._stageGL) return
+  img._stageGL = true
+  img.addEventListener('load', () => { paintStageGL({ fresh: true, upload: true }); paintShotSize() })
+}
+
 // Every change to the open clip's edit, by hand or by an agent, is written to its
 // document, so the edit survives a restart and both see the same thing. A cheap
 // compare on an interval rather than a hook in every control: nothing can be missed.
@@ -594,16 +810,16 @@ function historyPush(json) {
 
 function historyStep(dir) {
   const h = edHistory
-  if (!window.fetchDoc || h.src !== ed.src) return
+  if (!liveDoc() || h.src !== ed.src) return
   // settle anything still in flight first, so undo never skips the latest change
-  try { historyPush(JSON.stringify(window.fetchDoc.get())) } catch {}
+  try { historyPush(JSON.stringify(liveDoc().get())) } catch {}
   const j = h.i + dir
   if (j < 0 || j >= h.stack.length) return
   h.i = j
   const doc = JSON.parse(h.stack[j])
-  window.fetchDoc.load(doc)
-  ipcRenderer.invoke('write-doc', ed.src, doc).catch(() => {})
-  ipcRenderer.invoke('write-cues', ed.src, ed.cues).catch(() => {})
+  liveDoc().load(doc)
+  ipcRenderer.invoke(docWrite(), ed.src, doc).catch(() => {})
+  if (!ed.shot) ipcRenderer.invoke('write-cues', ed.src, ed.cues).catch(() => {})
   docSaveLast = h.stack[j]
   paintUndo()
   // one pill for undo and redo: stepping back and forth replaces it, never stacks two
@@ -623,18 +839,18 @@ let docSaveLast = null
 function startDocAutosave(src) {
   clearInterval(docSaveTimer)
   docSaveLast = null
-  try { docSaveLast = JSON.stringify(window.fetchDoc.get()) } catch {}
+  try { docSaveLast = JSON.stringify(liveDoc().get()) } catch {}
   edHistory.src = src; edHistory.stack = docSaveLast ? [docSaveLast] : []; edHistory.i = edHistory.stack.length - 1
   paintUndo()
   docSaveTimer = setInterval(() => {
-    if (ed.src !== src || !window.fetchDoc) { clearInterval(docSaveTimer); return }
+    if (ed.src !== src || !liveDoc()) { clearInterval(docSaveTimer); return }
     let cur
-    try { cur = JSON.stringify(window.fetchDoc.get()) } catch { return }
+    try { cur = JSON.stringify(liveDoc().get()) } catch { return }
     if (cur === docSaveLast) return
     if (pointerHeld) return                    // mid-drag: one step when it lands
     docSaveLast = cur
     historyPush(cur)
-    ipcRenderer.invoke('write-doc', src, JSON.parse(cur)).catch(() => {})
+    ipcRenderer.invoke(docWrite(), src, JSON.parse(cur)).catch(() => {})
   }, 400)
 }
 
@@ -1016,6 +1232,9 @@ function wireEditor() {
   const FD = require('./ui/fetchdoc')
 
   function docFromEd() {
+    // a shot is its own document (ui/shot.js), so anything asking this one for an edit
+    // while a capture is open is asking about the wrong thing and is told so
+    if (ed.shot) return null
     const base = ed.doc || FD.emptyDoc(ed.src, ed.dur)
     const doc = FD.normalize(base, ed.src, ed.dur)
 
@@ -1122,6 +1341,9 @@ function wireEditor() {
     // document here is what let "add a zoom" wipe the crop, the caption font and the
     // backdrop, none of which the agent had been shown.
     apply: async patch => {
+      // a capture is open: an edit document does not describe it, and quietly writing
+      // one would put a clock on a PNG
+      if (ed.shot) throw new Error('That is a shot, not a recording. Change it as a shot.')
       const src = ed.src, before = docFromEd()
       docToEd(FD.normalize(FD.mergeDoc(before, patch), ed.src, ed.dur))
       // Captions are burned from the .srt, so corrected wording has to reach it too,
@@ -1143,12 +1365,66 @@ function wireEditor() {
       return after
     },
     // Only once the clip's saved edit is loaded. Reporting the clip as open any earlier
-    // let an agent read the blank state and write it over the saved edit.
-    src: () => (ed.docReady && ed.src) || null,
+    // let an agent read the blank state and write it over the saved edit. A shot is
+    // not an edit, so while one is open the answer is that none is.
+    src: () => (!ed.shot && ed.docReady && ed.src) || null,
     load: doc => docToEd(doc),
   }
 
-    $('doExport').onclick = exportModal
+  // The shot as a document, and the same three questions asked of it: what is it, put
+  // this on it, what is open. ui/shot.js is the canonical shape; `ed` is the working
+  // copy the inspector, the marks and the crop drive, exactly as they do for an edit.
+  function shotFromEd() {
+    const size = { w: (ed.meta && ed.meta.width) || 0, h: (ed.meta && ed.meta.height) || 0 }
+    const base = ed.doc && ed.doc.kind === 'shot' ? ed.doc : ShotLib.emptyShot(ed.src, size)
+    return ShotLib.normalize({
+      ...base,
+      src: ed.src,
+      look: ed.look,
+      crop: ed.crop || null,
+      cropAR: ed.cropAR,
+      // the span every mark is lent belongs to the document, not to the editor
+      marks: ShotLib.untimed(ed.marks || []),
+    }, ed.src, size)
+  }
+
+  function shotToEd(shot) {
+    const s = ShotLib.normalize(shot, ed.src, { w: shot && shot.w, h: shot && shot.h })
+    ed.doc = s                                   // what mintObjId counts from, as an edit's does
+    ed.look = LookLib.resolve(s.look); syncLookMirrors()
+    ed.crop = s.crop ? { ...s.crop } : null
+    ed.cropAR = s.cropAR || 'free'
+    ed.marks = ShotLib.timed(s.marks)
+    ed.zooms = []; ed.texts = []; ed.cues = []; ed.cuts = []
+    if (ed.sel && !(ed.marks || []).some(m => m.id === ed.sel.id)) ed.sel = null
+    renderFocus()
+    try { paintBackdrop(); paintCrop() } catch {}
+    paintOverlays(); paintStageGL({ fresh: true }); paintShotSize()
+  }
+
+  window.fetchShot = {
+    get: () => shotFromEd(),
+    // A partial change, merged by ui/shot.js: marks by id, the look field by field,
+    // and everything the caller did not mention kept.
+    apply: async patch => {
+      const src = ed.src, before = shotFromEd()
+      shotToEd(ShotLib.mergeShot(before, patch))
+      const after = shotFromEd()
+      if (ed.src === src) {
+        agentUndo.note(src, before, after)
+        flashAgentChange(EditAssist.changedIds(before, after))
+        paintAgentUndo()
+        window.dispatchEvent(new CustomEvent('fetch:agent-edit', { detail: { src } }))
+      }
+      return after
+    },
+    src: () => (ed.shot && ed.docReady && ed.src) || null,
+    load: shot => shotToEd(shot),
+  }
+
+  // A shot has one format worth offering and no length, quality or resolution to pick,
+  // so the button is the export: one click from the stage to the file.
+  $('doExport').onclick = () => (ed.shot ? exportShot() : exportModal())
 
   document.querySelectorAll('.ed .slider').forEach(s => {
     const paint = () => s.style.setProperty('--fill', ((s.value - s.min) / (s.max - s.min) * 100) + '%')
@@ -1197,6 +1473,9 @@ function bindRange(id, apply, fmt) {
 // ── painting ────────────────────────────────────────────────────────────
 const clamp01 = n => Math.max(0, Math.min(1, n))
 const seek = t => {
+  // a shot has one frame and it is always the one on the stage, so there is nowhere
+  // to seek to and ed.cur must not be moved off it
+  if (ed.shot) return
   const v = $('edVideo')
   v.currentTime = Math.max(0, Math.min(t, ed.dur))
   ed.cur = v.currentTime
@@ -1380,13 +1659,19 @@ window.editorFollowRename = moves => {
   if (!next) return
   ed.src = next
   paintEdName()
-  if (window.fetchDoc) window.fetchDoc.src = () => ed.src
+  if (window.fetchDoc) window.fetchDoc.src = () => (ed.shot ? null : ed.src)
   if (ed.cam && map.has(ed.cam.file)) ed.cam.file = map.get(ed.cam.file)
   if (ed.audioTrack && map.has(ed.audioTrack.file)) ed.audioTrack.file = map.get(ed.audioTrack.file)
-  const v = $('edVideo')
-  if (v) { const t = v.currentTime; v.src = 'file://' + encodeURI(next).replace(/#/g, '%23').replace(/\?/g, '%3F'); v.currentTime = t }
-  if (ed.docReady && window.fetchDoc) {
-    ipcRenderer.invoke('write-doc', next, window.fetchDoc.get()).catch(() => {})
+  const url = 'file://' + encodeURI(next).replace(/#/g, '%23').replace(/\?/g, '%3F')
+  // a renamed shot is the same pixels under a new name, so the picture is repointed
+  // rather than reloaded and nothing on the stage moves
+  if (ed.shot) { const img = $('edStill'); if (img) img.src = url }
+  else {
+    const v = $('edVideo')
+    if (v) { const t = v.currentTime; v.src = url; v.currentTime = t }
+  }
+  if (ed.docReady && liveDoc()) {
+    ipcRenderer.invoke(docWrite(), next, liveDoc().get()).catch(() => {})
     startDocAutosave(next)
   }
 }
@@ -1400,13 +1685,14 @@ window.editorCloseIfGone = () => {
   clearInterval(docSaveTimer)
   const v = $('edVideo')
   if (v) { v.pause(); v.removeAttribute('src'); v.load() }
+  const was = ed.shot
   ed.src = null; ed.docReady = false; ed.meta = null; ed.cam = null; ed.audioTrack = null
-  ed.sel = null
+  ed.sel = null; ed.shot = false
   setLasso(false); clearBand()
   const mount = $('editorMount')
   mount.className = 'empty'
   mount.innerHTML = `<img class="biscuit biscuit-lg" src="./assets/mascot/sad.png" alt="">
-    <p>That take was moved to the Trash. Put it back from the Trash to edit it again.</p>
+    <p>That ${was ? 'shot' : 'take'} was moved to the Trash. Put it back from the Trash to edit it again.</p>
     <button class="btn btn-sm" id="edGoneLib">Open the Library</button>`
   $('edGoneLib').onclick = () => document.querySelector('#nav [data-view="library"]').click()
   window.dispatchEvent(new CustomEvent('fetch:editor-closed'))
@@ -1495,6 +1781,8 @@ function layoutTimeline() {
   paintTrim(); paintPlayhead()
 }
 function relayoutEditor() {
+  // a shot has no timeline to measure against, so its stage lays itself out
+  if (ed.shot) { if (ed.src) { paintBackdrop(); paintStageGL(); paintOverlays() } return }
   // a hidden editor measures zero wide: laying out then collapsed the trim to a sliver
   if (ed.src && $('tlWrap') && $('tlWrap').clientWidth) { drawWave(); drawExtraWave(); layoutTimeline(); renderBeats(); renderZooms(); renderMarks(); paintBackdrop(); paintCaption(); paintCam() }
 }
@@ -1597,7 +1885,7 @@ function dragTimeline() {
 // With a backdrop the export draws overlays over the composited frame, so the
 // preview has to offer the same area or dragging would not match the output.
 function overlayRect() {
-  const v = $('edVideo'), frame = $('stageFrame'), canvas = $('edCanvas')
+  const v = srcEl(), frame = $('stageFrame'), canvas = $('edCanvas')
   if (!v || !canvas) return { left: 0, top: 0, w: 0, h: 0 }
   const host = (ed.backdrop && frame) ? frame : v
   const r = host.getBoundingClientRect(), p = canvas.getBoundingClientRect()
@@ -1605,7 +1893,7 @@ function overlayRect() {
 }
 
 function videoRect() {
-  const v = $('edVideo'), r = v.getBoundingClientRect(), p = $('edCanvas').getBoundingClientRect()
+  const v = srcEl(), r = v.getBoundingClientRect(), p = $('edCanvas').getBoundingClientRect()
   return { left: r.left - p.left, top: r.top - p.top, w: r.width, h: r.height }
 }
 function applyAspect() {
@@ -1764,7 +2052,7 @@ function renderTexts() {
   })
   renderTextTrack()
   // the stage's canvas draws the text itself, so a moved or retyped layer is redrawn there
-  if ($('edVideo') && $('edVideo').paused) paintStageGL({ fresh: true })
+  if (ed.shot || ($('edVideo') && $('edVideo').paused)) paintStageGL({ fresh: true })
 }
 function renderLayerList() {
   const list = $('layerList'); list.innerHTML = ''
@@ -1850,6 +2138,12 @@ function mountLook() {
     // typography and focus from the person while an agent could set every one of them,
     // and the renderer draws them. What a renderer cannot draw is the schema's own
     // question now (ui/look-schema.js), asked once, in one place.
+    //
+    // The one exception is captions on a shot. They are drawn from the words spoken in
+    // a take and a capture has none, so Shot.toExportOpts always sends cues: []. Six
+    // dials whose values are stored and never drawn are worse than no dials, which is
+    // the same reason the Text tab is gone on a shot.
+    sections: ed.shot ? LookLib.sections().map(s => s.id).filter(id => id !== 'captions') : null,
     open: ['frame', 'background', 'motion'],
     userDir: LOOK_DIR,
     ico, toast,
@@ -1864,10 +2158,17 @@ function mountLook() {
     },
     extras: {
       // auto zoom is part of the edit, not the look, so it sits here by its depth
-      motion: () => `<label class="lk-top lk-bool"><span class="lk-lbl">Auto zoom on clicks</span>
+      motion: () => (ed.shot
+        // The look is stored whole on a shot and pinned only as it is drawn
+        // (ui/shot.js STILL_PINS), so a fade set on a recording survives a trip
+        // through one. Saying so beats a section of dials that quietly do nothing.
+        ? `<p class="micro dimmer lk-note">A shot is one frame, so the fades, the
+            arrival, the loop and the motion blur are off in it. They are kept, and
+            come back when this look is used on a recording.</p>`
+        : `<label class="lk-top lk-bool"><span class="lk-lbl">Auto zoom on clicks</span>
           <span class="switch"><input type="checkbox" id="autoZoom" ${ed.autoZoom ? 'checked' : ''} ${ed.hasCursor === false ? 'disabled' : ''}><span class="track"></span></span></label>
         <p class="micro dimmer lk-note" id="zoomNote">${ed.hasCursor === false ? 'No cursor track: only recordings made by Fetch can auto zoom.'
-          : 'Pushes in where the cursor clicks or settles.'}</p>`,
+          : 'Pushes in where the cursor clicks or settles.'}</p>`),
     },
   })
   root.addEventListener('change', e => { if (e.target.id === 'autoZoom') ed.autoZoom = e.target.checked })
@@ -1944,13 +2245,15 @@ function paintBlurFill(frame, v) {
     c.className = 'bd-fill'
     frame.prepend(c)
     const draw = () => {
-      if (!blurFilled() || !v.videoWidth) return
+      // the take's own pixels, or the capture's: both answer srcSize
+      const p = srcSize(v)
+      if (!blurFilled() || !p.w) return
       // the cropped frame, as the export blurs it
-      const s = stageView(), sw = v.videoWidth * s.w, sh = v.videoHeight * s.h
+      const s = stageView(), sw = p.w * s.w, sh = p.h * s.h
       c.width = 320; c.height = Math.round(320 * sh / sw)
-      try { c.getContext('2d').drawImage(v, v.videoWidth * s.x, v.videoHeight * s.y, sw, sh, 0, 0, c.width, c.height) } catch {}
+      try { c.getContext('2d').drawImage(v, p.w * s.x, p.h * s.y, sw, sh, 0, 0, c.width, c.height) } catch {}
     }
-    for (const ev of ['loadeddata', 'seeked', 'pause']) v.addEventListener(ev, draw)
+    for (const ev of ['loadeddata', 'seeked', 'pause', 'load']) v.addEventListener(ev, draw)
     c._draw = draw
   }
   c._draw()
@@ -1969,8 +2272,9 @@ function stageView() {
 }
 function stageAR(v) {
   const s = stageView()
+  const p = srcSize(v)
   const ar = (ed.videoW && ed.videoH) ? ed.videoW / ed.videoH
-    : (v && v.videoWidth && v.videoHeight) ? v.videoWidth / v.videoHeight : 16 / 9
+    : (p.w && p.h) ? p.w / p.h : 16 / 9
   return ar * s.w / s.h
 }
 function fitVideoInto(v, availW, availH) {
@@ -1988,7 +2292,7 @@ function fitVideoToStage(v) {
   fitVideoInto(v, stage.clientWidth, stage.clientHeight)
 }
 function paintBackdrop() {
-  const frame = $('stageFrame'), v = $('edVideo')
+  const frame = $('stageFrame'), v = srcEl()
   if (!frame || !v) return
   if (!ed.backdrop) {
     paintBlurFill(frame, v)
@@ -2032,7 +2336,8 @@ function paintBackdrop() {
   // does not fire while the window is not being composited.
   const stage = $('edCanvas')
   const view = stageView()
-  const vw = (ed.videoW || v.videoWidth || 1920) * view.w, vh = (ed.videoH || v.videoHeight || 1080) * view.h
+  const pix = srcSize(v)
+  const vw = (ed.videoW || pix.w || 1920) * view.w, vh = (ed.videoH || pix.h || 1080) * view.h
   // Burned captions get a band of their own below the video, on the backdrop, as the
   // export draws them (Overlays.captionLayout)
   const cst = ed.capStyle || {}
@@ -2114,7 +2419,7 @@ function paintCaption() {
   const ph = capPhrases().find(p => ed.cur >= p.show && ed.cur < p.hide)
   if (!ph) { box.dataset.on = 'false'; return }
   const st = ed.capStyle || {}
-  const v = $('edVideo'), frame = $('stageFrame')
+  const v = srcEl(), frame = $('stageFrame')
   const host = box.offsetParent || frame
   if (!v || !host) return
   // when framed, the caption can live anywhere on the composited canvas
@@ -2229,7 +2534,7 @@ function ovPicture(v) {
 // second, so while playing a zoom is repainted on every video frame.
 var zoomLoop = false
 function paintZoom(t, pic) {
-  const v = $('edVideo'), layer = document.querySelector('#stageFrame .ov-zoom')
+  const v = srcEl(), layer = document.querySelector('#stageFrame .ov-zoom')
   if (!v) return
   const z = ed.tab === 'crop' ? { s: 1 } : ovLib().zoomView(ed.zooms, t, (ed.look && ed.look.motion || {}).zoomEase)
   const view = stageView(), c = ed.crop && ed.tab !== 'crop' ? ed.crop : null
@@ -2270,7 +2575,7 @@ function paintZoom(t, pic) {
 }
 
 function paintOverlays() {
-  const frame = $('stageFrame'), v = $('edVideo')
+  const frame = $('stageFrame'), v = srcEl()
   if (!frame || !v || !v.getBoundingClientRect().width) return
   let host = frame.querySelector('.ov-stage')
   if (!host) {
@@ -2482,7 +2787,7 @@ function dragCaption() {
   span.onmousedown = e => {
     if (span.dataset.editing === 'true') return // let the caret land instead of starting a drag
     e.preventDefault(); e.stopPropagation()
-    const v = (ed.backdrop && $('stageFrame')) ? $('stageFrame') : $('edVideo')
+    const v = (ed.backdrop && $('stageFrame')) ? $('stageFrame') : srcEl()
     if (!v) return
     const vb = v.getBoundingClientRect()
     // Move by the distance dragged, and only after a real drag. It used to put the
@@ -2639,6 +2944,44 @@ function exportOverlay(label) {
   }
 }
 
+// A shot's export: one click, one file. There is no length, no quality and no
+// resolution to ask about, so nothing is asked. The work bar in the inspector stands
+// in for the full screen overlay a video gets, because a still is drawn in the time it
+// takes to read that overlay's first word.
+//
+// The options are the stage's own, prepared reading and backdrop file included, so the
+// PNG is the frame that was on screen rather than a second opinion of it.
+//
+// The editor stays open afterwards, where a video export leaves for the Library: a
+// shot is usually written again with one dial moved, and a take rarely is.
+async function exportShot() {
+  const btn = $('doExport'), bar = $('expBar')
+  if (!btn || btn.disabled) return
+  const opts = ShotLib.toExportOpts(window.fetchShot.get(), {
+    prepared: stagePrep.data && stagePrep.data.src === ed.src ? stagePrep.data : null,
+    imageFile: ed.backdropFile || null,
+  })
+  btn.disabled = true
+  if (bar) { bar.hidden = false; const l = bar.querySelector('.work-label'); if (l) l.textContent = 'Fetching your shot' }
+  const cid = 'sh' + Date.now(), jobId = Date.now()
+  jobs.set(cid, j => {
+    if (j.status === 'done') {
+      jobs.delete(cid); btn.disabled = false; if (bar) bar.hidden = true
+      if (typeof mood === 'function') mood('happy')
+      toast(`Shot saved${j.result && j.result.mb ? ` · ${j.result.mb} MB` : ''}`, 'ok')
+      if (typeof window.clearEditorDirty === 'function') window.clearEditorDirty()
+      refreshLibrary()
+      if (j.result && j.result.file) ipcRenderer.send('reveal', j.result.file)
+    }
+    if (j.status === 'error') {
+      jobs.delete(cid); btn.disabled = false; if (bar) bar.hidden = true
+      toast(j.message, 'bad', 7000)
+    }
+    if (j.status === 'cancelled') { jobs.delete(cid); btn.disabled = false; if (bar) bar.hidden = true }
+  })
+  return ipcRenderer.invoke('edit-job', { op: 'shot', src: ed.src, opts, out: { format: 'png', scale: 'native' }, cid, jobId })
+}
+
 async function doExport(pick) {
   // The edit as one document, read through the same adapter the MCP export and
   // preview_frame use. Options built here by hand from the controls dropped every
@@ -2733,20 +3076,47 @@ function askPrepared(opts) {
   }, stagePrep.data && stagePrep.data.src === src ? 350 : 0)
 }
 
+// ── the shot's plan ─────────────────────────────────────────
+// The three things Plan.prepare takes for a shot, decided in one place. The export
+// builds its own from render-host.shotPlan, and the only way the stage and the PNG can
+// disagree is if these two drift, so test/shot-stage.test.js holds this block against
+// that one and fails when they do.
+function shotPlanParts(shot, ctx = {}) {
+  return {
+    opts: ShotLib.toExportOpts(shot),
+    // the meta prepare would have read off a take, on the rate render-host draws at
+    meta: { ...ShotLib.toMeta(shot), fps: SHOT_FPS },
+    // the reading of the capture and the backdrop file travel in ctx here and in opts
+    // on the way to the export, because that is the shape each side takes them in
+    ctx: { gutter: ctx.gutter || null, imageFile: ctx.imageFile || null,
+      prepared: ctx.prepared || null, fps: SHOT_FPS },
+  }
+}
+
+// ── the stage ───────────────────────────────────────────────
 function stageGLSpec(fresh) {
   if (stageGL.spec && !fresh) return stageGL.spec
-  const v = $('edVideo')
+  const v = srcEl()
+  const s = srcSize(v)
   const FD = require('./ui/fetchdoc')
   const Plan = require('./ui/compositor/plan')
   const Timeline = require('./ui/timeline')
-  const opts = FD.toExportOpts(window.fetchDoc.get())
+  // One door to the compositor: a shot hands over the same options bag an edit does
+  // (ui/shot.js toExportOpts), so the stage below cannot tell them apart and neither
+  // can the renderer. render-host.shotPlan builds the export's spec from this same bag.
+  const shot = ed.shot ? window.fetchShot.get() : null
+  // asked for with the same bag it is planned with, so the reading that comes back is
+  // of the frame that is drawn
+  const first = shot ? ShotLib.toExportOpts(shot) : FD.toExportOpts(window.fetchDoc.get())
+  askPrepared(first)
+  const prepared = stagePrep.data && stagePrep.data.src === ed.src ? stagePrep.data : null
+  const parts = shot ? shotPlanParts(shot, { gutter: ed.gutter, imageFile: ed.backdropFile, prepared }) : null
+  const opts = parts ? parts.opts : first
   // the cadence comes with it: it is what decides the output rate (Timeline.outFps), so
   // leaving it behind planned the stage on a different frame grid than the export's
-  const meta = { width: v.videoWidth, height: v.videoHeight, duration: ed.dur,
+  const meta = parts ? parts.meta : { width: s.w, height: s.h, duration: ed.dur,
     fps: (ed.meta && ed.meta.fps) || 30, cadence: (ed.meta && ed.meta.cadence) || 0 }
-  askPrepared(opts)
-  const prepared = stagePrep.data && stagePrep.data.src === ed.src ? stagePrep.data : null
-  const ctx = { gutter: ed.gutter || null, imageFile: ed.backdropFile || null, prepared }
+  const ctx = parts ? parts.ctx : { gutter: ed.gutter || null, imageFile: ed.backdropFile || null, prepared }
   const key = JSON.stringify([opts, meta, ctx.gutter, ctx.imageFile, prepared ? stagePrep.v : 0])
   if (key !== stageGL.key) {
     stageGL.key = key
@@ -2786,12 +3156,16 @@ function stageGLBox(frame, v, spec) {
 }
 
 function paintStageGL({ fresh = false, upload = false, t = null } = {}) {
-  const frame = $('stageFrame'), v = $('edVideo'), cv = $('stageGL')
+  const frame = $('stageFrame'), v = srcEl(), cv = $('stageGL')
   if (!frame || !v || !cv || stageGL === false) return
+  const size = srcSize(v)
   const off = () => { if (lassoBand) lassoBand.hidden = true; if (frame.dataset.gl === 'on') { frame.dataset.gl = 'off'; paintCam() } }
-  // stepped aside (the Crop tab, a lost context): the frame it holds goes stale, so the
-  // next paint uploads the <video>'s frame again
-  if (ed.tab === 'crop' || !v.videoWidth || cv._lost) { if (stageGL) stageGL.ready = false; return off() }
+  // stepped aside (the Crop tab, Original on a shot, a lost context): the frame it
+  // holds goes stale, so the next paint uploads the source's own pixels again
+  if (ed.tab === 'crop' || (ed.shot && ed.view === 'original') || !size.w || cv._lost) {
+    if (stageGL) stageGL.ready = false
+    return off()
+  }
   try {
     if (!stageGL || stageGL.canvas !== cv) {
       // a fresh stage per take: the last one's context goes, or they pile up to the limit
@@ -2821,14 +3195,14 @@ function paintStageGL({ fresh = false, upload = false, t = null } = {}) {
     const k = Math.min(1, (box.w * dpr) / spec.W)
     comp.resize(spec.W * k, spec.H * k)
     if (upload || !stageGL.ready) {
-      if (v.readyState < 2) return
-      comp.uploadImage('content', v, v.videoWidth, v.videoHeight)
+      if (!ed.shot && v.readyState < 2) return
+      comp.uploadImage('content', v, size.w, size.h)
       stageGL.ready = true
     }
-    const src = t != null ? t : v.currentTime
+    const src = ed.shot ? shotTime() : (t != null ? t : v.currentTime)
     const tOut = stageGL.clock(src)
     const fp = require('./ui/compositor/plan').framePlan(spec, tOut)
-    if (v.paused) fp.fade = 1
+    if (ed.shot || v.paused) fp.fade = 1
     const s = spec.src, c = spec.crop
     // the camera's own <video>, kept on the take's clock by syncCam
     let cam = false, camUV = [0, 0, 1, 1]
@@ -2852,6 +3226,7 @@ function paintStageGL({ fresh = false, upload = false, t = null } = {}) {
     }
     comp.present()
     if (frame.dataset.gl !== 'on') { frame.dataset.gl = 'on'; paintCam() }
+    if (ed.shot) paintShotSize()      // the look decides the size, so it is read off the plan
     // the lasso's band rides the same geometry, so it follows a zoom, a title card
     // and a resize without being told about any of them, and so do the handles on
     // whatever is selected
@@ -2939,6 +3314,13 @@ const LASSO_NEAR = 0.5           // a box drawn at 12 s means nothing at 40 s
 const LASSO_ELS = 8              // moments of elements kept in hand
 const LASSO_WAIT = 2000          // a pass that hangs gives up its say, never the gesture
 
+// The picture the band is drawn over, and the moment it is drawn at. A shot is one
+// frame, so that moment is always the same one. This block is lifted whole into
+// test/stage-pick.test.js, so it asks through its own two accessors rather than the
+// editor's, which do not travel with it.
+const lassoPic = () => (ed.shot ? $('edStill') : null) || $('edVideo')
+const lassoAt = () => (ed.shot ? shotTime() : (lassoPic() || {}).currentTime || 0)
+
 let lassoDrag = null             // { from, to, at, box, element, kind, label } while held
 let lassoBand = null             // the rubber band, one div inside #stageFrame
 let lassoShown = null            // the region the band is standing for, once it is made
@@ -2960,7 +3342,7 @@ function setLasso(on) {
 }
 
 function wireLasso() {
-  const frame = $('stageFrame'), v = $('edVideo')
+  const frame = $('stageFrame'), v = lassoPic()
   if (!frame || !v) return
   if ($('edLasso')) $('edLasso').onclick = () => setLasso(!ed.lasso)
   // the bubble phase: the camera, the caption and the text layers stop their own
@@ -2996,9 +3378,9 @@ const lassoKey = (path, at, crop) =>
 // the pass calls the drag back itself, rather than waiting to be asked by the next
 // mousemove, which for a quick drag never comes.
 function askElements(at) {
-  const path = ed.src, v = $('edVideo')
+  const path = ed.src, v = lassoPic()
   if (!ed.lasso || !path || !v) return Promise.resolve([])
-  at = at != null ? at : v.currentTime
+  at = at != null ? at : lassoAt()
   const g = lassoGeom()
   const crop = g ? g.crop : null
   const key = lassoKey(path, at, crop)
@@ -3025,9 +3407,9 @@ function askElements(at) {
 // What is known about the moment being drawn on. Empty until the pass lands, which
 // is the whole loading story: no spinner, no blocking, no modal.
 function elementsNow(g) {
-  const v = $('edVideo')
+  const v = lassoPic()
   if (!v || !ed.src) return []
-  return elsAt(lassoDrag ? lassoDrag.at : v.currentTime, g ? g.crop : null)
+  return elsAt(lassoDrag ? lassoDrag.at : lassoAt(), g ? g.crop : null)
 }
 
 const elsAt = (at, crop) => (ed.src ? lassoEls.get(lassoKey(ed.src, at, crop)) : null) || []
@@ -3085,11 +3467,11 @@ function bandReading(on) {
 // lifted it), the window margin trimmed inside it, and the zoom in force. Plan.viewAt
 // rather than fp.view0, which with motion blur is half a shutter early.
 function lassoGeom() {
-  const frame = $('stageFrame'), v = $('edVideo'), cv = $('stageGL')
+  const frame = $('stageFrame'), v = lassoPic(), cv = $('stageGL')
   if (!frame || !v || !cv || !stageGL || !stageGL.spec || frame.dataset.gl !== 'on') return null
   const Plan = require('./ui/compositor/plan')
   const spec = stageGL.spec
-  const tOut = stageGL.clock(v.currentTime)
+  const tOut = stageGL.clock(lassoAt())
   const fp = Plan.framePlan(spec, tOut)
   return { spec, cv, W: spec.W, H: spec.H, inner: spec.inner, crop: lassoCropOf(spec),
     rect: Pick.movedRect(spec.rect, fp.move), view: Plan.viewAt(spec, tOut) }
@@ -3151,9 +3533,9 @@ function clearBand() {
 // moment it was drawn at, because a box at 12 s means nothing at 40.
 function paintLasso() {
   if (!lassoBand || lassoDrag) return
-  const v = $('edVideo')
+  const v = lassoPic()
   if (!lassoShown || !v) return
-  const g = Math.abs(v.currentTime - lassoShown.at) > LASSO_NEAR ? null : lassoGeom()
+  const g = Math.abs(lassoAt() - lassoShown.at) > LASSO_NEAR ? null : lassoGeom()
   if (!g) { lassoBand.hidden = true; return }
   placeBand(g, lassoShown.box)
 }
@@ -3182,7 +3564,7 @@ function lassoDown(e) {
   if (!f) return                   // the backdrop, not the take: nothing to point at
   e.preventDefault()
   clearBand()
-  lassoDrag = { from: f, to: f, at: $('edVideo').currentTime, crop: g.crop,
+  lassoDrag = { from: f, to: f, at: lassoAt(), crop: g.crop,
     box: null, element: null, kind: 'free', label: '' }
   askElements(lassoDrag.at)
   document.addEventListener('mousemove', lassoMove)
@@ -3359,7 +3741,10 @@ function addZoom() {
 
 function addMark(kind) {
   if (!ed.src || !ed.dur) return
-  const span = TrackEdit.newSpan(ed.cur, TrackEdit.WANT.mark, { lo: 0, hi: ed.dur, min: TrackEdit.MIN_MARK })
+  // on a shot every mark is on for the whole span, because the frame that is drawn is
+  // the middle of it and a mark that starts there would be drawn half arrived
+  const span = ed.shot ? { start: 0, end: ed.dur }
+    : TrackEdit.newSpan(ed.cur, TrackEdit.WANT.mark, { lo: 0, hi: ed.dur, min: TrackEdit.MIN_MARK })
   if (!span) return toast('There is no room for a mark here.', 'bad')
   // no box from the lasso on purpose: the lasso points Biscuit at an area and writes
   // nothing to the edit, so a mark made here is the person's own rectangle to place

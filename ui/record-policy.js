@@ -88,6 +88,12 @@ function decide(req = {}, policy = {}) {
  * Window ids to keep out of a display capture. Passed to ScreenCaptureKit as
  * excludingWindows, so protected apps are absent from the frame rather than blurred
  * afterwards: nothing sensitive is ever written to disk.
+ *
+ * This can only exclude what it was shown. The list a picker draws is filtered
+ * (WindowList.swift drops anything under 140x120 and deduplicates on app, title and
+ * size), so a password manager's small quick-access panel, or a second window of the
+ * same size and title, is not in it and cannot be named here. Prefer appsToExclude
+ * wherever the helper can enumerate the windows itself.
  */
 function windowsToExclude(windows, policy = {}) {
   const never = policy.neverRecord || DEFAULT_NEVER
@@ -95,6 +101,15 @@ function windowsToExclude(windows, policy = {}) {
     .filter(w => isProtected(w.app, never))
     .map(w => w.id)
 }
+
+/**
+ * The app names to keep out of a capture, for a helper that enumerates the windows
+ * itself. Names rather than window ids, because a list built for a person to read must
+ * never be what decides which pixels are written: every window of a protected app goes,
+ * including the ones no picker would ever show.
+ */
+const appsToExclude = (policy = {}) => (policy.neverRecord || DEFAULT_NEVER)
+  .map(x => (typeof x === 'string' ? x : x && x.app)).filter(Boolean)
 
 // ── settings an agent may change ─────────────────────────────────────────
 // HUMAN_ONLY is the part that makes the rest of this file mean anything: an agent
@@ -131,5 +146,5 @@ function checkSettingsPatch(patch, dirExists = () => true) {
   return out
 }
 
-module.exports = { decide, windowsToExclude, isProtected, DEFAULT_NEVER, MODES,
+module.exports = { decide, windowsToExclude, appsToExclude, isProtected, DEFAULT_NEVER, MODES,
   AGENT_PREFS, HUMAN_ONLY_PREFS, checkSettingsPatch }

@@ -218,5 +218,35 @@ is('a corrupt array is dropped, not fatal', d.normalize({ clips: 'nope' }, '/a.m
   is('and it asks for nothing per clip either', d.toExportOpts(back).clipAudio, null)
 }
 
+// ---- the mark family decides on screen, not on the clock ----
+// A shot has no timeline and reaches these through one lent span (ui/shot.js). Every
+// claim below is the same claim: with the times equal, the answer still comes out, and
+// it comes out of where the marks are. Break one of these and screenshots break with it.
+{
+  const SPAN = [0, 4]
+  const one = (kind, x, y, w, h, extra = {}) => ({ kind, start: SPAN[0], end: SPAN[1], x, y, w, h, ...extra })
+
+  is('an id-less mark is matched to the one it replaces with no time to tell them apart',
+    d.adoptIds([one('blur', 0.1, 0.1, 0.2, 0.1, { id: 'M7' })], [one('blur', 0.1, 0.1, 0.2, 0.1)]).map(m => m.id), ['M7'])
+
+  is('a mark not sent survives even though every mark shares one span',
+    d.mergeMarks([one('redact', 0.1, 0.1, 0.2, 0.1, { id: 'M1' })], [one('step', 0.5, 0.5, 0, 0, { id: 'M2' })], null)
+      .marks.map(m => m.id), ['M1', 'M2'])
+
+  // the whole point: with the clock saying nothing, overlap on screen decides alone
+  const covered = d.settleFocus([one('spotlight', 0.2, 0.2, 0.4, 0.3, { id: 'M1' })],
+    [one('spotlight', 0.2, 0.2, 0.4, 0.3, { id: 'M1' }), one('lift', 0.22, 0.22, 0.36, 0.26)])
+  is('a lift over a spotlight replaces it on the spatial test alone', covered.replaced, ['M1'])
+  const beside = d.settleFocus([one('spotlight', 0.2, 0.2, 0.3, 0.2, { id: 'M1' })],
+    [one('spotlight', 0.2, 0.2, 0.3, 0.2, { id: 'M1' }), one('lift', 0.7, 0.7, 0.2, 0.2)])
+  is('and one somewhere else does not', beside.replaced, [])
+
+  is('two sharing the one span and the screen are still reported',
+    d.focusClashes([one('lift', 0.2, 0.2, 0.3, 0.3, { id: 'M1' }), one('spotlight', 0.3, 0.3, 0.3, 0.3, { id: 'M2' })])
+      .map(c => [c.a, c.b]), [['M1', 'M2']])
+  is('and two that only share the span are not',
+    d.focusClashes([one('lift', 0.05, 0.05, 0.2, 0.2, { id: 'M1' }), one('spotlight', 0.7, 0.7, 0.2, 0.2, { id: 'M2' })]), [])
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

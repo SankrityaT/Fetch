@@ -1,12 +1,22 @@
-/* Fetch: styles for virtual folders in the Library. Injected by ui/library.js
-   so control.html never has to reference this file directly. Reuses the
+/* Fetch: styles for the Library, which holds screenshots and recordings. Injected by
+   ui/library.js so control.html never has to reference this file directly. Reuses the
    tokens and component classes from tokens.css and components.css. */
 
-/* ── folder bar, a horizontal row of chips above the grid ─────────────── */
-.folder-bar {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2);
-  margin-bottom: var(--s-4);
-}
+/* ── the bar above the grid ───────────────────────────────────────────────
+   Two rows: what kind and how it is sorted on top, where it lives underneath.
+   Folders wrap; the kind switch and the search never do. */
+.lib-bar { display: grid; gap: var(--s-2); margin-bottom: var(--s-4); }
+.lib-bar-row { display: flex; align-items: center; gap: var(--s-2); }
+.lib-bar-row.wrap { flex-wrap: wrap; }
+.lib-bar-sep { flex: none; width: 1px; height: 18px; margin: 0 var(--s-1); background: var(--ink-3); }
+.seg .chip-count { margin-left: 6px; }
+
+.lib-search { position: relative; display: flex; align-items: center; width: 210px; max-width: 34vw; }
+.lib-search .icon-sm { position: absolute; left: 11px; color: var(--text-2); pointer-events: none; }
+.lib-search .input { padding-left: 32px; }
+/* every control here is drawn by us, and the one the browser offers is not ours */
+.lib-search .input::-webkit-search-cancel-button { display: none; }
+
 .folder-chip { position: relative; }
 .folder-chip .chip-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-count {
@@ -29,9 +39,39 @@
 .new-folder-chip { border-style: dashed; color: var(--text-2); }
 .new-folder-chip:hover { color: var(--text-0); }
 
-/* ── folder tag shown on a card that belongs to at least one folder ────── */
-.clip-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* ── the gallery, grouped by day ───────────────────────────────────────────
+   A day is a run of the same masonry the whole grid is, under a heading. The heading
+   only appears while the grid is in date order (ui/library.js, byDay), so it never
+   sits over a list that is not in day order. */
+.lib-grid.by-day { display: block; }
+.lib-day + .lib-day { margin-top: var(--s-6); }
+.lib-day-head { display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-3); }
+.lib-day-label {
+  font-family: var(--font-display); font-size: var(--t-13); font-weight: 800;
+  letter-spacing: -.02em; color: var(--text-1); flex: none;
+}
+.lib-day-head::after { content: ''; flex: 1; height: 1px; background: var(--ink-3); opacity: .55; }
+.lib-day-grid { display: flex; align-items: flex-start; gap: var(--s-4); }
+
+/* ── what a card says about itself: kind, platform, folders ──────────────
+   Three small chips can outgrow one line beside a long name, so the row wraps rather
+   than squeezing the name it is labelling. */
+.clip-name-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .clip-name-row .clip-name { min-width: 0; flex: 1; cursor: text; }
+.kind {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  height: 18px; padding: 0 7px; border-radius: var(--r-pill);
+  background: var(--ink-2); border: 1px solid var(--ink-3);
+  font-size: 10px; font-weight: 600; color: var(--text-1); white-space: nowrap;
+}
+.kind .icon-sm { width: 11px; height: 11px; color: var(--fur-1); }
+.kind-platform { color: var(--text-2); }
+
+/* A screenshot is the picture, not a preview of one: the tile is already its real
+   shape (.clip-shot img is width:100%, height:auto, so nothing is ever cropped), and
+   the play button over it belongs to a recording. */
+.clip:has(.kind-shot) .clip-play span { display: none; }
+.clip:has(.kind-shot) .clip-play { background: linear-gradient(transparent, rgba(11, 10, 9, .4)); }
 
 /* ── inline rename, in place on the card, no modal ──────────────────────── */
 .clip-name-edit {
@@ -59,6 +99,19 @@
   animation: libMenuIn var(--dur-1) var(--ease-in);
 }
 @keyframes libMenuIn { from { opacity: 0; transform: translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) { .lib-menu { animation: none; } }
+
+/* ── the ⓘ panel: what this item was made from, and what came out of it ─── */
+.lib-info { min-width: 236px; max-width: 330px; padding: 10px 12px; display: grid; gap: 5px; }
+.lib-info-head {
+  font-size: var(--t-12); font-weight: 600; color: var(--text-0);
+  padding-bottom: 7px; border-bottom: var(--edge);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lib-info-row { display: flex; gap: var(--s-3); align-items: baseline; font-size: var(--t-11); }
+.lib-info-k { flex: none; width: 84px; color: var(--text-2); }
+.lib-info-v { flex: 1; min-width: 0; color: var(--text-1); overflow-wrap: anywhere; }
+.lib-info-v.mono { font-family: var(--font-mono); font-size: 10px; color: var(--text-2); }
 .lib-menu-item {
   display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 9px;
   border-radius: var(--r-sm); background: transparent; color: var(--text-1);

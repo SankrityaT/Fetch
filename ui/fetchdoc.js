@@ -524,6 +524,15 @@ function toRenderSpec(doc) {
 const LISTS = ['clips', 'zooms', 'texts', 'marks', 'cues', 'beats']
 const OBJECTS = ['camera', 'audioTrack']
 
+// ── what the mark family reads of the clock ─────────────────────────────
+// sameItem, adoptIds, mergeMarks, settleFocus and focusClashes decide by id and by
+// where a thing sits on screen; a time only ever narrows an answer they already have.
+// ui/shot.js leans on that. A shot has no timeline, so it lends every mark the same
+// span and runs them through here, and a time test that always passes leaves the
+// spatial one deciding, which is exactly what a still wants. A comparison added below
+// that a shared span cannot satisfy would break shots in silence, so
+// test/fetchdoc.test.js pins it.
+
 // ── ids an agent left off ───────────────────────────────────────────────
 // A list is replaced whole, so an agent adding one lift sends every mark back, and
 // often without the ids it was shown. Each then got a new id (M45 to M52 became M54

@@ -89,7 +89,8 @@ const FIELDS = [
   f('frame.radius', 'number', 14, { min: 0, max: 60, step: 1, unit: 'px', label: 'Corners',
     doc: 'Corner radius of the framed take, in pixels on a 1080p output.', when: { 'background.kind': '!none' } }),
   f('frame.shadow', 'number', 0.6, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Shadow',
-    doc: 'Strength of the soft shadow under the framed take.', when: { 'background.kind': '!none' } }),
+    doc: 'Strength of the soft shadow under the framed take.',
+    when: { 'background.kind': '!none' } }),
   f('frame.chrome', 'enum', 'remove', { options: ['keep', 'remove', 'clean'], label: 'Browser chrome',
     doc: 'A browser take\'s tabs and toolbar. remove crops them off where Fetch knows the page\'s place ' +
       '(an agent recorded it by reporting its pointer with viewport); keep leaves them; clean crops the same way and draws a frame of Fetch\'s own round the page.',
@@ -103,13 +104,15 @@ const FIELDS = [
 
   // ── device ──
   f('device.kind', 'enum', 'none', { options: ['none', 'browser', 'window', 'laptop', 'phone'], label: 'Device',
-    doc: 'A drawn frame round the take: generic shapes, never a real product. frame.chrome clean draws the browser one on its own.',
+    doc: 'A drawn frame round the take: generic shapes, never a real product. frame.chrome clean draws the browser one on its own. ' +
+      'A shot of several captures draws one frame each, the capture\'s own or this.',
     classic: false }),
   f('device.title', 'string', '', { label: 'Address',
     doc: 'The address a browser frame shows, or a window frame\'s title. Fetch records no page address, so an empty one leaves the bar blank.',
     classic: false, when: { 'device.kind': '!none' } }),
   f('device.theme', 'enum', 'auto', { options: ['auto', 'light', 'dark'], label: 'Device tone',
-    doc: 'The shell\'s own tone. auto steps in from the ground: graphite on a dark one, bone on a light one.',
+    doc: 'The shell\'s own tone. auto steps in from the ground: graphite on a dark one, bone on a light one. ' +
+      'One tone for every frame in a shot.',
     classic: false, when: { 'device.kind': '!none' } }),
 
   // ── background ──

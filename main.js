@@ -100,6 +100,15 @@ function newTakePath(ext) {
   fs.mkdirSync(dir, { recursive: true })
   return path.join(dir, `${stem}.${ext}`)
 }
+// A still lands in the same shape, for the same reason: the capture goes in Original
+// and never moves again, so whatever the compositor writes beside it is a second file
+// and the raw pixels stay one click away forever.
+function newShotPath(ext = 'png') {
+  const stem = `shot-${Date.now()}`
+  const dir = path.join(resolvedSaveDir(), stem, 'Original')
+  fs.mkdirSync(dir, { recursive: true })
+  return { stem, dir, file: path.join(dir, `${stem}.${ext}`) }
+}
 
 ipcMain.on('prefs-get-sync', e => { e.returnValue = loadPrefs() })
 ipcMain.handle('prefs-set', (e, patch) => {
@@ -246,6 +255,9 @@ app.whenReady().then(() => {
     // how much of a window others in front of it hide (WindowList --covered), or null
     windowCovered: id => runHelper(['--covered', String(id)]).then(o => { try { return JSON.parse(o || 'null') } catch { return null } }),
     getPrefs: loadPrefs,
+    // One captured frame, through the same policy gate and the same take folder a
+    // recording uses. The bridge asks the person first and passes approved.
+    takeShot,
     // Exports an agent asks for go through the same queue as the ones a person
     // starts, one heavy job at a time, so ten requests in a second cannot become ten
     // ffmpeg processes each threading across every core.
@@ -1265,6 +1277,141 @@ ipcMain.handle('native-commit', async (e, tmp) => {
   return { ok: true, file }
 })
 
+// ---------- stills ----------
+// A screenshot is a take of one frame, so it comes through the same door: the same
+// ScreenCaptureKit family (Shot.swift), the same never-record list, the same folder
+// with the raw capture in Original. Nothing here renders. Everything that turns this
+// PNG into a finished one is the compositor's, which already draws every part of it.
+function shotPath() {
+  for (const dir of [process.resourcesPath || '.', __dirname]) {
+    const p = path.join(dir, 'Shot')
+    if (fs.existsSync(p)) return p
+  }
+  return null
+}
+
+const runShot = args => new Promise(resolve => {
+  const bin = shotPath()
+  if (!bin) return resolve({ ok: false, error: 'the screenshot helper is not in this build' })
+  require('child_process').execFile(bin, args, { timeout: 20000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+    // The helper answers in JSON whichever way it went, so a parse failure means it
+    // never got to speak: a crash, or a kill on the timeout.
+    try { return resolve(JSON.parse(String(stdout).trim().split('\n').pop())) } catch {}
+    resolve({ ok: false, error: (err && err.message) || 'the screenshot helper said nothing' })
+  })
+})
+
+// Darwin 23 is macOS 14, where SCScreenshotManager arrived. Older Macs still record.
+ipcMain.handle('shot-available', () => ({ ok: !!shotPath() && majorOSVersion() >= 23 }))
+
+// opts: { windowId } | { displayId } | { region: {x,y,width,height}, displayId? },
+// plus by: 'agent' | 'human', cursor, windowShadow, approved.
+//
+// A named function rather than only a handler, because the agent bridge runs in this
+// process and calls it directly (take_shot).
+async function takeShot(opts = {}) {
+  if (!shotPath()) return { ok: false, error: 'the screenshot helper is not in this build' }
+  if (majorOSVersion() < 23) return { ok: false, error: 'stills need macOS 14 or later' }
+  const policy = require('./ui/record-policy')
+  const prefs = loadPrefs()
+  const by = opts.by === 'agent' ? 'agent' : 'human'
+  const r = opts.region ? {
+    x: Math.round(opts.region.x), y: Math.round(opts.region.y),
+    w: Math.round(opts.region.width != null ? opts.region.width : opts.region.w),
+    h: Math.round(opts.region.height != null ? opts.region.height : opts.region.h),
+  } : null
+  if (r && ![r.x, r.y, r.w, r.h].every(Number.isFinite)) return { ok: false, error: 'a region needs x, y, width and height' }
+  if (r && (r.w < 1 || r.h < 1)) return { ok: false, error: 'that region has no size' }
+  const kind = opts.windowId ? 'window' : r ? 'region' : 'display'
+
+  // The never-record list is applied here, before a pixel is read, exactly as a take
+  // applies it: a protected window is never the target, and on anything wider it is
+  // left out of the frame rather than captured and cropped afterwards.
+  const wins = await listWindowsJson()
+  let app = null
+  if (kind === 'window') {
+    const hit = wins.find(w => String(w.id) === String(opts.windowId))
+    app = hit && hit.app
+  }
+  // A region is judged as a display: it sees whatever happens to be under it, and no
+  // list of apps can be honoured by excluding windows from a rectangle.
+  const verdict = policy.decide({ by, kind: kind === 'window' ? 'window' : 'display', app },
+    { mode: prefs.recordAccess, neverRecord: prefs.neverRecord, allowedApps: prefs.allowedRecordApps })
+  if (!verdict.allow) return { ok: false, error: `Fetch refused to capture: ${verdict.reason}` }
+  // 'Ask' means a person approves every agent capture. The question belongs to whoever
+  // is holding the agent's request (ui/agent-bridge.js asks it once and can remember a
+  // yes for the session), so this refuses rather than raising a second dialog.
+  if (verdict.needsApproval && !opts.approved) {
+    return { ok: false, needsApproval: true, kind, app,
+      error: 'Fetch refused to capture: nobody at the Mac has approved this yet' }
+  }
+
+  const { stem, dir, file } = newShotPath('png')
+  const args = ['--out', file]
+  if (kind === 'window') args.push('--window', String(opts.windowId))
+  else {
+    if (opts.displayId) args.push('--display', String(opts.displayId))
+    if (r) args.push('--region', [r.x, r.y, r.w, r.h].join(','))
+    // By name, and by id as well. The ids come off the list a picker draws, which is
+    // filtered for readability and so cannot see a password manager's small panel or a
+    // second window with the same title and size. The helper matches the names against
+    // every window it can see, so what is left out is decided where the pixels are read.
+    const drop = policy.windowsToExclude(wins, { neverRecord: prefs.neverRecord })
+    if (drop.length) args.push('--exclude', drop.join(','))
+    for (const name of policy.appsToExclude({ neverRecord: prefs.neverRecord })) args.push('--exclude-app', name)
+  }
+  // The person's own pointer is out of a still unless it is the point of the shot.
+  if (opts.cursor) args.push('--cursor')
+  if (opts.windowShadow) args.push('--window-shadow')
+
+  // Fetch's own window is never in the shot. The recording path hides it (setRecState),
+  // and WindowList never lists Fetch, so its window id can never reach --exclude: being
+  // off screen while the helper reads the pixels is the only way out of a display or a
+  // region capture. A window capture reads one window's backing store and does not care.
+  const hideMe = kind !== 'window' && control && !control.isDestroyed() && control.isVisible()
+  const hadFocus = hideMe && control.isFocused()
+  if (hideMe) {
+    control.hide()
+    // the window server takes a moment to stop compositing it
+    await new Promise(r => setTimeout(r, 150))
+  }
+  let got
+  try { got = await runShot(args) } finally {
+    if (hideMe && control && !control.isDestroyed()) hadFocus ? control.show() : control.showInactive()
+  }
+  if (!got || !got.ok) {
+    // Nothing was written, so the folder it would have gone in should not outlive it
+    // in the library as an empty shot.
+    try { fs.rmSync(path.join(resolvedSaveDir(), stem), { recursive: true, force: true }) } catch {}
+    return { ok: false, error: (got && got.error) || 'the shot was not written', kind }
+  }
+  return { ...got, ok: true, ...nameShot(file, stem, got, kind, by), dir }
+}
+ipcMain.handle('take-shot', (e, opts = {}) => takeShot(opts))
+
+// A capture named from what it captured, the way a take is named from the app in
+// front. A still has no transcript, so this is the only name it will ever get by
+// itself, and shot-<epoch> is a timestamp nobody typed. An agent's capture is left
+// alone here: the bridge names it, and it may have been handed a name to use.
+// Returns { name, original }, whichever way the rename went.
+function nameShot(file, stem, got, kind, by) {
+  if (by === 'agent') return { name: stem, original: file }
+  try {
+    const naming = require('./ui/naming')
+    const want = naming.shotName({ app: got.app, title: got.title, area: kind })
+    if (!want || want === stem) return { name: stem, original: file }
+    const P = require('./processor')
+    const r = P.renameTake(file, want)
+    // so a later naming knows this name was Fetch's and may still be improved
+    try { P.writeNameNote(r.path, P.takeName(r.path), 'app', { front: { app: got.app, title: got.title } }) } catch {}
+    agentBridge.noteMoves(r.moves)
+    return { name: P.takeName(r.path), original: r.path }
+  } catch (err) {
+    console.warn('[shot] could not name the capture:', err.message)
+    return { name: stem, original: file }
+  }
+}
+
 // ---------- edit / post-production ----------
 const proc = require('./processor')
 proc.setTakesRoot(resolvedSaveDir)
@@ -1497,6 +1644,10 @@ ipcMain.handle('frame-gutter', (e, src, dur, crop) => proc.frameGutter(src, 0, d
 // the export reads (ui/compositor/prepare.js)
 ipcMain.handle('render-prepare', (e, src, opts) => require('./ui/compositor/prepare').prepareRender(src, opts || {}))
 ipcMain.handle('write-doc', (e, src, doc) => proc.writeDoc(src, doc))
+// The same two for a shot. A capture says its size rather than its length, so the
+// read takes { w, h } where a take's takes a duration.
+ipcMain.handle('read-shot', (e, src, size) => proc.readShot(src, size))
+ipcMain.handle('write-shot', (e, src, shot) => proc.writeShot(src, shot))
 ipcMain.handle('beats-for', (e, src, dur) => proc.beatsFor(src, dur))
 
 ipcMain.handle('read-cues', (e, src) => proc.readCues(src))
@@ -1604,6 +1755,15 @@ ipcMain.handle('edit-job', async (e, payload) => {
         case 'waveform':   result = await proc.waveform(payload.src, o, onP, id); break
       case 'filmstrip':  result = await proc.filmstrip(payload.src, o, onP, id); break
         case 'export':     result = await require('./ui/render-host').exportEdit(payload.src, o, onP, id); break
+        // A shot is drawn from the same plan an export is, and lands where an export
+        // lands: beside its Original, named after the folder.
+        case 'shot': {
+          const out = payload.out || {}
+          const fmt = (out.format || 'png').toLowerCase() === 'png' ? 'png' : 'jpg'
+          result = await require('./ui/render-host').renderShot(payload.src, o,
+            { ...out, dest: out.dest || proc.exportDest(payload.src, fmt) }, id)
+          break
+        }
         case 'transcribe':
           result = await proc.transcribe(payload.src, o,
             (pct, isDownload) => send('progress', isDownload ? { downloadPct: pct } : { pct }), id)

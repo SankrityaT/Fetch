@@ -34,6 +34,14 @@
 //   sheet      the contact sheet an agent sees motion in: every cell is the frame
 //              preview_frame draws at the output time burned into it, the cells move,
 //              and a cut out of the middle is nowhere on the sheet
+//   shots      a screenshot, which is a take of one frame: a styled still against its
+//              golden, the same plan at 1x, 2x and 3x, the gold keyline and the
+//              capture's own text at each of them, a redaction that still destroys at
+//              3x, and the file that comes out
+//   group      more than one capture in one picture: two devices, three, and a group
+//              where one capture has forty times the pixels of the other, each at its
+//              real size in millimetres, on one line, under one light, under one grade,
+//              on one ground that wears its tooth once
 //   sinks      each encoder (WebCodecs, VideoToolbox through ffmpeg, x264) keeps the
 //              bars' colours, and the canvas encoder one frame per slot
 //   audio      the sound (cuts, fades, an added track, a music bed) is as long as the
@@ -110,9 +118,245 @@ function rgbOf(file) {
 // One step between two frames, in levels: what the eye gets is the mean, what a single
 // speck of noise gets is the max, and a seam has to be judged on both.
 function step(a, b) {
+  if (a.length !== b.length) return { mean: 255, max: 255, sizeChanged: true }
   let sum = 0, max = 0
   for (let k = 0; k < a.length; k++) { const d = Math.abs(a[k] - b[k]); sum += d; if (d > max) max = d }
   return { mean: +(sum / a.length).toFixed(4), max }
+}
+
+// ---- stills ----------------------------------------------------------------
+// A screenshot is read close and often at 2x or 3x, so the measurements below are about
+// the two things a still has that a frame of a clip does not: it exists at more than one
+// size, and nothing stands between the drawn frame and the file someone opens.
+
+const lumaAt = (rgb, W, x, y) => { const p = 3 * (y * W + x); return 0.2126 * rgb[p] + 0.7152 * rgb[p + 1] + 0.0722 * rgb[p + 2] }
+const median = a => (a.length ? [...a].sort((p, q) => p - q)[a.length >> 1] : 0)
+
+/**
+ * How long a light-to-dark step takes, over a box: for every monotone run along a row
+ * whose two ends are at least `min` levels apart, how many of its samples sit between a
+ * tenth and nine tenths of the way across. That is the rise, and it is about one pixel
+ * for anything rasterised at the size it is drawn at, whatever that size is. A picture
+ * enlarged into its pixels takes as many as it was enlarged by, and a run rather than a
+ * rise would measure the width of a glyph's stroke instead of the sharpness of its edge.
+ * Returns the median rise, the median contrast across a step, and how many it found.
+ */
+function stepRuns(rgb, W, box, min = 40) {
+  const rises = [], tall = []
+  const x1 = box.x + box.w - 1
+  for (let y = box.y; y < box.y + box.h; y++) {
+    let x = box.x
+    while (x < x1) {
+      const dir = Math.sign(lumaAt(rgb, W, x + 1, y) - lumaAt(rgb, W, x, y))
+      if (!dir) { x++; continue }
+      let e = x
+      while (e < x1 && Math.sign(lumaAt(rgb, W, e + 1, y) - lumaAt(rgb, W, e, y)) === dir) e++
+      const a = lumaAt(rgb, W, x, y), b = lumaAt(rgb, W, e, y), total = Math.abs(b - a)
+      if (total >= min) {
+        const lo = Math.min(a, b) + 0.1 * total, hi = Math.min(a, b) + 0.9 * total
+        let mid = 0
+        for (let q = x; q <= e; q++) { const v = lumaAt(rgb, W, q, y); if (v > lo && v < hi) mid++ }
+        rises.push(mid); tall.push(total)
+      }
+      x = e
+    }
+  }
+  return { rise: median(rises), contrast: +median(tall).toFixed(1), n: rises.length }
+}
+
+/**
+ * The finest thing inside a box, in pixels: the share of neighbouring pairs along a row
+ * that differ at all, read back as the distance between them. A redaction replaces what
+ * is under it with cells of one colour, so this is how big those cells are on the
+ * delivered picture, and nothing smaller than one survived.
+ */
+function finest(rgb, W, box) {
+  let pairs = 0, moved = 0
+  for (let y = box.y; y < box.y + box.h; y++) {
+    for (let x = box.x; x < box.x + box.w - 1; x++) {
+      pairs++
+      if (Math.abs(lumaAt(rgb, W, x + 1, y) - lumaAt(rgb, W, x, y)) > 2) moved++
+    }
+  }
+  return moved ? +(pairs / moved).toFixed(1) : Infinity
+}
+
+/**
+ * Fetch's own gold, measured as a line: every horizontal run of gold pixels in the
+ * frame, and how many part-gold pixels stand at the start of one. A keyline the plan
+ * draws 2 px wide is 2k pixels at scale k, and its edge is still about a pixel, because
+ * it was drawn at that size rather than enlarged into it.
+ */
+function goldRuns(rgb, W, H) {
+  const gold = p => rgb[p] - rgb[p + 2] > 70 && rgb[p] > 120 && rgb[p + 1] > 80
+  const part = p => rgb[p] - rgb[p + 2] > 15 && rgb[p] - rgb[p + 2] <= 70
+  const runs = [], edges = []
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W;) {
+      if (!gold(3 * (y * W + x))) { x++; continue }
+      let e = x
+      while (e < W && gold(3 * (y * W + e))) e++
+      runs.push(e - x)
+      let soft = 0
+      while (soft < 8 && x - 1 - soft >= 0 && part(3 * (y * W + x - 1 - soft))) soft++
+      edges.push(soft)
+      x = e
+    }
+  }
+  return { width: median(runs), rise: median(edges), n: runs.length }
+}
+
+// A captured window, the way a screenshot arrives: a light app UI at 3420 by 1780,
+// which is a 1710 point window on a 2x display. Flat fields, 2 px hairlines (one point)
+// and small text are exactly what a still has to carry close up, and the synthetic take
+// the other groups use has none of them. Built here because the stills are this round's
+// work and test/gl/fixtures.sh is not this round's file.
+const SHOT_SRC = path.join(FIX, 'shot.png')
+function shotFixture() {
+  if (fs.existsSync(SHOT_SRC)) return SHOT_SRC
+  const W = 3420, H = 1780, ROW = 140, TOP = 160
+  const box = (x, y, w, h, c) => `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${c}:t=fill`
+  const text = (t, x, y, px, c) => `drawtext=text='${t}':x=${x}:y=${y}:fontsize=${px}:fontcolor=${c}`
+  const f = [
+    box(0, 0, 520, H, '0xF2EFEA'), box(520, 0, 2, H, '0xDDD6CD'),
+    box(522, 0, W, 120, '0xFFFFFF'), box(522, 118, W, 2, '0xDDD6CD'),
+    text('Library', 60, 48, 42, '0x2A2520'), text('312 songs', 60, 140, 30, '0x8E857C'),
+    text('Title', 600, 44, 30, '0x8E857C'), text('Tempo', 2280, 44, 30, '0x8E857C'), text('Key', 2760, 44, 30, '0x8E857C'),
+  ]
+  const rows = ['Nocturne in E flat', 'Prelude no 4', 'Etude in C sharp', 'Gymnopedie no 1', 'Arabesque no 1',
+    'Reverie', 'Clair de lune', 'Valse in A minor', 'Mazurka no 3', 'Berceuse']
+  for (let i = 0; i < rows.length; i++) {
+    const y = TOP + i * ROW
+    f.push(box(522, y + ROW - 2, W, 2, '0xE6E0D8'))
+    f.push(text(rows[i], 600, y + 48, 34, '0x2A2520'))
+    f.push(text(`${96 + i * 7} BPM`, 2280, y + 48, 34, '0x8E857C'))
+    // one row carries an address, because a redaction has to have something to destroy.
+    // Plainly not a real one: nothing shaped like a live secret belongs in a fixture.
+    f.push(text(i === 1 ? 'ada at example.test' : 'D minor', 2760, y + 48, 34, '0x8E857C'))
+  }
+  const r = spawnSync('/opt/homebrew/bin/ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', `color=c=0xFBFAF8:s=${W}x${H}`, '-vf', f.join(','), '-frames:v', '1', SHOT_SRC])
+  if (!fs.existsSync(SHOT_SRC)) throw new Error('could not draw the shot fixture: ' + String(r.stderr || r.error).slice(0, 300))
+  return SHOT_SRC
+}
+
+// ---- a group ---------------------------------------------------------------
+// More than one capture in one picture. The three below are the captures a group is
+// actually made of: a wide light window off a 2x desktop, a tall handset at 3x, and a
+// 5K desktop beside a capture with a fortieth of its pixels. Built here rather than in
+// test/gl/fixtures.sh, which is not this round's file.
+
+// A flat page of rows with hairlines and small text: what a capture is made of, at
+// whatever size and density the caller asks for. px is the text size in the capture's
+// own pixels, so a 3x handset and a 1x window both come out legible at their own scale.
+function pageFixture(file, W, H, o = {}) {
+  if (fs.existsSync(file)) return file
+  const px = o.px || Math.round(W / 100)
+  const ink = o.ink || '0x2A2520', dim = o.dim || '0x8E857C'
+  const bg = o.bg || '0xFBFAF8', line = o.line || '0xE6E0D8'
+  const top = Math.round(H * (o.top || 0.14)), row = Math.round(H * (o.row || 0.075))
+  const left = Math.round(W * (o.left || 0.07)), rail = o.rail ? Math.round(W * o.rail) : 0
+  const box = (x, y, w, h, c) => `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${c}:t=fill`
+  const text = (t, x, y, size, c) => `drawtext=text='${t}':x=${x}:y=${y}:fontsize=${size}:fontcolor=${c}`
+  const f = []
+  if (rail) f.push(box(0, 0, rail, H, '0xF2EFEA'), box(rail, 0, 2, H, '0xDDD6CD'))
+  f.push(box(rail, 0, W, Math.round(top * 0.6), '0xFFFFFF'), box(rail, Math.round(top * 0.6) - 2, W, 2, '0xDDD6CD'))
+  f.push(text(o.title || 'Library', left, Math.round(top * 0.2), Math.round(px * 1.3), ink))
+  const rows = o.rows || ['Nocturne in E flat', 'Prelude no 4', 'Etude in C sharp', 'Gymnopedie no 1',
+    'Arabesque no 1', 'Reverie', 'Clair de lune', 'Valse in A minor']
+  for (let i = 0; i < rows.length && top + (i + 1) * row < H; i++) {
+    const y = top + i * row
+    f.push(box(rail, y + row - 2, W, 2, line))
+    f.push(text(rows[i], left, y + Math.round(row * 0.3), px, ink))
+    f.push(text(`${96 + i * 7} BPM`, Math.round(W * 0.74), y + Math.round(row * 0.3), px, dim))
+  }
+  const r = spawnSync('/opt/homebrew/bin/ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', `color=c=${bg}:s=${W}x${H}`, '-vf', f.join(','), '-frames:v', '1', file])
+  if (!fs.existsSync(file)) throw new Error('could not draw ' + file + ': ' + String(r.stderr || r.error).slice(0, 300))
+  return file
+}
+
+// The members of the three groups, each with what is known about how big the real thing
+// is. scale is the capture's backing scale, which with the frame the look asks for is
+// all Fetch needs to put a handset beside a window at the size a handset really is.
+const GROUP_PICS = {
+  // 1710 points wide on a 2x display: an ordinary app window on a desk
+  desk: { file: path.join(FIX, 'g-desk.png'), w: 3420, h: 1780, scale: 2, device: 'window',
+    opts: { px: 34, rail: 0.15, title: 'Library' } },
+  // 393 points on a 3x handset, which is about 62 mm of real glass
+  hand: { file: path.join(FIX, 'g-hand.png'), w: 1179, h: 2556, scale: 3, device: 'phone',
+    opts: { px: 42, top: 0.09, row: 0.062, left: 0.09, title: 'Today' } },
+  // a 1280 point browser page on the same desk
+  web: { file: path.join(FIX, 'g-web.png'), w: 2560, h: 1600, scale: 2, device: 'browser',
+    opts: { px: 28, left: 0.06, title: 'Releases', rows: ['2.0 Shots', '1.9 Loop', '1.8 Keys', '1.7 Grain'] } },
+  // a 5K desktop: 2560 points, and eight and a half pixels to the millimetre
+  wall: { file: path.join(FIX, 'g-wall.png'), w: 5120, h: 2880, scale: 2, device: 'window',
+    opts: { px: 44, rail: 0.14, title: 'Sessions' } },
+  // and a capture with a fortieth of its pixels: 800 points at 1x, four and a third
+  // pixels to the millimetre, which is the case a group has to survive
+  // Its text is drawn at the same real size as the 5K capture's, about five
+  // millimetres: 44 px at 8.66 px per mm, 22 px at 4.33. So on the finished frame the
+  // two have to land at the same size, whatever their pixel counts say.
+  tiny: { file: path.join(FIX, 'g-tiny.png'), w: 800, h: 500, scale: 1, device: 'window',
+    opts: { px: 22, top: 0.2, row: 0.15, left: 0.06, title: 'Notes',
+      rows: ['Ada', 'Grace', 'Alan', 'Edsger', 'Barbara'] } },
+}
+const member = (name, extra = {}) => {
+  const p = GROUP_PICS[name]
+  pageFixture(p.file, p.w, p.h, p.opts)
+  return { src: p.file, w: p.w, h: p.h, scale: p.scale, device: p.device, ...extra }
+}
+
+// Where a member's shell stands on the finished frame, in the pixels the file was
+// written at: the plan's own numbers scaled by how far the plan was scaled.
+const extentOf = (r, i) => {
+  const e = r.group[i].extent, k = r.W / r.planW
+  return { x: Math.round(e.x * k), y: Math.round(e.y * k), w: Math.round(e.w * k), h: Math.round(e.h * k) }
+}
+const screenOf = (r, i) => {
+  const b = r.group[i].rect, k = r.W / r.planW
+  return { x: Math.round(b.x * k), y: Math.round(b.y * k), w: Math.round(b.w * k), h: Math.round(b.h * k) }
+}
+// a box a fraction in from each side of another, so a measurement is of the thing and
+// not of its own edge
+const inset = (b, f) => ({ x: Math.round(b.x + b.w * f), y: Math.round(b.y + b.h * f),
+  w: Math.round(b.w * (1 - 2 * f)), h: Math.round(b.h * (1 - 2 * f)) })
+const meanLuma = (rgb, W, b) => {
+  let s = 0, n = 0
+  for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) { s += lumaAt(rgb, W, x, y); n++ }
+  return n ? s / n : 0
+}
+// How saturated a box is, at most: the largest channel spread of any pixel in it. A
+// monochrome grade takes this to nothing; a ground the grade never reached keeps it.
+const maxChroma = (rgb, W, b) => {
+  let m = 0
+  for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) {
+    const p = 3 * (y * W + x)
+    const d = Math.max(rgb[p], rgb[p + 1], rgb[p + 2]) - Math.min(rgb[p], rgb[p + 1], rgb[p + 2])
+    if (d > m) m = d
+  }
+  return m
+}
+// The noise on a flat field: the mean absolute step between neighbours along a row. The
+// ground's tooth is three levels of it, and a ground that wore it once per member of a
+// group would measure two or three times this.
+const grit = (rgb, W, b) => {
+  let s = 0, n = 0
+  for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w - 1; x++) {
+    s += Math.abs(lumaAt(rgb, W, x + 1, y) - lumaAt(rgb, W, x, y)); n++
+  }
+  return n ? +(s / n).toFixed(3) : 0
+}
+// How far a shadow reaches under an object: walking straight down from the bottom of
+// its extent, the first row at which the ground is back within a level of the ground
+// well clear of everything. One light means one of these, whatever the object's size.
+function shadowReach(rgb, W, H, ext, clear) {
+  const x = Math.round(ext.x + ext.w / 2)
+  let y = Math.min(H - 2, ext.y + ext.h)
+  const dark = lumaAt(rgb, W, x, y)
+  if (clear - dark < 1) return 0
+  for (; y < H - 1; y++) if (clear - lumaAt(rgb, W, x, y) < 1) break
+  return y - (ext.y + ext.h)
 }
 
 app.whenReady().then(async () => {
@@ -155,6 +399,56 @@ app.whenReady().then(async () => {
           clock: Timeline.outClock(opts.cuts, s.start, s.end, opts.rates), span: s.span,
           place: K.place || 'left', size: K.size == null ? 1 : K.size, show: K.show !== false })
         return s
+      }
+    })()`)
+
+    // More than one capture in one picture, drawn by the one renderer. compositor/
+    // index.js renderShot fills one slot from one picture; a group fills one per member
+    // and draws the same plan through the same compositor, which is the whole of the
+    // difference and is written out in .context/survey/s-s6.md for the file that owns it.
+    // It lives here because ui/compositor/index.js is not this round's file.
+    await page.webContents.executeJavaScript(`(() => {
+      const fs = require('fs'), path = require('path')
+      const { Compositor, SLOTS } = require(${mod('ui/compositor/gl')})
+      const Plan = require(${mod('ui/compositor/plan')})
+      const { loadAssets } = require(${mod('ui/compositor/index')})
+      const pic = file => new Promise((res, rej) => {
+        const i = new Image()
+        i.onload = () => res(i); i.onerror = () => rej(new Error('could not read ' + file))
+        i.src = 'file://' + file
+      })
+      let comp = null
+      window.group = async (job, file) => {
+        const spec = Plan.prepare(job.opts, job.meta, job.ctx || {})
+        const k = job.width ? job.width / spec.W : 1
+        const W = Math.round(spec.W * k), H = Math.round(spec.H * k)
+        if (!comp) comp = new Compositor(W, H, { preserve: true })
+        comp.resize(W, H)
+        if (spec.bg.kind === 'image') comp.setImage(spec.bg.file, await pic(spec.bg.file))
+        await loadAssets(comp, spec)
+        // one capture is a take and fills the one slot a take fills; several fill one
+        // slot each, which is the whole of what a group asks of the caller
+        const list = spec.group || [{ file: job.opts.group.members[0].src, src: spec.src, crop: spec.crop }]
+        for (let i = 0; i < list.length; i++) {
+          const p = await pic(list[i].file)
+          comp.uploadImage(SLOTS[i], p, p.width, p.height)
+        }
+        const s0 = spec.src, c0 = spec.crop
+        const cropUV = spec.group ? null : [c0.x / s0.w, c0.y / s0.h, c0.w / s0.w, c0.h / s0.h]
+        const at = job.at == null ? spec.span / 2 : job.at
+        const n = Math.max(0, Math.min(spec.frames - 1, Math.round(at * spec.fps)))
+        if (!comp.render(spec, Plan.framePlan(spec, n / spec.fps), { n, ...(cropUV ? { cropUV } : {}) })) throw new Error('nothing to draw')
+        const px = comp.readRGBA()
+        if (file) {
+          const cv = document.createElement('canvas'); cv.width = comp.W; cv.height = comp.H
+          cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer, px.byteOffset, comp.W * comp.H * 4), comp.W, comp.H), 0, 0)
+          const blob = await new Promise(r => cv.toBlob(r, 'image/png'))
+          fs.mkdirSync(path.dirname(file), { recursive: true })
+          fs.writeFileSync(file, Buffer.from(await blob.arrayBuffer()))
+        }
+        return { W: comp.W, H: comp.H, planW: spec.W, planH: spec.H, rect: spec.rect,
+          group: (spec.group || []).map(m => ({ mm: m.mm, rect: m.rect, crop: m.crop, src: m.src,
+            kind: m.device ? m.device.kind : null, extent: m.device ? m.device.extent : m.rect })) }
       }
     })()`)
 
@@ -1024,6 +1318,380 @@ app.whenReady().then(async () => {
       const big = await host.contactSheet(take, doc, { count: 40, width: 1200 }, 'gl-test-sheet-max')
       is('never more than 24 frames', big.frames.length === 24 && big.cols * big.rows === 24,
         `${big.frames.length} frames, ${big.cols}x${big.rows}, ${big.ms} ms`)
+    }
+
+    if (want('shots')) {
+      console.log('a screenshot is a take of one frame')
+      // A still goes through the plan an export goes through and the passes an export
+      // draws, in the same compositor; the only thing that differs is that the content
+      // slot is filled from a captured picture rather than a decoded one. So what is
+      // checked here is not the look, which the goldens above already hold: it is the
+      // two things a still has and a clip has not. It exists at more than one size, and
+      // nothing stands between the drawn frame and the file someone opens.
+      const src = shotFixture()
+      // Everything a styled screenshot is made of, in one picture: a ground, a browser
+      // frame, a gold keyline, the row with the tempo lifted with its step badge, an
+      // arrow at another row, a loupe on the corner, and the address redacted.
+      const shotLook = { treatment: { motionBlur: 0.5 }, frame: { border: 2, borderColor: '#F0A93C' },
+        grain: { dither: false }, device: { kind: 'browser', title: 'fetch.app' } }
+      const shotOpts = { backdrop: 'dusk', inset: 0.07, shadow: 0.6, look: shotLook, marks: [
+        { kind: 'redact', start: 0, end: 4, x: 0.79, y: 0.175, w: 0.16, h: 0.05 },
+        { kind: 'lift', start: 0, end: 4, x: 0.05, y: 0.395, w: 0.62, h: 0.08 },
+        { kind: 'step', start: 0, end: 4, x: 0.05, y: 0.395 },
+        { kind: 'arrow', start: 0, end: 4, x: 0.70, y: 0.55, w: 0.14, h: 0.07 },
+        { kind: 'loupe', start: 0, end: 4, x: 0.17, y: 0.60, w: 0.16, h: 0.06 },
+      ] }
+      // The same still with nothing over the take but a redaction, and nothing gold in
+      // the frame but the keyline. A lift blurs and dims everything outside the row it
+      // raises, which is the point of it, and a drawn device puts the take inside a
+      // shell rather than across the plan's own box; both are exactly what the styled
+      // still is for and both are in the way of measuring a pixel. So the measurements
+      // below run on this one, where the take fills spec.rect and the ground is ink.
+      const plainOpts = { backdrop: 'ink', inset: 0.07, shadow: 0.6,
+        look: { treatment: { motionBlur: 0.5 }, frame: { border: 2, borderColor: '#F0A93C' }, grain: { dither: false } },
+        marks: [{ kind: 'redact', start: 0, end: 4, x: 0.79, y: 0.175, w: 0.16, h: 0.05 }] }
+      const { spec: shotSpec, size: cap } = host.shotPlan(src, shotOpts)
+      const { spec: plainSpec } = host.shotPlan(src, plainOpts)
+      const shot = (tag, out) => host.renderShot(src, shotOpts, { ...out, dest: path.join(OUT, tag) }, 'gl-test-' + tag)
+      const plain = (tag, out) => host.renderShot(src, plainOpts, { ...out, dest: path.join(OUT, tag) }, 'gl-test-' + tag)
+
+      // The golden, at the width every other golden here is kept at
+      const gold = path.join(GOLD, 'shot-styled.png')
+      const small = await shot('shot-styled.png', { width: 640 })
+      if (update || !fs.existsSync(gold)) { fs.copyFileSync(small.file, gold); is('shot-styled written', true, `${small.w}x${small.h}`) }
+      else {
+        const d = step(rgbOf(small.file), rgbOf(gold))
+        is('a ground, a browser frame, a lift, a loupe, an arrow and a redaction in one still',
+          d.max <= 2 && d.mean < 0.05, `max ${d.max} LSB, mean ${d.mean}`)
+      }
+
+      // The sizes. A plan is one plan at one size and a bigger still is that same plan
+      // drawn at a multiple of it, so each has to come out at exactly k times the plan.
+      const at = {}
+      for (const k of [1, 2, 3]) {
+        at[k] = await shot(`shot-${k}x.png`, { scale: k })
+        is(`${k}x is the plan at ${k} times its own size`,
+          at[k].w === shotSpec.W * k && at[k].h === shotSpec.H * k && at[k].scale === k,
+          `${at[k].w}x${at[k].h}, ${(at[k].bytes / 1e6).toFixed(1)} MB, ${at[k].ms} ms`)
+      }
+      const nat = await shot('shot-native.png', {})
+      is('native is the largest of those that does not enlarge the capture',
+        nat.scale === 2 && nat.w === shotSpec.W * 2, `${nat.scale}x, ${nat.w}x${nat.h} from a ${cap.width}x${cap.height} capture`)
+
+      // One picture, more pixels. Scaled back down, a bigger still has to be the small
+      // one: a second layout, a second look pipeline or anything laid out in output
+      // pixels rather than plan pixels would drift here and nowhere else.
+      const one = rgbOf(at[1].file)
+      for (const k of [2, 3]) {
+        const down = path.join(OUT, `shot-${k}x-down.png`)
+        spawnSync('/opt/homebrew/bin/ffmpeg', ['-v', 'error', '-y', '-i', at[k].file,
+          '-vf', `scale=${shotSpec.W}:${shotSpec.H}:flags=area`, '-frames:v', '1', down])
+        const d = step(one, rgbOf(down))
+        is(`${k}x scaled back down is the 1x picture`, d.mean < 4, `mean ${d.mean} levels, max ${d.max}`)
+      }
+
+      // Now the plain still, at the same three sizes, where a pixel can be read.
+      const pl = {}
+      for (const k of [1, 2, 3]) pl[k] = await plain(`shot-plain-${k}x.png`, { scale: k })
+
+      // Fetch's own hairline at each size. The plan draws a 2 px gold keyline round the
+      // take, so at k it is 2k pixels wide and its edge is still about one pixel: drawn
+      // at the size rather than enlarged into it. A line that vanished, doubled or went
+      // soft would show in one of those two numbers.
+      for (const k of [1, 2, 3]) {
+        const g = goldRuns(rgbOf(pl[k].file), pl[k].w, pl[k].h)
+        is(`${k}x keeps the gold keyline`, g.width === 2 * k && g.rise <= 1,
+          `${g.width} px wide, ${g.rise} px of edge, ${g.n} runs`)
+      }
+
+      // The capture's own text and hairlines, read in a clean part of the take. What a
+      // still promises is that the pixels that were captured are the pixels in the file,
+      // and at native they are. At 1x the capture is area-averaged into fewer pixels,
+      // which softens its contrast and is the honest thing to do with it; what must not
+      // happen at any size is that a step turns into a ramp.
+      const box = (spec, k, x, y, w, h) => ({
+        x: Math.round((spec.rect.x + spec.rect.w * x) * k), y: Math.round((spec.rect.y + spec.rect.h * y) * k),
+        w: Math.round(spec.rect.w * w * k), h: Math.round(spec.rect.h * h * k),
+      })
+      const takeRuns = {}
+      for (const k of [1, 2, 3]) takeRuns[k] = stepRuns(rgbOf(pl[k].file), pl[k].w, box(plainSpec, k, 0.16, 0.09, 0.17, 0.22))
+      is('the capture\'s own text is a step at every size, never a ramp',
+        [1, 2, 3].every(k => takeRuns[k].rise <= 2 && takeRuns[k].n > 100),
+        [1, 2, 3].map(k => `${k}x rises in ${takeRuns[k].rise} px over ${takeRuns[k].n} edges`).join(', '))
+      is('and it carries more of its contrast the more pixels it is given',
+        takeRuns[3].contrast >= takeRuns[2].contrast && takeRuns[2].contrast >= takeRuns[1].contrast,
+        [1, 2, 3].map(k => `${k}x ${takeRuns[k].contrast} levels`).join(', '))
+
+      // A redaction has to destroy what is under it, and a still at 3x is where someone
+      // would go looking. What it leaves is cells of one colour, so inside its box
+      // nothing is finer than a cell, and the cell grows with the size: a screenshot at
+      // 3x carries no more of what was hidden than one at 1x, only bigger blocks of it.
+      // a fifth in from each side, so the box is the redaction and not its own edge
+      const redBox = k => box(plainSpec, k, 0.79 + 0.16 * 0.2, 0.175 + 0.05 * 0.2, 0.16 * 0.6, 0.05 * 0.6)
+      const cells = [1, 2, 3].map(k => finest(rgbOf(pl[k].file), pl[k].w, redBox(k)))
+      is('inside a redaction nothing is finer than its own cell, at any size',
+        cells.every((c, i) => c >= 8 * (i + 1)),
+        [1, 2, 3].map((k, i) => `${k}x nothing under ${cells[i]} px`).join(', '))
+      // and the cell is over the words rather than beside them: the same still with the
+      // mark taken off is a different picture in exactly that box
+      const bare = await host.renderShot(src, { ...plainOpts, marks: [] }, { scale: 1, dest: path.join(OUT, 'shot-bare-1x.png') }, 'gl-test-shot-bare')
+      const bx = redBox(1), bp = rgbOf(bare.file), rp = rgbOf(pl[1].file)
+      let gone = 0, n = 0
+      for (let y = bx.y; y < bx.y + bx.h; y++) for (let x = bx.x; x < bx.x + bx.w; x++) {
+        gone += Math.abs(lumaAt(rp, pl[1].w, x, y) - lumaAt(bp, bare.w, x, y)); n++
+      }
+      is('and it is over the words rather than beside them', gone / n > 3, `${(gone / n).toFixed(1)} levels of the take replaced`)
+
+      // The file. A PNG is the default because this pipeline draws hairlines and small
+      // text on flat fields, which is where JPEG's chroma and its ringing are visible;
+      // the JPEG is still the same picture, an order of magnitude smaller.
+      const jpg = await shot('shot-1x.jpg', { scale: 1, format: 'jpg' })
+      const dj = step(one, rgbOf(jpg.file))
+      is('a JPEG of the same still is the same picture, much smaller',
+        jpg.format === 'jpg' && jpg.bytes < at[1].bytes / 3 && dj.mean < 2,
+        `${(jpg.bytes / 1e6).toFixed(2)} MB against ${(at[1].bytes / 1e6).toFixed(2)} MB, mean ${dj.mean} levels`)
+
+      // And a PNG is opaque, so nobody opens a screenshot and finds a hole in it
+      const alpha = spawnSync('/opt/homebrew/bin/ffmpeg', ['-v', 'error', '-i', at[1].file,
+        '-vf', 'extractplanes=a', '-f', 'rawvideo', '-'], { maxBuffer: 1 << 30 }).stdout
+      is('the PNG is opaque', alpha && alpha.length > 0 && !alpha.includes(0), `${alpha ? alpha.length : 0} bytes of alpha`)
+
+      // A still is one frame and reads nothing before it, which is the rule the whole
+      // compositor is built on, said at the size a screenshot is actually delivered at.
+      const again = await shot('shot-1x-again.png', { scale: 1 })
+      is('a still drawn again is the same still, byte for byte', step(one, rgbOf(again.file)).max === 0,
+        `max ${step(one, rgbOf(again.file)).max} LSB`)
+      console.log(`  (1x ${at[1].ms} ms, 2x ${at[2].ms} ms, 3x ${at[3].ms} ms)`)
+
+      // More than one capture in one picture, through the export's own door rather than
+      // through the harness's own draw: render-host measures each member from its own
+      // header and checks every file is there, and compositor/index.js fills one slot
+      // per member. This is the chain the Export PNG button and the export tool take.
+      const gDesk = member('desk'), gHand = member('hand')
+      const groupOpts = { ...plainOpts, marks: [],
+        group: { gap: 0.06, align: 'stand', members: [gDesk, gHand] } }
+      const gFile = await host.renderShot(gDesk.src, groupOpts,
+        { width: 900, dest: path.join(OUT, 'shot-group.png') }, 'gl-test-shot-group')
+      is('a group reaches the file through the one export path', gFile.w === 900 && gFile.h > 0,
+        `${gFile.w}x${gFile.h} from two captures`)
+      // A member whose file is not there is said rather than drawn as a size mismatch
+      // about a picture nobody asked about.
+      const missing = await host.renderShot(gDesk.src,
+        { ...groupOpts, group: { members: [gDesk, { ...gHand, src: '/tmp/fetch-no-such-capture.png' }] } },
+        { width: 200, dest: path.join(OUT, 'shot-group-missing.png') }, 'gl-test-shot-missing')
+        .then(() => null, e => e.message)
+      is('and a member with no file is named by name', /fetch-no-such-capture\.png/.test(missing || ''),
+        missing || 'it drew something instead')
+
+      // native is the density of the least dense capture in the set, not the group box's
+      // aggregate, which is the sharpest member's: drawn to that, the small capture is
+      // enlarged while the big one is minified.
+      const odd2 = { ...plainOpts, marks: [],
+        group: { gap: 0.06, align: 'stand', members: [member('wall'), member('tiny')] } }
+      const gNat = await host.renderShot(GROUP_PICS.wall.file, odd2,
+        { scale: 'native', dest: path.join(OUT, 'shot-group-native.png') }, 'gl-test-shot-native')
+      is('native enlarges no capture in a group', gNat.scale <= 2,
+        `${gNat.scale}x, ${gNat.w}x${gNat.h}`)
+    }
+
+    if (want('group')) {
+      console.log('more than one device in one shot')
+      // What a group has to be is one photograph of several things, not several
+      // pictures beside each other. So the measurements below are not about the look,
+      // which the goldens hold: they are the four things that make it one photograph.
+      // One scale, in millimetres. One light. One grade. One ground, worn once.
+      const GW = 900
+      const look = { device: { theme: 'dark' }, grain: { dither: false }, frame: { radius: 14 } }
+      const base = { backdrop: 'studio', inset: 0.08, shadow: 0.6, start: 0, end: 4, look }
+      const draw = async (tag, members, extra = {}) => {
+        const first = members[0]
+        const { at, width, ...rest } = extra
+        const opts = { ...base, ...rest, look: { ...look, ...(rest.look || {}) }, group: { ...(rest.group || {}), members } }
+        return call('group', { opts, meta: { width: first.w, height: first.h, duration: 4, fps: 30 },
+          ctx: { fps: 30 }, width: width || GW }, path.join(OUT, tag))
+      }
+      const goldenGroup = async (name, members, extra = {}) => {
+        const r = await draw(name + '.png', members, extra)
+        const gold = path.join(GOLD, name + '.png')
+        const made = path.join(OUT, name + '.png')
+        if (update || !fs.existsSync(gold)) { fs.copyFileSync(made, gold); is(name + ' written', true, `${r.W}x${r.H}`) }
+        else {
+          const d = step(rgbOf(made), rgbOf(gold))
+          is(name, d.max <= 2 && d.mean < 0.05, `max ${d.max} LSB, mean ${d.mean}`)
+        }
+        return { ...r, file: made, px: rgbOf(made) }
+      }
+
+      // ── two: a handset beside a window ────────────────────────────────
+      const two = await goldenGroup('group-two', [member('desk'), member('hand')])
+
+      // The whole of "at their real relative sizes", in one line. Every member is drawn
+      // at the same number of output pixels per millimetre of real glass, so a handset
+      // beside a window is the size a handset is beside a window. Pixel count has
+      // nothing to do with it and neither does the capture's own aspect.
+      const perMM = r => r.group.map(m => (m.rect.w / m.mm) * (r.W / r.planW))
+      const spread = a => (Math.max(...a) - Math.min(...a)) / Math.max(...a)
+      is('two captures, one scale in millimetres', spread(perMM(two)) < 0.01,
+        perMM(two).map((v, i) => `${two.group[i].kind} ${two.group[i].mm} mm at ${v.toFixed(3)} px/mm`).join(', '))
+      // and what that comes to on the frame: a handset about a fifth of the window
+      is('and the handset is a handset beside a window',
+        two.group[1].rect.w / two.group[0].rect.w > 0.15 && two.group[1].rect.w / two.group[0].rect.w < 0.23,
+        `${(two.group[1].rect.w / two.group[0].rect.w * 100).toFixed(1)} percent of its width`)
+
+      // One surface. Both extents end on the same line, which is what stops two objects
+      // with nothing under them reading as two pictures pasted on.
+      const e0 = extentOf(two, 0), e1 = extentOf(two, 1)
+      const foot = r => r.group.map(m => m.extent.y + m.extent.h)
+      is('they stand on one line', Math.max(...foot(two)) - Math.min(...foot(two)) <= 2,
+        foot(two).join(' and ') + ' in the plan\'s own pixels')
+
+      // One light. Both pools have the same drop and the same softness, because both
+      // come off the one spec.shadow rather than off two numbers set the same way. Read
+      // off the pixels: how far the pool reaches under each object, measured against the
+      // ground well clear of both.
+      const clear = meanLuma(two.px, two.W, { x: 4, y: 4, w: 40, h: 40 })
+      const reach = [shadowReach(two.px, two.W, two.H, e0, clear), shadowReach(two.px, two.W, two.H, e1, clear)]
+      is('one light over both of them', reach[0] > 2 && Math.abs(reach[0] - reach[1]) <= Math.max(2, 0.2 * reach[0]),
+        `${reach[0]} px under the window, ${reach[1]} px under the handset`)
+
+      // One ground, worn once. The tooth is three levels of noise on the ground, and it
+      // is laid on by the pass that draws the ground. A later member standing on the
+      // picture the earlier ones made must not lay it on again, or the file carries two
+      // or three times the noise it says it does.
+      const one = await draw('group-one.png', [member('desk')])
+      const patch = { x: 8, y: 8, w: 120, h: 60 }
+      const g2 = grit(two.px, two.W, patch), g1 = grit(rgbOf(path.join(OUT, 'group-one.png')), one.W, patch)
+      is('the ground wears its tooth once, not once per member', Math.abs(g2 - g1) < 0.25,
+        `${g2} levels against ${g1} for one capture`)
+
+      // One grade, and it stops at every capture rather than at one of them. Drained to
+      // black and white, both captures have to come out monochrome while the ground
+      // keeps the colour the look chose: that is the grade reaching every member and
+      // being held to the recording inside each of them.
+      const mono = await draw('group-mono.png', [member('desk'), member('hand')],
+        { look: { treatment: { saturation: -1 } } })
+      const mp = rgbOf(path.join(OUT, 'group-mono.png'))
+      const chroma = [0, 1].map(i => maxChroma(mp, mono.W, inset(screenOf(mono, i), 0.12)))
+      const ground = maxChroma(mp, mono.W, { x: 4, y: 4, w: 60, h: 60 })
+      is('one grade over the whole set, and it stops at each capture',
+        chroma[0] <= 3 && chroma[1] <= 3 && ground > 12,
+        `${chroma[0]} and ${chroma[1]} levels of colour left in the captures, ${ground} on the ground`)
+
+      // A group is still one frame that draws alone: nothing carries over between the
+      // members' draws but the pixels of this frame.
+      await draw('group-other.png', [member('web'), member('hand'), member('desk')])
+      const againTwo = await draw('group-two-again.png', [member('desk'), member('hand')])
+      is('a group drawn again after another is the same picture, byte for byte',
+        step(two.px, rgbOf(path.join(OUT, 'group-two-again.png'))).max === 0 && againTwo.W === two.W,
+        `max ${step(two.px, rgbOf(path.join(OUT, 'group-two-again.png'))).max} LSB`)
+
+      // ── three: a browser, a window and a handset ──────────────────────
+      const three = await goldenGroup('group-three', [member('web'), member('desk'), member('hand')])
+      is('three captures, still one scale in millimetres', spread(perMM(three)) < 0.01,
+        perMM(three).map((v, i) => `${three.group[i].kind} ${three.group[i].mm} mm at ${v.toFixed(3)} px/mm`).join(', '))
+      const ext3 = [0, 1, 2].map(i => extentOf(three, i))
+      is('and all three stand on one line', Math.max(...foot(three)) - Math.min(...foot(three)) <= 2,
+        foot(three).join(', '))
+      // left to right in the order they were given, which is the order they are drawn in,
+      // so a member that overlaps the one before it is in front of it
+      is('in the order they were given', ext3[0].x < ext3[1].x && ext3[1].x < ext3[2].x,
+        ext3.map(e => e.x).join(' < '))
+
+      // ── one capture far larger than the other ─────────────────────────
+      // A 5K desktop beside a window with a fortieth of its pixels. Two things have to
+      // hold, and they pull opposite ways: the big one must not be drawn big because it
+      // has more pixels, and the small one must not be the thing that reads as soft
+      // while the big one reads as crisp.
+      const odd = await goldenGroup('group-odd', [member('wall'), member('tiny')])
+      is('a capture is drawn at its real size and not at its pixel count', spread(perMM(odd)) < 0.01,
+        odd.group.map((m, i) => `${(m.crop.w * m.crop.h / 1e6).toFixed(1)} MP at ${m.mm} mm`).join(', ') +
+        `, ${(odd.group[0].crop.w * odd.group[0].crop.h / (odd.group[1].crop.w * odd.group[1].crop.h)).toFixed(0)}x the pixels`)
+      // Read at the plan's own width rather than at the golden's, because what is being
+      // measured is the capture's own text and at 900 px neither capture has any left.
+      const oddFull = await draw('group-odd-full.png', [member('wall'), member('tiny')], { width: 1920 })
+      oddFull.W = oddFull.planW; oddFull.H = oddFull.planH
+      const fp = rgbOf(path.join(OUT, 'group-odd-full.png'))
+      // How far each is minified, which is the number that decides whether it aliases
+      const shrink = oddFull.group.map(m => m.crop.w / m.rect.w)
+      // Both captures' own text, read on the finished file. A rise is how many samples
+      // sit between a tenth and nine tenths of a step, so it is about a pixel for
+      // anything rasterised at the size it is drawn at and grows with anything enlarged
+      // into its pixels or aliased down into them. Both have to be a step, and the
+      // fourteen megapixel one must not be the crisp one.
+      const runs = [0, 1].map(i => stepRuns(fp, oddFull.W, inset(screenOf(oddFull, i), 0.08), 30))
+      is('neither the fourteen megapixel capture nor the fortieth of one aliases or smears',
+        runs.every(r => r.n > 40 && r.rise <= 2),
+        runs.map((r, i) => `${shrink[i].toFixed(1)}x down rises in ${r.rise} px over ${r.n} edges`).join(', '))
+      // and the same five millimetres of real text comes out the same height in both,
+      // which is real relative size said about the content rather than about the frames
+      is('and the same real text height lands at the same size in both',
+        Math.abs(runs[0].contrast - runs[1].contrast) < 60,
+        runs.map(r => `${r.contrast} levels of step`).join(' against '))
+
+      // One plan at one size, drawn at whichever size is asked for: the editor's stage
+      // and the file are the same renderer at the group surface too. A group laid out in
+      // output pixels rather than in the plan's own would drift here and nowhere else.
+      const down = path.join(OUT, 'group-odd-down.png')
+      spawnSync('/opt/homebrew/bin/ffmpeg', ['-v', 'error', '-y', '-i', path.join(OUT, 'group-odd-full.png'),
+        '-vf', `scale=${odd.W}:${odd.H}:flags=area`, '-frames:v', '1', down])
+      const dd = step(odd.px, rgbOf(down))
+      is('the same group at twice the pixels is the same picture', dd.mean < 4,
+        `${oddFull.W}x${oddFull.H} down to ${odd.W}x${odd.H}, mean ${dd.mean} levels`)
+
+      // ── overlap: two objects on one surface ───────────────────────────
+      // The part that finishes the illusion. With a negative gap the handset stands in
+      // front of the window, and its pool falls on the window rather than only on the
+      // ground: a shadow that stopped at the ground would say the two were never in one
+      // room. Measured as the same strip of the window with and without the handset.
+      const over = await draw('group-over.png', [member('desk'), member('hand')], { group: { gap: -0.06 } })
+      const alone = await draw('group-alone.png', [member('desk')])
+      const op = rgbOf(path.join(OUT, 'group-over.png')), ap = rgbOf(path.join(OUT, 'group-alone.png'))
+      const hand = extentOf(over, 1), win = screenOf(over, 0)
+      // a strip of the window just left of the handset, inside the window and clear of it
+      const strip = { x: Math.max(win.x + 2, hand.x - Math.round(0.05 * win.w)), y: Math.round(hand.y + hand.h * 0.5),
+        w: Math.round(0.04 * win.w), h: Math.round(hand.h * 0.2) }
+      const lit = meanLuma(ap, alone.W, strip), shaded = meanLuma(op, over.W, strip)
+      is('a member in front casts on the member behind it', hand.x < win.x + win.w && lit - shaded > 3,
+        `${(lit - shaded).toFixed(1)} levels darker where the handset stands over it`)
+      is('and an overlap is still an arrangement, not one capture hidden behind another',
+        over.group[1].rect.x > over.group[0].rect.x + over.group[0].rect.w * 0.5,
+        `the handset starts ${((over.group[1].rect.x - over.group[0].rect.x) / over.group[0].rect.w * 100).toFixed(0)} percent across the window`)
+
+      // ── marks, on a member and on the set itself ──────────────────────
+      // A group is a still of several things, so a mark on one of them has no when to
+      // give: a member's marks carry no start and no end. And the shot's own marks
+      // belong to the first member, because a shot's src, crop and marks are the
+      // capture it started as and a second capture standing beside it does not move
+      // them. Both used to plan to an empty track and draw nothing at all, which no
+      // measurement of the look would ever catch.
+      const redact = (x, w) => ({ kind: 'redact', x, y: 0.25, w, h: 0.12 })
+      const plain = await draw('group-marks-none.png', [member('desk'), member('hand')])
+      const pp = rgbOf(path.join(OUT, 'group-marks-none.png'))
+      const onMember = await draw('group-marks-member.png',
+        [member('desk'), member('hand', { marks: [redact(0.1, 0.8)] })])
+      const onSet = await draw('group-marks-take.png', [member('desk'), member('hand')],
+        { marks: [{ ...redact(0.1, 0.5), start: 0, end: 4 }] })
+      // where two frames differ, as a box, so a mark can be shown to land on the
+      // capture it was drawn on rather than merely to have changed something
+      const changedBox = (a, b, W) => {
+        let x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1
+        for (let i = 0; i < a.length; i += 3) {
+          if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) < 24) continue
+          const q = i / 3, x = q % W, y = (q - x) / W
+          if (x < x0) x0 = x; if (x > x1) x1 = x
+          if (y < y0) y0 = y; if (y > y1) y1 = y
+        }
+        return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 }
+      }
+      const within = (b, r) => !!b && b.x >= r.x - 3 && b.y >= r.y - 3 &&
+        b.x + b.w <= r.x + r.w + 3 && b.y + b.h <= r.y + r.h + 3
+      const mBox = changedBox(pp, rgbOf(path.join(OUT, 'group-marks-member.png')), plain.W)
+      is('a member\'s own mark is drawn, with no start and no end, on that member',
+        within(mBox, screenOf(onMember, 1)),
+        mBox ? `changed ${mBox.w}x${mBox.h} at ${mBox.x},${mBox.y} inside the handset` : 'nothing changed at all')
+      const sBox = changedBox(pp, rgbOf(path.join(OUT, 'group-marks-take.png')), plain.W)
+      is('and the set\'s own marks are the first capture\'s', within(sBox, screenOf(onSet, 0)),
+        sBox ? `changed ${sBox.w}x${sBox.h} at ${sBox.x},${sBox.y} inside the window` : 'nothing changed at all')
     }
 
     if (want('sinks')) {

@@ -212,7 +212,7 @@ void main(){
 const FS_FRAME = `#version 300 es
 precision highp float;
 uniform vec2 uRes;
-uniform int uBgKind;                 // 0 none, 1 still, 2 blurred take
+uniform int uBgKind;                 // 0 none, 1 still, 2 blurred take, 3 the picture so far
 uniform uint uFrame;                 // the ground's tooth is seeded by it, like the film and the dither
 uniform float uTooth;                // and scaled by it: the export's three levels, at the size being drawn
 uniform sampler2D uBg, uFill;
@@ -392,7 +392,7 @@ float shadowAt(vec2 q){
 // is read where the pixel is and the shadow where the plane is, which are the same
 // place until a tilt turns the plane away from the frame.
 vec3 groundAt(vec2 q, vec2 sp){
-  vec3 g = uBgKind == 1 ? texture(uBg, sp / uRes).rgb : uBgKind == 2 ? fillAt(sp, 0.0) : vec3(0.0);
+  vec3 g = uBgKind == 1 || uBgKind == 3 ? texture(uBg, sp / uRes).rgb : uBgKind == 2 ? fillAt(sp, 0.0) : vec3(0.0);
   return g * (1.0 - shadowAt(q));
 }
 
@@ -407,6 +407,13 @@ void main(){
   // tooth on it here, since that is the part that has to be new every frame
   if (uBgKind == 1) col = texelFetch(uBg, ivec2(p), 0).rgb + tooth(p);
   else if (uBgKind == 2) col = fillAt(p, tooth(p));
+  // A later member of a group stands on the picture the members before it made, which is
+  // how several captures share one ground, one light and one edge contract without this
+  // pass learning that there is more than one of them: the ground is whatever is behind,
+  // and behind can be another member. Its mask comes with it, so the grade still knows
+  // exactly which pixels are somebody's recording. No tooth: the ground already wears it,
+  // and laying it on again once per member is three times the noise the file will carry.
+  else if (uBgKind == 3) { vec4 b = texelFetch(uBg, ivec2(p), 0); col = b.rgb; mask = b.a; }
   vec2 lo = uRect.xy, hi = uRect.xy + uRect.zw;
   col *= 1.0 - shadowAt(q);
   float d = sdTake(q, lo, hi);
@@ -551,7 +558,10 @@ uniform sampler2D uScene, uSoft, uGlow;
 uniform vec2 uRes;
 uniform float uSoftOn, uMeanLod, uAb;
 uniform vec3 uLevel;                 // the take's black point, its white point, how much
-uniform vec4 uLevelBox; uniform float uLevelRad;   // and where the take is, which is all it touches
+// and where the take is, which is all it touches. A list, because a group is several
+// captures in one picture and the grade reaches every one of them; one capture is a
+// list of one and draws exactly what it drew before this was a list.
+uniform vec4 uLevelBox[3]; uniform float uLevelRad[3]; uniform int uLevelN;
 uniform vec3 uTilt; uniform vec2 uTiltC; uniform float uTiltS;   // and on which plane, where a tilt turned it
 uniform vec3 uGrade;                 // brightness, contrast, saturation, as ffmpeg eq takes them
 uniform vec4 uShoulder, uToe;        // and the two ends of that line rolled in (plan.js rollOff)
@@ -598,8 +608,12 @@ vec3 gradeAt(vec3 c){
 // How far a point is outside the take's own rect, corner and all: auto level's
 // authority, and the edge the grade has to know about to hand a rim pixel's ground back
 float takeDist(vec2 q){
-  return uLevelRad > 0.0 ? sdRound(q - (uLevelBox.xy + uLevelBox.zw * 0.5), uLevelBox.zw * 0.5, uLevelRad)
-    : max(max(uLevelBox.x - q.x, q.x - uLevelBox.x - uLevelBox.z), max(uLevelBox.y - q.y, q.y - uLevelBox.y - uLevelBox.w));
+  float d = 1e9;
+  for (int i = 0; i < 3; i++) { if (i >= uLevelN) break;
+    vec4 b = uLevelBox[i]; float r = uLevelRad[i];
+    d = min(d, r > 0.0 ? sdRound(q - (b.xy + b.zw * 0.5), b.zw * 0.5, r)
+      : max(max(b.x - q.x, q.x - b.x - b.z), max(b.y - q.y, q.y - b.y - b.w))); }
+  return d;
 }
 // The take's own plane, where frame.tilt turned it (plan.js, and FS_FRAME, which reads
 // the same three numbers the same way). The lens and the film are in front of the whole
@@ -1243,6 +1257,11 @@ function fit(text, width, px, measure) {
   return s + '…'
 }
 
+// Which slot each member of a group is uploaded into. 'content' first, so the ordinary
+// one-capture edit and the first member of a group are the same slot and nothing that
+// fills it has to ask which it is filling.
+const SLOTS = ['content', 'content1', 'content2']
+
 const mipsFor = (w, h) => Math.floor(Math.log2(Math.max(w, h))) + 1
 const canvas = (w, h) => {
   if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(Math.max(1, w), Math.max(1, h))
@@ -1424,8 +1443,7 @@ class Compositor {
   // graphite on a dark ground and bone on a light one, and a photo's ground is not
   // known until it is decoded. The shell's tones are the plan's (Plan.SHELL), so the
   // stage and the export pick the same one and the picture's cache key follows it.
-  deviceOf(spec) {
-    const D = spec.device
+  deviceOf(spec, D = spec.device) {
     if (!D || !D.auto || spec.bg.kind !== 'image') return D
     const y = this.imgLuma.get(spec.bg.file)
     if (y == null) return D
@@ -1562,6 +1580,12 @@ class Compositor {
    *               three are seeded by the frame's place inside it (loopIndex). Defaults
    *               to spec.loop, which is the plan's answer for the whole clip; a caller
    *               drawing a window of its own gives its own length here.
+   *
+   * Where the plan holds a group (spec.group, several captures in one picture), the
+   * caller fills one slot per member instead of one (SLOTS), and their crops come off
+   * the plan rather than off src: a member is a capture, and a capture knows its own.
+   * Everything else here is the same, because a group is this pass run once per member
+   * with the picture so far as its ground.
    */
   render(spec, fp, src = {}) {
     const { W, H } = this
@@ -1576,29 +1600,22 @@ class Compositor {
     // frames, so an export at 60 fps renews it at the same rate one at 30 does. A
     // function of this frame's index and nothing else, like the index itself.
     const tn = Math.floor(n / (spec.grainHold || 1))
-    const c = this.slots.content
-    if (!c || !c.ready) return false
-    const cropUV = src.cropUV || [0, 0, 1, 1]
+    // What the frame pass draws, member by member. One capture is a group of one, which
+    // is why there is no second path here: a phone standing beside a window is this
+    // function run twice, and the second run stands on the first one's pixels.
+    const members = this.memberList(spec, fp, src)
+    if (!members.length) return false
     this.stillBackground(spec)
     const kind = spec.bg.kind === 'blur' ? 2 : spec.bg.kind === 'none' ? 0 : 1
-    if (kind === 2) this.blurFill(spec, cropUV)
-    // the recording with its marks drawn on it, when anything is (else the source itself)
-    // the incoming side of a dissolve reads its own marks: it is playing inside the
-    // material the cut removed, where the output clock has nothing to say (plan.js)
-    const fm = src.side === 'b' && fp.marks2 ? fp.marks2 : fp.marks
-    const marked = fm ? this.contentPass(spec, fm, cropUV) : null
+    if (kind === 2) this.blurFill(spec, members[0].cropUV)
     const sh = spec.shadow
     // under a title card the framed take rises into place, or settles back
     const mv = fp.move || { k: 1, dy: 0, alpha: 1, shadow: 1 }
+    // The whole set arrives, leaves and turns about one point: the box it all stands in.
+    // One light and one camera is the difference between a photograph of two things and
+    // two photographs beside each other.
     const r0 = spec.rect
-    const r = { w: r0.w * mv.k, h: r0.h * mv.k }
-    r.x = r0.x + (r0.w - r.w) / 2; r.y = r0.y + (r0.h - r.h) / 2 + mv.dy
     const cam = spec.cam && src.cam && this.slots.cam && this.slots.cam.ready
-    const edge = this.edgeOf(spec)
-    // The shell of a drawn device, moved with the take it holds: the shadow is cast
-    // from it rather than from the screen, or a laptop would float on a pool the shape
-    // of its own picture.
-    const dev = spec.device ? this.moved(spec.device.box, r0, mv) : null
     // The plane a tilt turns, in the pixels this compositor draws. The pivot rides the
     // take's own landing, so a take arriving under a title card turns about where it is
     // rather than about where it will be.
@@ -1606,51 +1623,76 @@ class Compositor {
     const tilt = T ? { uTilt: [T.m * k, T.sin, T.D * k], uTiltS: 1 / T.fit,
       uTiltC: [(r0.x + r0.w / 2 + (T.cx - r0.x - r0.w / 2) * mv.k) * k, (r0.y + r0.h / 2 + (T.cy - r0.y - r0.h / 2) * mv.k + mv.dy) * k] }
       : { uTilt: [1, 0, 0], uTiltS: 1, uTiltC: [0, 0] }
-    const u = {
-      uRes: [W, H], uBgKind: kind,
-      uRect: [r.x * k, r.y * k, r.w * k, r.h * k], uRadius: spec.radius * mv.k * k,
-      uShadowRect: dev ? [dev.x * k, dev.y * k, dev.w * k, dev.h * k] : [r.x * k, r.y * k, r.w * k, r.h * k],
-      uShadowRad: dev ? spec.device.box.r * mv.k * k : spec.radius * mv.k * k,
-      ...tilt,
-      uTake: [mv.alpha, mv.shadow],
-      uShadow: sh ? [sh.dy * k, Math.max(0.5, sh.sigma * k), sh.alpha, 1] : [0, 1, 0, 0],
-      uBorder: spec.border ? [...spec.border.color, 1] : [0, 0, 0, 0], uBorderPx: spec.border ? spec.border.px * k : 0,
-      uEdge: edge ? [edge.floor, edge.px * k] : [0, 0],
-      uEdgeCol: edge ? edge.col : [0, 0, 0],
-      uFillBand: spec.bg.band || [0, 0],
-      uContentSize: marked ? marked.size : [c.w, c.h], uCropUV: marked ? [0, 0, 1, 1] : cropUV,
-      uMarked: marked ? 1 : 0,
-      uInner: [spec.inner.x, spec.inner.y, spec.inner.w, spec.inner.h],
-      uV0: fp.view0, uV1: fp.view1, uTaps: fp.taps,
-      uCam: cam ? 1 : 0,
-      uVig: spec.treat ? spec.treat.vignette : 0,
-      uFrame: tn, uTooth: Math.min(1, k) * (spec.tooth != null ? spec.tooth : 1),
+    // Ping-pong, and only where there is more than one member: each member reads the
+    // picture the ones before it made and writes the picture the next one stands on. The
+    // last writes this.scene, because that is what every pass after this reads. A group
+    // of one writes this.scene straight away and touches neither target.
+    const boxes = []
+    for (let i = 0; i < members.length; i++) {
+      const m = members[i]
+      const last = i === members.length - 1
+      const dst = last ? this.scene : this.keep(i % 2 ? 'grpB' : 'grpA', W, H)
+      const behind = i === 0 ? null : this.keep((i - 1) % 2 ? 'grpB' : 'grpA', W, H)
+      // the member carried through the set's own landing, exactly as its shell is
+      const r = this.moved(m.rect, r0, mv)
+      // A device frame answers for its own member's edge; a bare member still stands off
+      // whatever is behind it by the floor, and behind it may be another member.
+      const edge = m.device ? null : this.edgeOf(spec)
+      // The shell of a drawn device, moved with the take it holds: the shadow is cast
+      // from it rather than from the screen, or a laptop would float on a pool the shape
+      // of its own picture.
+      const dev = m.device ? this.moved(m.device.box, r0, mv) : null
+      const c = m.slot
+      const marked = m.marks ? this.contentPass(spec, m.marks, m.cropUV, m) : null
+      const onCam = cam && last
+      const u = {
+        uRes: [W, H], uBgKind: behind ? 3 : kind,
+        uRect: [r.x * k, r.y * k, r.w * k, r.h * k], uRadius: m.radius * mv.k * k,
+        uShadowRect: dev ? [dev.x * k, dev.y * k, dev.w * k, dev.h * k] : [r.x * k, r.y * k, r.w * k, r.h * k],
+        uShadowRad: dev ? m.device.box.r * mv.k * k : m.radius * mv.k * k,
+        ...tilt,
+        uTake: [mv.alpha, mv.shadow],
+        uShadow: sh ? [sh.dy * k, Math.max(0.5, sh.sigma * k), sh.alpha, 1] : [0, 1, 0, 0],
+        uBorder: spec.border ? [...spec.border.color, 1] : [0, 0, 0, 0], uBorderPx: spec.border ? spec.border.px * k : 0,
+        uEdge: edge ? [edge.floor, edge.px * k] : [0, 0],
+        uEdgeCol: edge ? edge.col : [0, 0, 0],
+        uFillBand: spec.bg.band || [0, 0],
+        uContentSize: marked ? marked.size : [c.w, c.h], uCropUV: marked ? [0, 0, 1, 1] : m.cropUV,
+        uMarked: marked ? 1 : 0,
+        uInner: [m.inner.x, m.inner.y, m.inner.w, m.inner.h],
+        uV0: fp.view0, uV1: fp.view1, uTaps: fp.taps,
+        uCam: onCam ? 1 : 0,
+        uVig: spec.treat ? spec.treat.vignette : 0,
+        uFrame: tn, uTooth: Math.min(1, k) * (spec.tooth != null ? spec.tooth : 1),
+      }
+      if (onCam) {
+        // Where the bubble is this frame (plan.js, camAt): its track is keyframed, so its
+        // place, its size and its corner are all a function of the output time. A caller
+        // that built a frame plan without one gets where the bubble opens, which on a take
+        // with no keys is the only place it ever is.
+        const cb = fp.bubble || spec.cam
+        // The bubble rides the take: the same scale about the frame's own centre and the
+        // same drop, since it is a thing lying on the picture rather than beside it. Drawn
+        // in its landed place it stayed full size and full opacity while the take was
+        // still rising, and a dip left it lit over bare ground.
+        const ccx = r0.x + r0.w / 2, ccy = r0.y + r0.h / 2, cd = cb.d * mv.k
+        const cx = ccx + (cb.x + cb.d / 2 - ccx) * mv.k - cd / 2
+        const cy = ccy + (cb.y + cb.d / 2 - ccy) * mv.k - cd / 2 + mv.dy
+        u.uCamRect = [cx * k, cy * k, cd * k, cd * k]
+        u.uCamUV = src.camUV || [0, 0, 1, 1]
+        u.uCamRound = cb.round * mv.k * k
+        u.uCamRing = cb.ring * mv.k * k
+      }
+      this.draw('frame', dst, u, { uBg: behind || this.bg, uFill: this.fillA || this.dummy,
+        uContent: marked ? marked.tex : c.rgba, uCamTex: onCam ? this.slots.cam.rgba : this.dummy })
+      if (m.device) this.devicePass(dst, m.device, this.moved(m.device.extent, r0, mv), k, tilt, mv.alpha)
+      boxes.push({ box: u.uRect, r: u.uRadius })
     }
-    if (cam) {
-      // Where the bubble is this frame (plan.js, camAt): its track is keyframed, so its
-      // place, its size and its corner are all a function of the output time. A caller
-      // that built a frame plan without one gets where the bubble opens, which on a take
-      // with no keys is the only place it ever is.
-      const cb = fp.bubble || spec.cam
-      // The bubble rides the take: the same scale about the frame's own centre and the
-      // same drop, since it is a thing lying on the picture rather than beside it. Drawn
-      // in its landed place it stayed full size and full opacity while the take was
-      // still rising, and a dip left it lit over bare ground.
-      const ccx = r0.x + r0.w / 2, ccy = r0.y + r0.h / 2, cd = cb.d * mv.k
-      const cx = ccx + (cb.x + cb.d / 2 - ccx) * mv.k - cd / 2
-      const cy = ccy + (cb.y + cb.d / 2 - ccy) * mv.k - cd / 2 + mv.dy
-      u.uCamRect = [cx * k, cy * k, cd * k, cd * k]
-      u.uCamUV = src.camUV || [0, 0, 1, 1]
-      u.uCamRound = cb.round * mv.k * k
-      u.uCamRing = cb.ring * mv.k * k
-    }
-    this.draw('frame', this.scene, u, { uBg: this.bg, uFill: this.fillA || this.dummy, uContent: marked ? marked.tex : c.rgba, uCamTex: cam ? this.slots.cam.rgba : this.dummy })
-    if (spec.device) this.devicePass(spec, this.moved(spec.device.extent, r0, mv), k, tilt, mv.alpha)
     if (spec.text) this.textPass(spec, fp)
     if (spec.keys) this.keysPass(spec, fp)
-    // auto level touches the take alone, so the treatment pass is told where it is: the
-    // same rect the frame pass drew it in, fading with it under a title card
-    const finished = spec.treat ? this.treatPass(spec, u.uRect, u.uRadius, mv.alpha, tilt) : this.scene
+    // auto level touches the captures alone, so the treatment pass is told where they
+    // are: the same rects the frame pass drew them in, fading with them under a title card
+    const finished = spec.treat ? this.treatPass(spec, boxes, mv.alpha, tilt) : this.scene
     const gr = spec.grain
     // The grain's cell is the export's grid scaled to what is being drawn, and below a
     // pixel it is left there: clamping it up made the editor's stage three times
@@ -1681,6 +1723,40 @@ class Compositor {
     return true
   }
 
+  /**
+   * What the frame pass draws, in the order it draws it. One capture is a list of one
+   * and every number in it is the number render() used before a group existed, which is
+   * what keeps an ordinary export byte for byte what it was.
+   *
+   * A group's members come off spec.group, each with its own captured picture in its own
+   * slot ('content', 'content1', 'content2'). A member whose slot is not filled is
+   * dropped rather than drawn from whatever was there: a group is a set of things that
+   * were captured, and half a group is a wrong picture, not a missing one.
+   */
+  memberList(spec, fp, src) {
+    if (!spec.group) {
+      const c = this.slots.content
+      if (!c || !c.ready) return []
+      // the incoming side of a dissolve reads its own marks: it is playing inside the
+      // material the cut removed, where the output clock has nothing to say (plan.js)
+      const fm = src.side === 'b' && fp.marks2 ? fp.marks2 : fp.marks
+      return [{ slot: c, rect: spec.rect, radius: spec.radius, device: this.deviceOf(spec),
+        cropUV: src.cropUV || [0, 0, 1, 1], inner: spec.inner, content: spec.content, marks: fm }]
+    }
+    const out = []
+    for (let i = 0; i < spec.group.length; i++) {
+      const m = spec.group[i]
+      const c = this.slots[SLOTS[i]]
+      if (!c || !c.ready) continue
+      // The capture's own crop, carried in the texture the way the editor's stage
+      // carries a <video>'s: a member is uploaded whole and shown in part.
+      const cropUV = [m.crop.x / m.src.w, m.crop.y / m.src.h, m.crop.w / m.src.w, m.crop.h / m.src.h]
+      out.push({ slot: c, rect: m.rect, radius: m.radius, device: this.deviceOf(spec, m.device), cropUV,
+        inner: m.inner, content: m.content, marks: fp.group ? fp.group[i] : null, tag: String(i) })
+    }
+    return out
+  }
+
   // A box of the plan carried through the take's own landing: the same scale about the
   // frame's centre and the same drop the frame pass gives the take, so a device and the
   // take inside it arrive, leave and dip as one object.
@@ -1694,19 +1770,20 @@ class Compositor {
    * a hole where the screen is, lying on the take's own plane. Made once per plan and
    * size, like every other picture here, so a frame costs one textured quad.
    */
-  devicePass(spec, ext, k, tilt, alpha) {
-    const D = this.deviceOf(spec)
+  devicePass(dst, dev, ext, k, tilt, alpha) {
+    const D = dev
     const w = Math.max(2, Math.ceil(D.extent.w * k)), h = Math.max(2, Math.ceil(D.extent.h * k))
     const p = this.pic(`device|${D.kind}|${w}x${h}|${D.light ? 'l' : 'd'}|${D.title}`, () => deviceCanvas(D, k, this.measure))
     if (!p) return
-    this.quad('plate', this.scene, [0, 0, this.W, this.H],
+    this.quad('plate', dst, [0, 0, this.W, this.H],
       { uBox: [ext.x * k, ext.y * k, ext.w * k, ext.h * k], uOp: alpha, ...tilt }, { uTex: p.tex }, true, true)
   }
 
   // The grade and the lens over the finished frame (PASSES.md 13), into a target of its
   // own: one shader for everything per pixel, and a blur first for what is wide. Called
   // only while spec.treat says something shows. Returns what the final pass should read.
-  treatPass(spec, takeBox, takeRadius, takeAlpha, tilt) {
+  // takeBoxes is one box per capture in the picture, and one capture is a list of one.
+  treatPass(spec, takeBoxes, takeAlpha, tilt) {
     const { W, H } = this, k = W / spec.W, T = spec.treat
     const dst = this.keep('treat', W, H)
     const glowOn = T.bloom > 0 || T.halation > 0
@@ -1721,7 +1798,7 @@ class Compositor {
     this.draw('treat', dst, {
       uRes: [W, H], uSoftOn: soft ? 1 : 0, uMeanLod: mipsFor(W, H) - 1,
       uLevel: T.level ? [T.level[0], T.level[1], takeAlpha] : [0, 1, 0],
-      uLevelBox: takeBox, uLevelRad: takeRadius, ...tilt,
+      uLevelBox: takeBoxes.flatMap(b => b.box), uLevelRad: takeBoxes.map(b => b.r), uLevelN: takeBoxes.length, ...tilt,
       uGrade: [T.bright, T.contrast, T.sat],
       uShoulder: T.shoulder, uToe: T.toe,
       uTint: [...T.tint, T.tintAmount],
@@ -1817,14 +1894,19 @@ class Compositor {
    * that order (PASSES.md). M is marks.at() for this moment, positions in content pixels.
    * Returns { tex, size } to sample in place of the source, or null when nothing shows.
    */
-  contentPass(spec, M, cropUV) {
+  contentPass(spec, M, cropUV, m = null) {
     const any = M.erase.length || M.redact.length || M.blur.length || M.focus.length || M.steps.length || M.pointer || M.loupe.length || M.arrow.length
     if (!any) return null
-    const c = this.slots.content
+    // the capture this is drawn on, and the content space its marks were placed in: a
+    // member of a group answers for both itself, which is the whole of what this pass
+    // had to learn about groups
+    const c = m ? m.slot : this.slots.content
+    const cs = m ? m.content : spec.content
     const tw = Math.max(2, Math.round(c.w * cropUV[2])), th = Math.max(2, Math.round(c.h * cropUV[3]))
-    const sx = tw / spec.content.w, sy = th / spec.content.h
+    const sx = tw / cs.w, sy = th / cs.h
     const S = b => [b.x * sx, b.y * sy, b.w * sx, b.h * sy]
-    const A = this.keep('contA', tw, th, mipsFor(tw, th))
+    const tag = m ? m.tag || '' : ''
+    const A = this.keep('contA' + tag, tw, th, mipsFor(tw, th))
     const fills = M.erase.filter(e => e.fill).slice(0, 24)
     this.draw('clean', A, {
       uCropUV: cropUV, uT: [tw, th], uSrcSize: [c.w, c.h],
@@ -1855,9 +1937,9 @@ class Compositor {
       // the page behind, blurred by the most any of them asks
       const sig = Math.max(...M.focus.map(f => f.shape.blur || 0)) * sx
       const page = this.blurred('page', A, [0, 0, tw, th], Math.max(0.5, sig))
-      const B = this.keep('contB', tw, th, mipsFor(tw, th))
+      const B = this.keep('contB' + tag, tw, th, mipsFor(tw, th))
       const list = M.focus.slice(0, 4)
-      const aa = Math.max(0.75, sx / Math.max(1e-3, spec.content.px || 1))
+      const aa = Math.max(0.75, sx / Math.max(1e-3, cs.px || 1))
       this.draw('focus', B, {
         uT: [tw, th], uN: list.length,
         uBox: list.flatMap(f => S(f.shape)),
@@ -1877,7 +1959,7 @@ class Compositor {
       // Its own target, because a pass that magnifies part of a picture has to read
       // that picture somewhere other than where it writes.
       const list = M.loupe.slice(0, Marks.MAX.loupe)
-      const C = this.keep('contC', tw, th, mipsFor(tw, th))
+      const C = this.keep('contC' + tag, tw, th, mipsFor(tw, th))
       const scaled = f => {
         const b = f.box, c = { x: b.x + b.w / 2, y: b.y + b.h / 2 }, s = f.scale
         return [(c.x - b.w * s / 2) * sx, (c.y - b.h * s / 2) * sy, b.w * s * sx, b.h * s * sy]
@@ -2366,4 +2448,4 @@ function loopCheck(spec) {
   }
 }
 
-module.exports = { Compositor, Readback, loopIndex, loopCheck }
+module.exports = { Compositor, SLOTS, Readback, loopIndex, loopCheck }

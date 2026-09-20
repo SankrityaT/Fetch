@@ -296,6 +296,119 @@ async function previewFrames(src, doc, times, { width = 1280 } = {}) {
   return out.map((f, i) => ({ file: f.file, at: +at[i].toFixed(2), engine: 'gl' }))
 }
 
+// ---- screenshots ---------------------------------------------------------
+// A screenshot is a take of one frame. It is planned by the same Plan.prepare an export
+// runs through and drawn by the same passes in the same compositor, so what the editor
+// shows over a shot is what the file holds, exactly as it is for a clip.
+//
+// The one thing a still has to be given is a clock, because a plan is a thing that runs:
+// a reveal rises, a badge lands, a caption's glass comes up. Rather than teaching every
+// one of those passes what a still is, a shot gets a real timeline a few seconds long
+// whose every frame is the same picture, and the still is taken from the middle of it.
+// Every arrival in the vocabulary lands well inside half of it (plan.js REVEAL_IN is
+// 0.36 s, a badge lands in 0.34, a focus eases in 0.45), so at the middle everything is
+// at rest and nothing has begun to leave. No pass forks and nothing is special-cased: a
+// shot's marks read as marks that have arrived because they have.
+//
+// The shot document lends itself the same clock and says so in its own words
+// (ui/shot.js, SPAN and HOLD), and hands that span over as the options bag's end. These
+// are the fallback for a caller with no document, so the two cannot drift into two
+// different answers about one picture.
+const SHOT_SPAN = 4, SHOT_FPS = 30
+// mirrored for the surfaces that offer a size; compositor/index.js shotScale is what
+// actually holds a shot to them, against the GPU's own ceiling
+const SHOT_SCALES = [1, 2, 3]
+
+/**
+ * The size of a captured picture, from its own header. A screenshot is a PNG or a JPEG
+ * and both say their size in the first few hundred bytes, so this costs one short read
+ * where probing it with ffmpeg costs a process.
+ */
+function pictureSize(file) {
+  const fd = fs.openSync(file, 'r')
+  try {
+    const b = Buffer.alloc(65536)
+    const n = fs.readSync(fd, b, 0, b.length, 0)
+    if (n > 24 && b.readUInt32BE(0) === 0x89504e47 && b.toString('latin1', 12, 16) === 'IHDR') {
+      return { width: b.readUInt32BE(16), height: b.readUInt32BE(20), kind: 'png' }
+    }
+    if (n > 4 && b[0] === 0xff && b[1] === 0xd8) {
+      // walk the markers to the start of frame, which is the only one carrying the size
+      for (let p = 2; p + 9 < n && b[p] === 0xff;) {
+        const m = b[p + 1], len = b.readUInt16BE(p + 2)
+        if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+          return { width: b.readUInt16BE(p + 7), height: b.readUInt16BE(p + 5), kind: 'jpg' }
+        }
+        p += 2 + len
+      }
+    }
+  } finally { fs.closeSync(fd) }
+  throw new Error(`${path.basename(file)} is not a PNG or a JPEG, so there is no picture to style`)
+}
+
+// The members of a group, each measured from its own header where the caller did not
+// say. A shot of one capture has no group and is untouched.
+function groupSizes(opts = {}) {
+  const raw = opts.group && (Array.isArray(opts.group) ? opts.group : opts.group.members)
+  if (!raw || raw.length < 2) return opts
+  const members = raw.map(m => {
+    if (+m.w > 0 && +m.h > 0) return m
+    const p = pictureSize(m.src)
+    return { ...m, w: p.width, h: p.height }
+  })
+  return { ...opts, group: Array.isArray(opts.group) ? members : { ...opts.group, members } }
+}
+
+/**
+ * The plan of a shot: the same options bag an export takes (toExportOpts' shape), on a
+ * take of one frame. Returns { spec, size }.
+ */
+function shotPlan(image, opts = {}, size = null) {
+  opts = groupSizes(opts)
+  const pic = size || pictureSize(image)
+  const look = opts.look || {}
+  // The span the document lent itself, where it sent one
+  const span = +opts.end > 0 ? +opts.end : SHOT_SPAN
+  // A still has nothing to fade from, nothing to cut to and nothing to loop into, so
+  // those are off here rather than refused somewhere a person can see the refusal.
+  const o = { ...opts, start: 0, end: span, fadeIn: 0, fadeOut: 0, cuts: null, rates: null, camera: null,
+    look: { ...look, motion: { ...(look.motion || {}), loop: false } } }
+  const prepared = opts.prepared || null
+  const ctx = { fps: SHOT_FPS, imageFile: opts.imageFile || (prepared && prepared.imageFile) || null, prepared }
+  return { spec: Plan.prepare(o, { width: pic.width, height: pic.height, duration: span, fps: SHOT_FPS }, ctx), size: pic }
+}
+
+/**
+ * Draw a finished screenshot.
+ *   image  the captured picture (PNG or JPEG)
+ *   opts   the export options bag, as a clip's edit hands it over
+ *   out    { dest, scale, format, quality, width, at }
+ * scale is 1, 2, 3 or 'native' (the default: the largest that does not enlarge the
+ * capture). at defaults to the middle of the shot's own span. Returns what was written,
+ * with the size it was drawn at.
+ */
+async function renderShot(image, opts = {}, out = {}, jobId) {
+  // Every capture in the picture, not just the first: a group draws one file per member
+  // and a missing one would come back as a size mismatch rather than as a missing file.
+  const files = [image, ...((opts.group && (opts.group.members || opts.group)) || []).map(m => m.src)]
+  for (const f of files) if (!f || !fs.existsSync(f)) throw new Error(`No picture at ${f}. It may have been renamed or deleted.`)
+  const { spec, size } = shotPlan(image, opts)
+  const format = (out.format || 'png').toLowerCase()
+  const dest = out.dest || path.join(os.tmpdir(), `fetch-shot-${process.pid}-${Date.now().toString(36)}.${format === 'png' ? 'png' : 'jpg'}`)
+  // written beside itself and swapped in, as an export's deliverable is: a shot that
+  // fails halfway never destroys the last good one
+  const partial = path.join(path.dirname(dest), `.${path.basename(dest)}.partial`)
+  const t0 = Date.now()
+  try {
+    const r = await drawStills({ spec, image, out: partial, format, quality: out.quality,
+      scale: out.scale == null ? 'native' : out.scale, width: out.width, at: out.at }, jobId)
+    moveInto(partial, dest)
+    return { ...r, file: dest, engine: 'gl', ms: Date.now() - t0, capture: `${size.width}x${size.height}` }
+  } finally {
+    try { fs.unlinkSync(partial) } catch {}
+  }
+}
+
 // ---- contact sheet -------------------------------------------------------
 // The whole edit in one picture (contact_sheet): frames of the output, evenly spaced,
 // drawn by the compositor and tiled with each frame's output time burned into its
@@ -425,4 +538,5 @@ async function probe() {
   })
 }
 
-module.exports = { exportEdit, pickEngine, previewFrames, contactSheet, planFor, warm, probe, close: closeWindow }
+module.exports = { exportEdit, pickEngine, previewFrames, contactSheet, planFor, warm, probe, close: closeWindow,
+  renderShot, shotPlan, pictureSize, SHOT_SCALES, SHOT_SPAN, SHOT_FPS }

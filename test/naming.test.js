@@ -1,4 +1,4 @@
-const { smartName, isAutoName, fit, productFromDomain, productFromTitle, dominantFront, namePrompt, parseAgentName } = require('../ui/naming')
+const { smartName, shotName, uniqueName, isAutoName, fit, productFromDomain, productFromTitle, dominantFront, namePrompt, parseAgentName } = require('../ui/naming')
 
 let pass = 0, fail = 0
 const is = (name, got, want) => {
@@ -121,6 +121,30 @@ is('a timestamp stays auto whatever the note', isAutoName('recording-17896770813
   is('the agent is not told the chat title', /Rinse/.test(namePrompt({ ...chat, product: 'Aside', words: 'here is the demo of it' })), false)
   is('a web tab in Aside keeps its page', smartName({ app: 'Aside', title: '(16) CSE 469F26 – Ed Discussion' }), 'Ed Discussion · CSE 469F26')
 }
+
+// ── a shot names itself after what it captured ──
+is('a shot of a window is named like a take of it', shotName({ app: 'Linear', title: 'Issue 42 triage' }), 'Linear · Issue 42 triage')
+is('a shot of a browser is named for the product', shotName({ app: 'Google Chrome', title: 'Library | Songscription' }), 'Songscription · Library')
+is('a whole display with nothing to go on is still called something', shotName({ area: 'display' }), 'Screen')
+is('a dragged rectangle says so', shotName({ area: 'region' }), 'Screen area')
+is('a window nobody could name', shotName({ area: 'window' }), 'Window')
+is('and with nothing at all, nothing', shotName({}), null)
+is('what was captured beats the fallback', shotName({ app: 'Xcode', title: 'Xcode', area: 'display' }), 'Xcode')
+
+// Two shots of the same window, a second apart, is the ordinary case
+is('a free name is used as it is', uniqueName('Songscription · Library', ['Demo']), 'Songscription · Library')
+is('a taken one counts up', uniqueName('Demo', ['Demo']), 'Demo 2')
+is('and keeps counting', uniqueName('Demo', ['Demo', 'Demo 2', 'Demo 3']), 'Demo 4')
+is('case does not make it free', uniqueName('demo', ['DEMO']), 'demo 2')
+is('a test can be a function', uniqueName('Demo', n => n === 'Demo'), 'Demo 2')
+is('nothing to name is still named', uniqueName('', []), 'Screen')
+{
+  const long = uniqueName('x'.repeat(60), ['x'.repeat(56)])
+  is('a long name makes room for its number', long.length <= 56 && / 2$/.test(long), true)
+}
+is('a shot Fetch named itself is fair game later', isAutoName('Screen area 3'), true)
+is('as is a bare Screen', isAutoName('Screen'), true)
+is('a name someone typed over it is not', isAutoName('Tempo row'), false)
 
 console.log(`\n  ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

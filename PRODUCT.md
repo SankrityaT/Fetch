@@ -3,9 +3,9 @@
 **register: product** · **version: 2.0**
 
 An agent-native workspace for recording and shipping real software, on macOS. You, or an
-agent you already pay for, record your actual screen, find the moment by what was said,
-zoom into it and export the clip. Everything runs on the machine except one clearly
-labelled optional feature.
+agent you already pay for, record your actual screen or capture one frame of it, find the
+moment by what was said, zoom into it and export the clip or the picture. Everything runs
+on the machine except one clearly labelled optional feature.
 
 Electron shell, native Swift helpers, ScreenCaptureKit capture, ffmpeg export,
 on-device transcription, an MCP server. GPL-3.0, public.
@@ -98,7 +98,24 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   area alone, and the message tells the agent to work on exactly that. The lasso writes
   nothing to the edit document: it points, the agent makes the mark, and the Undo button
   already there takes it back.
-- Library: masonry, each tile the real shape of its take.
+- Library: masonry, each tile the real shape of its take, grouped by day, filtered by
+  kind (shots or takes), by platform (Mac, Phone, Tablet, Web: a shape, never a make),
+  by folder and by a search over the name. An information button on any card says its
+  kind and platform, what is on disk, when it was captured, when it was last exported
+  and which folders hold it. The kind is read off what was captured and never off what
+  was exported, so styling a shot never makes it a take. Provenance (what an item was
+  styled or cut from, and what was made out of it) is a row the panel draws from an
+  item's `from`, and nothing in Fetch writes that field yet, so those rows are silent
+  on every item today. Under Not built, below.
+- Shot editor: the same editor, the same stage, the same compositor, with the clock
+  taken off it. Crop, Zooms and marks, and Look; a Styled and Original switch where the
+  play button was, Space to peek at the capture, and one Export PNG button, since a
+  still has no length, no quality and no resolution to ask about. The Look tab drops its
+  Captions section on a shot, for the reason the Text tab is gone: captions are drawn
+  from the words spoken in a take, a capture has none, and six dials whose values are
+  stored and never drawn are worse than no dials. Motion keeps its dials and gains a
+  line saying the fades, the arrival, the loop and the shutter are off in one frame and
+  come back when the look is used on a recording.
 - Activity: every action on the machine, attributed. No vendor mark means a person.
 - Settings: Recording access (never-record list), Connect, voiceover account.
 
@@ -125,6 +142,76 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   Library offers "Name these recordings" for older takes, with Undo.
 - Delete trashes the whole folder. Takes from before this stay loose on the Desktop
   and keep working, with `-edit` exports beside them.
+
+**Screenshots** (`Shot.swift`, `ui/shot.js`, `.fetch/<stem>.fetchshot.json`). A screenshot
+is a take of one frame, and that sentence is the whole design. `Shot.swift` is
+`Recorder.swift` asked for one frame: the same framework, the same content filter, the
+same never-record list applied before a pixel is read, the same folder, so the raw capture
+sits in `Original/` and is never touched again. A window arrives shaped like the window,
+on transparency, with its own corners cut out of the picture and no macOS drop shadow in
+it, because the compositor already draws a key and a contact shadow and a second baked one
+cannot be lifted back out.
+The never-record list reaches the helper by app name as well as by window id, and the
+helper matches the names itself against every window ScreenCaptureKit can see. The list
+of windows Fetch draws for a person is filtered to be readable (nothing under 140 by 120,
+one row per app, title and size), and a list built for reading must never be what decides
+which pixels are written: a password manager's small quick-access panel is not in it, and
+under the old id-only exclusion it was captured to disk while the result still reported
+that it had been left out. Fetch's own window is hidden for the moment a display or
+region capture takes, the way a take hides it, because Fetch is in the helper's skip set
+and so can never be named in an exclusion list either.
+A capture an agent asks for is its own question. The dialog says screenshot rather than
+record, says the frame is written now and that nothing keeps running, and the "until
+Fetch quits" answer is remembered against the kind as well as the target: allowing
+screenshots of a browser does not also allow recordings of it, and the other way round.
+A person's own capture is named from what it captured, the way a take is named from the
+app in front (`naming.shotName`), so a shot lands as "Songscription · Library" rather
+than as `shot-1758...`; that name is Fetch's, recorded in `.fetch/<stem>.name.json`, and
+is fair game for a later improvement, while a name someone typed never is.
+A shot is its own document rather than an edit with one frame. Half of `ui/fetchdoc.js` is
+a clock (clips, cues, beats, zooms, the pointer track, speed ramps, per-clip sound, fades,
+the loop), and a document holding all of that at its defaults lies about itself: the first
+agent to read one back would reasonably set `speedAudio` on a PNG. What the two documents
+share is the look, whole and unconverted, validated by the same `ui/look.js` against the
+same table, so `shot.look = doc.look` is simply true and a preset saved off a recording
+lands on a capture. A shot stores even the fields one frame cannot mean, and pins them only
+at the moment it projects (`Shot.STILL_PINS`: the two fades, the arrival, the loop, the cut
+transition, the travel-driven shutter), so a look with a two second fade crosses onto a
+screenshot and back with the fade still on it.
+**There is no second renderer.** A shot is lent a clock four seconds long whose every frame
+is the same picture, and the frame drawn is the middle one, where every arrival in the
+shared planner has landed and nothing has begun to leave. So the mark planner, the focus
+timing, the badge easing and all fifteen passes are handed a thing that runs, and not one
+of them forks. `Shot.toRenderSpec` and `Shot.toExportOpts` return the same key sets
+`Fetchdoc`'s do, asserted key by key in the tests, and reach `Plan.prepare` through the one
+door: the only difference anywhere is that a recording's content texture arrives as NV12
+out of ffmpeg and a capture arrives through `uploadImage` with its crop carried in
+`cropUV`, which is the path the editor's own stage already takes with its `<video>`.
+Measured: a shot drawn at 2x is the 1x picture to a mean of 0.83 levels and at 3x to 0.81,
+the 2 px gold keyline is 2, 4 and 6 px at the three sizes with no part-gold pixel at the
+start of a run, and inside a redaction nothing is finer than the mark's own cell at any
+size, so a screenshot at 3x carries no more of what was hidden than one at 1x.
+`scale: native` picks the largest of 1x, 2x and 3x that does not enlarge the capture, held
+against the GPU's own texture ceiling read off the live context. PNG is the default as a
+measurement and not a preference: a still draws flat fields, one pixel hairlines and small
+text, and JPEG rings along exactly those edges (0.18 MB against 1.40, differing by a mean
+of 1.08 levels), so it stays for the case it wins and is not the default. The alpha channel
+is pinned to 255 in the sink, because PNG is the one deliverable that could carry a hole
+out of the app.
+**More than one capture in one picture** (`opts.group`, up to three). A group of one is a
+take, and the ordinary path is that list with one entry in it, which is why every existing
+golden is byte for byte what it was. A member after the first reads the picture so far as
+its ground, ping-ponged between two targets, so its shadow falls on the member behind it
+and the edge floor stands one capture off another, for free rather than by being kept in
+step. No pass reads the previous frame: a member reads the previous member of the same
+frame, in the same draw. The layout is in millimetres until the last step, believing a
+stated width, then a stated density, then the capture's own scale, because a point is not
+the same size on a desk as in a hand: laid out in points a handset comes out five times too
+large and the group reads as a toy beside a building. Real relative size is a rule and not a
+dial, since the moment one member can be made bigger the group stops being a photograph.
+One ground, one softbox in absolute pixels, one grade over the finished frame, one camera:
+two vanishing points is two cameras, and two cameras is the thing this exists to stop
+looking like.
 
 **The edit document** (`ui/fetchdoc.js`)
 - One canonical description of an edit, written to `.fetch/<stem>.fetchdoc.json`.
@@ -315,9 +402,13 @@ less by the piece than far from it); it starts when its element is on screen, an
 it rides is re-framed so the raised card, its badges and some air all fit, a card at the
 frame's edge coming up a little inward. Sample and hold is exact: an output frame shows
 the last frame the take wrote at or before its moment, across cuts.
-`FETCH_ENGINE=classic|gl` forces one.
+`FETCH_ENGINE=classic|gl` forces one. The same module draws a finished screenshot
+(`renderShot`), and every place a frame becomes a file is one sink (`writeStill`), so a
+preview frame, a contact sheet cell and an exported PNG of one plan are the same file in
+the same format. What is left for the classic ffmpeg renderer is a sound file and a
+preview still taken off its own path.
 
-**MCP tools** (`mcp/index.js`), 38: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `pointer`,
+**MCP tools** (`mcp/index.js`), 39: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `take_shot`, `pointer`,
 `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
 `list_beats`, `get_edit`, `apply_edit`, `direct`, `review`, `fit_to_length`, `revert_my_edit`,
 `ask`, `propose`, `can_loop`,
@@ -328,7 +419,25 @@ the last frame the take wrote at or before its moment, across cuts.
 on it, every tool drives an op that exists, and the names the in-app pane allows are the names
 the server registers, both directions. `record.pause` sat in the bridge for months with no
 tool on it, so the app could hold a take and no agent could, and a feature no agent can reach
-is a feature that does not exist. The server also says **how to work** before anything calls
+is a feature that does not exist. **Screenshots cost the surface one tool.** `take_shot` is
+the only thing a capture needed of its own, because capturing one frame is a different act
+from recording and everything after it is not: `get_edit`, `apply_edit`, `apply_look`,
+`save_look`, `find_on_screen`, `preview_frame`, `contact_sheet`, `get_frame`, `direct`,
+`review`, `revert_my_edit`, `export`, `probe`, `list_recordings`, `rename_recording` and
+`delete_recording` all take a shot's path where they take a recording's, and
+`test/tools.test.js` fails if a second op named for stills ever appears beside
+`shot.take`. A shot goes through the same element resolution a recording does, so
+`element: 'E7'` from `find_on_screen` and `element: 'R1'` from the person's own lasso aim
+at part of a screenshot exactly as they aim at part of a take, and a lift with nothing to
+raise is refused with the same sentence. The tools that are questions about time
+(`fit_to_length`, `remove_dead_air`, `enhance_audio`, `transcribe`, `list_beats`,
+`can_loop`, `voiceover`) refuse a capture by name and say what to call instead, because a
+refusal that only says no costs the agent a turn and the person a wait. `preview_frame` on
+a shot is that shot's export drawn narrow, from the same plan through the same renderer, so
+what an agent checks and what ships differ in pixel count and nothing else. `review` on a
+shot is the same rubric on the half of it that is about a picture, and the one rule that is
+about a clock comes back under `not_judged` with its reason rather than telling an agent a
+screenshot is twenty-six seconds short. The server also says **how to work** before anything calls
 it: `mcp/index.js` sets MCP's `instructions` to what Fetch is, the six line loop the in-app
 agent is handed word for word (see the job below), aim at a box and never at a coordinate,
 read the state that comes back rather than calling again to find it, write down what is still
@@ -485,7 +594,15 @@ are what auto-zoom follows. The track is `pointer` in the edit document, so it c
 supplied or corrected afterwards.
 
 **Not built**, and not to be claimed: driving apps (Fetch records, other tools drive),
-arrows, more than one device in a frame, reading the project's source code.
+capturing the keyboard, reading the project's source code, a fourth capture in one
+picture, a mark that spans two of them, per-member tilt (each device angled its own
+way is two cameras, and a group that wants two angles wants two pictures), and
+provenance across items. The information panel can draw "Styled from", "Cut from" and
+"Used to make" off an item's `from` field, and nothing writes that field, so nothing
+in Fetch today knows that one library item came out of another. Every derived file
+made so far lives in its own take's folder, where the relationship is the folder and
+needs no field; what is missing is the first path that makes a new item out of an old
+one, and the panel is waiting for it rather than claiming it.
 
 ## Strategic principles
 

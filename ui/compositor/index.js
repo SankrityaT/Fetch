@@ -4,9 +4,9 @@
 // host renders it with ffmpeg alongside and muxes the two (ui/render-host.js).
 'use strict'
 const Plan = require('./plan')
-const { Compositor, Readback } = require('./gl')
+const { Compositor, Readback, SLOTS } = require('./gl')
 const { framePts, decodeArgs, FfmpegSource } = require('./sources')
-const { encodeArgs, Nv12PipeSink, WebCodecsSink } = require('./sinks')
+const { encodeArgs, Nv12PipeSink, WebCodecsSink, writeStill } = require('./sinks')
 const path = require('path')
 
 const even = n => Math.max(2, 2 * Math.round(n / 2))
@@ -233,6 +233,118 @@ async function renderVideo(job, hooks = {}) {
   return stats
 }
 
+// ---- a still -------------------------------------------------------------
+// A screenshot is a take of one frame. Everything below draws it with the passes that
+// draw a frame of video, off the same plan, in the same compositor: there is no second
+// renderer and no second look pipeline, and the only thing that differs from an export
+// is where the content texture comes from. A recording arrives as NV12 out of ffmpeg; a
+// captured picture arrives the way the editor's own <video> arrives, through
+// uploadImage with the crop carried in cropUV. Both land in the same slot and every
+// pass after that is the pass an export runs.
+
+// What a shot can be drawn at. A plan is one plan at one size (1920 wide, or 1280 at
+// 720), and a bigger still is that same plan drawn at a multiple of it: gl.js scales
+// every placement by W / spec.W, so 2x is the same picture with twice the pixels and
+// not a second layout. Sizes matter here in a way they do not for video, because a
+// screenshot is read close and often at 2x or 3x:
+//
+//   1x  1920 wide. The web size: a help centre, a changelog, a README. A Retina capture
+//       is area-averaged into it, which softens the take's own hairlines and is the
+//       honest thing to do with them at this size.
+//   2x  3840 wide. Where a Retina capture of an ordinary window lands about 1:1 (a 1710
+//       point window is 3420 pixels and the take's box inside a framed 2x plan is about
+//       2900 of them), so the screenshot carries the pixels that were captured.
+//   3x  5760 wide. A 5K or 6K capture at 1:1, and the size an app store asks for.
+//
+// Above 3x is a bigger file and no more picture: nothing in the plan carries more detail
+// than the capture does, and the GPU's own texture ceiling arrives soon after.
+const SHOT_SCALES = [1, 2, 3]
+
+/**
+ * Which of those a shot is drawn at. 'native' (the default) is the largest that does not
+ * enlarge the capture: the take's box is rect.w * k pixels wide and the capture has
+ * crop.w to fill it with, so anything past that ratio is a bigger file carrying no more
+ * picture. A few percent over is allowed, because that much softening is invisible and
+ * the step below it is less than half the pixels. max is the GPU's texture ceiling, read
+ * off the live context by the caller, so a machine with a small one gets a smaller still
+ * rather than a failed draw.
+ */
+function shotScale(spec, want = 'native', max = 16384) {
+  const top = SHOT_SCALES[SHOT_SCALES.length - 1]
+  // A group is only as dense as its least dense capture. The group box's own ratio is
+  // the sharpest member's, so drawing to that enlarges every other one: the small
+  // capture comes out stretched while the big one is minified.
+  const dens = b => (b.rect && b.rect.w > 0 ? b.crop.w / b.rect.w : 1)
+  const ratio = spec.group && spec.group.length ? Math.min(...spec.group.map(dens)) : dens(spec)
+  const native = [...SHOT_SCALES].reverse().find(k => k <= ratio + 0.05) || SHOT_SCALES[0]
+  const asked = want === 'native' || want == null ? native : Math.round(+want) || native
+  const cap = Math.max(1, Math.floor(max / Math.max(spec.W, spec.H)))
+  return Math.max(1, Math.min(top, asked, cap))
+}
+
+/**
+ * One finished screenshot: the plan drawn once, at full size, and written as a picture.
+ *   job  { spec, image, out, format, quality, scale, width, at }
+ * image is the captured picture, and the plan must have been made from its own size.
+ * scale is 1, 2, 3 or 'native'; width instead draws the plan at an exact pixel width,
+ * which is how a thumbnail and the harness's goldens ask for one. at is the output
+ * second to draw, and defaults to the middle of the shot's own span, where every
+ * arrival has landed and nothing has begun to leave.
+ */
+async function renderShot(job, hooks = {}) {
+  const { spec } = job
+  const t0 = performance.now()
+  // One capture fills one slot; a group fills one per member, each from its own file.
+  // A group of one is a take, and is this list with one entry in it.
+  const want = spec.group ? spec.group.map(m => ({ file: m.file, size: m.src }))
+    : [{ file: job.image, size: spec.src }]
+  const imgs = []
+  for (const q of want) {
+    const img = await loadImage(q.file)
+    // The plan's crop, its rect and the marks fitted to it are all in the capture's own
+    // pixels, so a plan made from a different picture would place every one of them
+    // somewhere else. Said here rather than drawn wrong.
+    if (img.width !== q.size.w || img.height !== q.size.h) {
+      throw new Error(`the plan is for a ${q.size.w}x${q.size.h} picture and this one is ${img.width}x${img.height}`)
+    }
+    imgs.push(img)
+  }
+  // Built at the plan's own size so the live context can be asked for its ceiling, then
+  // resized to what the shot is actually drawn at
+  const comp = new Compositor(spec.W, spec.H, { preserve: true })
+  try {
+    const k = job.width ? Math.max(0.02, job.width / spec.W)
+      : shotScale(spec, job.scale, comp.gl.getParameter(comp.gl.MAX_TEXTURE_SIZE))
+    comp.resize(spec.W * k, spec.H * k)
+    if (spec.bg.kind === 'image') {
+      try { comp.setImage(spec.bg.file, await loadImage(spec.bg.file)) } catch (e) { console.warn(e.message) }
+    }
+    await loadAssets(comp, spec)
+    // The whole picture into the content slot and the crop carried in cropUV, which is
+    // the path the editor's stage takes with its <video>. The export's path crops in the
+    // decoder instead and hands the slot a cropped frame; parity holds the two to within
+    // a level, so a still drawn this way is the frame the export would have drawn.
+    // One slot per member, in the order the plan laid the group out.
+    for (let i = 0; i < imgs.length; i++) comp.uploadImage(SLOTS[i], imgs[i], imgs[i].width, imgs[i].height)
+    // A group's members each carry their own crop on the plan, because a capture knows
+    // its own; one capture carries it here instead.
+    const s = spec.src
+    const cropUV = spec.group ? null : [spec.crop.x / s.w, spec.crop.y / s.h, spec.crop.w / s.w, spec.crop.h / s.h]
+    const at = job.at == null ? spec.span / 2 : Math.max(0, Math.min(spec.span, +job.at))
+    const n = Math.max(0, Math.min(spec.frames - 1, Math.round(at * spec.fps)))
+    const fp = Plan.framePlan(spec, n / spec.fps)
+    if (hooks.progress) hooks.progress(0, 1)
+    if (!comp.render(spec, fp, { n, ...(cropUV ? { cropUV } : {}) })) throw new Error('no picture to draw')
+    const out = await writeStill(job.out, comp.readRGBA(), comp.W, comp.H,
+      { format: job.format || 'png', ...(job.quality != null ? { quality: +job.quality } : {}) })
+    if (hooks.progress) hooks.progress(1, 1)
+    return { ...out, scale: +k.toFixed(4), at: +(n / spec.fps).toFixed(3), source: { w: s.w, h: s.h },
+      plan: `${spec.W}x${spec.H}`, ms: Math.round(performance.now() - t0) }
+  } finally {
+    comp.destroy()
+  }
+}
+
 /**
  * Single frames of an edit, drawn exactly as the export draws them (preview_frame, and
  * for looking at a pass): each output time's source frame decoded on its own, drawn,
@@ -240,8 +352,13 @@ async function renderVideo(job, hooks = {}) {
  *   job  { spec, src, ffmpeg, times: [output seconds], files: [paths], width, type }
  * type is 'image/jpeg' (default) or 'image/png'; width shrinks the frame (the plan is
  * drawn at that size, as the editor's stage draws below export size).
+ *
+ * A job carrying an image instead of a recording is a shot, and goes to renderShot: the
+ * render window routes every still job here (ui/render-window.js), and which source the
+ * frame comes from is this module's business rather than that one's.
  */
 async function renderStills(job, hooks = {}) {
+  if (job.image) return renderShot(job, hooks)
   const { spec, ffmpeg } = job
   const t0 = performance.now()
   const pid = hooks.pid || (() => {})
@@ -296,11 +413,10 @@ async function renderStills(job, hooks = {}) {
         comp.uploadNV12('content', new Uint8Array(xf.data), xf.w, xf.h, spec.src.h)
         comp.render(spec, fp, { n, cam, side: 'b' })
       }
-      const px = comp.readRGBA()
-      const cv = new OffscreenCanvas(comp.W, comp.H)
-      cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer), comp.W, comp.H), 0, 0)
-      const blob = await cv.convertToBlob({ type: job.type || 'image/jpeg', quality: 0.9 })
-      require('fs').writeFileSync(job.files[j], Buffer.from(await blob.arrayBuffer()))
+      // the same writer a finished screenshot goes out through, so a preview frame and a
+      // shot of the same plan are the same file in the same format
+      await writeStill(job.files[j], comp.readRGBA(), comp.W, comp.H,
+        { format: job.type === 'image/png' ? 'png' : 'jpg', quality: 0.9 })
       out.push({ file: job.files[j], at: +(n / spec.fps).toFixed(3), source: i })
       if (process.env.FETCH_DEBUG_RENDER) console.log(`still ${j} at ${job.times[j]}: ${Math.round(performance.now() - t0)} ms`)
     }
@@ -310,4 +426,4 @@ async function renderStills(job, hooks = {}) {
   return out
 }
 
-module.exports = { renderVideo, renderStills, decodeSize, camSquare, yieldNow, loadImage, loadAssets }
+module.exports = { renderVideo, renderStills, renderShot, shotScale, SHOT_SCALES, decodeSize, camSquare, yieldNow, loadImage, loadAssets }

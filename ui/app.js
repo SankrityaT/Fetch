@@ -6,6 +6,10 @@ const $ = id => document.getElementById(id)
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n }
 const ico = (name, cls = 'icon') => `<svg class="${cls}"><use href="./assets/icons/sprite.svg#i-${name}"/></svg>`
 const fmtTime = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
+// A still: a capture, or a finished picture made from one. The library card, the
+// player and the editor all branch on it, so the test is written once. Same list as
+// ui/library.js STILL_EXT, because an item the library calls a shot must open as one.
+const isStill = p => /\.(png|jpe?g|heic|heif|webp|tiff?|avif)$/i.test(String(p || ''))
 const fmtAgo = ms => {
   const m = (Date.now() - ms) / 6e4
   if (m < 1) return 'just now'
@@ -135,6 +139,47 @@ function paintHeroCta() {
     : 'Screen, camera and mic. Set it up once and go.'
 }
 window.paintHeroCta = paintHeroCta
+
+// ── take a shot ──────────────────────────────────────────────────────────
+// A screenshot is a take of one frame, so it is asked for where a recording is asked
+// for and lands in the same library. The chip sits beside the setup button rather
+// than in a menu: the target is already chosen there, and a still of it is one click.
+//
+// The chip is only added where stills exist (main.js shot-available: the helper is in
+// this build and the Mac is new enough). On an older Mac nothing appears, rather than
+// a button that apologises.
+async function wireShotChip() {
+  const chips = $('heroChips'), after = $('setupBtn')
+  if (!chips || !after || $('shotBtn')) return
+  let ok = false
+  try { ok = !!(await ipcRenderer.invoke('shot-available') || {}).ok } catch {}
+  if (!ok) return
+  const b = el('button', 'hero-chip', `${ico('camera', 'icon-sm')} Take a shot`)
+  b.id = 'shotBtn'
+  b.dataset.tip = 'Captures what you set up, at its full resolution'
+  b.onclick = () => takeShot()
+  after.insertAdjacentElement('afterend', b)
+}
+
+async function takeShot() {
+  const b = $('shotBtn')
+  if (b) b.disabled = true
+  mood('working')
+  let r = null
+  try {
+    // the same target a native recording would take: the chosen window, else the
+    // screen the chosen source is on
+    r = await ipcRenderer.invoke('take-shot', { ...nativeTarget(), by: 'human' })
+  } catch (e) { r = { ok: false, error: String((e && e.message) || e) } }
+  if (b) b.disabled = false
+  if (!r || !r.ok) { mood('error'); return toast((r && r.error) || 'That shot did not happen.', 'bad', 6000) }
+  mood('done')
+  refreshLibrary()
+  // straight into the editor: a capture nobody styles is a screenshot, and Fetch is
+  // for the finished one
+  openInEditor(r.original)
+}
+wireShotChip()
 
 $('setupBtn').onclick = () => {
   // Quick record starts straight away using the saved defaults, no wizard.
@@ -769,16 +814,17 @@ async function refreshLibraryOnce() {
   Library.renderBar(grid, groups, refreshLibrary)
 
   if (!list.length) {
-    $('libCount').textContent = '0 clips'
+    $('libCount').textContent = 'Nothing yet'
     grid.innerHTML = `<div class="empty" style="grid-column:1/-1">
       <img class="biscuit biscuit-lg" src="./assets/mascot/sit-happy.png" alt="">
-      <p>Nothing recorded yet. Hit record and Biscuit will bring it back here.</p>
+      <p>Nothing here yet. Record something, or take a shot, and Biscuit will bring it back here.</p>
       <button class="btn btn-primary btn-sm" onclick="document.querySelector('[data-view=record]').click()">Start recording</button></div>`
     return
   }
 
   const visible = Library.filterGroups(groups)
-  $('libCount').textContent = `${visible.length} take${visible.length === 1 ? '' : 's'}`
+  // "3 shots · 2 takes": the count says what kind of library this is
+  $('libCount').textContent = Library.countLabel(visible)
 
   if (!visible.length) {
     const folder = Library.findFolder(Library.getActiveId())
@@ -789,16 +835,22 @@ async function refreshLibraryOnce() {
   }
 
   grid.innerHTML = ''
+  // the headings the cards are dealt under, in card order
+  grid._days = Library.daySpans(visible)
   const needsThumb = [], cards = []
   for (const g of visible) {
     const c = g.original
+    // A shot is its own thumbnail and has nothing to play, so its tile is the picture
+    // and the button under it opens the editor rather than the player.
+    const shot = Library.isShot(g)
+    const poster = shot ? (c.poster || c.path) : c.poster
     const card = el('div', 'clip')
     card.innerHTML = `
       <button class="clip-shot">
-        ${c.poster ? `<img src="file://${encodeURI(c.poster).replace(/#/g, '%23').replace(/\?/g, '%3F')}" alt="">` : `<span class="ph">${ico('film-strip', 'icon-xl')}</span>`}
+        ${poster ? `<img src="file://${encodeURI(poster).replace(/#/g, '%23').replace(/\?/g, '%3F')}" alt="">` : `<span class="ph">${ico(shot ? 'image' : 'film-strip', 'icon-xl')}</span>`}
         <span class="clip-play"><span>${ico('play-fill', 'icon-lg')}</span></span>
         <span class="clip-badges">
-          ${c.srt ? '<span class="badge gold">CC</span>' : ''}
+          ${!shot && c.srt ? '<span class="badge gold">CC</span>' : ''}
           ${c.imported ? `<span class="badge">imported ${c.ext}</span>` : ''}
           ${g.derived.length ? `<span class="badge gold">${g.derived.length} export${g.derived.length === 1 ? '' : 's'}</span>` : ''}
         </span>
@@ -806,43 +858,50 @@ async function refreshLibraryOnce() {
       <div class="clip-body">
         <div class="clip-name-row">
           <div class="clip-name" title="${escHtml(g.take ? path.basename(g.take) : c.name)}">${escHtml(takeTitle(g))}</div>
-          ${Library.tagHTML(c.path)}
+          ${Library.tagHTML(g)}
         </div>
         <div class="clip-meta">${c.mb} MB · ${fmtAgo(c.mtime)}${takeWhere(g) ? ` · ${escHtml(takeWhere(g))}` : ''}</div>
         ${takeRows(g).length ? `<div class="derived">${takeRows(g).map(d => `
           <button class="derived-row" data-p="${d.path}">
-            ${ico('film-strip', 'icon-sm')}
+            ${ico(isStill(d.path) ? 'image' : 'film-strip', 'icon-sm')}
             <span class="d-name" title="${escHtml(d.name)}">${escHtml(exportLabel(d, g))}</span>
             <span class="d-size mono">${d.mb} MB</span>
           </button>`).join('')}</div>` : ''}
         <div class="clip-acts">
-          <button class="btn btn-sm" data-act="edit">${ico('scissors', 'icon-sm')} Edit</button>
-          <button class="btn btn-sm" data-act="convert" data-tip="Convert">${ico('export', 'icon-sm')}</button>
+          <button class="btn btn-sm" data-act="edit">${shot ? `${ico('sparkle', 'icon-sm')} Style` : `${ico('scissors', 'icon-sm')} Edit`}</button>
+          ${shot ? '' : `<button class="btn btn-sm" data-act="convert" data-tip="Convert">${ico('export', 'icon-sm')}</button>`}
           <button class="btn btn-sm" data-act="rename" data-tip="Rename">${ico('pencil-simple', 'icon-sm')}</button>
-          ${Library.assignButtonHTML()}
+          ${Library.assignButtonHTML(g)}
           <button class="btn btn-sm" data-act="reveal" data-tip="Show in Finder">${ico('magnifying-glass', 'icon-sm')}</button>
           <button class="btn btn-sm btn-danger" data-act="delete" data-tip="Move to Trash">${ico('trash', 'icon-sm')}</button>
         </div>
       </div>`
-    card.querySelector('.clip-shot').onclick = () => openPlayer(c)     // watch it here, not in Finder
+    // a shot has nothing to play, so its own tile is the way into the editor
+    card.querySelector('.clip-shot').onclick = () => (shot ? openInEditor(c.path) : openPlayer(c))
     // a take folder shows its finished video, or the folder itself before there is one
     card.querySelector('[data-act="reveal"]').onclick = () => ipcRenderer.send('reveal',
       g.take ? ((g.derived.find(d => d.deliverable) || g.copy || {}).path || g.take) : c.path)
     card.querySelector('[data-act="edit"]').onclick = () => openInEditor(c.path)
-    card.querySelector('[data-act="convert"]').onclick = () => quickConvert(c)
+    const conv = card.querySelector('[data-act="convert"]')
+    if (conv) conv.onclick = () => quickConvert(c)
     card.querySelector('[data-act="rename"]').onclick = () => startRename(card, g)
     card.querySelector('.clip-name').ondblclick = () => startRename(card, g)
     card.querySelector('[data-act="folder"]').onclick = e => Library.openAssignMenu(e.currentTarget, c.path, refreshLibrary)
     card.querySelector('[data-act="delete"]').onclick = () => confirmDelete(g)
     card.querySelectorAll('.derived-row').forEach(b => {
-      // the player and editor read video; a GIF deliverable is shown in Finder instead
-      if (/\.gif$/i.test(b.dataset.p)) { b.onclick = () => ipcRenderer.send('reveal', b.dataset.p); return }
+      // the player and editor read video; a finished picture and a GIF are deliverables
+      // and are shown in Finder. The one to style again is the capture, not its export.
+      if (isStill(b.dataset.p) || /\.gif$/i.test(b.dataset.p)) {
+        b.onclick = () => ipcRenderer.send('reveal', b.dataset.p)
+        return
+      }
       b.onclick = () => openPlayer(b.dataset.p)
       b.ondblclick = () => openInEditor(b.dataset.p)
     })
     cards.push(card)
 
-    if (!c.poster) needsThumb.push(c)
+    // a shot needs no thumbnail pass: the file is the picture
+    if (!c.poster && !shot) needsThumb.push(c)
   }
   grid._cards = cards
   grid._cols = 0
@@ -868,24 +927,25 @@ function dealLibrary(grid) {
   const cards = grid._cards
   if (!cards || !cards.length || !grid.isConnected) return
   const n = libraryColumns(grid.clientWidth || 1240)
-  if (n === grid._cols && cards[0].parentElement && cards[0].parentElement.parentElement === grid) return
+  // Still laid out and still on screen. Checked by connection rather than by depth: a
+  // day run puts the columns one level further down and the old test never matched.
+  if (n === grid._cols && cards[0].isConnected) return
   grid._cols = n
-  grid.replaceChildren(...dealColumns(cards, n).map(col => {
-    const c = el('div', 'lib-col')
-    c.append(...col)
-    return c
-  }))
+  // ui/library.js lays the runs out under their day heading and falls back to plain
+  // columns when there are none, so the two views deal the same cards one way
+  Library.dealInto(grid, cards, n, dealColumns)
 }
 
 function confirmDelete(g) {
   const all = [g.original, ...g.derived]
+  const what = Library.isShot(g) ? 'shot' : 'take'
   const scrim = el('div', 'scrim')
   scrim.innerHTML = `<div class="modal" style="width:min(430px,92vw)">
     <div class="modal-body" style="text-align:center;display:grid;gap:12px;justify-items:center">
       <img class="biscuit" src="./assets/mascot/sad.png" alt="" style="width:88px;height:88px">
       <h3 style="font-family:var(--font-display);font-size:var(--t-18);letter-spacing:-.03em">Move to Trash?</h3>
       <p class="dim" style="font-size:var(--t-12)">
-        ${all.length === 1 ? 'This take' : `This take and its ${g.derived.length} export${g.derived.length === 1 ? '' : 's'}`},
+        ${all.length === 1 ? `This ${what}` : `This ${what} and its ${g.derived.length} export${g.derived.length === 1 ? '' : 's'}`},
         plus any captions and thumbnails. You can get them back from the Trash.</p>
       ${g.derived.length ? `<label class="opt" style="padding:6px 0"><span class="opt-txt">
         <span class="opt-title">Keep the original</span>

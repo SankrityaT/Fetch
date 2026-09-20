@@ -282,15 +282,51 @@ function parseAgentName(reply) {
   return name ? fit(name) : null
 }
 
+// ── a shot names itself after what it captured ────────────────────────────
+// Same rule as a take, for the same reason: the library is scanned by what is in the
+// picture, not by when the shutter went. The difference is that a still has no
+// transcript, so this name is the only one it will ever get, and a capture of a whole
+// display with nothing identifiable in front still has to be called something.
+const AREA = { display: 'Screen', region: 'Screen area', window: 'Window' }
+function shotName({ app, title, domain, product, area } = {}) {
+  return smartName({ app, title, domain, product }) || AREA[area] || null
+}
+
+/**
+ * `stem`, or the first of `stem 2`, `stem 3`... that is free. Two shots of the same
+ * window a second apart are the ordinary case, so a name has to make room for its
+ * twin rather than overwrite it. Same shape as processor.renameTake's "Name 2".
+ *
+ * @param {string} stem
+ * @param {string[]|function} taken  the names already used, or a test for one
+ */
+function uniqueName(stem, taken) {
+  const used = typeof taken === 'function' ? taken
+    : n => (taken || []).some(t => sameIgnoringCase(String(t || ''), n))
+  const base = fit(clean(stem)) || 'Screen'
+  if (!used(base)) return base
+  for (let n = 2; n < 1000; n++) {
+    const suffix = ' ' + n
+    const next = fit(base, MAX - suffix.length) + suffix
+    if (!used(next)) return next
+  }
+  return base + ' ' + Date.now().toString(36)
+}
+
 // Names Fetch generated itself, which are fair game to improve later. A name someone
 // typed is theirs and is never touched again. `note` is the take's name note
 // (processor.readNameNote): the exact name Fetch last gave it, so a name made from the
 // app in front ("Songscription · Library") is told apart from one a person typed.
+// The bare fallbacks a shot falls back to ("Screen", "Screen area 3") count too: they
+// are names nobody types.
 const isAutoName = (stem, note) => {
   const s = String(stem || '')
-  if (/^recording-\d{10,}/i.test(s) || /^Screen · \d/.test(s)) return true
+  // shot-<epoch> is what the capture path writes before anything names it, the same
+  // shape recording-<epoch> is for a take.
+  if (/^recording-\d{10,}/i.test(s) || /^shot-\d{10,}/i.test(s) || /^Screen · \d/.test(s)) return true
+  if (/^(Screen|Screen area|Window)( \d+)?$/.test(s)) return true
   return !!(note && typeof note.auto === 'string' && note.auto && s === note.auto)
 }
 
-module.exports = { smartName, isAutoName, clean, fit, MAX,
+module.exports = { smartName, shotName, uniqueName, isAutoName, clean, fit, MAX,
   productFromDomain, productFromTitle, dominantFront, namePrompt, parseAgentName, titleCase }

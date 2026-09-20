@@ -191,9 +191,21 @@ function devicePlan(D = {}, chrome, g, corner, end, bg = {}, viewport = null) {
   const base = d.base || 0
   // the largest screen of the take's own shape that leaves room for the shell round it
   const sw = Math.min(g.vidW / (1 + 2 * d.side), g.vidH / (1 / a + d.bar + d.foot + base))
+  return { ...shellAt(kind, sw, a, g.ox + g.vidW / 2, g.oy + g.vidH / 2, corner),
+    ...shellTone(D, end, bg), title: String(D.title || '').slice(0, 80) }
+}
+
+/**
+ * The shell round a screen sw wide of the capture's own aspect, centred on (cx, cy).
+ * Every measurement a drawn device has is here and nowhere else, so one capture filling
+ * the layout and one capture standing beside another in a group are the same shape
+ * solved from a different width rather than two shapes that have to be kept in step.
+ */
+function shellAt(kind, sw, a, cx, cy, corner) {
+  const d = DEVICES[kind]
+  const base = d.base || 0
   const sh = sw / a
   const boxW = sw * (1 + 2 * d.side), boxH = sh + sw * (d.bar + d.foot)
-  const cx = g.ox + g.vidW / 2, cy = g.oy + g.vidH / 2
   const box = { x: Math.round(cx - boxW / 2), y: Math.round(cy - (boxH + sw * base) / 2), w: Math.round(boxW), h: Math.round(boxH), r: sw * d.r }
   const screen = {
     x: Math.round(box.x + sw * d.side), y: Math.round(box.y + sw * d.bar),
@@ -201,13 +213,6 @@ function devicePlan(D = {}, chrome, g, corner, end, bg = {}, viewport = null) {
     // never tighter than the window's own rounded corner, or its black corner shows
     r: Math.max(corner, sw * d.sr),
   }
-  // Graphite on a dark ground, bone on a light one. A photo is the one ground the plan
-  // cannot read: edgeEnd calls every image light, because the hairline's ink end is the
-  // safe one until the picture is decoded, and for a shell that would be a pale slab on
-  // a near-black photo, which is four of the five we ship. So a photo starts on graphite
-  // and gl.js re-picks it from the decoded mean (deviceOf), the way it does the hairline.
-  const auto = D.theme !== 'light' && D.theme !== 'dark'
-  const light = !auto ? D.theme === 'light' : bg.kind !== 'image' && !!end.light
   const foot = base ? {
     x: box.x - sw * d.over, y: box.y + box.h, w: box.w + 2 * sw * d.over, h: sw * base,
     r: sw * base * 0.35, taper: sw * base * 0.5,
@@ -217,12 +222,150 @@ function devicePlan(D = {}, chrome, g, corner, end, bg = {}, viewport = null) {
   const pad = Math.ceil(sw * 0.02)
   const x0 = Math.min(box.x, foot ? foot.x : box.x) - pad, y0 = box.y - pad
   const x1 = Math.max(box.x + box.w, foot ? foot.x + foot.w : 0) + pad, y1 = (foot ? foot.y + foot.h : box.y + box.h) + pad
-  return {
-    kind, box, screen, foot, slit, light, auto, ...SHELL[light ? 'light' : 'dark'],
-    bar: sw * d.bar, unit: sw,
-    title: String(D.title || '').slice(0, 80),
-    extent: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 },
-  }
+  return { kind, box, screen, foot, slit, bar: sw * d.bar, unit: sw,
+    extent: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } }
+}
+
+// Graphite on a dark ground, bone on a light one. A photo is the one ground the plan
+// cannot read: edgeEnd calls every image light, because the hairline's ink end is the
+// safe one until the picture is decoded, and for a shell that would be a pale slab on
+// a near-black photo, which is four of the five we ship. So a photo starts on graphite
+// and gl.js re-picks it from the decoded mean (deviceOf), the way it does the hairline.
+// A group asks this once for the whole set: two shells in one picture lit two ways is
+// the fault the whole group exists to avoid.
+function shellTone(D = {}, end, bg = {}) {
+  const auto = D.theme !== 'light' && D.theme !== 'dark'
+  const light = !auto ? D.theme === 'light' : bg.kind !== 'image' && !!end.light
+  return { light, auto, ...SHELL[light ? 'light' : 'dark'] }
+}
+
+// The room that shell needs, and where its centre sits inside it, with no placement at
+// all: what a group has to know about a member before it knows where the member goes.
+function shellExtent(kind, sw, a) {
+  const d = DEVICES[kind]
+  if (!d) return { w: sw, h: sw / a, cdx: sw / 2, cdy: sw / (2 * a) }
+  const base = d.base || 0, over = d.over || 0, pad = sw * 0.02
+  const boxW = sw * (1 + 2 * d.side), boxH = sw / a + sw * (d.bar + d.foot)
+  const w = (base ? boxW + 2 * sw * over : boxW) + 2 * pad
+  return { w, h: boxH + sw * base + 2 * pad, cdx: w / 2, cdy: pad + (boxH + sw * base) / 2 }
+}
+
+// ── more than one capture in one picture ────────────────────────────────
+//
+// A handset beside a window, a handset beside a laptop: two or three captures arranged
+// as one group. What makes a group a photograph rather than two pictures pasted
+// together is that everything but the pixels is shared, and shared by being one number
+// rather than two numbers set the same way. One ground. One light: every member casts
+// from spec.shadow, so the drop and the softness are the same absolute distance for a
+// handset and for a laptop, which is what one softbox over a desk actually does. One
+// grade, because the treatment pass runs once over the finished frame. One plane where
+// a tilt turns, since two vanishing points is two cameras. One scale.
+//
+// Real relative sizes is the rule and not a dial, and it is the part that is easy to get
+// wrong. A point is not the same size on a desk as in a hand: a desktop point is about a
+// hundred and tenth of an inch and a handset's about a hundred and sixtieth, so a 1440
+// point window is 332 mm across and a 393 point handset screen is 62. Laid out in points
+// alone the handset comes out five times too large and the group reads as a toy beside a
+// building. So a member is measured in millimetres, and the layout is in millimetres
+// until the last step.
+const MM_DESK = 25.4 / 110, MM_HAND = 25.4 / 160
+
+// A capture's real screen width. Believed in this order, because a capture that knows
+// its own density is better evidence than any default: the width someone gave, the
+// pixel density someone gave, and finally the backing scale with the frame the look
+// asked for standing in for where the thing was (a handset frame means it was in a
+// hand). Never zero: a member with nothing known is read as a 2x desktop capture.
+function realMM(m) {
+  if (+m.mm > 0) return +m.mm
+  if (+m.ppi > 0) return Math.max(1, (+m.w || 1) / +m.ppi * 25.4)
+  const scale = +m.scale > 0 ? +m.scale : 2
+  return Math.max(1, ((+m.w || 1) / scale) * (m.kind === 'phone' ? MM_HAND : MM_DESK))
+}
+
+/**
+ * Where each member of a group sits, at one pixel per millimetre, before the group is
+ * fitted to the frame. gap is a share of the widest member's own shell, so it means the
+ * same thing whatever is in the group, and it is allowed to go negative: an overlap is
+ * what stops two objects on one surface reading as two photographs.
+ *
+ * align 'stand' gives every member one bottom line, which is the arrangement that reads
+ * as one surface; 'centre' lines their middles up, which is right when the group is a
+ * row of screens rather than a desk.
+ */
+const GROUP_MAX = 3
+function groupLayout(list, gap, align) {
+  const cells = list.map(m => ({ ...shellExtent(m.kind, m.mm, m.a), sw: m.mm }))
+  const unit = Math.max(...cells.map(c => c.w))
+  // clamped so a gap can never fold the group onto one point
+  const sp = clamp(num(gap, 0.06), -0.45, 0.6) * unit
+  const H = Math.max(...cells.map(c => c.h))
+  let x = 0
+  // a quarter of every member stays clear of the next whatever the gap asks for: past
+  // that an overlap is not an arrangement, it is one capture hidden behind another
+  for (const c of cells) { c.x = x; x += Math.max(0.25 * c.w, c.w + sp); c.y = align === 'centre' ? (H - c.h) / 2 : H - c.h }
+  const W = Math.max(...cells.map(c => c.x + c.w))
+  return { w: W, h: H, cells }
+}
+
+/**
+ * The group as the caller states it, in this module's own words, or null where there is
+ * nothing to arrange. A group of one is a take, and goes down the path a take goes down.
+ *   opts.group  { gap, align, members } or just the members
+ * A member is { src, w, h, scale, ppi, mm, device, title, crop }: its file, its captured
+ * pixels, what is known about how big the thing really is, and the frame it wears. The
+ * frame is the member's own, because a handset and a browser window in one picture is
+ * the case this exists for; where a member does not name one it wears the look's.
+ */
+function groupSpec(raw, D = {}, radius = 0) {
+  const members = (Array.isArray(raw) ? raw : (raw && raw.members) || []).filter(Boolean).slice(0, GROUP_MAX)
+  if (members.length < 2) return null
+  const cfg = Array.isArray(raw) ? {} : raw || {}
+  const list = members.map(m => {
+    const w = Math.max(1, +m.w || 1), h = Math.max(1, +m.h || 1)
+    const c = m.crop && m.crop.w > 0 && m.crop.h > 0 ? m.crop : null
+    const cw = c ? 2 * Math.floor(w * c.w / 2) : w & ~1, chh = c ? 2 * Math.floor(h * c.h / 2) : h & ~1
+    const asked = m.device === undefined || m.device === null ? D.kind : m.device
+    const kind = DEVICES[asked] ? asked : null
+    const q = { src: m.src || null, w, h, scale: m.scale, ppi: m.ppi, mm: m.mm, kind,
+      title: String(m.title == null ? D.title || '' : m.title).slice(0, 80),
+      marks: Array.isArray(m.marks) ? m.marks : [],
+      crop: { x: c ? Math.min(w - cw, Math.floor(w * c.x) & ~1) : 0, y: c ? Math.min(h - chh, Math.floor(h * c.y) & ~1) : 0, w: cw, h: chh },
+      radius }
+    // the shape the frame is drawn to is the crop's, not the capture's: a member cropped
+    // square must not be hung in a shell cut for the whole window
+    q.a = q.crop.w / q.crop.h
+    // measured off the crop, since that is the part of the thing that is in the picture
+    q.mm = realMM({ ...q, w: q.crop.w })
+    return q
+  })
+  return { list, gap: cfg.gap, align: cfg.align === 'centre' ? 'centre' : 'stand', theme: cfg.theme || D.theme }
+}
+
+/**
+ * The group placed in the room the composition gave it: one scale in millimetres for
+ * every member, so the relative sizes survive the fit, and the set centred in that room.
+ * Returns the members with their shells and their screens, and the box the whole group
+ * stands in, which is what a tilt turns and what the grade is held to.
+ */
+function placeGroup(G, gl, g, corner, end, bg) {
+  const S = Math.min(g.vidW / gl.w, g.vidH / gl.h)
+  const ox = g.ox + (g.vidW - gl.w * S) / 2, oy = g.oy + (g.vidH - gl.h * S) / 2
+  // one tone for the whole set: two shells in one picture lit two ways is two pictures
+  const tone = shellTone(G, end, bg)
+  const members = G.list.map((m, i) => {
+    const c = gl.cells[i]
+    const cx = Math.round(ox + (c.x + c.cdx) * S), cy = Math.round(oy + (c.y + c.cdy) * S)
+    const sw = m.mm * S
+    const shell = m.kind ? { ...shellAt(m.kind, sw, m.a, cx, cy, corner), ...tone, title: m.title } : null
+    const w = 2 * Math.round(sw / 2), h = 2 * Math.round(sw / m.a / 2)
+    const rect = shell ? shell.screen : { x: Math.round(cx - w / 2), y: Math.round(cy - h / 2), w, h }
+    return { src: m.src, device: shell, rect, radius: shell ? shell.screen.r : Math.max(0, m.radius),
+      srcSize: { w: m.w, h: m.h }, crop: m.crop, mm: m.mm, rawMarks: m.marks }
+  })
+  const ext = members.map(q => (q.device ? q.device.extent : q.rect))
+  const x0 = Math.min(...ext.map(e => e.x)), y0 = Math.min(...ext.map(e => e.y))
+  const x1 = Math.max(...ext.map(e => e.x + e.w)), y1 = Math.max(...ext.map(e => e.y + e.h))
+  return { members, scale: S, box: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } }
 }
 
 // ── the tilt ────────────────────────────────────────────────────────────
@@ -462,8 +605,19 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     : (opts.cues || []).length || (P && P.captions && (P.captions.cues || []).length) || 0
   const band = framed && opts.captions && cues > 0 && (!cst.position || cst.position === 'bottom') && cst.fx == null
     ? Overlays.CAP_BAND : 0
+  // More than one capture in one picture, laid out in millimetres and handed to the
+  // composition as if it were the take: the padding, the shape, the shadow and the
+  // caption band then need to know nothing about it. A group needs a ground to stand on,
+  // so an unframed edit has none and draws its one take as it always did.
+  const G = framed ? groupSpec(opts.group, L('device'), num(opts.radius, 0)) : null
+  const gl = G ? groupLayout(G.list, G.gap, G.align) : null
+  // the group at its own pixels: every member at the density of the sharpest of them, so
+  // the size the layout is given is the size at which nothing in the set is enlarged
+  const gpx = gl ? Math.max(...G.list.map(m => m.crop.w / m.mm)) : 1
+  const boxW = gl ? Math.max(2, Math.round(gl.w * gpx)) : cw
+  const boxH = gl ? Math.max(2, Math.round(gl.h * gpx)) : ch
   const g = framed
-    ? Layout.backdropGeometry(cw, ch, { inset: opts.inset, radius: opts.radius, scale: opts.scale, band,
+    ? Layout.backdropGeometry(boxW, boxH, { inset: opts.inset, radius: opts.radius, scale: opts.scale, band,
       outWidth: opts.scale === 720 ? 1280 : 1920, outAspect: aspect })
     : Layout.plainGeometry(cw, ch, { outAspect: aspect, scale: opts.scale })
 
@@ -558,15 +712,21 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const end0 = edgeEnd(bg)
   // the screen's corner is the device's own, floored at the window's (`corner`) so the
   // take's black corner never shows; frame.radius belongs to a take with no device
-  const device = framed ? devicePlan(L('device'), L('frame').chrome, g, corner, end0, bg, opts.viewport) : null
-  const rect = device ? device.screen : { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH }
-  const rad = device ? device.screen.r : radius
+  const device = framed && !gl ? devicePlan(L('device'), L('frame').chrome, g, corner, end0, bg, opts.viewport) : null
+  // A group has no one device and no one screen: each member carries its own, and what
+  // stands in for the take everywhere else (the grade's reach, the caption band, a title
+  // card, the keys) is the box the whole set stands in.
+  const group = gl ? placeGroup(G, gl, g, corner, end0, bg) : null
+  const rect = group ? group.box : device ? device.screen : { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH }
+  const rad = group ? 0 : device ? device.screen.r : radius
   // A tilt turns the whole framed take, the device and the camera bubble on it in one
   // plane; the frame pass reads it backwards, per pixel (gl.js, FS_FRAME).
   // A take with nothing behind it is the whole output, and turning it would open black
   // wedges at the corners, which is the one thing the output never draws. Same rule as
   // the take's own arrival: it can only turn in something.
   const tilt = bg.kind === 'none' ? null : tiltPlan(num(L('frame').tilt, 0), device ? device.box : rect, g)
+  // The whole group on one plane: two vanishing points is two cameras, and two cameras
+  // is the thing a group exists to stop looking like.
 
   // Zooms on the output clock, as the classic export places them; with auto zoom and
   // none of its own, the moments prepare.js found (already on the output clock)
@@ -616,6 +776,26 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const pointer = points ? Marks.planPointer(points, { W: cw, H: ch, clock, crop: c, scale: P && P.pointer ? P.pointer.scale : null,
     span, px, zooms: pm.zooms, size: Cu.size, ripple: Cu.ripple }) : null
   const marks = { ...pm, erase, pointer }
+  // Each member of a group carries its own marks, and they go through this planner, on
+  // that member's own pixels, at that member's own drawn size. A lift is fitted to the
+  // capture it was drawn on and a step badge is sized against the screen it lands on, so
+  // nothing in the mark planner learns that there is more than one capture. No zoom and
+  // no pointer: a group is a still of several things, and neither travels.
+  // A member's mark with no span runs the whole clip. A group is a still of several
+  // things, so a mark on one of them has no when to give, and planned on the output
+  // clock with neither a start nor an end it would plan to an empty track and draw
+  // nothing at all. Same rule as the shot document's own timed().
+  const wholeClip = list => (list || []).filter(Boolean)
+    .map(m => (m.start == null && m.end == null ? { ...m, start, end } : m))
+  const gmarks = group ? group.members.map((m, i) => ({
+    // The take's own marks belong to the first member: a shot's src, its crop and its
+    // marks are the capture it started as, and a second capture standing beside it does
+    // not move them. Dropped here they would be planned, stored and never drawn.
+    ...Marks.planMarks(i === 0 ? [...drawn, ...wholeClip(markList(m.rawMarks, null))] : wholeClip(markList(m.rawMarks, null)),
+      { W: m.crop.w, H: m.crop.h, px: m.rect.h / m.crop.h,
+        clock, span, zooms: [], ease: L('motion').zoomEase,
+        look: { dim: F.dim, lift: F.lift, loupe: F.loupe, arrow: F.arrow } }),
+    erase: [], pointer: null })) : null
   // What the edit hides, on the source clock, for the one transition that shows the
   // material a cut removed (cutPoints). The marks themselves are on the output clock by
   // now, and the removed material has no time there at all.
@@ -703,15 +883,33 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   // and not from the screen inside the device. Laid out from the screen, a 50 px caption
   // landed on a laptop's foot. Everything else a text reads (a lower third rides the
   // product) still goes by the screen.
-  const capBox = framed ? (device ? { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH } : { ...rect }) : null
+  const capBox = framed ? (device || group ? { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH } : { ...rect }) : null
   const text = Text.planText(opts, { clock, span, W: g.outW, H: g.outH, box: framed ? { ...rect } : null,
     capBox, prepared: P, zooms: pm.zooms })
 
   return {
     W: g.outW, H: g.outH, fps, frames, span, keep, start, end,
-    src: { w: srcW, h: srcH }, crop: { x: cx, y: cy, w: cw, h: ch },
-    content: { w: cw, h: ch, px },
+    // For a group these three describe the group: the box it stands in, at the pixels it
+    // would take to draw every member at its own density. They are what says how big a
+    // still of it is worth writing (compositor/index.js shotScale reads crop.w / rect.w),
+    // and each member's real source, crop and content are in spec.group.
+    src: gl ? { w: boxW, h: boxH } : { w: srcW, h: srcH },
+    crop: gl ? { x: 0, y: 0, w: boxW, h: boxH } : { x: cx, y: cy, w: cw, h: ch },
+    content: gl ? { w: boxW, h: boxH, px: rect.h / boxH } : { w: cw, h: ch, px },
     framed, rect, radius: rad, shadow, inner, device, tilt,
+    /**
+     * More than one capture in one picture, each with its own shell, its own pixels and
+     * its own marks, sharing one ground, one light, one grade and one plane. Null for
+     * the ordinary one-capture edit, which is every export: a group of one is a take.
+     * Each member is { file, rect, radius, device, src, crop, content, inner, marks, mm },
+     * which is the same set of names the take itself answers to, so the frame pass draws
+     * a member with the code that draws a take rather than with code of its own.
+     */
+    group: group ? group.members.map((m, i) => ({
+      file: m.src, rect: m.rect, radius: m.radius, device: m.device, mm: +m.mm.toFixed(2),
+      src: m.srcSize, crop: m.crop, content: { w: m.crop.w, h: m.crop.h, px: m.rect.h / m.crop.h },
+      inner: { x: 0, y: 0, w: 1, h: 1 }, marks: gmarks[i],
+    })) : null,
     // The edge floor, and the hairline that meets it where nothing else does: about a
     // pixel and a quarter at 1080, scaled with the output so it stays a hairline at 4K.
     // No ground, no contract: a take in its own shape is the whole output, and a line
@@ -1071,8 +1269,11 @@ function framePlan(spec, t) {
   const xd = mix > 0 ? cutAt(spec, t, 'crossfade') : null
   const marks = spec.marks ? Marks.at(spec.marks, xd ? Math.min(t, xd.b.t - CUT_EPS) : t) : null
   const marks2 = spec.marks && xd ? Marks.at(spec.marks, Math.max(t, xd.b.t)) : null
+  // A member's marks read at this instant exactly as the take's do, through the same
+  // function: a group is still one frame of one plan and still draws alone.
+  const group = spec.group ? spec.group.map(m => Marks.at(m.marks, t)) : null
   return { t, s, s2, mix, view0, view1, taps, speed, rate: rateAt(spec.keep, t), fade: fi * fo, camT, bubble,
-    marks, ...(marks2 ? { marks2 } : {}), move: takeMove(spec, t) }
+    marks, ...(marks2 ? { marks2 } : {}), ...(group ? { group } : {}), move: takeMove(spec, t) }
 }
 
 // ── which source frames ─────────────────────────────────────────────────
@@ -1138,4 +1339,4 @@ function cameraFrames(spec, pts) {
   return frameMap(pts, spec.frames, n => Timeline.camTime(spec.cam, srcAt(spec.keep, n / spec.fps)))
 }
 
-module.exports = { prepare, framePlan, camAt, srcAt, rateAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL }
+module.exports = { prepare, framePlan, camAt, srcAt, rateAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL, realMM, groupLayout, GROUP_MAX, MM_DESK, MM_HAND }

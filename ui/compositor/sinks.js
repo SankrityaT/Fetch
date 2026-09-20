@@ -133,6 +133,46 @@ const gifRate = fps => GIF_RATES.reduce((a, b) => (Math.abs(b - fps) < Math.abs(
 const GIF_COLORS = 256
 const GIF_DITHER = 'bayer:bayer_scale=5'
 
+// ── a still ─────────────────────────────────────────────────────────────────
+// A screenshot has no encoder, no container and no clock: the drawn frame goes straight
+// out as a picture through Chromium's own writers, so there is nothing here to keep in
+// step with the video path. This is the whole of the still sink, and it is here rather
+// than in index.js so that every place a finished frame becomes a file is in one module.
+//
+// PNG is the default and that is a measurement, not a preference. What a still draws is
+// a user interface: flat fields, hairlines a pixel wide and small text, over a ground a
+// look chose. JPEG subsamples chroma to 4:2:0, which halves the colour resolution of
+// exactly those edges, and its ringing reads as a halo along a hairline on a flat field.
+// A clip is watched once and a screenshot is read close, often at 2x, so both are plain
+// in the one and invisible in the other. JPEG stays for the case it wins: a photo
+// backdrop behind a big frame, where nothing is a hairline and the file is a tenth the
+// size.
+const STILL_FORMATS = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg' }
+const STILL_QUALITY = 0.92
+
+/**
+ * Write one drawn frame as a picture.
+ *   px      RGBA bytes as the compositor read them back, W * H * 4
+ *   format  'png' (default) or 'jpg'; quality is JPEG's alone
+ * Returns { file, format, w, h, bytes }.
+ */
+async function writeStill(file, px, W, H, { format = 'png', quality = STILL_QUALITY } = {}) {
+  const id = String(format).toLowerCase().replace(/^\./, '')
+  const type = STILL_FORMATS[id]
+  if (!type) throw new Error(`a still is written as ${Object.keys(STILL_FORMATS).join(' or ')}, not ${format}`)
+  // The frame is opaque by construction: the ground fills it edge to edge and the last
+  // pass writes over all of it. PNG is the one deliverable that would carry an alpha
+  // channel out of the app, so it is pinned here rather than trusted, and someone who
+  // opens the file never finds a hole where a pass left a fraction behind.
+  for (let k = 3; k < px.length; k += 4) px[k] = 255
+  const cv = new OffscreenCanvas(W, H)
+  cv.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(px.buffer, px.byteOffset, W * H * 4), W, H), 0, 0)
+  const blob = await cv.convertToBlob({ type, quality })
+  const buf = Buffer.from(await blob.arrayBuffer())
+  require('fs').writeFileSync(file, buf)
+  return { file, format: type === 'image/png' ? 'png' : 'jpg', w: W, h: H, bytes: buf.length }
+}
+
 function gifChain(W, H, W4) {
   const pre = [
     ...(W4 !== W ? [`crop=${W}:${H}:0:0`] : []),
@@ -292,4 +332,4 @@ class WebCodecsSink {
   kill() { try { this.encoder.close() } catch {} try { this.proc.kill('SIGKILL') } catch {} }
 }
 
-module.exports = { encodeArgs, gifRate, Nv12PipeSink, WebCodecsSink, GIF_RATES }
+module.exports = { encodeArgs, gifRate, Nv12PipeSink, WebCodecsSink, GIF_RATES, writeStill, STILL_FORMATS }
