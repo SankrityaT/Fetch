@@ -62,7 +62,7 @@ Group these into three or four sections. Do not render them as a grid of identic
 feature cards (see Anti-patterns).
 
 **Agents drive it, on your plan**
-- MCP server with 19 tools. `record_start`, `record_stop`, `record_status`,
+- MCP server with 34 tools. `record_start`, `record_stop`, `record_status`,
   `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
   `list_beats`, `get_edit`, `apply_edit`, `export`, `rename_recording`,
   `remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`,
@@ -113,6 +113,63 @@ feature cards (see Anti-patterns).
   without re-recording. The only feature that uses the internet, and the app says so
   where you use it. The key lives in the macOS Keychain.
 
+**The picture: one renderer, and looks that stand beside Screen Studio**
+- **One WebGL2 compositor draws the editor's stage and the export from the same plan.**
+  What you see is the file, proven frame by frame to within 1 to 2 colour steps out of
+  255. No competitor's page claims this, because most of them cannot.
+- Seven looks: Fetch, Clean, Studio, Paper, Mono print, Noir, Film. Scored **7 to 9 out
+  of 10** by an adversarial judge working to a Screen Studio and a competitor bar, on real
+  1080p frames of a real recording.
+- The whole treatment section: levels, tint, haze, blur, vignette, bloom, halation,
+  chromatic aberration, bokeh, film grain, dither, mesh gradients and photo backdrops.
+- Device frames **drawn, not photographed**: a synthetic browser frame that can show the
+  page's address, a window, a laptop, a phone, tilt in real perspective, and a loupe.
+  No Apple imagery and no trade dress anywhere.
+- Lift raises the element's own pixels over a key and a contact shadow while the page
+  behind steps back, blurred and dimmed more with distance.
+
+**Motion, which is the thing people mean when they say a recording looks expensive**
+- Zooms **leave rest and settle** instead of snapping. Acceleration at both ends is
+  under 4 percent of peak; the old curve hit its peak at both ends, which is the jolt.
+- Motion blur is the zoom's own travel, the analytic derivative of the ease, so a fast
+  pass smears and a settle does not.
+- Cut transitions, and a take that opens and closes deliberately.
+- **Judged 9 out of 10** stepping through all 3,333 frames of a real export.
+
+**Point at it: the lasso**
+- Arm the lasso in the transport and drag a rectangle over the picture. It snaps to the
+  real element under it when there is one, and stays exactly as drawn when there is not.
+- On release it becomes a chip in the chat composer: a thumbnail of the area, what is in
+  it, the time, and an id like `R1`.
+- Send the turn and the agent gets the moment, the box in the recording's own pixels and
+  a picture of just that area. "Lift this" needs no ranking and no guessing.
+- Areas outlive the turn that carried them, so "now zoom on it" still finds `R1`.
+- **This is the most demoable thing in 2.0.** One gesture, an immediate payoff, and
+  nothing else on the market works this way. If the page shows one motion clip, show
+  this: drag a box round a button, type "lift this and zoom on it", watch it land.
+
+**Aim the agent cannot talk its way out of**
+- A zoom sent as a bare point **snaps onto the element under it**. A lift with no box is
+  **refused**, and the refusal names the two ways to get one. A zoom too loose on its
+  target is refitted. Every applied edit comes back with a preview frame.
+- Enforced in code, not requested in a prompt. Eleven rounds of testing showed prompting
+  never held; this does.
+
+**A job the agent can finish, not a parts bin**
+- `contact_sheet` so it sees the whole edit as one picture instead of a frame at a time.
+  `direct` for a brief and a plan it keeps. `review` that checks its own work and is safe
+  to follow. `fit_to_length` that hits a number from the transcript, and **refuses
+  honestly** when the take is too short rather than faking it. `revert_my_edit`.
+  `remember`, so a new chat stops erasing what it knows about your product.
+- The MCP server carries **instructions**, so an outside agent gets the same doctrine the
+  in-app one does.
+- Speed regions: parts of a take sped up or slowed down.
+
+**Numbers that are safe to print**
+- 1,681 automated checks and 203 GPU checks, all passing.
+- Preview and export agree to within 1 to 2 of 255.
+- Exports run several times faster than real time at 1080p60.
+
 ## The hero
 
 One demo carries the page. It must show something no competitor can produce, which
@@ -140,10 +197,13 @@ These are **not** built. Putting them on the page would be false.
 - **Fetch does not drive apps or browsers.** It records. Playwright drives browsers,
   a computer-use agent drives native apps, `simctl` drives the Simulator. Say
   "composes with", never "controls your apps".
-- Arrows, a magnifying loupe, "lift one row", multi-device frames. These are
-  a competitor's screenshot features. Not in Fetch. (Redaction, spotlight, numbered step
-  badges and styled backdrops are in Fetch and fine to claim, for video, not
-  screenshots.)
+- **Screenshots. Fetch has none.** Every capability on this page is about video. A
+  styled still is a competitor's ground and Fetch does not stand on it yet.
+- **More than one device in a single shot** (a phone beside a Mac, at real relative
+  sizes). Not built.
+- (Arrows, the loupe, lift, redaction, spotlight, numbered steps, device frames and
+  styled backdrops **are** built as of 20 September and are fine to claim, for video.
+  An earlier version of this brief said they were not. They are.)
 - Understanding your codebase or reading your source. Not built.
 - Cross-platform. macOS only (13 or later for native capture).
 - "AI-generated" anything. The agent is the person's own, not Fetch's.
