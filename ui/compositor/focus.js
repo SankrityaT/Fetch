@@ -90,6 +90,68 @@ function shape(m, W, H, out = 1, o = {}) {
   }
 }
 
+// ── the loupe ───────────────────────────────────────────────────────────────
+// A magnified inset of a small area, for the detail that is too small to read and too
+// small to zoom to without throwing away the context it means anything in. The area
+// keeps its place and a thin outline; the inset sits beside it where there is room for
+// it, over the same two shadows a lift has, with a hairline round its own edge.
+//
+// It is the recording's own pixels, magnified, so it is drawn in content space like
+// every other mark: a zoom carries it, the grade grades it, and what the edit hides
+// stays hidden inside it, because it reads the frame after the redactions and blurs
+// rather than the take (gl.js, contentPass).
+const LOUPE = { gap: 14, pad: 2, r: 9, hair: 1.25, out: 0.62, edge: 10,
+  key: { dy: 18, sigma: 26, alpha: 0.42 }, contact: { dy: 3, sigma: 5, alpha: 0.3 } }
+
+/**
+ * Where a loupe's area and its inset sit on the cropped recording, content pixels.
+ *   m     the mark, fractions of the cropped frame
+ *   out   finished pixels per content pixel, through the zoom it is seen in
+ *   mag   the look's focus.loupe
+ *   view  what is on screen while it is up, fractions of the cropped frame (the whole
+ *         frame with no zoom). The inset is sized and placed against this and not
+ *         against the recording: a zoom carries the loupe with it, so a side picked
+ *         against the whole frame put the inset off the side of a 2x window and the
+ *         viewer saw a sliver with its hairline cut. A lift is held in the same way
+ *         (nudge); this is the loupe's share of it.
+ * Returns { src, box, mag, r, hair, key, contact }, or null when the area is so large
+ * that a magnified copy of it has nowhere to go.
+ */
+function loupeShape(m, W, H, out = 1, mag = 2.2, view = null) {
+  const u = 1 / Math.max(1e-3, out)
+  const bx = clamp(+m.x || 0, 0, 1) * W, by = clamp(+m.y || 0, 0, 1) * H
+  const bw = Math.max(2, Math.min(W - bx, (+m.w > 0 ? +m.w : 0.08) * W))
+  const bh = Math.max(2, Math.min(H - by, (+m.h > 0 ? +m.h : 0.05) * H))
+  const src = { x: bx, y: by, w: bw, h: bh, r: Math.min(bw / 2, bh / 2, LOUPE.pad * u + 4 * u) }
+  const v = view ? { x: view.x * W, y: view.y * H, w: view.w * W, h: view.h * H } : { x: 0, y: 0, w: W, h: H }
+  // never past a share of what is on screen: a loupe of half the picture is a zoom with
+  // extra steps, and one wider than the window has nowhere to stand at all
+  const k = clamp(+mag || 2.2, 1.4, 4)
+  const fit = Math.min(k, (LOUPE.out * v.w) / bw, (LOUPE.out * v.h) / bh)
+  if (!(fit > 1.2)) return null
+  const iw = bw * fit, ih = bh * fit
+  const gap = LOUPE.gap * u, edge = LOUPE.edge * u
+  const sides = [
+    [bx + bw + gap, by + bh / 2 - ih / 2], [bx - gap - iw, by + bh / 2 - ih / 2],
+    [bx + bw / 2 - iw / 2, by + bh + gap], [bx + bw / 2 - iw / 2, by - gap - ih],
+  ]
+  // beside it where there is room, under or over it where there is not, and where
+  // nothing quite fits, whichever side leaves the most. Reading order first: an inset
+  // to the right of the thing it magnifies is where the eye goes next anyway.
+  const room = ([x, y]) => Math.min(x - v.x - edge, y - v.y - edge, v.x + v.w - edge - (x + iw), v.y + v.h - edge - (y + ih))
+  const best = sides.find(s => room(s) >= 0) || sides.reduce((a, b) => (room(b) > room(a) ? b : a))
+  const box = {
+    x: clamp(best[0], v.x + edge, Math.max(v.x + edge, v.x + v.w - edge - iw)),
+    y: clamp(best[1], v.y + edge, Math.max(v.y + edge, v.y + v.h - edge - ih)),
+    w: iw, h: ih, r: Math.min(iw / 2, ih / 2, LOUPE.r * u + src.r * fit),
+  }
+  return {
+    src, box, mag: fit, hair: LOUPE.hair * u,
+    key: { dy: LOUPE.key.dy * u, sigma: LOUPE.key.sigma * u, alpha: LOUPE.key.alpha },
+    contact: { dy: LOUPE.contact.dy * u, sigma: LOUPE.contact.sigma * u, alpha: LOUPE.contact.alpha },
+  }
+}
+
 // How far the raised piece, its shadow and the step badges riding it (s.margin) reach
 // past its box, content pixels, per side
 function reach(s) {
@@ -180,4 +242,4 @@ function nudge(s, view, W, H) {
 // How far in a lift or spotlight is at t, 0 to 1, on the zoom's curve
 const level = (tm, t) => Overlays.focusLevel(tm, t)
 
-module.exports = { shape, reframe, nudge, reach, level, LIFT, SPOT, smooth01 }
+module.exports = { shape, loupeShape, reframe, nudge, reach, level, LIFT, SPOT, LOUPE, smooth01 }

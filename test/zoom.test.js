@@ -45,8 +45,18 @@ const display = { x: 0, y: 0, width: 1440, height: 900 }
   // eases back while it travels, the same dip an explicit pair of zooms gets
   is('the scale never drops to the whole frame through the pan', Math.min(...ts.map(t => ev(z, t))) > 1.2, true)
   is('...and the pan lands on the second zoom', r3(ev(z, m[1].inEnd)), 1.7)
+  // fx is how far along its own travel the window sits (Overlays.focusFrac), so the
+  // landing is the second click read in that coordinate
+  const O = require('../ui/overlays')
   const xs = ts.map(t => ev(fx, t))
-  is('the pan glides without going back', xs.every((x, i) => i === 0 || x >= xs[i - 1] - 1e-9) && r3(xs[xs.length - 1]) === r3(1103 / 1440), true)
+  const land = O.focusFrac(1103 / 1440, m[1].scale)
+  is('the pan glides without going back', xs.every((x, i) => i === 0 || x >= xs[i - 1] - 1e-9) && r3(xs[xs.length - 1]) === r3(land), true)
+  // and the window it makes is as near the click as a 1.7x frame reaches: 0.766 of the
+  // way across is past the edge, so it lands against it, which is where the clamp used
+  // to put it too. What changed is the path, not the landing.
+  const zEnd = ev(z, m[1].inEnd), w = 1 / zEnd
+  is('...and it lands as near the click as the frame allows',
+    r3((1 - w) * xs[xs.length - 1] + w / 2), r3(Math.min(1103 / 1440, 1 - w / 2)))
   is('nothing is NaN at the handover', [m[0].outEnd, m[1].inEnd].every(t => isFinite(ev(z, t)) && isFinite(ev(fx, t))), true)
   const late = p.zoomMoments({ kind: 'display', display, clicks: [[2000, 144, 90], [9000, 1296, 810]] })
   is('clicks far apart in time still pull out between', late[1].from, undefined)
@@ -114,10 +124,23 @@ const display = { x: 0, y: 0, width: 1440, height: 900 }
   const cursor = { kind: 'display', display, clicks: [[2000, 1296, 90]] }
   const f = p.autoZoomFilter(null, meta, { cursor, zoom: 2 }, p.outClock([], 0, 30), { w: 1540, h: 962 })
   is('auto-zoom finds the moment', f.moments, 1)
-  // centred on the point and clamped at the edge, the formula explicit zooms use
-  is('auto-zoom centres, not pans by fraction', /x='max\(0,min\(iw-iw\/zoom,iw\*\(/.test(f.filter), true)
+  // a fraction of the window's own travel, the formula explicit zooms use: the frame's
+  // edge is where the expression ends, so no clamp sits in the middle of the move
+  is('auto-zoom rides its travel rather than clamping the frame', /x='iw\*\(1-1\/zoom\)\*\(/.test(f.filter), true)
   is('auto-zoom outputs at the size it is given', /:s=1540x962:fps=60$/.test(f.filter), true)
-  is('the moment is placed at its point', /0\.9000/.test(f.filter) && /0\.1000/.test(f.filter), true)
+  // the click is at 0.9, 0.1 of the display, which a 2x window can only half reach:
+  // evaluate the filter rather than read its digits, since the point is now in the
+  // travel's own coordinate
+  const at2 = t => {
+    const g = k => new RegExp(`[=:]${k}='([^']+)'`).exec(f.filter)[1]
+    const ev2 = e => new Function('in_time', 'IF', 'lt', 'between', 'exp',
+      `return ${e.replace(/\bif\(/g, 'IF(')}`)(t, (c, a, b) => (c ? a : b), (a, b) => (a < b ? 1 : 0),
+      (x, a, b) => (x >= a && x <= b ? 1 : 0), Math.exp)
+    const zz = ev2(g('z')), ww = 1 / zz
+    return [r3((1 - ww) * ev2(/\(1-1\/zoom\)\*\((.+)\)$/.exec(g('x'))[1]) + ww / 2),
+      r3((1 - ww) * ev2(/\(1-1\/zoom\)\*\((.+)\)$/.exec(g('y'))[1]) + ww / 2)]
+  }
+  is('the moment is placed as near its point as the frame allows', at2(2), [0.75, 0.25])
   is('a trim start still works as a number', p.autoZoomFilter(null, meta, { cursor }, 1).moments, 1)
   is('nothing to zoom to is null', p.autoZoomFilter(null, meta, { cursor: { kind: 'display', display, clicks: [] } }, 0), null)
 }

@@ -74,10 +74,43 @@ function srcTime(keep, tOut) {
 // Length of the output a set of kept ranges makes
 const outLength = keep => (keep || []).reduce((n, [a, b]) => n + (b - a), 0)
 
-// The export's frame rate: 60 for a take recorded at 45 fps or more, else 30. A native
-// take is variable rate (ScreenCaptureKit writes a frame only when the screen changes),
-// so the rate is decided here and every frame is resampled onto it.
-const outFps = meta => (((meta && meta.fps) || 30) >= 45 ? 60 : 30)
+/**
+ * The rate a take's own frames arrive at, in fps, read from their presentation times;
+ * 0 when there are too few of them to say.
+ *
+ * Not the average. ScreenCaptureKit writes a frame only when the screen changes, so a
+ * take's average is its display's refresh less everything that stood still, and the
+ * average is all ffmpeg reports: of this person's four takes one steps at 1/60 the
+ * whole way through and reads 26, because the page it is of stands still for half its
+ * length and the gaps that leaves run to a second each. The cadence is the rate most
+ * of its frames actually arrive at, the median of the gaps between them: a handful of
+ * long stills cannot drag it down and a handful of stray short gaps cannot lift it.
+ * All four of those takes read 60.00, and a take that really does deliver every other
+ * 60 Hz frame reads 30, which is the rate it should go out at.
+ */
+function takeFps(pts) {
+  if (!pts || pts.length < 24) return 0
+  const d = []
+  for (let i = 1; i < pts.length; i++) { const x = pts[i] - pts[i - 1]; if (x > 1e-4) d.push(x) }
+  if (d.length < 20) return 0
+  d.sort((a, b) => a - b)
+  return 1 / d[d.length >> 1]
+}
+
+// The export's frame rate: 60 where the take's screen runs at 45 fps or more, else 30,
+// and every frame is resampled onto it (frameAt, sample and hold).
+//
+// There is no third option. A native take is variable rate by nature: its frames land
+// 15 to 20 ms apart on the container's own 600 Hz clock, with whole frames missing
+// wherever nothing moved, so no output rate makes sample and hold clean. Writing a
+// take's 57.88 fps average as 57.88 takes the repeats in the file from 128 to 86 and
+// the repeats on the 60 Hz screen it is played on from 128 to 204, since the player
+// has to resample it a second time, and throws 86 captured frames away doing it
+// (.context/survey/m5-timing.md). So the rate is snapped to one a player runs at 1:1,
+// and which of the two is read off the take's cadence rather than off an average a
+// still screen drags down.
+const cadence = meta => (meta && +meta.cadence > 0 ? +meta.cadence : ((meta && +meta.fps) || 30))
+const outFps = meta => (cadence(meta) >= 45 ? 60 : 30)
 
 /**
  * Which source frame output frame n shows, sample and hold: the last source frame at
@@ -120,4 +153,4 @@ function camTime(cam, s) {
   return c
 }
 
-module.exports = { keepRanges, outClock, srcTime, outLength, outFps, frameAt, camTime }
+module.exports = { keepRanges, outClock, srcTime, outLength, outFps, takeFps, frameAt, camTime }

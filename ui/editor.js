@@ -1357,7 +1357,7 @@ window.editorCloseIfGone = () => {
 
 // Marks as their own track. A redaction in particular must be visible before export:
 // it is the one edit where missing it means something private ships.
-const MARK_LABEL = { redact: 'Redact', blur: 'Blur', lift: 'Lift', spotlight: 'Spotlight', step: 'Step' }
+const MARK_LABEL = { redact: 'Redact', blur: 'Blur', lift: 'Lift', spotlight: 'Spotlight', step: 'Step', loupe: 'Loupe' }
 function renderMarks() {
   const host = $('tlMarks')
   if (!host) return
@@ -2636,7 +2636,10 @@ function stageGLSpec(fresh) {
   const Plan = require('./ui/compositor/plan')
   const Timeline = require('./ui/timeline')
   const opts = FD.toExportOpts(window.fetchDoc.get())
-  const meta = { width: v.videoWidth, height: v.videoHeight, duration: ed.dur, fps: (ed.meta && ed.meta.fps) || 30 }
+  // the cadence comes with it: it is what decides the output rate (Timeline.outFps), so
+  // leaving it behind planned the stage on a different frame grid than the export's
+  const meta = { width: v.videoWidth, height: v.videoHeight, duration: ed.dur,
+    fps: (ed.meta && ed.meta.fps) || 30, cadence: (ed.meta && ed.meta.cadence) || 0 }
   askPrepared(opts)
   const prepared = stagePrep.data && stagePrep.data.src === ed.src ? stagePrep.data : null
   const ctx = { gutter: ed.gutter || null, imageFile: ed.backdropFile || null, prepared }

@@ -742,14 +742,17 @@ function withElements(src, doc, prev) {
   const known = new Set(((prev && prev.marks) || []).map(m => m && m.id).filter(Boolean))
   const swap = list => !Array.isArray(list) ? list : list.map(it => {
     const aimed = it && it.element ? resolveElement(src, seen, mine, crop, it) : it
-    if (aimed && aimed.kind === 'lift') {
-      // a new lift with nothing but times raises nothing at all, so say what to send.
-      // One that names an existing mark keeps that mark's box and is only being retimed.
+    if (aimed && (aimed.kind === 'lift' || aimed.kind === 'loupe')) {
+      // a new lift or loupe with nothing but times raises nothing and magnifies
+      // nothing, so say what to send. One that names an existing mark keeps that
+      // mark's box and is only being retimed.
       if (!aimed.id || !known.has(aimed.id)) {
-        const needs = T.liftNeedsBox(it)
+        const needs = T.liftNeedsBox({ ...it, kind: aimed.kind })
         if (needs) throw new Error(needs)
       }
-      liftable(seen || mine, aimed)
+      // a loupe asks nothing of the element under it: it copies what is there, room or
+      // no room, and the one thing it must not do is cover the area it magnifies
+      if (aimed.kind === 'lift') liftable(seen || mine, aimed)
     }
     return aimed
   })
@@ -1208,7 +1211,7 @@ function summarise(doc, path) {
       // agents the moment it exists, not when this line is edited
       backgroundImages: deps.proc.backdropList().filter(b => b.image).map(b => b.id),
       textStyles: ['title', 'lower-third', 'label'],
-      markKinds: ['redact', 'blur', 'lift', 'spotlight', 'step'],
+      markKinds: ['redact', 'blur', 'lift', 'spotlight', 'step', 'loupe'],
       cropAR: ['free', '16:9', '9:16', '1:1', '4:5'],
     },
   }

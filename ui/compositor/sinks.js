@@ -4,16 +4,54 @@
 'use strict'
 const { spawn } = require('child_process')
 
-// The same encoder and rate factors as the classic export (processor FORMATS), so a
-// file is the same size whichever renderer drew it. Measured on the Songscription tour
-// at 1080p60: x264 veryfast at CRF 23 made 5 MB at SSIM 0.989 in 3.8 s; VideoToolbox
-// needed 22 MB for 0.987 at 3 Mbit/s and ran slower, and WebCodecs' encoder (Chromium
-// on VideoToolbox) has no constant-quality mode, so at a bitrate that keeps text sharp
-// it wrote 71 MB. Screen content is flat and x264 spends almost nothing on it.
-// sink 'vt' and 'webcodecs' stay for measuring.
+// Measured on the Songscription tour at 1080p60: x264 veryfast at CRF 23 made 5 MB at
+// SSIM 0.989 in 3.8 s; VideoToolbox needed 22 MB for 0.987 at 3 Mbit/s and ran slower,
+// and WebCodecs' encoder (Chromium on VideoToolbox) has no constant-quality mode, so at
+// a bitrate that keeps text sharp it wrote 71 MB. Screen content is flat and x264
+// spends almost nothing on it. sink 'vt' and 'webcodecs' stay for measuring.
 const BPP = { balanced: 0.085, small: 0.05, high: 0.12 }
 const QUALITY_ALIAS = { best: 'high', fast: 'small' }
-const CRF = { high: 19, balanced: 23, small: 28 }
+
+// What the compositor hands this encoder is not what the classic renderer hands it: the
+// ground has a tooth, and four of the seven looks put a roll of film in front of the
+// whole frame. One to two and a half levels of luma, renewed thirty times a second, over
+// two megapixels. A rate-distortion encoder's first move on fine noise over a flat field
+// is to throw it away, so three taste passes scored a texture off PNGs that the file the
+// customer plays did not carry: on a still passage the delivered ground was byte for
+// byte the frame before it for up to seventeen frames at a stretch, and what was left of
+// the tooth was one frozen picture of it rather than a surface that lives
+// (`.context/survey/m5-fades.md`). Every number about it is measured on the decoded file
+// now, which is the only end of this pipe that was ever worth measuring.
+//
+// What the encoder is told, at the one rate factor that can carry it:
+//
+//   psy-rd          rate-distortion that prefers a frame carrying the same amount of
+//                   texture to a frame that is merely closer in error. It is the whole
+//                   of this, and it needs subme >= 6, which is what moves the preset off
+//                   veryfast. fast runs no trellis, so the psy-trellis term is small.
+//   aq-mode 3       quantiser down into flat and dark blocks, which is where a ground
+//                   and a dark look's page are. Strength is the dial that matters: at
+//                   0.6 the ground goes back to standing still.
+//   no-dct-decimate stop x264 zeroing a block whose coefficients come to almost nothing.
+//                   A block of tooth is almost nothing, by definition.
+//   deblock -1,-1   the deblocker is a smoother and three levels of tooth is the first
+//                   thing it smooths. Costs no bits at all.
+//
+// fast is a better preset than veryfast, so one step of rate factor pays for most of
+// what those cost and the delivered picture is the one it was: against the drawn frames,
+// mean absolute difference 1.22 levels where it was 1.25, p99 5 where it was 6, SSIM
+// 0.9853 where it was 0.9854. What changes is where the bits go. Through a 200 frame still
+// passage the ground now moves on every one of them, where it used to stand still for up
+// to seventeen, and the file is 26 to 44 percent larger.
+//
+// Only at high. A rate factor that cannot carry the tooth cannot be told into carrying
+// it: at CRF 23 the whole of a 200 frame still passage comes back as one frozen picture
+// whatever the encoder is tuned to, and the same tuning there costs a fifth of the file
+// for nothing. balanced and small keep the encoder they had.
+const X264_GRAIN = 'psy-rd=1.5,0.15:aq-mode=3:aq-strength=1.0:no-dct-decimate=1:deblock=-1,-1'
+const CRF = { high: 20, balanced: 23, small: 28 }
+const PRESET = { high: 'fast', balanced: 'veryfast', small: 'veryfast' }
+const TUNE = { high: ['-x264-params', X264_GRAIN] }
 
 /**
  * The encoder's arguments. W4 x H is the packed frame (W rounded up to four); the
@@ -23,7 +61,7 @@ function encodeArgs(file, W, H, fps, { quality = 'balanced', W4 = W, codec = 'x2
   const q = CRF[QUALITY_ALIAS[quality] || quality] ? (QUALITY_ALIAS[quality] || quality) : 'balanced'
   const venc = codec === 'vt'
     ? ['-c:v', 'h264_videotoolbox', '-b:v', String(Math.round(W * H * fps * BPP[q])), '-profile:v', 'high', '-allow_sw', '1']
-    : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(CRF[q]), '-pix_fmt', 'yuv420p']
+    : ['-c:v', 'libx264', '-preset', PRESET[q], '-crf', String(CRF[q]), ...(TUNE[q] || []), '-pix_fmt', 'yuv420p']
   return ['-hide_banner', '-loglevel', 'error', '-y',
     // the bytes are BT.709 limited range already, and ffmpeg has to be told on the input:
     // tagged only on the output, ffmpeg 8 converted them as another matrix (dE 5)

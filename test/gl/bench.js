@@ -1,6 +1,6 @@
 // Export speed on a real take, compositor against the classic renderer. Electron:
 //
-//   FETCH_GL_TESTS=1 npx electron test/gl/bench.js [take.mov] [--full] [--sinks] [--treat] [--cuts] [--shut]
+//   FETCH_GL_TESTS=1 npx electron test/gl/bench.js [take.mov] [--full] [--sinks] [--treat] [--cuts] [--shut] [--device]
 //
 // Defaults to the Songscription tour. Exports go to /tmp/fetch-gl/bench, never over the
 // take's own deliverable. The compositor draws what it can of the take's edit (marks,
@@ -80,6 +80,18 @@ app.whenReady().then(async () => {
       for (const kind of ['crossfade', 'dip', 'zoom']) {
         await time('gl-cuts-' + kind, { ...cut, look: Look.merge(subset.look, { motion: { cutTransition: kind } }).look }, 'gl')
       }
+    }
+    if (args.includes('--device')) {
+      // Everything M5 draws at once: a laptop frame (one cached picture and one full
+      // frame pass), a tilt (every pixel of the frame and the treatment pass read
+      // through the plane) and a loupe running the whole length of the take (one more
+      // content-size pass). A look that asks for none of them pays for none of them,
+      // which is the run above.
+      const Look = require('../../ui/look')
+      const m = { ...subset, look: Look.merge(subset.look, { device: { kind: 'laptop' }, frame: { tilt: 9 } }).look }
+      await time('gl-device', m, 'gl')
+      const box = { x: 0.34, y: 0.3, w: 0.14, h: 0.09 }
+      await time('gl-device-loupe', { ...m, marks: [{ id: 'M90', kind: 'loupe', start: 0.5, end: Math.max(1.5, meta.duration - 0.5), ...box }] }, 'gl')
     }
     if (args.includes('--sinks')) {
       await time('gl-vt', { ...subset, sink: 'vt' }, 'gl')

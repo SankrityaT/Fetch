@@ -234,7 +234,9 @@ function build() {
         'few percent larger over a soft shadow, the rest of the frame dimmed about a third ' +
         'and lightly blurred; the premium way to say "look at this card", best with the ' +
         'element\'s exact box), spotlight (the same cutout without the rise: the element ' +
-        'stays put, everything else dims to about half with a light blur), or step (a round gold badge; n is the ' +
+        'stays put, everything else dims to about half with a light blur), loupe (a magnified inset of a ' +
+        'small area, drawn beside it, for a detail too small to read and too small to zoom to without ' +
+        'losing the context it sits in; needs the area\'s box), or step (a round gold badge; n is the ' +
         'number, left out the steps count 1, 2, 3 in order). Lift and spotlight ease in and ' +
         'out on the zoom curve, and a zoom starting or ending within 1.2s of one, or up to ' +
         '3s inside it, carries it, so zoom and lift read as one move: to zoom on and lift ' +

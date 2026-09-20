@@ -5,6 +5,9 @@ const fs = require('fs')
 const path = require('path')
 const os = require('os')
 const Timeline = require('./ui/timeline')
+// the same packet-time reader the compositor's decode uses, so one thing knows how to
+// ask a container when its frames were shown
+const { framePts } = require('./ui/compositor/sources')
 
 let FFMPEG = path.join(__dirname, 'vendor', 'ffmpeg')
 if (!fs.existsSync(FFMPEG)) FFMPEG = '/opt/homebrew/bin/ffmpeg' // dev fallback
@@ -144,7 +147,25 @@ async function probeMeta(src) {
   if (a) { meta.hasAudio = true; meta.acodec = a[1] }
   // a native take can carry system audio and the mic as two separate tracks
   meta.audioTracks = (out.match(/Stream #\d+:\d+.*?: Audio: /g) || []).length
+  meta.cadence = await probeCadence(src)
   return meta
+}
+
+// The cadence of a take, cached on the file as it stands: the rate its own frames
+// arrive at while the screen is moving (Timeline.takeFps), which is what decides the
+// export's rate. The header's `fps` cannot: it is the average over a take that stops
+// writing frames whenever the screen stands still. Reading every packet's time costs
+// 0.14 s for seven minutes of take and nothing at all the second time.
+const cadences = new Map()
+async function probeCadence(src) {
+  let key = src
+  try { const st = fs.statSync(src); key = `${src}|${st.mtimeMs}|${st.size}` } catch { return 0 }
+  if (cadences.has(key)) return cadences.get(key)
+  let fps = 0
+  try { fps = Timeline.takeFps(await framePts(FFMPEG, src)) } catch { fps = 0 }
+  if (cadences.size > 64) cadences.clear()
+  cadences.set(key, fps)
+  return fps
 }
 
 async function probeDuration(src) {
@@ -1752,30 +1773,37 @@ function zoomExpr(moments, disp, zMax, trimStart, curve) {
     // carry none and fall back to the single global amount exactly as before.
     const zm = m.scale != null ? m.scale : zMax
     const lz = Math.log(zm).toFixed(5)
-    const cx = Math.min(1, Math.max(0, (m.x - disp.x) / disp.width)).toFixed(4)
-    const cy = Math.min(1, Math.max(0, (m.y - disp.y) / disp.height)).toFixed(4)
+    // The focus as a fraction of the travel a window of that scale has, which is what
+    // the compositor eases too (Overlays.focusFrac): 0 against the frame's near edge,
+    // 1 against the far one, 0.5 centred. zoompan's x is then iw*(1-1/zoom)*n and the
+    // frame edge cannot be crossed, so nothing has to be clamped at any instant, and
+    // the one frame the old clamp let go on does not change speed.
+    const nx = Overlays.focusFrac(Math.min(1, Math.max(0, (m.x - disp.x) / disp.width)), zm)
+    const ny = Overlays.focusFrac(Math.min(1, Math.max(0, (m.y - disp.y) / disp.height)), zm)
+    const amount = `if(lt(${T},${b.toFixed(3)}),${upP},${out})`
+    // out of the centre with the ease and back into it: at 1x the frame is all there is
+    const settle = n => `0.5+${(n - 0.5).toFixed(5)}*(${amount})`
     const f = m.from
     if (f) {
       // arriving from another moment: already zoomed, so the in-ease is a pan on the
       // same curve, the focus and any change of scale moving together
       const fz = f.scale != null ? f.scale : zm
       const lf = Math.log(fz).toFixed(5)
-      const px = Math.min(1, Math.max(0, (f.x - disp.x) / disp.width)).toFixed(4)
-      const py = Math.min(1, Math.max(0, (f.y - disp.y) / disp.height)).toFixed(4)
-      const lerp = (from, to) => `if(lt(${T},${b.toFixed(3)}),${from}+(${to}-${from})*${upP},${to})`
+      const px = Overlays.focusFrac(Math.min(1, Math.max(0, (f.x - disp.x) / disp.width)), fz)
+      const py = Overlays.focusFrac(Math.min(1, Math.max(0, (f.y - disp.y) / disp.height)), fz)
+      const lerp = (from, to) => `if(lt(${T},${b.toFixed(3)}),${from.toFixed(5)}+${(to - from).toFixed(5)}*${upP},${settle(to)})`
       // a far pan eases back while it travels (Overlays.panDip), octaves off the scale
       // on a parabola of the same progress
       const dip = f.dip > 0.001 ? `-${(4 * f.dip).toFixed(5)}*${upP}*(1-${upP})` : ''
       const pan = `exp(${lf}+${(Math.log(zm) - Math.log(fz)).toFixed(5)}*${upP}${dip})`
       z = `if(${inWindow},if(lt(${T},${b.toFixed(3)}),${pan},exp(${lz}*(${out}))),${z})`
-      fx = `if(${inWindow},${lerp(px, cx)},${fx})`
-      fy = `if(${inWindow},${lerp(py, cy)},${fy})`
+      fx = `if(${inWindow},${lerp(px, nx)},${fx})`
+      fy = `if(${inWindow},${lerp(py, ny)},${fy})`
       continue
     }
-    const amount = `if(lt(${T},${b.toFixed(3)}),${upP},${out})`
     z = `if(${inWindow},exp(${lz}*(${amount})),${z})`
-    fx = `if(${inWindow},${cx},${fx})`
-    fy = `if(${inWindow},${cy},${fy})`
+    fx = `if(${inWindow},${settle(nx)},${fx})`
+    fy = `if(${inWindow},${settle(ny)},${fy})`
   }
   return { z, fx, fy }
 }
@@ -1785,8 +1813,9 @@ function zoomExpr(moments, disp, zMax, trimStart, curve) {
 // settled. Same easing and the same expression builder as auto-zoom, so the two look
 // identical on screen. Coordinates are 0..1 fractions of the frame, which is what an
 // agent can reason about, rather than screen pixels it cannot see.
-// The rate zoom output runs at: 60 for a 60fps source, otherwise 30. A variable-rate
-// take reports its average (44 here), which is not a rate anything should play at.
+// The rate zoom output runs at: 60 or 30, off the take's cadence rather than off the
+// average it reports, which on a take that stands still for half its length is 26 for
+// a screen that never ran at anything but 60.
 // the export's frame rate lives with the rest of the edit's time (ui/timeline.js)
 const zoomFps = Timeline.outFps
 
@@ -1804,13 +1833,14 @@ const UNIT = { x: 0, y: 0, width: 1, height: 1 }
 // frame is the size zoompan outputs: the cropped frame, or the framed video's size
 // when a backdrop will shrink it anyway, so zoom never scales pixels it then throws
 // away. Using the source size stretched every cropped recording that had a zoom.
-function zoompan(z, fx, fy, meta, frame) {
+function zoompan(z, nx, ny, meta, frame) {
   const w = (frame && frame.w) || meta.width || 1920, h = (frame && frame.h) || meta.height || 1080
-  // fx,fy is the point to centre on, held centred at every step of the ease and
-  // clamped only where the frame edge forces it. It used to be a pan fraction, which
-  // put a 2x zoom aimed at 0.85 centred on 0.675.
-  const x = `max(0,min(iw-iw/zoom,iw*(${fx})-iw/zoom/2))`
-  const y = `max(0,min(ih-ih/zoom,ih*(${fy})-ih/zoom/2))`
+  // nx,ny is how far along its own travel the window sits, 0 to 1 (Overlays.focusFrac),
+  // so the frame's edge is where the expression ends rather than where a clamp cuts it.
+  // A pan fraction of the raw focus is the bug this used to have, and it put a 2x zoom
+  // aimed at 0.85 centred on 0.675; the fraction is of the travel, not of the frame.
+  const x = `iw*(1-1/zoom)*(${nx})`
+  const y = `ih*(1-1/zoom)*(${ny})`
   return `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${zoomFps(meta)}`
 }
 

@@ -94,6 +94,12 @@ console.log('warnings and the classic renderer')
   const shaped = L.merge(L.defaults(), { frame: { aspect: '9:16' } }).look
   is('a shape with no background says it is filled, never black', L.warnings(shaped).some(w => /never black/.test(w)), true)
   is('chrome remove with no known page says so', L.warnings(L.defaults(), { browser: true, viewport: false }).some(w => /chrome/.test(w)), true)
+  // clean crops for the same reason remove does, so it fails on the same take, and
+  // there the drawn browser would sit round the real one
+  const clean = L.merge(L.defaults(), { frame: { chrome: 'clean' } }).look
+  is('and so does clean, which would otherwise draw two browsers',
+    L.warnings(clean, { browser: true, viewport: false }).some(w => /chrome clean/.test(w) && /two browsers/.test(w)), true)
+  is('with the page\'s place known it says nothing about it', L.warnings(clean, { browser: true, viewport: true }).some(w => /two browsers/.test(w)), false)
   const img = L.merge(L.defaults(), { background: { kind: 'image', image: 'img:nope.jpg' } }).look
   is('an image nobody has is named', L.warnings(img, { images: ['img:meadow.jpg'] }).some(w => /img:nope\.jpg/.test(w)), true)
   is('an image in the list is not', L.warnings(img, { images: ['img:nope.jpg'] }).some(w => /img:nope/.test(w)), false)
@@ -111,8 +117,9 @@ console.log('the inspector and the agent docs')
   is('a mesh background is offered, now that the compositor draws it', secs.find(s => s.id === 'background').fields[0].options.includes('mesh'), true)
   const doc = L.describe()
   is('every field is described', S.FIELDS.filter(x => !x.hidden).every(x => doc.includes(x.path)), true)
-  // about 4 characters a token: the whole schema stays under 2000 tokens
-  is('the agent docs fit a token budget', doc.length < 8000, true)
+  // about 4 characters a token: the whole schema stays inside a couple of thousand of
+  // them. It grew a section at M5 (the drawn device), which is what the extra buys.
+  is('the agent docs fit a token budget', doc.length < 9000, true)
   is('no em dashes in the agent docs', /\u2014/.test(doc), false)
   is('when hides a field that does not apply', L.visible(S.BY_PATH.get('background.color'), L.defaults()), false)
 }

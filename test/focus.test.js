@@ -5,6 +5,7 @@ const Focus = require('../ui/compositor/focus')
 const Marks = require('../ui/compositor/marks')
 const Text = require('../ui/compositor/text')
 const Plan = require('../ui/compositor/plan')
+const O = require('../ui/overlays')
 const T = require('../ui/timeline')
 
 let pass = 0, fail = 0
@@ -173,6 +174,47 @@ console.log('text')
   is('and has risen into place as the card clears', land.alpha === 1 && land.k > 0.999, true)
   const dodge = Text.planText({ ...opts, texts: [] }, { clock, span: 12, W: 1920, H: 1080, box: null, prepared: { captions: { cues, words, busy: [1.5] } } })
   is('a caption over the product\'s own toast goes to the top', dodge.phrases[0].at, 'top')
+}
+
+console.log('the loupe')
+{
+  const plan = (m, look) => Marks.planMarks([{ kind: 'loupe', start: 2, end: 8, ...m }], { W, H, px, clock, span: 60, zooms: [], look })
+  const one = (m, look) => plan(m, look).loupe[0]
+  const g = one({ x: 0.1, y: 0.1, w: 0.1, h: 0.08 })
+  is('the inset is the area magnified by the look\'s own dial', r2(g.box.w / g.src.w), 2.2)
+  is('and it sits beside the area, not over it', g.box.x >= g.src.x + g.src.w, true)
+  is('with a gap between them', r2(g.box.x - (g.src.x + g.src.w)) > 0, true)
+  // the side with the most room: an area against the right edge sends the inset left
+  const right = one({ x: 0.82, y: 0.4, w: 0.1, h: 0.08 })
+  is('an area at the right edge puts its inset on the left', right.box.x + right.box.w <= right.src.x, true)
+  const low = one({ x: 0.4, y: 0.86, w: 0.1, h: 0.1 })
+  is('and one at the foot keeps its inset inside the frame', low.box.y + low.box.h <= H, true)
+  is('the dial says how far it magnifies', r2(one({ x: 0.1, y: 0.1, w: 0.1, h: 0.08 }, { loupe: 3 }).box.w / g.src.w), 3)
+  // a loupe of half the picture is a zoom with extra steps, so the magnification gives way
+  const big = one({ x: 0.05, y: 0.05, w: 0.5, h: 0.4 })
+  is('a large area is magnified only as far as the frame allows', big.box.w <= 0.63 * W && big.mag < 2.2, true)
+  is('and one that cannot be magnified at all is not drawn', plan({ x: 0, y: 0, w: 0.9, h: 0.9 }).loupe.length, 0)
+  // A zoom carries the loupe with it, so the inset is placed against what that zoom
+  // shows and not against the recording: picked against the whole frame, an inset on a
+  // 2x window went off the side of it and the viewer saw a cut sliver.
+  {
+    const zooms = [{ start: 0, end: 60, scale: 2, x: 0.3, y: 0.5 }]
+    const z = Marks.planMarks([{ kind: 'loupe', start: 2, end: 8, x: 0.45, y: 0.45, w: 0.07, h: 0.05 }],
+      { W, H, px, clock, span: 60, zooms, look: {} }).loupe[0]
+    const v = O.zoomView(zooms, 5)
+    is('a loupe inside a zoom keeps its inset inside the window',
+      [z.box.x >= v.x * W - 0.5, z.box.x + z.box.w <= (v.x + v.w) * W + 0.5,
+        z.box.y >= v.y * H - 0.5, z.box.y + z.box.h <= (v.y + v.h) * H + 0.5], [true, true, true, true])
+    is('and is never wider than the window it is seen through', z.box.w < v.w * W, true)
+  }
+  // it arrives and leaves like everything else Fetch draws over the recording
+  const m = Marks.planMarks([{ kind: 'loupe', start: 2, end: 8, x: 0.1, y: 0.1, w: 0.1, h: 0.08 }], { W, H, px, clock, span: 60, zooms: [] })
+  const at = t => Marks.at({ ...m, erase: [], pointer: null }, t).loupe[0]
+  is('it is not there before it starts', Marks.at({ ...m, erase: [], pointer: null }, 1.9).loupe.length, 0)
+  is('it arrives', at(2.1).op > 0 && at(2.1).op < 1, true)
+  is('it is whole in the middle', at(5).op, 1)
+  is('and it settles out rather than blinking', at(7.9).op < 1 && at(7.9).op > 0, true)
+  is('the inset grows the last of the way in as it arrives', at(2.1).scale < at(5).scale, true)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

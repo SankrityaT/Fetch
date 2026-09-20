@@ -216,6 +216,8 @@ uniform sampler2D uBg, uFill;
 uniform float uVig;                  // the treatment's vignette, which lands on the ground too
 uniform vec2 uFillBand;              // how far a blur ground may stand off the take's own mean: least, most
 uniform vec4 uRect; uniform float uRadius;
+uniform vec4 uShadowRect; uniform float uShadowRad;   // what casts the shadow: the take, or the device's shell round it
+uniform vec3 uTilt; uniform vec2 uTiltC; uniform float uTiltS;   // frame.tilt: (D cos, sin, D), the pivot, and 1 / the shrink
 uniform vec2 uTake;                  // the take's opacity and its shadow's (a title card's reveal)
 uniform vec4 uShadow;                // dy, sigma, alpha, on
 uniform vec4 uBorder; uniform float uBorderPx;
@@ -340,26 +342,62 @@ vec4 sampleView(vec2 local, vec4 v, float lod){
   return textureLod(uContent, clamp(uCropUV.xy + f * uCropUV.zw, uCropUV.xy + h, uCropUV.xy + uCropUV.zw - h), lod);
 }
 
+// ── the tilt ────────────────────────────────────────────────────────────
+// frame.tilt turns the framed take about the vertical axis through its own centre and
+// projects it from a camera 2.2 frames away (plan.js, tiltPlan). This pass reads that
+// backwards: which point of the flat plane does this output pixel show. Everything
+// after it (the rounded mask, the border, the shadow, the camera bubble lying on the
+// take, the device's shell) is then worked out on the plane exactly as it was before
+// tilt existed, so the mask and the shadow follow the perspective because they are the
+// same mask and the same shadow rather than a skew of the finished picture.
+//
+// Forward, with the plane's own coordinate X about the pivot and s = D / (D - X sin):
+// screen = pivot + fit * (X cos s, Y s). Inverting that is two lines, which is the
+// whole reason to use a plane a camera turns rather than a warp anyone has to sample.
+vec2 unplane(vec2 p){
+  vec2 a = (p - uTiltC) * uTiltS;
+  float w = uTilt.x + a.x * uTilt.y;
+  return uTiltC + vec2(a.x * uTilt.z, a.y * uTilt.x) / w;
+}
+vec2 toScreen(vec2 q){
+  vec2 X = q - uTiltC;
+  float s = uTilt.z / max(1e-3, uTilt.z - X.x * uTilt.y);
+  return uTiltC + vec2(X.x * uTilt.x / uTilt.z, X.y) * s / uTiltS;
+}
+// output pixels per plane pixel here, so an edge measured on the plane still lands one
+// pixel wide on the frame
+float tiltScale(vec2 q){
+  return (uTilt.z / max(1e-3, uTilt.z - (q.x - uTiltC.x) * uTilt.y)) / uTiltS;
+}
+
 // How far a point is outside the framed take, in pixels: its own rounded corner, or
 // its plain rectangle when a look asked for no corner at all.
 float sdTake(vec2 q, vec2 lo, vec2 hi){
   return uRadius > 0.0 ? sdRound(q - (lo + hi) * 0.5, uRect.zw * 0.5, uRadius)
                        : max(max(lo.x - q.x, q.x - hi.x), max(lo.y - q.y, q.y - hi.y));
 }
+// The shadow at a point of the plane: the take's own shape, or the device's shell where
+// one is drawn round it, so the pool under a laptop is the laptop's and not the page's.
+float shadowAt(vec2 q){
+  if (uShadow.w < 0.5) return 0.0;
+  vec2 lo = uShadowRect.xy, hi = uShadowRect.xy + uShadowRect.zw;
+  return uShadow.z * uTake.y * clamp(roundedBoxShadow(lo + vec2(0.0, uShadow.x), hi + vec2(0.0, uShadow.x), q, uShadow.y, uShadowRad), 0.0, 1.0);
+}
 // The ground at any point: the background a look chose, or the take's own blur, with
 // the shadow at that point over it. Read a few pixels outside the take by the edge
-// floor, which is measured against the ground a viewer actually sees there.
-vec3 groundAt(vec2 q, vec2 lo, vec2 hi){
-  vec3 g = uBgKind == 1 ? texture(uBg, q / uRes).rgb : uBgKind == 2 ? fillAt(q, 0.0) : vec3(0.0);
-  if (uShadow.w > 0.5) {
-    float sh = roundedBoxShadow(lo + vec2(0.0, uShadow.x), hi + vec2(0.0, uShadow.x), q, uShadow.y, uRadius);
-    g *= 1.0 - uShadow.z * uTake.y * clamp(sh, 0.0, 1.0);
-  }
-  return g;
+// floor, which is measured against the ground a viewer actually sees there. The ground
+// is read where the pixel is and the shadow where the plane is, which are the same
+// place until a tilt turns the plane away from the frame.
+vec3 groundAt(vec2 q, vec2 sp){
+  vec3 g = uBgKind == 1 ? texture(uBg, sp / uRes).rgb : uBgKind == 2 ? fillAt(sp, 0.0) : vec3(0.0);
+  return g * (1.0 - shadowAt(q));
 }
 
 void main(){
   vec2 p = gl_FragCoord.xy;
+  // the point of the plane this pixel shows: itself, until a tilt turns the plane
+  vec2 q = uTilt.z > 0.0 ? unplane(p) : p;
+  float j = uTilt.z > 0.0 ? tiltScale(q) : 1.0;
   vec3 col = vec3(0.0);
   float mask = 0.0;                  // the ground is a colour the look chose: no grade
   // the ground the look chose, with the app's own pools already in it (FS_BG) and its
@@ -367,14 +405,11 @@ void main(){
   if (uBgKind == 1) col = texelFetch(uBg, ivec2(p), 0).rgb + tooth(p);
   else if (uBgKind == 2) col = fillAt(p, tooth(p));
   vec2 lo = uRect.xy, hi = uRect.xy + uRect.zw;
-  if (uShadow.w > 0.5) {
-    float sh = roundedBoxShadow(lo + vec2(0.0, uShadow.x), hi + vec2(0.0, uShadow.x), p, uShadow.y, uRadius);
-    col *= 1.0 - uShadow.z * uTake.y * clamp(sh, 0.0, 1.0);
-  }
-  float d = sdTake(p, lo, hi);
-  float cover = clamp(0.5 - d, 0.0, 1.0);
+  col *= 1.0 - shadowAt(q);
+  float d = sdTake(q, lo, hi);
+  float cover = clamp(0.5 - d * j, 0.0, 1.0);
   if (cover > 0.0) {
-    vec2 local = (p - lo) / uRect.zw;
+    vec2 local = (q - lo) / uRect.zw;
     // explicit level: the zoom says exactly how far the take is minified, and the
     // sample sits in non-uniform flow where implicit derivatives are undefined
     float lod = max(0.0, log2(uContentSize.x * uCropUV.z * uInner.z * min(uV0.z, uV1.z) / uRect.z));
@@ -399,9 +434,10 @@ void main(){
       // along the edge's own normal, shadow and all. Not the ground under this pixel,
       // because a shadow hangs low and at the top edge it has already moved away.
       vec2 e = vec2(1.0, 0.0);
-      vec2 n = normalize(vec2(sdTake(p + e.xy, lo, hi) - sdTake(p - e.xy, lo, hi),
-                              sdTake(p + e.yx, lo, hi) - sdTake(p - e.yx, lo, hi)) + 1e-5);
-      float yg = dot(groundAt(p + n * (2.5 - d), lo, hi), K), yt = dot(c.rgb, K);
+      vec2 n = normalize(vec2(sdTake(q + e.xy, lo, hi) - sdTake(q - e.xy, lo, hi),
+                              sdTake(q + e.yx, lo, hi) - sdTake(q - e.yx, lo, hi)) + 1e-5);
+      vec2 probe = q + n * (2.5 - d);
+      float yg = dot(groundAt(probe, uTilt.z > 0.0 ? toScreen(probe) : probe), K), yt = dot(c.rgb, K);
       float f = uEdge.x, dy = yt - yg;
       // The tone the line goes to is the plan's end and only ever that: picked once
       // from the background (plan.edgeEnd) so a gradient crossing mid grey cannot put a
@@ -460,15 +496,17 @@ void main(){
     mask = mix(mask, take, cover * uTake.x);
   }
   if (uCam == 1) {
+    // the bubble lies on the take, so it lies on the plane: it turns with a tilt like
+    // anything else resting there
     vec2 clo = uCamRect.xy, chi = uCamRect.xy + uCamRect.zw, cc = (clo + chi) * 0.5;
-    float sh = roundedBoxShadow(clo + vec2(0.0, uCamRect.z * 0.03), chi + vec2(0.0, uCamRect.z * 0.03), p, uCamRect.z * 0.045, uCamRound);
+    float sh = roundedBoxShadow(clo + vec2(0.0, uCamRect.z * 0.03), chi + vec2(0.0, uCamRect.z * 0.03), q, uCamRect.z * 0.045, uCamRound);
     col *= 1.0 - 0.32 * uTake.y * clamp(sh, 0.0, 1.0);
-    float cd = sdRound(p - cc, uCamRect.zw * 0.5, uCamRound);
+    float cd = sdRound(q - cc, uCamRect.zw * 0.5, uCamRound);
     // the bubble is on the take, so it arrives, leaves and dips with it: left at full
     // opacity it sat lit over bare ground on the boundary frame of a dip
-    float ccov = clamp(0.5 - cd, 0.0, 1.0) * uTake.x;
+    float ccov = clamp(0.5 - cd * j, 0.0, 1.0) * uTake.x;
     if (ccov > 0.0) {
-      vec2 uv = uCamUV.xy + ((p - clo) / uCamRect.zw) * uCamUV.zw;
+      vec2 uv = uCamUV.xy + ((q - clo) / uCamRect.zw) * uCamUV.zw;
       float lod = max(0.0, log2(float(textureSize(uCamTex, 0).x) * uCamUV.z / uCamRect.z));
       vec3 c = textureLod(uCamTex, uv, lod).rgb;
       // the bubble is a recording as much as the take is, so the grade holds it; its
@@ -511,6 +549,7 @@ uniform vec2 uRes;
 uniform float uSoftOn, uMeanLod, uAb;
 uniform vec3 uLevel;                 // the take's black point, its white point, how much
 uniform vec4 uLevelBox; uniform float uLevelRad;   // and where the take is, which is all it touches
+uniform vec3 uTilt; uniform vec2 uTiltC; uniform float uTiltS;   // and on which plane, where a tilt turned it
 uniform vec3 uGrade;                 // brightness, contrast, saturation, as ffmpeg eq takes them
 uniform vec4 uShoulder, uToe;        // and the two ends of that line rolled in (plan.js rollOff)
 uniform vec4 uTint;                  // the colour, and how much of it
@@ -559,8 +598,23 @@ float takeDist(vec2 q){
   return uLevelRad > 0.0 ? sdRound(q - (uLevelBox.xy + uLevelBox.zw * 0.5), uLevelBox.zw * 0.5, uLevelRad)
     : max(max(uLevelBox.x - q.x, q.x - uLevelBox.x - uLevelBox.z), max(uLevelBox.y - q.y, q.y - uLevelBox.y - uLevelBox.w));
 }
+// The take's own plane, where frame.tilt turned it (plan.js, and FS_FRAME, which reads
+// the same three numbers the same way). The lens and the film are in front of the whole
+// frame and stay in its pixels; the grade is of the picture, so where the picture is
+// has to be asked on the plane the picture lies on.
+vec2 unplane(vec2 p){
+  vec2 a = (p - uTiltC) * uTiltS;
+  float w = uTilt.x + a.x * uTilt.y;
+  return uTiltC + vec2(a.x * uTilt.z, a.y * uTilt.x) / w;
+}
+vec2 toScreen(vec2 q){
+  vec2 X = q - uTiltC;
+  float s = uTilt.z / max(1e-3, uTilt.z - X.x * uTilt.y);
+  return uTiltC + vec2(X.x * uTilt.x / uTilt.z, X.y) * s / uTiltS;
+}
 void main(){
   vec2 p = gl_FragCoord.xy;
+  vec2 qp = uTilt.z > 0.0 ? unplane(p) : p;
   vec3 c;
   if (uAb > 0.0) {
     // Chromatic aberration: the channels part radially, growing with the square of the
@@ -596,7 +650,7 @@ void main(){
   // The take's edge is already a hard edge, so nothing is feathered but its own corner.
   // The rect stays its authority (it is what keeps the camera bubble out of numbers
   // measured off the screen); the mask only takes away, where Fetch drew over the take.
-  float ld = takeDist(p);
+  float ld = takeDist(qp);
   if (uLevel.z > 0.0) {
     float m = min(clamp(0.5 - ld, 0.0, 1.0) * uLevel.z, take);
     if (m > 0.0) c = mix(c, clamp((c - uLevel.x) / max(0.05, uLevel.y - uLevel.x), 0.0, 1.0), m);
@@ -623,9 +677,10 @@ void main(){
       // ground's colour is the one a couple of pixels outside the edge, along the edge's
       // own normal, which is the same place the frame pass measured the edge floor at.
       vec2 e = vec2(1.0, 0.0);
-      vec2 n = normalize(vec2(takeDist(p + e.xy) - takeDist(p - e.xy),
-                              takeDist(p + e.yx) - takeDist(p - e.yx)) + 1e-5);
-      vec3 gr = sceneAt(p + n * (2.5 - ld));
+      vec2 n = normalize(vec2(takeDist(qp + e.xy) - takeDist(qp - e.xy),
+                              takeDist(qp + e.yx) - takeDist(qp - e.yx)) + 1e-5);
+      vec2 probe = qp + n * (2.5 - ld);
+      vec3 gr = sceneAt(uTilt.z > 0.0 ? toScreen(probe) : probe);
       c = g + (1.0 - take) * (gr - gradeAt(gr));
     }
     // and anywhere else the mask is partial it is Fetch's own furniture over the take
@@ -896,6 +951,78 @@ void main(){
   o = vec4(mix(bg, piece, cover), 1.0);
 }`
 
+// The loupe (ui/compositor/focus.js): a magnified inset of a small area, for the detail
+// that is too small to read and too small to zoom to without losing the context it means
+// anything in. The area keeps its place under a thin outline; the inset sits beside it,
+// over the same two shadows a lift has, with a hairline round its own edge.
+//
+// It reads the content target as it now stands, which is what the take's pixels have
+// become: cleaned, redacted, blurred, lifted. So what the edit hides stays hidden at
+// magnification, which is the one thing a magnifier must not get wrong. Its own pixels
+// are the recording's, so they keep the mask and the grade grades them; the two lines
+// are Fetch's own and carve themselves out of it.
+const FS_LOUPE = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc; uniform vec2 uT;
+uniform int uN;
+uniform vec4 uBox[2];      // the inset, x y w h
+uniform vec4 uArea[2];     // the area it magnifies, x y w h
+uniform vec4 uA[2];        // inset radius, area radius, magnification, how far in it is
+uniform vec4 uKey[2];      // key shadow: dy, sigma, alpha, hairline width
+uniform vec4 uCon[2];      // contact shadow: dy, sigma, alpha
+out vec4 o;
+const vec3 K = vec3(0.2126, 0.7152, 0.0722);
+const vec3 INK = vec3(0.102, 0.090, 0.078), LIT = vec3(0.984, 0.980, 0.973);
+vec4 erf4(vec4 x){ vec4 s = sign(x), a = abs(x); x = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a; x *= x; return s - s / (x * x); }
+float gaussian(float x, float sigma){ return exp(-(x * x) / (2.0 * sigma * sigma)) / (2.5066283 * sigma); }
+float boxShadowX(float x, float y, float sigma, float corner, vec2 halfSize){
+  float delta = min(halfSize.y - corner - abs(y), 0.0);
+  float curved = halfSize.x - corner + sqrt(max(0.0, corner * corner - delta * delta));
+  vec2 integral = 0.5 + 0.5 * erf4(vec4((x + vec2(-curved, curved)) * (sqrt(0.5) / sigma), 0.0, 0.0)).xy;
+  return integral.y - integral.x;
+}
+float roundedBoxShadow(vec2 lower, vec2 upper, vec2 point, float sigma, float corner){
+  vec2 center = (lower + upper) * 0.5, halfSize = (upper - lower) * 0.5; point -= center;
+  float low = point.y - halfSize.y, high = point.y + halfSize.y;
+  float start = clamp(-3.0 * sigma, low, high), end = clamp(3.0 * sigma, low, high);
+  float step = (end - start) / 4.0, y = start + step * 0.5, value = 0.0;
+  for (int i = 0; i < 4; i++) { value += boxShadowX(point.x, point.y - y, sigma, corner, halfSize) * gaussian(y, sigma) * step; y += step; }
+  return value;
+}
+float sdRound(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r; }
+// a line just inside an edge, antialiased on both sides
+float ringAt(float d, float w){ return clamp(0.5 - d, 0.0, 1.0) - clamp(0.5 - (d + w), 0.0, 1.0); }
+// the end that stands clear of what it lies on, drifting with it rather than choosing
+// between the two at mid grey, which is the rule the blur mark's plate already follows
+vec3 drift(vec3 c){ return mix(LIT, INK, smoothstep(0.2, 0.8, dot(c, K))); }
+void main(){
+  vec2 p = gl_FragCoord.xy;
+  vec4 base = textureLod(uSrc, p / uT, 0.0);
+  vec3 c = base.rgb;
+  float mask = base.a;
+  for (int i = 0; i < 2; i++) { if (i >= uN) break;
+    float L = uA[i].w, mag = uA[i].z, hw = uKey[i].w;
+    vec2 ac = uArea[i].xy + uArea[i].zw * 0.5, bc = uBox[i].xy + uBox[i].zw * 0.5;
+    // the area, outlined where it sits
+    float line = ringAt(sdRound(p - ac, uArea[i].zw * 0.5, uA[i].y), hw) * L * 0.55;
+    c = mix(c, drift(c), line); mask *= 1.0 - line;
+    // the inset's shadows on whatever is behind it
+    float d = sdRound(p - bc, uBox[i].zw * 0.5, uA[i].x);
+    float sk = roundedBoxShadow(uBox[i].xy + vec2(0.0, uKey[i].x), uBox[i].xy + uBox[i].zw + vec2(0.0, uKey[i].x), p, uKey[i].y, uA[i].x);
+    float sc = roundedBoxShadow(uBox[i].xy + vec2(0.0, uCon[i].x), uBox[i].xy + uBox[i].zw + vec2(0.0, uCon[i].x), p, uCon[i].y, uA[i].x);
+    c *= (1.0 - uKey[i].z * L * clamp(sk, 0.0, 1.0)) * (1.0 - uCon[i].z * L * clamp(sc, 0.0, 1.0));
+    float cov = clamp(0.5 - d, 0.0, 1.0) * L;
+    if (cov > 0.0) {
+      vec2 g = clamp(ac + (p - bc) / mag, vec2(0.5), uT - 0.5);
+      vec4 s = textureLod(uSrc, g / uT, 0.0);
+      float ring = ringAt(d, hw);
+      c = mix(c, mix(s.rgb, drift(s.rgb), 0.4 * ring), cov);
+      mask = mix(mask, s.a * (1.0 - ring), cov);
+    }
+  }
+  o = vec4(c, mask);
+}`
+
 // A picture over a target (text, badges, the cursor): premultiplied, at an opacity,
 // crossfading to a blurred copy while it comes in or goes, and with one rectangle of it
 // re-coloured (the word being spoken)
@@ -918,6 +1045,36 @@ void main(){
   // agent's cursor and every caption over the picture. The picture's own coverage is
   // read back out of the sprite's opacity and put back after it, so a badge fading in
   // carves the share it covers and not the share it is drawn at.
+  if (uCarve > 0.5) o = vec4(0.0, 0.0, 0.0, smoothstep(0.5, 0.95, c.a) * uOp);
+}`
+
+// The drawn device over the finished frame: one picture, made once per plan and size
+// with Canvas2D (devicePlate), lying on the same plane the take lies on. It is drawn
+// after the take and has a hole where the screen is, so the take shows through it and
+// its bezel covers the take's own outermost pixel, which is where the screen's hairline
+// goes. Full frame rather than a quad, because a tilt moves every pixel of it.
+//
+// It carves itself out of the grade's mask like the border and the badges: a drawn
+// shell is not the recording, and a look that drains the colour out of a take has no
+// business turning its frame grey. The lens is still in front of it, so the vignette,
+// the grain and the dither land on it as they land on everything.
+const FS_PLATE = `#version 300 es
+precision highp float;
+uniform sampler2D uTex; uniform vec4 uBox;
+uniform vec3 uTilt; uniform vec2 uTiltC; uniform float uTiltS;
+uniform float uOp, uCarve; out vec4 o;
+vec2 unplane(vec2 p){
+  vec2 a = (p - uTiltC) * uTiltS;
+  float w = uTilt.x + a.x * uTilt.y;
+  return uTiltC + vec2(a.x * uTilt.z, a.y * uTilt.x) / w;
+}
+void main(){
+  vec2 p = gl_FragCoord.xy;
+  vec2 q = uTilt.z > 0.0 ? unplane(p) : p;
+  vec2 uv = (q - uBox.xy) / uBox.zw;
+  vec2 g = step(vec2(0.0), uv) * step(uv, vec2(1.0));
+  vec4 c = textureLod(uTex, uv, 0.0) * (g.x * g.y);
+  o = c * uOp;
   if (uCarve > 0.5) o = vec4(0.0, 0.0, 0.0, smoothstep(0.5, 0.95, c.a) * uOp);
 }`
 
@@ -957,6 +1114,132 @@ void main(){
   o = vec4(mix(texture(uBlur, p / uRes).rgb, uScrim, uScrimA), 1.0) * s * uOp;
 }`
 
+// ── the drawn device ──────────────────────────────────────────────────────
+// Every device Fetch draws is this one function: rectangles, radii and two tones. It is
+// generic on purpose and by construction. Nothing is traced from a product, nothing
+// carries a wordmark, the three dots on a window bar are the shell's own tone and never
+// the three colours one desktop uses, a laptop is a slab and a shallow foot with no
+// keyboard and no hinge, and a phone has a speaker slit and nothing else. If a shape
+// would make anyone think of one company's hardware it is the wrong shape, and the test
+// is not whether it is close enough to be recognisable but whether it is close at all.
+//
+// The picture has a hole where the screen is, so the take shows through it and the
+// bezel covers the take's outermost pixel. Both of its edges are a pair of tones the
+// range apart, the shell and a hairline just inside it: whatever the edge meets, the
+// page inside or the ground outside, it cannot be within the edge floor of both, so the
+// contract the frame pass measures per pixel is met here by construction and the two
+// decode paths cannot land on opposite sides of a threshold.
+//
+// How much of the hairline tone lands on the shell at each of its two edges. Not a
+// taste number: it is what puts the line about halfway between the two ends, which is
+// where a pair of tones stands furthest from whatever it might meet. Under a third of
+// it the line stopped being a boundary at all on a dark shell against a dark ground.
+const EDGE_LINE = 0.42
+const rgbaOf = (hex, a) => {
+  const c = Plan.rgb(hex)
+  return `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${a})`
+}
+function deviceCanvas(D, k, measure) {
+  const E = D.extent, B = D.box, S = D.screen, u = D.unit
+  const w = Math.max(2, Math.ceil(E.w * k)), h = Math.max(2, Math.ceil(E.h * k))
+  const cv = canvas(w, h), g = cv.getContext('2d')
+  // drawn in export pixels, at whatever size this compositor is running
+  g.setTransform(k, 0, 0, k, -E.x * k, -E.y * k)
+  const hair = Math.max(0.75, u * 0.00075)
+  const path = (x, y, bw, bh, r) => { g.beginPath(); g.roundRect(x, y, bw, bh, Math.min(r, bw / 2, bh / 2)) }
+  // a line just inside a shape's own edge: the shape clips it, so half the stroke lands
+  // inside it and none of it grows the silhouette
+  const inside = (make, colour, alpha, width) => {
+    g.save(); make(); g.clip(); make()
+    g.strokeStyle = rgbaOf(colour, alpha); g.lineWidth = 2 * width; g.stroke(); g.restore()
+  }
+  if (D.foot) {
+    // a laptop's foot: a shallow slab, a little wider than the lid and tapered, with a
+    // thumb notch in the front edge. No wedge, no feet, no keyboard.
+    const F = D.foot
+    g.beginPath()
+    g.moveTo(F.x, F.y); g.lineTo(F.x + F.w, F.y)
+    g.lineTo(F.x + F.w - F.taper, F.y + F.h - F.r)
+    g.quadraticCurveTo(F.x + F.w - F.taper, F.y + F.h, F.x + F.w - F.taper - F.r, F.y + F.h)
+    g.lineTo(F.x + F.taper + F.r, F.y + F.h)
+    g.quadraticCurveTo(F.x + F.taper, F.y + F.h, F.x + F.taper, F.y + F.h - F.r)
+    g.closePath()
+    g.fillStyle = rgbaOf(D.deep, 1); g.fill()
+    g.strokeStyle = rgbaOf(D.line, EDGE_LINE); g.lineWidth = hair; g.stroke()
+    const nw = F.w * 0.09, nh = F.h * 0.34
+    path(F.x + F.w / 2 - nw / 2, F.y + F.h - nh, nw, nh, nh * 0.5)
+    g.fillStyle = rgbaOf(D.shell, 0.9); g.fill()
+  }
+  const shell = () => path(B.x, B.y, B.w, B.h, B.r)
+  shell(); g.fillStyle = rgbaOf(D.shell, 1); g.fill()
+  // the bar a browser and a window wear, a shade off the shell so it reads as a surface
+  if (D.bar > 0 && (D.kind === 'browser' || D.kind === 'window')) {
+    g.save(); shell(); g.clip()
+    g.fillStyle = rgbaOf(D.face, 1); g.fillRect(B.x, B.y, B.w, D.bar)
+    g.fillStyle = rgbaOf(D.line, D.light ? 0.14 : 0.10)
+    g.fillRect(B.x, B.y + D.bar - hair, B.w, hair)
+    g.restore()
+    // the window's own buttons, in the shell's tone: three dots say window in every
+    // desktop drawn since 1984 and the colours are one vendor's, so they stay grey
+    const dr = D.bar * 0.075, gap = D.bar * 0.36
+    let dx = B.x + D.bar * 0.42 + dr, dy = B.y + D.bar / 2
+    for (let i = 0; i < 3; i++) {
+      g.beginPath(); g.arc(dx, dy, dr, 0, Math.PI * 2)
+      g.fillStyle = rgbaOf(D.line, D.light ? 0.22 : 0.20); g.fill()
+      dx += gap
+    }
+    const ph = D.bar * 0.44, py = B.y + (D.bar - ph) / 2
+    if (D.kind === 'browser') {
+      // the address, which is half the reason to draw a browser at all. Fetch does not
+      // record the page's address, so an empty one is an empty bar rather than a made
+      // up host: the frame says browser either way, and nothing in an export is invented.
+      const px0 = dx + D.bar * 0.3, pw = Math.min(S.w * 0.56, B.x + B.w - px0 - D.bar * 0.5)
+      path(px0, py, pw, ph, ph / 2)
+      g.fillStyle = rgbaOf(D.light ? '#FFFFFF' : '#0A0908', D.light ? 0.7 : 0.3); g.fill()
+      g.strokeStyle = rgbaOf(D.line, D.light ? 0.12 : 0.08); g.lineWidth = hair; g.stroke()
+      if (D.title) {
+        const fs = ph * 0.52
+        g.save(); path(px0, py, pw, ph, ph / 2); g.clip()
+        g.font = Text.fontFor('sub', fs); g.fillStyle = rgbaOf(D.text, 1); g.textAlign = 'left'
+        g.fillText(fit(D.title, pw - ph * 1.1, fs, measure), px0 + ph * 0.55, py + ph / 2 + fs * 0.36)
+        g.restore()
+      }
+    } else if (D.title) {
+      const fs = ph * 0.52
+      g.font = Text.fontFor('sub', fs); g.fillStyle = rgbaOf(D.text, 1); g.textAlign = 'center'
+      g.fillText(fit(D.title, B.w * 0.6, fs, measure), B.x + B.w / 2, py + ph / 2 + fs * 0.36)
+    }
+  }
+  // a phone's speaker, the one detail on it
+  if (D.slit) {
+    path(B.x + B.w / 2 - D.slit.w / 2, D.slit.y, D.slit.w, D.slit.h, D.slit.h / 2)
+    g.fillStyle = rgbaOf(D.line, D.light ? 0.18 : 0.14); g.fill()
+  }
+  // The shell's own edge against the ground, the outer half of the pair: the hairline
+  // tone just inside the silhouette, so the ground meets a line the range away from the
+  // shell and the shell meets the same line. Nothing can be within the floor of both.
+  inside(shell, D.line, EDGE_LINE, hair)
+  // DESIGN's third kind of depth: a highlight along the top edge, just inside the line
+  // rather than on it, or the two would be one row of the same tone
+  g.save(); shell(); g.clip()
+  g.fillStyle = rgbaOf(D.line, D.sheen); g.fillRect(B.x + B.r, B.y + hair, B.w - 2 * B.r, hair)
+  g.restore()
+  // the screen, punched out so the take shows through, then its own hairline over the
+  // take's outermost pixel
+  const hole = () => path(S.x, S.y, S.w, S.h, S.r)
+  g.save(); g.globalCompositeOperation = 'destination-out'; hole(); g.fillStyle = '#000'; g.fill(); g.restore()
+  inside(hole, D.line, EDGE_LINE, hair)
+  return { canvas: cv, x: Math.round(E.x * k), y: Math.round(E.y * k), w, h }
+}
+// A line of text cut to a width, with the last of it left out rather than spilling
+function fit(text, width, px, measure) {
+  const m = measure || ((t, s) => Text.estimate(t, s))
+  let s = String(text)
+  if (m(s, px, 'sub') <= width) return s
+  while (s.length > 1 && m(s + '…', px, 'sub') > width) s = s.slice(0, -1)
+  return s + '…'
+}
+
 const mipsFor = (w, h) => Math.floor(Math.log2(Math.max(w, h))) + 1
 const canvas = (w, h) => {
   if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(Math.max(1, w), Math.max(1, h))
@@ -976,8 +1259,8 @@ class Compositor {
     this.prog = {}
     for (const [k, fs] of Object.entries({ nv12: FS_NV12, bg: FS_BG, mesh: FS_MESH, shrink: FS_SHRINK, gauss: FS_GAUSS,
       bokeh: FS_BOKEH, bright: FS_BRIGHT, frame: FS_FRAME, treat: FS_TREAT, final: FS_FINAL, present: FS_PRESENT, pack: FS_PACK,
-      clean: FS_CLEAN, copy: FS_COPY, focus: FS_FOCUS, ground: FS_GROUND, dissolve: FS_DISSOLVE })) this.prog[k] = this.program(fs)
-    for (const [k, fs] of Object.entries({ blurmark: FS_BLURMARK, sprite: FS_SPRITE, frost: FS_FROST })) this.prog[k] = { ...this.program(fs, VS_QUAD), quad: true }
+      clean: FS_CLEAN, copy: FS_COPY, focus: FS_FOCUS, loupe: FS_LOUPE, ground: FS_GROUND, dissolve: FS_DISSOLVE })) this.prog[k] = this.program(fs)
+    for (const [k, fs] of Object.entries({ blurmark: FS_BLURMARK, sprite: FS_SPRITE, frost: FS_FROST, plate: FS_PLATE })) this.prog[k] = { ...this.program(fs, VS_QUAD), quad: true }
     this.vao = gl.createVertexArray()
     // pictures drawn with Canvas2D (text, badges, the cursor), by what they show
     this.pics = new Map()
@@ -1134,6 +1417,19 @@ class Compositor {
     return { ...spec.edge, ...Plan.edgeFor(y * (1 - 0.7 * (spec.bg.dim || 0)) > 0.5) }
   }
 
+  // The drawn device's own tone, on the same terms and for the same reason as edgeOf:
+  // graphite on a dark ground and bone on a light one, and a photo's ground is not
+  // known until it is decoded. The shell's tones are the plan's (Plan.SHELL), so the
+  // stage and the export pick the same one and the picture's cache key follows it.
+  deviceOf(spec) {
+    const D = spec.device
+    if (!D || !D.auto || spec.bg.kind !== 'image') return D
+    const y = this.imgLuma.get(spec.bg.file)
+    if (y == null) return D
+    const light = y * (1 - 0.7 * (spec.bg.dim || 0)) > 0.5
+    return light === D.light ? D : { ...D, light, ...Plan.SHELL[light ? 'light' : 'dark'] }
+  }
+
   // An image background, decoded once and kept
   // (premult for a picture drawn over the take as a sprite, a clean patch)
   setImage(key, img, premult = false) {
@@ -1286,9 +1582,23 @@ class Compositor {
     r.x = r0.x + (r0.w - r.w) / 2; r.y = r0.y + (r0.h - r.h) / 2 + mv.dy
     const cam = spec.cam && src.cam && this.slots.cam && this.slots.cam.ready
     const edge = this.edgeOf(spec)
+    // The shell of a drawn device, moved with the take it holds: the shadow is cast
+    // from it rather than from the screen, or a laptop would float on a pool the shape
+    // of its own picture.
+    const dev = spec.device ? this.moved(spec.device.box, r0, mv) : null
+    // The plane a tilt turns, in the pixels this compositor draws. The pivot rides the
+    // take's own landing, so a take arriving under a title card turns about where it is
+    // rather than about where it will be.
+    const T = spec.tilt
+    const tilt = T ? { uTilt: [T.m * k, T.sin, T.D * k], uTiltS: 1 / T.fit,
+      uTiltC: [(r0.x + r0.w / 2 + (T.cx - r0.x - r0.w / 2) * mv.k) * k, (r0.y + r0.h / 2 + (T.cy - r0.y - r0.h / 2) * mv.k + mv.dy) * k] }
+      : { uTilt: [1, 0, 0], uTiltS: 1, uTiltC: [0, 0] }
     const u = {
       uRes: [W, H], uBgKind: kind,
       uRect: [r.x * k, r.y * k, r.w * k, r.h * k], uRadius: spec.radius * mv.k * k,
+      uShadowRect: dev ? [dev.x * k, dev.y * k, dev.w * k, dev.h * k] : [r.x * k, r.y * k, r.w * k, r.h * k],
+      uShadowRad: dev ? spec.device.box.r * mv.k * k : spec.radius * mv.k * k,
+      ...tilt,
       uTake: [mv.alpha, mv.shadow],
       uShadow: sh ? [sh.dy * k, Math.max(0.5, sh.sigma * k), sh.alpha, 1] : [0, 1, 0, 0],
       uBorder: spec.border ? [...spec.border.color, 1] : [0, 0, 0, 0], uBorderPx: spec.border ? spec.border.px * k : 0,
@@ -1317,10 +1627,11 @@ class Compositor {
       u.uCamRing = spec.cam.ring * mv.k * k
     }
     this.draw('frame', this.scene, u, { uBg: this.bg, uFill: this.fillA || this.dummy, uContent: marked ? marked.tex : c.rgba, uCamTex: cam ? this.slots.cam.rgba : this.dummy })
+    if (spec.device) this.devicePass(spec, this.moved(spec.device.extent, r0, mv), k, tilt, mv.alpha)
     if (spec.text) this.textPass(spec, fp)
     // auto level touches the take alone, so the treatment pass is told where it is: the
     // same rect the frame pass drew it in, fading with it under a title card
-    const finished = spec.treat ? this.treatPass(spec, u.uRect, u.uRadius, mv.alpha) : this.scene
+    const finished = spec.treat ? this.treatPass(spec, u.uRect, u.uRadius, mv.alpha, tilt) : this.scene
     const gr = spec.grain
     // The grain's cell is the export's grid scaled to what is being drawn, and below a
     // pixel it is left there: clamping it up made the editor's stage three times
@@ -1351,10 +1662,32 @@ class Compositor {
     return true
   }
 
+  // A box of the plan carried through the take's own landing: the same scale about the
+  // frame's centre and the same drop the frame pass gives the take, so a device and the
+  // take inside it arrive, leave and dip as one object.
+  moved(b, r0, mv) {
+    const cx = r0.x + r0.w / 2, cy = r0.y + r0.h / 2
+    return { x: cx + (b.x - cx) * mv.k, y: cy + (b.y - cy) * mv.k + mv.dy, w: b.w * mv.k, h: b.h * mv.k }
+  }
+
+  /**
+   * The drawn device over the finished frame (PASSES.md 9a): one Canvas2D picture with
+   * a hole where the screen is, lying on the take's own plane. Made once per plan and
+   * size, like every other picture here, so a frame costs one textured quad.
+   */
+  devicePass(spec, ext, k, tilt, alpha) {
+    const D = this.deviceOf(spec)
+    const w = Math.max(2, Math.ceil(D.extent.w * k)), h = Math.max(2, Math.ceil(D.extent.h * k))
+    const p = this.pic(`device|${D.kind}|${w}x${h}|${D.light ? 'l' : 'd'}|${D.title}`, () => deviceCanvas(D, k, this.measure))
+    if (!p) return
+    this.quad('plate', this.scene, [0, 0, this.W, this.H],
+      { uBox: [ext.x * k, ext.y * k, ext.w * k, ext.h * k], uOp: alpha, ...tilt }, { uTex: p.tex }, true, true)
+  }
+
   // The grade and the lens over the finished frame (PASSES.md 13), into a target of its
   // own: one shader for everything per pixel, and a blur first for what is wide. Called
   // only while spec.treat says something shows. Returns what the final pass should read.
-  treatPass(spec, takeBox, takeRadius, takeAlpha) {
+  treatPass(spec, takeBox, takeRadius, takeAlpha, tilt) {
     const { W, H } = this, k = W / spec.W, T = spec.treat
     const dst = this.keep('treat', W, H)
     const glowOn = T.bloom > 0 || T.halation > 0
@@ -1369,7 +1702,7 @@ class Compositor {
     this.draw('treat', dst, {
       uRes: [W, H], uSoftOn: soft ? 1 : 0, uMeanLod: mipsFor(W, H) - 1,
       uLevel: T.level ? [T.level[0], T.level[1], takeAlpha] : [0, 1, 0],
-      uLevelBox: takeBox, uLevelRad: takeRadius,
+      uLevelBox: takeBox, uLevelRad: takeRadius, ...tilt,
       uGrade: [T.bright, T.contrast, T.sat],
       uShoulder: T.shoulder, uToe: T.toe,
       uTint: [...T.tint, T.tintAmount],
@@ -1466,7 +1799,7 @@ class Compositor {
    * Returns { tex, size } to sample in place of the source, or null when nothing shows.
    */
   contentPass(spec, M, cropUV) {
-    const any = M.erase.length || M.redact.length || M.blur.length || M.focus.length || M.steps.length || M.pointer
+    const any = M.erase.length || M.redact.length || M.blur.length || M.focus.length || M.steps.length || M.pointer || M.loupe.length
     if (!any) return null
     const c = this.slots.content
     const tw = Math.max(2, Math.round(c.w * cropUV[2])), th = Math.max(2, Math.round(c.h * cropUV[3]))
@@ -1518,6 +1851,27 @@ class Compositor {
         uNudge: list.flatMap(f => f.shape.nudge ? [f.shape.nudge.dx * sx, f.shape.nudge.dy * sy] : [0, 0]),
       }, { uSrc: A, uPage: page })
       cur = B
+    }
+    if (M.loupe.length) {
+      // Last of the marks, so what it magnifies is what the frame now shows: a
+      // redaction under a loupe stays destroyed, and a lifted card comes up inside it.
+      // Its own target, because a pass that magnifies part of a picture has to read
+      // that picture somewhere other than where it writes.
+      const list = M.loupe.slice(0, Marks.MAX.loupe)
+      const C = this.keep('contC', tw, th, mipsFor(tw, th))
+      const scaled = f => {
+        const b = f.box, c = { x: b.x + b.w / 2, y: b.y + b.h / 2 }, s = f.scale
+        return [(c.x - b.w * s / 2) * sx, (c.y - b.h * s / 2) * sy, b.w * s * sx, b.h * s * sy]
+      }
+      this.draw('loupe', C, {
+        uT: [tw, th], uN: list.length,
+        uBox: list.flatMap(scaled),
+        uArea: list.flatMap(f => S(f.src)),
+        uA: list.flatMap(f => [f.box.r * sx, f.src.r * sx, f.mag * f.scale, f.op]),
+        uKey: list.flatMap(f => [f.key.dy * sy, Math.max(0.5, f.key.sigma * sx), f.key.alpha, Math.max(0.75, f.hair * sx)]),
+        uCon: list.flatMap(f => [f.contact.dy * sy, Math.max(0.5, f.contact.sigma * sx), f.contact.alpha, 0]),
+      }, { uSrc: cur })
+      cur = C
     }
     for (const s of M.steps) this.stepSprite(cur, s, sx)
     if (M.pointer) this.pointerSprites(cur, M.pointer, spec.marks.pointer, sx, sy)

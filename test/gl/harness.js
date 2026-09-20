@@ -148,6 +148,18 @@ app.whenReady().then(async () => {
         { kind: 'step', start: 1, end: 11, x: 0.35, y: 0.3 }] }, n: 150 },
       'lift': { opts: { backdrop: 'slate', inset: 0.06, look, zooms: [{ start: 1, end: 11, scale: 1.8, x: 0.5, y: 0.5 }],
         marks: [{ kind: 'lift', start: 2, end: 10, x: 0.35, y: 0.35, w: 0.3, h: 0.3 }, { kind: 'step', start: 3, end: 10, x: 0.35, y: 0.35 }] }, n: 180 },
+      // M5: a thing leaving, which every other case only ever catches arriving. Four
+      // badges that arrived a beat apart and share an end at 9 s: they clear in arrival
+      // order, 1/15 s apart, so at output frame 262 (8.733 s, this take goes out at 30)
+      // the group is a gradient rather than a light switch. The first is most of the way
+      // out, the second part way, the last two still up, and each carries the scale its
+      // own alpha goes with. A group that blinked would draw four full badges here, or
+      // none.
+      'leave': { opts: { backdrop: 'ink', inset: 0.06, look, marks: [
+        { kind: 'step', start: 2, end: 9, x: 0.2, y: 0.32 },
+        { kind: 'step', start: 3, end: 9, x: 0.4, y: 0.32 },
+        { kind: 'step', start: 4, end: 9, x: 0.6, y: 0.32 },
+        { kind: 'step', start: 5, end: 9, x: 0.8, y: 0.32 }] }, n: 262 },
       'pointer': { opts: { backdrop: 'dusk', inset: 0.06, look, pointer: [{ t: 0.5, x: 0.2, y: 0.3 }, { t: 3, x: 0.6, y: 0.5, click: true }, { t: 6, x: 0.4, y: 0.7 }] }, n: 92 },
       'text': { opts: { backdrop: 'dusk', inset: 0.06, look, captions: true, captionStyle: {},
         cues: [{ start: 3, end: 6, text: 'Every row shows the key and the tempo.' }],
@@ -164,9 +176,50 @@ app.whenReady().then(async () => {
         cues: [{ start: 3, end: 6, text: 'Every row shows the key and the tempo.' }] },
         ctx: { prepared: { captions: { cues: [], busy: [], words: { words: [{ w: 'Every', t: 3 }, { w: 'row', t: 3.3 }, { w: 'shows', t: 3.6 }, { w: 'the', t: 4 },
           { w: 'key', t: 4.2 }, { w: 'and', t: 4.6 }, { w: 'the', t: 4.8 }, { w: 'tempo.', t: 5 }] } } } }, n: 128 },
+      // M5: the same caption on its way out, at output frame 186 (6.2 s), which is two
+      // thirds through the 160 ms the words get. The words are well down the S and the
+      // glass is still nearly up, because the plate outlasts them by 60 ms: a caption is
+      // words inside a piece of glass, and the two switching off together is what read
+      // as a cut. A caption that blinked, or a plate that went with its words, draws a
+      // different frame here.
+      'caption-leave': { opts: { backdropAspect: 16 / 9, look, captions: true, captionStyle: {},
+        cues: [{ start: 3, end: 6, text: 'Every row shows the key and the tempo.' }] },
+        ctx: { prepared: { captions: { cues: [], busy: [], words: { words: [{ w: 'Every', t: 3 }, { w: 'row', t: 3.3 }, { w: 'shows', t: 3.6 }, { w: 'the', t: 4 },
+          { w: 'key', t: 4.2 }, { w: 'and', t: 4.6 }, { w: 'the', t: 4.8 }, { w: 'tempo.', t: 5 }] } } } }, n: 186 },
       'title': { opts: { backdrop: 'dusk', inset: 0.06, look, texts: [{ text: 'Fetch', subtitle: 'fetch.app', start: 0, end: 2.5, style: 'title' }] }, n: 36 },
       'lower-third': { opts: { backdrop: 'dusk', inset: 0.06, look, texts: [{ text: 'Library', subtitle: 'Three hundred songs', start: 7, end: 11, style: 'lower-third' },
         { text: 'New', start: 7, end: 11, fx: 0.7, fy: 0.3, style: 'label', box: true }] }, n: 270 },
+      // M5: the drawn devices, one case each, because each has its own shape. What is
+      // being looked at is the shell, its two hairlines, the take inside the hole and
+      // the shadow coming off the shell rather than off the screen.
+      'device-browser': { opts: { backdrop: 'ink', inset: 0.07, look: { ...look, device: { kind: 'browser', title: 'songscription.app' } } }, n: 150 },
+      'device-window': { opts: { backdrop: 'slate', inset: 0.07, look: { ...look, device: { kind: 'window', title: 'Library' } } }, n: 150 },
+      'device-laptop': { opts: { backdrop: 'dusk', inset: 0.07, look: { ...look, device: { kind: 'laptop' } } }, n: 150 },
+      'device-phone': { opts: { backdrop: 'mint', inset: 0.07, look: { ...look, device: { kind: 'phone' } } }, n: 150 },
+      // frame.chrome clean is the browser frame on its own: the real chrome cropped off
+      // where the page's place is known, and one of Fetch's own drawn in its place. The
+      // viewport is that place, and the crop is what the document made of it: with no
+      // viewport nothing is cropped and Fetch draws no browser at all (devicePlan).
+      'chrome-clean': { opts: { backdrop: 'ink', inset: 0.07, crop: { x: 0, y: 0.12, w: 1, h: 0.88 }, viewport: { x: 0, y: 0.12, w: 1, h: 0.88 },
+        look: { ...look, frame: { border: 0, chrome: 'clean' }, device: { title: 'fetch.app', theme: 'light' } } }, n: 150 },
+      // A burned caption under a device. The band is the room the layout left under the
+      // take, and the device sits in the take's own place rather than beside it, so the
+      // caption belongs in that band and not on the shell: laid out from the screen
+      // inside the shell it came down onto a laptop's foot.
+      'device-caption': { opts: { backdrop: 'dusk', inset: 0.06, captions: true, captionStyle: {},
+        cues: [{ start: 3, end: 6, text: 'Every row shows the key and the tempo.' }],
+        look: { ...look, device: { kind: 'laptop' } } },
+        ctx: { prepared: { captions: { cues: [], busy: [], words: { words: [{ w: 'Every', t: 3 }, { w: 'row', t: 3.3 }, { w: 'shows', t: 3.6 }, { w: 'the', t: 4 },
+          { w: 'key', t: 4.2 }, { w: 'and', t: 4.6 }, { w: 'the', t: 4.8 }, { w: 'tempo.', t: 5 }] } } } }, n: 128 },
+      // The tilt: a real turn in perspective, so the mask, the border and the shadow
+      // follow it. A device with it, since the two are the same plane.
+      'tilt': { opts: { backdrop: 'violet', inset: 0.08, look: { ...look, frame: { border: 2, borderColor: '#F0A93C', tilt: 14 } } }, n: 150 },
+      'tilt-device': { opts: { backdrop: 'studio', inset: 0.07, look: { ...look, frame: { border: 0, tilt: -11 }, device: { kind: 'laptop' } } }, n: 150 },
+      // The loupe: a magnified inset of a small area, beside the area it magnifies. The
+      // redaction is there on purpose: what the edit hides has to stay hidden inside it.
+      'loupe': { opts: { backdrop: 'ink', inset: 0.06, look, marks: [
+        { kind: 'loupe', start: 1, end: 11, x: 0.12, y: 0.18, w: 0.16, h: 0.10 },
+        { kind: 'redact', start: 0, end: 12, x: 0.14, y: 0.20, w: 0.06, h: 0.04 }] }, n: 150 },
       // M4: the treatment pass and the grain, one or two fields each so a failure names
       // the part that moved. Every other case leaves treatment at its defaults, which is
       // what holds those goldens still while this pass exists.
@@ -262,7 +315,7 @@ app.whenReady().then(async () => {
       // zoom-glide is here now that the shutter is open by default: it is the one case
       // that draws through the multi-tap blur, and preview and export have to agree on it
       for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'bokeh-ground', 'zoom-hold', 'zoom-glide', 'cut-dissolve', 'reveal', 'camera', 'marks', 'lift', 'pointer', 'text', 'caption-plate', 'glow',
-        'auto-level', 'auto-level-hard', 'treat-furniture', 'treat-all']) {
+        'auto-level', 'auto-level-hard', 'treat-furniture', 'treat-all', 'device-browser', 'tilt-device', 'loupe']) {
         const c = cases[name]
         const r = await call('parity', { ...base, ...c })
         // A crop's first and last rows can differ at a sharp colour edge: the <video>
@@ -291,6 +344,14 @@ app.whenReady().then(async () => {
       // out of turn has to come back byte for byte
       const t = await call('stateless', { ...base, ...cases['treat-all'] }, [50, 260, 5])
       is('the whole treatment stack, grain and aberration on', t.max === 0, `max ${t.max}`)
+      // A drawn device is one picture kept between frames and a loupe reads a target of
+      // its own, so both are places where a frame could carry something from the one
+      // before it. Neither does: the picture is a function of the plan and the size, and
+      // the loupe's target is written whole every time it is used.
+      const dv = await call('stateless', { ...base, ...cases['tilt-device'] }, [60, 200])
+      is('a drawn device and a tilt', dv.max === 0, `max ${dv.max}`)
+      const lp = await call('stateless', { ...base, ...cases['loupe'] }, [40, 250, 9])
+      is('a loupe, over its own marks', lp.max === 0, `max ${lp.max}`)
       // a dissolve draws the frame twice and mixes the two: still the frame's own time
       // and nothing else, so it comes back byte for byte after other frames
       const d = await call('stateless', { ...base, ...cases['cut-dissolve'] }, [30, 91, 200])
@@ -439,6 +500,65 @@ app.whenReady().then(async () => {
       const none = await call('moved', { ...sbase, opts: { backdrop: 'dusk', inset: 0.08, look }, n: 3 },
         [{ ...sbase, opts: { backdrop: 'dusk', inset: 0.08, look: { ...look, motion: { reveal: 'none' } } }, n: 3 }])
       is('reveal none is the hard frame it always was', none[0].max > 8, `max ${none[0].max} LSB`)
+    }
+
+    if (want('device')) {
+      console.log('the drawn frame, the tilt and the loupe')
+      // Every one of them against the same look without it: a device, its address, its
+      // tone, a tilt and a loupe all have to reach a pixel, and the ones that cost
+      // nothing when they are off have to cost nothing.
+      const one = (o, n = 150) => ({ ...base, opts: { backdrop: 'ink', inset: 0.07, ...o }, n, width: 640 })
+      const dev = (d, f) => one({ look: { ...look, device: d, ...(f ? { frame: { border: 0, ...f } } : {}) } })
+      const kinds = ['browser', 'window', 'laptop', 'phone']
+      const rs = await call('moved', one({ look }), [
+        ...kinds.map(k => dev({ kind: k })),
+        dev({ kind: 'browser', title: 'songscription.app' }),
+        dev({ kind: 'browser', theme: 'light' }),
+        one({ look: { ...look, frame: { border: 0, tilt: 12 } } }),
+        one({ look: { ...look, frame: { border: 0, tilt: 0 } } }),
+      ])
+      kinds.forEach((k, i) => is(`device.kind ${k} draws a frame`, rs[i].max > 8, `max ${rs[i].max} LSB, mean ${rs[i].mean}`))
+      // the address and the tone against the plain browser frame, not against no frame
+      const br = await call('moved', dev({ kind: 'browser' }), [dev({ kind: 'browser', title: 'songscription.app' }), dev({ kind: 'browser', theme: 'light' })])
+      is('device.title writes the address into the bar', br[0].max > 8, `max ${br[0].max} LSB`)
+      is('device.theme light is another shell', br[1].max > 8, `max ${br[1].max} LSB`)
+      // frame.chrome clean draws the browser frame only where the real chrome could be
+      // cropped off. With no viewport nothing was cropped, so a drawn browser would sit
+      // round the real one: it draws nothing, and the frame is the one it always was.
+      const page = { x: 0, y: 0.12, w: 1, h: 0.88 }
+      const cl = o => one({ crop: page, ...o, look: { ...look, frame: { border: 0, chrome: 'clean' } } })
+      const ch = await call('moved', cl({ viewport: page }), [cl({})])
+      is('frame.chrome clean draws a browser where the page\'s place is known', ch[0].max > 8, `max ${ch[0].max} LSB`)
+      const kept = await call('moved', cl({}), [one({ crop: page, look: { ...look, frame: { border: 0, chrome: 'keep' } } })])
+      is('and where it is not the frame is the one it always was', kept[0].max === 0, `max ${kept[0].max} LSB`)
+      // The shell's tone follows the ground, and a photo ground is only known once it is
+      // decoded: the plan cannot read it, so gl.js picks it there (deviceOf). This
+      // fixture is a bright picture, so it takes the bone shell, and dimmed it takes the
+      // graphite one, which is what four of the five backdrops we ship ask for.
+      const img = (d, dim) => ({ ...base, width: 640, n: 150, ctx: { imageFile: path.join(FIX, 'bg.jpg') },
+        opts: { backdrop: 'img:bg.jpg', inset: 0.07, look: { ...look, device: { kind: 'browser', ...d }, background: { imageDim: dim } } } })
+      const tone = await call('moved', img({}, 0), [img({ theme: 'light' }, 0), img({ theme: 'dark' }, 0)])
+      is('an auto shell on a light photo is the bone one', tone[0].max === 0 && tone[1].max > 8,
+        `light ${tone[0].max} LSB, dark ${tone[1].max} LSB`)
+      const dark = await call('moved', img({}, 0.7), [img({ theme: 'dark' }, 0.7), img({ theme: 'light' }, 0.7)])
+      is('and on a dark one it is graphite', dark[0].max === 0 && dark[1].max > 8,
+        `dark ${dark[0].max} LSB, light ${dark[1].max} LSB`)
+      is('frame.tilt turns the take', rs[6].max > 8, `max ${rs[6].max} LSB, mean ${rs[6].mean}`)
+      is('and a tilt of nothing is the frame it always was, to the bit', rs[7].max === 0, `max ${rs[7].max} LSB`)
+      // the loupe, and the dial that says how far it magnifies
+      const gl = cases['loupe'].opts
+      const ls = await call('moved', { ...base, opts: { ...gl, marks: gl.marks.filter(m => m.kind !== 'loupe') }, n: 150, width: 640 },
+        [{ ...base, opts: gl, n: 150, width: 640 },
+          { ...base, opts: { ...gl, look: { ...look, focus: { loupe: 3.6 } } }, n: 150, width: 640 }])
+      is('a loupe draws a magnified inset', ls[0].max > 8, `max ${ls[0].max} LSB, mean ${ls[0].mean}`)
+      is('focus.loupe says how far it magnifies', ls[1].max > 8 && Math.abs(ls[1].mean - ls[0].mean) > 0.05,
+        `max ${ls[1].max} LSB, mean ${ls[1].mean} against ${ls[0].mean}`)
+      // What the edit hides stays hidden at magnification. The loupe reads the content
+      // target after the redaction has destroyed what it covers, so taking the
+      // redaction away has to change the inset as well as the area it copies.
+      const hid = await call('moved', { ...base, opts: gl, n: 150, width: 640 },
+        [{ ...base, opts: { ...gl, marks: gl.marks.filter(m => m.kind !== 'redact') }, n: 150, width: 640 }])
+      is('a redaction under a loupe is redacted inside it too', hid[0].max > 8, `max ${hid[0].max} LSB`)
     }
 
     if (want('blur')) {

@@ -198,6 +198,40 @@ console.log('nothing jumps between adjacent frames, anywhere in the take')
   }
 }
 
+console.log('a zoom the frame edge holds in still changes speed like one it does not')
+{
+  // The fault the motion pass measured (.context/survey/motion-taste.md): where a zoom
+  // asks for a focus a window that wide cannot reach, the view sits against the frame's
+  // edge and then comes off it, and on the one frame it comes off the picture changed
+  // speed by 11 to 19 percent. The constraint is right; reading it as a clamp at every
+  // instant is what was not continuous. These are the three moves that showed it, at
+  // the numbers the edit they were measured on actually uses.
+  const held = [{ start: 1, end: 5, scale: 2.2, x: 0.594, y: 0.78 },
+    { start: 7, end: 11, scale: 1.94, x: 0.4425, y: 0.2575 },
+    { start: 13, end: 17, scale: 1.72, x: 0.4955, y: 0.4405 }]
+  // and one whose focus is well inside the frame, which never touched the edge and so
+  // never had the fault: it is the yardstick for what a smooth ramp at 60 fps measures
+  const free = [{ start: 1, end: 5, scale: 1.71, x: 0.5, y: 0.5 }]
+  const worstKink = zooms => {
+    const spec = Plan.prepare({ zooms }, meta)
+    const tr = [], N = Math.round(19 * 60)
+    for (let n = 1; n <= N; n++) tr[n] = Plan.travel(spec, Plan.viewAt(spec, (n - 1) / 60), Plan.viewAt(spec, n / 60))
+    let out = 0, peak = 0, kink = 0
+    for (let n = 2; n < N; n++) {
+      const v = Plan.viewAt(spec, n / 60)
+      out = Math.max(out, -Math.min(v[0], v[1], 1 - v[0] - v[2], 1 - v[1] - v[3]))
+      peak = Math.max(peak, tr[n])
+      if (tr[n] > 0.02) kink = Math.max(kink, Math.abs(tr[n] - (tr[n - 1] + tr[n + 1]) / 2))
+    }
+    return { kink: kink / peak, out, peak }
+  }
+  const a = worstKink(held), b = worstKink(free)
+  is('a move the edge holds in has no frame of its own out of line', r(a.kink, 4) < 0.05, true)
+  is('...no worse than a move the edge never touches', a.kink < b.kink * 2.5, true)
+  is('and the window is still inside the frame on every frame of it', a.out <= 1e-9, true)
+  console.log(`       held in ${r(100 * a.kink, 1)}% of ${r(a.peak, 1)} px, free ${r(100 * b.kink, 1)}% of ${r(b.peak, 1)} px`)
+}
+
 console.log('the shutter reads the move, not the dial')
 {
   const spec = Plan.prepare({ zooms: [{ start: 1, end: 6, scale: 2.2, x: 0.25, y: 0.3 }] }, meta)
@@ -527,6 +561,68 @@ console.log('every frame still draws alone')
     differ.length, 0)
   // and it is a moving take: a plan that never changes would pass the check above
   is('...and did move', new Set(inOrder).size > all.length * 0.9, true)
+}
+
+console.log('everything that arrives has a way to leave')
+{
+  // The fault motion-taste.md named: five badges that arrived a beat apart all went out
+  // on one frame, and the alpha rode --ease-out, which is an accelerate and so spends
+  // half its window above 0.68 and crosses the readable range in the last third.
+  const Marks = require('../ui/compositor/marks')
+  const steps = [1, 2, 3, 4, 5].map((n, i) => ({ kind: 'step', n, x: 0.3 + 0.1 * i, y: 0.4, start: 2 + i * 0.5, end: 9 }))
+  const m = Marks.planMarks(steps, { W: 1920, H: 1080, px: 1, clock: t => t, span: 12, zooms: [] })
+  const opsAt = t => Marks.at(m, t).steps.map(s => r(s.op, 3))
+  is('five badges that end together do not leave together',
+    new Set(m.steps.map(s => r(s.gone, 3))).size, 5)
+  is('and they leave in the order they arrived',
+    m.steps.map(s => s.gone).every((g, i, a) => i === 0 || g > a[i - 1]), true)
+  // every badge: how many frames at 60 its alpha spends between 0.9 and 0.1, and the
+  // worst one frame step in it
+  const leave = (s) => {
+    const v = []
+    for (let n = Math.round((s.gone - s.OUT - 0.05) * 60); n <= Math.round(s.gone * 60); n++) {
+      const one = Marks.at(m, n / 60).steps.find(x => x.label === s.label)
+      v.push(one ? one.op : 0)
+    }
+    const hi = v.findIndex(x => x < 0.9), lo = v.findIndex(x => x < 0.1)
+    return { frames: lo - hi, step: Math.max(...v.slice(1).map((x, i) => v[i] - x)) }
+  }
+  const worst = m.steps.map(leave)
+  is('a badge crosses the readable range in six frames or more at 60',
+    Math.min(...worst.map(w => w.frames)) >= 6, true)
+  is('and no frame of it moves more than a seventh of the badge',
+    r(Math.max(...worst.map(w => w.step)), 3) <= 0.145, true)
+  // the leave is quicker than the arrival, and never instant
+  is('the leave is quicker than the arrival and not instant',
+    m.steps.every(s => s.OUT < s.IN && s.OUT >= 0.12), true)
+
+  // captions: the arrival is the longer of the pair and both ends are eased
+  const Text = require('../ui/compositor/text')
+  const cues = [{ start: 1, end: 3, text: 'one two three' }, { start: 5, end: 7, text: 'four five six' }]
+  const tp = Text.planText({ captions: true, cues, captionStyle: {} },
+    { clock: Object.assign(t => t, { kept: () => true }), span: 10, W: 1920, H: 1080 })
+  const capOp = t => { const it = Text.textAt(tp, t).items.filter(i => /^cap\|/.test(i.key) && !/shade$/.test(i.key)); return it.length ? it[0].op : 0 }
+  const p0 = tp.phrases[0]
+  is('a caption arrives over longer than it leaves',
+    [r(capOp(p0.show + 0.1), 2) < 0.6, r(capOp(p0.hide - 0.08), 2) < 0.6], [true, true])
+  is('and neither end of it is a corner',
+    [capOp(p0.show + 0.005) < 0.01, capOp(p0.hide - 0.005) < 0.01], [true, true])
+  // the plate is still there after the words have gone
+  is('the glass closes after the words do',
+    Text.textAt(tp, p0.hide + 0.02).frost.length > 0 && capOp(p0.hide + 0.02) === 0, true)
+
+  // A phrase floored at its shortest on-screen time (phraseTimes) is exactly one
+  // arrival long, and a caption that spends all of itself arriving never reaches full.
+  // Both fades are cut to the phrase instead, here and in the ASS the classic renderer
+  // writes (ui/overlays.js capFades), so the stage and that file still agree.
+  const quick = [{ start: 1, end: 1.12, text: 'Right.' }, { start: 1.15, end: 1.4, text: 'Now' }]
+  const qp = Text.planText({ captions: true, cues: quick, captionStyle: {} },
+    { clock: Object.assign(t => t, { kept: () => true }), span: 10, W: 1920, H: 1080 })
+  const q0 = qp.phrases[0]
+  const qOp = t => { const it = Text.textAt(qp, t).items.filter(i => /^cap\|/.test(i.key) && !/shade$/.test(i.key)); return it.length ? it[0].op : 0 }
+  const peak = Math.max(...Array.from({ length: 201 }, (_, i) => qOp(q0.show + i * (q0.hide - q0.show) / 200)))
+  is('a floored phrase still comes all the way up', r(peak, 2), 1)
+  is('and still leaves rather than cutting', qOp(q0.hide - 0.005) < 0.2, true)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

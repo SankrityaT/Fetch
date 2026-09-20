@@ -85,8 +85,8 @@ const FIELDS = [
   f('frame.shadow', 'number', 0.6, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Shadow',
     doc: 'Strength of the soft shadow under the framed take.', when: { 'background.kind': '!none' } }),
   f('frame.chrome', 'enum', 'remove', { options: ['keep', 'remove', 'clean'], label: 'Browser chrome',
-    doc: 'A browser take\'s tabs and toolbar. remove crops them off where Fetch knows the page\'s place in the window ' +
-      '(takes an agent recorded while reporting its pointer with viewport); keep leaves them; clean draws a plain synthetic frame (new renderer).',
+    doc: 'A browser take\'s tabs and toolbar. remove crops them off where Fetch knows the page\'s place ' +
+      '(an agent recorded it by reporting its pointer with viewport); keep leaves them; clean crops the same way and draws a frame of Fetch\'s own round the page.',
     gpuOptions: ['clean'] }),
   f('frame.scale', 'number', 1, { min: 0.5, max: 1.2, step: 0.01, unit: 'x', label: 'Scale', doc: 'Size of the framed take.', gpu: true, advanced: true }),
   f('frame.offsetX', 'number', 0, { min: -0.5, max: 0.5, step: 0.01, unit: '%', label: 'Offset X', doc: 'Moves the framed take across.', gpu: true, advanced: true }),
@@ -97,7 +97,14 @@ const FIELDS = [
 
   // ── device ──
   f('device.kind', 'enum', 'none', { options: ['none', 'browser', 'window', 'laptop', 'phone'], label: 'Device',
-    doc: 'A drawn frame around the take. Generic shapes, never a real product.', gpu: true, gpuOptions: ['browser', 'window', 'laptop', 'phone'] }),
+    doc: 'A drawn frame round the take: generic shapes, never a real product. frame.chrome clean draws the browser one on its own.',
+    gpu: true, gpuOptions: ['browser', 'window', 'laptop', 'phone'] }),
+  f('device.title', 'string', '', { label: 'Address',
+    doc: 'The address a browser frame shows, or a window frame\'s title. Fetch records no page address, so an empty one leaves the bar blank.',
+    gpu: true, when: { 'device.kind': '!none' } }),
+  f('device.theme', 'enum', 'auto', { options: ['auto', 'light', 'dark'], label: 'Device tone',
+    doc: 'The shell\'s own tone. auto steps in from the ground: graphite on a dark one, bone on a light one.',
+    gpu: true, when: { 'device.kind': '!none' } }),
 
   // ── background ──
   f('background.kind', 'enum', 'none', { options: ['none', 'solid', 'gradient', 'mesh', 'image', 'video-blur'], label: 'Background',
@@ -180,6 +187,8 @@ const FIELDS = [
   // ── focus ──
   f('focus.dim', 'number', 0.5, { min: 0, max: 0.9, step: 0.05, label: 'Spotlight dim', doc: 'How dark the frame goes round a spotlight.', gpu: true }),
   f('focus.lift', 'number', 1.04, { min: 1, max: 1.15, step: 0.01, unit: 'x', label: 'Lift', doc: 'How far a lifted element rises.', gpu: true }),
+  f('focus.loupe', 'number', 2.2, { min: 1.4, max: 4, step: 0.1, unit: 'x', label: 'Loupe',
+    doc: 'How far a loupe magnifies its area. The inset sits beside that area, or under it where there is no room beside.', gpu: true }),
 ]
 
 const BY_PATH = new Map(FIELDS.map(x => [x.path, x]))

@@ -71,6 +71,26 @@ is('a pause in speech breaks the phrase', pause.map(p => p.text), ['Wait for', '
 const times = O.phraseTimes(ph)
 is('phrases never overlap on screen', times[0].hide <= times[1].show, true)
 
+// A phrase floored at its shortest on-screen time is exactly one arrival long, so the
+// two fades have to be cut to fit it: libass reads \fad knots that overlap in the order
+// they were written, and the words ramped up over the whole line and cut out in one
+// frame. The pair keeps its shape and the caption still reaches full.
+{
+  const short = O.phraseTimes(O.captionPhrases([{ text: 'Right.', start: 1, end: 1.12 }, { text: 'Now', start: 1.15, end: 1.4 }]))[0]
+  const f = O.capFades(short)
+  is('a floored phrase is one arrival long', [Math.round((short.hide - short.show) * 1000), short.cut], [200, true])
+  is('and its two fades are cut to fit inside it', [f.in + f.out <= short.hide - short.show + 1e-9, f.in > f.out], [true, true])
+  is('so it reaches full opacity before it leaves', O.fadeLevel(short.show + f.in, short.show, short.hide, f.in, f.out), 1)
+  const ass = O.frameScript({ W: 1920, H: 1080, phrases: [{ text: 'Right.', start: 1, end: 1.12, words: [{ text: 'Right.', start: 1, end: 1.12 }], lines: [1] },
+    { text: 'Now', start: 1.15, end: 1.4, words: [{ text: 'Now', start: 1.15, end: 1.4 }], lines: [1] }], capStyle: {}, span: 4 })
+  const secs = s => { const [h, m, x] = s.split(':'); return +h * 3600 + +m * 60 + +x }
+  const fad = ass.split('\n').filter(l => /^Dialogue: \d,/.test(l) && /\\fad\(/.test(l)).map(l => {
+    const c = l.split(','), f = /\\fad\((\d+),(\d+)\)/.exec(l)
+    return (+f[1] + +f[2]) / 1000 <= secs(c[2]) - secs(c[1]) + 1e-9
+  })
+  is('and no event asks libass for a fade longer than itself', [fad.length > 0, fad.every(Boolean)], [true, true])
+}
+
 // ---- texts ----
 is('a separator splits a title from its subtitle',
   O.titleParts({ text: 'Songscription · your piano library' }), { title: 'Songscription', subtitle: 'Your piano library' })
@@ -243,7 +263,7 @@ is('an edge never moves in to leave a sliver', O.spotlightSpan({ start: 5, end: 
 // in a band just around the captions, fading with them
 const fr = O.captionFrost({ W: 1920, H: 1080, phrases: ph, capStyle: {}, box: { x: 115, y: 71, w: 1690, h: 938 } })
 const frLines = fr.script.split('\n').filter(l => l.startsWith('Dialogue'))
-is('the frost is one feathered patch per phrase', [frLines.length, frLines.every(l => /\\fad\(150,/.test(l) && /\\blur\d/.test(l))], [O.phraseTimes(ph).length, true])
+is('the frost is one feathered patch per phrase', [frLines.length, frLines.every(l => /\\fad\(200,/.test(l) && /\\blur\d/.test(l))], [O.phraseTimes(ph).length, true])
 is('the frost band is even, inside the frame, below the middle', [fr.y % 2, fr.h % 2, fr.y > 540, fr.y + fr.h <= 1080], [0, 0, true, true])
 is('the frost script is drawn at the band size', /PlayResY: (\d+)/.exec(fr.script)[1], String(fr.h))
 is('no captions, no frost', O.captionFrost({ W: 1920, H: 1080, phrases: [] }), null)

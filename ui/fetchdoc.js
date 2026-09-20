@@ -65,6 +65,12 @@ function emptyDoc(src, dur) {
 // routed (lookPatchOf), never refused: agents built against v1 keep working.
 const LEGACY = ['backdrop', 'backdropFile', 'outAspect', 'capStyle', 'hideMacCursor']
 
+// The two frame.chrome settings that crop the real browser chrome off where the page's
+// place is known exactly: remove leaves the page bare, clean draws Fetch's own frame
+// round it. Look owns the pair, because Look.warnings has to say the same thing about
+// a take where neither can happen.
+const CROPS_CHROME = Look.CROPS_CHROME
+
 function cleanAudio(a, base = AUDIO_DEFAULTS) {
   const o = { ...base, ...(a && typeof a === 'object' ? a : {}) }
   const g = +o.gain
@@ -233,7 +239,7 @@ function normalize(doc, src, dur) {
   // The page's place arriving for the first time crops the chrome off, once: a crop
   // the person or an agent later changes or clears stays theirs.
   if (out.viewport && !doc.viewportApplied) {
-    if (out.look.frame.chrome === 'remove' && !out.crop) out.crop = { ...out.viewport }
+    if (CROPS_CHROME.has(out.look.frame.chrome) && !out.crop) out.crop = { ...out.viewport }
     out.viewportApplied = true
   }
   out.nextId = { ...base.nextId, ...(doc.nextId || {}) }
@@ -294,15 +300,17 @@ const byId = (doc, id) => {
   return null
 }
 
-// frame.chrome switched with the page's place known: remove crops to the page,
-// keep takes that crop away again. A crop someone drew by hand is never touched.
+// frame.chrome switched with the page's place known: remove and clean both crop to the
+// page, keep takes that crop away again. A crop someone drew by hand is never touched.
+// clean crops for the same reason remove does, and then draws a frame of Fetch's own in
+// place of the one it took off (ui/compositor/plan.js, devicePlan).
 function chromeCrop(doc, was) {
   const now = doc && doc.look && doc.look.frame && doc.look.frame.chrome
   const v = doc && doc.viewport
   if (!v || !now || was === now) return doc
   const same = c => c && ['x', 'y', 'w', 'h'].every(k => Math.abs(+c[k] - v[k]) < 0.002)
-  if (now === 'remove' && !doc.crop) doc.crop = { ...v }
-  else if (now !== 'remove' && same(doc.crop)) doc.crop = null
+  if (CROPS_CHROME.has(now) && !doc.crop) doc.crop = { ...v }
+  else if (!CROPS_CHROME.has(now) && same(doc.crop)) doc.crop = null
   return doc
 }
 
@@ -325,6 +333,9 @@ function toExportOpts(doc, extra = {}) {
   return {
     start, end, cuts,
     crop: doc.crop,
+    // where the page sits in a browser take, for the compositor: frame.chrome clean
+    // only draws its own browser where the real one could be cropped off
+    viewport: doc.viewport || null,
     texts: doc.texts,
     // the waveform peaks drawn on the timeline are the editor's, not the export's
     audioTrack: at && at.file ? { file: at.file, volume: at.volume, offset: at.offset, replace: !!at.replace,

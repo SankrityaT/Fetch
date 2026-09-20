@@ -162,6 +162,11 @@ function findPreset(name, userDir) {
 // what choosing a preset leaves alone (fields, or whole sections)
 const KEPT_BY_PRESET = ['frame.aspect', 'frame.chrome', 'captions', 'motion', 'cursor']
 
+// The two frame.chrome settings that need the page's place in the window: remove crops
+// the real chrome off, clean crops it off and draws Fetch's own in its place. Neither
+// can happen on a take that never recorded where the page sits (ui/fetchdoc.js).
+const CROPS_CHROME = new Set(['remove', 'clean'])
+
 /**
  * A look checked against the schema: { look, warnings }. `base` is what fields left
  * out keep (defaults when absent). Unknown fields are dropped and named.
@@ -312,13 +317,20 @@ function warnings(look, ctx = {}) {
   if (L.frame.aspect !== 'auto' && L.background.kind === 'none') {
     out.push(`frame.aspect ${L.frame.aspect} with background none: the space round the take is filled with the take itself, blurred and darkened, never black bars.`)
   }
+  // A drawn frame and a turn both need ground to sit in. With no background the take is
+  // the whole output: there is nowhere for a bezel or a shadow to go, and turning it
+  // would open black wedges at the corners, which the output never draws.
+  if (L.background.kind === 'none' && (L.device.kind !== 'none' || L.frame.chrome === 'clean' || L.frame.tilt !== 0)) {
+    out.push('background none: a drawn device and frame.tilt both need ground round the take, so neither is drawn. Pick a background, or a shape, which fills itself.')
+  }
   if (L.background.kind === 'image' && !L.background.image) out.push('background.kind is image but background.image is not set, so dusk is used.')
   // the renderer falls back to dusk for an id it cannot find, which read as the look working
   else if (L.background.kind === 'image' && Array.isArray(ctx.images) && !ctx.images.includes(L.background.image)) {
     out.push(`background.image ${L.background.image} is not one of the images list_looks names, so dusk is used.`)
   }
-  if (L.frame.chrome === 'remove' && ctx.browser && ctx.viewport === false) {
-    out.push('frame.chrome remove: this take does not record where the page sits in the browser window, so its tabs and toolbar stay. Crop them off with crop instead.')
+  if (CROPS_CHROME.has(L.frame.chrome) && ctx.browser && ctx.viewport === false) {
+    out.push(`frame.chrome ${L.frame.chrome}: this take does not record where the page sits in the browser window, so its tabs and toolbar stay. Crop them off with crop instead.` +
+      (L.frame.chrome === 'clean' ? ' Fetch draws no browser frame here either: round a real one it would be two browsers.' : ''))
   }
   return out
 }
@@ -445,5 +457,5 @@ function save(dir, name, look, label) {
 module.exports = {
   defaults, validate, merge, resolve, diff, compact, visible, sections, describe, warnings,
   list, findPreset, save, fromV1, isV1Look, toClassic, backdropId, backgroundFromId,
-  aspectOf, aspectNumber, getPath, setPath, V1_KEYS, v1Patch, luma,
+  aspectOf, aspectNumber, getPath, setPath, V1_KEYS, v1Patch, luma, CROPS_CHROME,
 }

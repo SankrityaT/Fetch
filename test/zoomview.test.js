@@ -24,9 +24,11 @@ const evalAt = (expr, t) => Function('F', 'in_time', `return ${expr.replace(/\b(
 function exported(zooms, t, curve) {
   const f = P.explicitZoomFilter(zooms, { width: 1000, height: 1000, fps: 30 }, x => x, { w: 1000, h: 1000 }, curve).filter
   const z = evalAt(/z='([^']+)'/.exec(f)[1], t)
-  const pick = k => /\*\((.+)\)-i[wh]\/zoom\/2/.exec(new RegExp(`:${k}='[^']+'`).exec(f)[0])[1]
-  const fx = evalAt(pick('x'), t), fy = evalAt(pick('y'), t), w = 1 / z
-  return { s: r3(z), x: r3(Math.max(0, Math.min(1 - w, fx - w / 2))), y: r3(Math.max(0, Math.min(1 - w, fy - w / 2))) }
+  // x='iw*(1-1/zoom)*(n)': n is the fraction of its own travel the window sits at, so
+  // the origin is that fraction of 1 - w and there is no clamp left to apply
+  const pick = k => /\(1-1\/zoom\)\*\((.+)\)$/.exec(new RegExp(`:${k}='([^']+)'`).exec(f)[1])[1]
+  const nx = evalAt(pick('x'), t), ny = evalAt(pick('y'), t), w = 1 / z
+  return { s: r3(z), x: r3((1 - w) * nx), y: r3((1 - w) * ny) }
 }
 const view = (zooms, t, curve) => { const v = O.zoomView(zooms, t, curve); return { s: r3(v.s), x: r3(v.x), y: r3(v.y) } }
 

@@ -119,7 +119,7 @@ const lum = c => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
  * Where this end cannot carry the floor against the take, the frame pass delivers what
  * the tone has and no more.
  */
-const edgeFor = light => (light ? { col: rgb(EDGE_INK) } : { col: rgb(EDGE_LIT) })
+const edgeFor = light => ({ light, col: rgb(light ? EDGE_INK : EDGE_LIT) })
 function edgeEnd(bg) {
   const light = bg.kind === 'gradient' ? (lum(bg.c0) + lum(bg.c1)) / 2 > 0.5
     : bg.kind === 'mesh' ? bg.c.reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i % 3], 0) / (bg.c.length / 3) > 0.5
@@ -133,6 +133,122 @@ function rgb(hex) {
   const m = /^(?:#|0x)?([0-9a-f]{6})$/i.exec(String(hex || ''))
   if (!m) return [0.1, 0.09, 0.08]
   return [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16) / 255)
+}
+
+// ── the drawn device ────────────────────────────────────────────────────
+//
+// A frame round the take: a browser, a plain window, a laptop or a phone, drawn from
+// rectangles, radii and two tones. Everything here is generic by construction and by
+// intent. No outline is traced from a product, nothing carries a wordmark, a window's
+// buttons are three dots in the shell's own tone rather than three coloured ones, a
+// laptop is a slab and a shallow foot with no keyboard, wedge or hinge detail, and a
+// phone has a speaker slit and nothing else: no notch, no island, no home bar. If a
+// shape would make anyone think of one company's product it is the wrong shape.
+//
+// The device takes the place the layout gave the take and hands back what is left, so
+// the frame's margins, its shadow and the whole composition stay where they were and
+// only the take gets smaller. Sizes are shares of the screen's own width, so a device
+// is the same device at 720p and at 4K.
+// bar: the top bezel, side and foot the others, r and sr the shell's and the screen's
+// corners, base and over a laptop's foot: its height and how far it stands out either
+// side. All of them shares of the screen's own width.
+const DEVICES = {
+  browser: { bar: 0.070, side: 0.008, foot: 0.008, r: 0.018, sr: 0.005 },
+  window: { bar: 0.046, side: 0.008, foot: 0.008, r: 0.018, sr: 0.005 },
+  laptop: { bar: 0.020, side: 0.020, foot: 0.052, r: 0.022, sr: 0.006, base: 0.030, over: 0.055 },
+  phone: { bar: 0.050, side: 0.030, foot: 0.050, r: 0.070, sr: 0.030 },
+}
+// The shell, and the hairline that answers for both of its edges. The two are the
+// range apart on purpose: an edge drawn as a pair of tones that far apart stands clear
+// of whatever it meets, because nothing can be within the floor of both of them. That
+// is how a device keeps the take's edge contract without measuring anything per pixel,
+// which is what keeps the two decode paths on the same side of it.
+// face is the bar a browser wears, a shade up from the shell because a toolbar sits in
+// front of the page; deep is the laptop's foot, a shade down, because a foot is under
+// the lid rather than in front of it.
+const SHELL = {
+  dark: { shell: '#2A2420', line: EDGE_LIT, face: '#1F1B18', deep: '#1F1B18', text: '#BDB5AC', sheen: 0.07 },
+  light: { shell: '#E8E2DA', line: EDGE_INK, face: '#F6F3EE', deep: '#D6CFC5', text: '#6E655C', sheen: 0.5 },
+}
+
+/**
+ * Where a drawn device sits, in output pixels, or null when the look asks for none.
+ *   D       the look's device section
+ *   chrome  the look's frame.chrome: clean draws the browser frame on its own, which
+ *           is the whole of that setting's third option (the crop that removes the
+ *           real chrome is the document's, ui/fetchdoc.js chromeCrop). It only draws
+ *           where that crop could happen: with no viewport the take still carries its
+ *           own tabs and toolbar, and a drawn browser round them is two browsers.
+ *           Look.warnings says so in the same case.
+ *   g       the layout's geometry, gut the take's corner floor, end the ground's own end
+ *   bg      the ground, for the shell's own tone
+ */
+function devicePlan(D = {}, chrome, g, corner, end, bg = {}, viewport = null) {
+  const kind = DEVICES[D.kind] ? D.kind : (chrome === 'clean' && viewport ? 'browser' : null)
+  if (!kind) return null
+  const d = DEVICES[kind]
+  const a = g.vidW / g.vidH
+  const base = d.base || 0
+  // the largest screen of the take's own shape that leaves room for the shell round it
+  const sw = Math.min(g.vidW / (1 + 2 * d.side), g.vidH / (1 / a + d.bar + d.foot + base))
+  const sh = sw / a
+  const boxW = sw * (1 + 2 * d.side), boxH = sh + sw * (d.bar + d.foot)
+  const cx = g.ox + g.vidW / 2, cy = g.oy + g.vidH / 2
+  const box = { x: Math.round(cx - boxW / 2), y: Math.round(cy - (boxH + sw * base) / 2), w: Math.round(boxW), h: Math.round(boxH), r: sw * d.r }
+  const screen = {
+    x: Math.round(box.x + sw * d.side), y: Math.round(box.y + sw * d.bar),
+    w: 2 * Math.round(sw / 2), h: 2 * Math.round(sh / 2),
+    // never tighter than the window's own rounded corner, or its black corner shows
+    r: Math.max(corner, sw * d.sr),
+  }
+  // Graphite on a dark ground, bone on a light one. A photo is the one ground the plan
+  // cannot read: edgeEnd calls every image light, because the hairline's ink end is the
+  // safe one until the picture is decoded, and for a shell that would be a pale slab on
+  // a near-black photo, which is four of the five we ship. So a photo starts on graphite
+  // and gl.js re-picks it from the decoded mean (deviceOf), the way it does the hairline.
+  const auto = D.theme !== 'light' && D.theme !== 'dark'
+  const light = !auto ? D.theme === 'light' : bg.kind !== 'image' && !!end.light
+  const foot = base ? {
+    x: box.x - sw * d.over, y: box.y + box.h, w: box.w + 2 * sw * d.over, h: sw * base,
+    r: sw * base * 0.35, taper: sw * base * 0.5,
+  } : null
+  // a phone's speaker, the one detail on it: a slit in the top bezel, centred
+  const slit = kind === 'phone' ? { w: sw * 0.10, h: Math.max(2, sw * 0.006), y: box.y + sw * d.bar * 0.42 } : null
+  const pad = Math.ceil(sw * 0.02)
+  const x0 = Math.min(box.x, foot ? foot.x : box.x) - pad, y0 = box.y - pad
+  const x1 = Math.max(box.x + box.w, foot ? foot.x + foot.w : 0) + pad, y1 = (foot ? foot.y + foot.h : box.y + box.h) + pad
+  return {
+    kind, box, screen, foot, slit, light, auto, ...SHELL[light ? 'light' : 'dark'],
+    bar: sw * d.bar, unit: sw,
+    title: String(D.title || '').slice(0, 80),
+    extent: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 },
+  }
+}
+
+// ── the tilt ────────────────────────────────────────────────────────────
+//
+// frame.tilt turns the framed take in perspective: a real rotation about the vertical
+// axis through its own centre, projected from a camera 2.2 frames away, not a skew.
+// The frame pass reads it backwards, per pixel: every pixel of the output is asked
+// which point of the flat plane it shows, and everything after that (the take's rounded
+// mask, its border, its shadow, the camera bubble lying on it) is worked out on the
+// plane exactly as it was before the tilt existed. So the mask follows the perspective
+// because it is the same mask, and the shadow follows it because it is cast on the
+// plane rather than painted under the picture.
+//
+// The plane is shrunk by as much as the projection's near edge grows, so a tilted take
+// occupies exactly the room the flat one did and the near corner cannot reach past the
+// frame. Positive turns the take's right edge toward the viewer.
+const TILT_DIST = 2.2
+function tiltPlan(deg, box, g) {
+  const t = clamp(num(deg, 0), -20, 20)
+  if (!(Math.abs(t) > 0.01)) return null
+  const rad = t * Math.PI / 180
+  const D = TILT_DIST * Math.max(g.outW, g.outH)
+  const sin = Math.sin(rad), m = D * Math.cos(rad)
+  // the near edge grows by D / (D - halfW |sin|); the whole plane gives that back
+  const fit = (D - (box.w / 2) * Math.abs(sin)) / D
+  return { sin, m, D, fit, cx: box.x + box.w / 2, cy: box.y + box.h / 2 }
 }
 
 // ── which renderer ──────────────────────────────────────────────────────
@@ -304,6 +420,22 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   }
   if (bokehDial > 0 && (bg.kind === 'image' || bg.kind === 'blur')) bg.bokeh = bokehDial
 
+  // The drawn frame round the take, and the take's own rect inside it. A device takes
+  // the place the layout gave the take and hands the take back what is left, so the
+  // composition, the margins and the shadow stay exactly where they were.
+  const end0 = edgeEnd(bg)
+  // the screen's corner is the device's own, floored at the window's (`corner`) so the
+  // take's black corner never shows; frame.radius belongs to a take with no device
+  const device = framed ? devicePlan(L('device'), L('frame').chrome, g, corner, end0, bg, opts.viewport) : null
+  const rect = device ? device.screen : { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH }
+  const rad = device ? device.screen.r : radius
+  // A tilt turns the whole framed take, the device and the camera bubble on it in one
+  // plane; the frame pass reads it backwards, per pixel (gl.js, FS_FRAME).
+  // A take with nothing behind it is the whole output, and turning it would open black
+  // wedges at the corners, which is the one thing the output never draws. Same rule as
+  // the take's own arrival: it can only turn in something.
+  const tilt = bg.kind === 'none' ? null : tiltPlan(num(L('frame').tilt, 0), device ? device.box : rect, g)
+
   // Zooms on the output clock, as the classic export places them; with auto zoom and
   // none of its own, the moments prepare.js found (already on the output clock)
   let zooms = (opts.zooms || []).filter(z => z && +z.end > +z.start)
@@ -316,9 +448,11 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   let cam = null
   const k = opts.camera
   if (k && k.file && k.on !== false) {
-    const d = 2 * Math.round(Math.max(24, clamp(num(k.size, 0.22), 0.05, 0.6) * g.vidW) / 2)
-    const cxp = clamp(g.ox + num(k.x, 0.82) * g.vidW, g.ox + d / 2, g.ox + g.vidW - d / 2)
-    const cyp = clamp(g.oy + num(k.y, 0.78) * g.vidH, g.oy + d / 2, g.oy + g.vidH - d / 2)
+    // its fractions are of the take, so under a device frame it sits on the screen and
+    // not on the bezel
+    const d = 2 * Math.round(Math.max(24, clamp(num(k.size, 0.22), 0.05, 0.6) * rect.w) / 2)
+    const cxp = clamp(rect.x + num(k.x, 0.82) * rect.w, rect.x + d / 2, rect.x + rect.w - d / 2)
+    const cyp = clamp(rect.y + num(k.y, 0.78) * rect.h, rect.y + d / 2, rect.y + rect.h - d / 2)
     const C = L('camera')
     cam = {
       file: k.file, x: cxp - d / 2, y: cyp - d / 2, d,
@@ -330,10 +464,11 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
 
   // What is drawn on the recording itself, placed once: sizes for the finished frame
   // from px, the finished pixels per content pixel before any zoom
-  const px = g.vidH / (ch * inner.h)
+  const px = rect.h / (ch * inner.h)
   const drawn = markList(opts.marks, P && P.marks)
   const F = L('focus'), Cu = L('cursor')
-  const pm = Marks.planMarks(drawn, { W: cw, H: ch, px, clock, span, zooms, ease: L('motion').zoomEase, look: { dim: F.dim, lift: F.lift } })
+  const pm = Marks.planMarks(drawn, { W: cw, H: ch, px, clock, span, zooms, ease: L('motion').zoomEase,
+    look: { dim: F.dim, lift: F.lift, loupe: F.loupe } })
   const erase = P && P.erase ? Marks.planErase(P.erase.spans, P.erase.plates,
     { src: { w: srcW, h: srcH }, crop: { x: cx, y: cy }, content: { w: cw, h: ch }, clock, end, span }) : []
   // an empty track is the look's cursor switched off, whatever the take has
@@ -424,19 +559,29 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   } : null
   const film = clamp(num(L('grain').film, 0), 0, 1)
 
-  const text = Text.planText(opts, { clock, span, W: g.outW, H: g.outH, box: framed ? { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH } : null,
-    prepared: P, zooms: pm.zooms })
+  // The caption band is the room the layout left under the take, and a device sits in
+  // the take's own place rather than beside it, so the band is measured from the take
+  // and not from the screen inside the device. Laid out from the screen, a 50 px caption
+  // landed on a laptop's foot. Everything else a text reads (a lower third rides the
+  // product) still goes by the screen.
+  const capBox = framed ? (device ? { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH } : { ...rect }) : null
+  const text = Text.planText(opts, { clock, span, W: g.outW, H: g.outH, box: framed ? { ...rect } : null,
+    capBox, prepared: P, zooms: pm.zooms })
 
   return {
     W: g.outW, H: g.outH, fps, frames, span, keep, start, end,
     src: { w: srcW, h: srcH }, crop: { x: cx, y: cy, w: cw, h: ch },
     content: { w: cw, h: ch, px },
-    framed, rect: { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH }, radius, shadow, inner,
+    framed, rect, radius: rad, shadow, inner, device, tilt,
     // The edge floor, and the hairline that meets it where nothing else does: about a
     // pixel and a quarter at 1080, scaled with the output so it stays a hairline at 4K.
     // No ground, no contract: a take in its own shape is the whole output, and a line
     // round that is a line round the video.
-    edge: bg.kind === 'none' ? null : { floor: EDGE_FLOOR, px: Math.max(1, g.outH * 1.25 / 1080), ...edgeEnd(bg) },
+    // A device frame answers for the take's edge itself: the bezel is a tone Fetch
+    // chose, held off the ground by the same floor, and it carries a hairline on both
+    // sides of itself (devicePlan). A second line just inside the screen would be a
+    // line drawn on a line.
+    edge: bg.kind === 'none' || device ? null : { floor: EDGE_FLOOR, px: Math.max(1, g.outH * 1.25 / 1080), ...end0 },
     border: borderPx > 0 ? { px: borderPx, color: rgb(L('frame').borderColor || '#FFFFFF') } : null,
     bg, zooms: pm.zooms, ease: L('motion').zoomEase, cam, marks,
     cut: cutPoints(keep, L('motion').cutTransition, fps, hidden),
@@ -806,4 +951,4 @@ function cameraFrames(spec, pts) {
   return frameMap(pts, spec.frames, n => Timeline.camTime(spec.cam, srcAt(spec.keep, n / spec.fps)))
 }
 
-module.exports = { prepare, framePlan, srcAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor }
+module.exports = { prepare, framePlan, srcAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL }

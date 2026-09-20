@@ -24,6 +24,25 @@ still could be written from the still before it. The take arriving and leaving
 (`motion.reveal`) and a dip through the ground ride the same machinery a title card's
 landing does, `fp.move`, which the frame pass reads as `uTake`.
 
+Everything Fetch draws over the recording arrives and leaves, and one function says how
+far in any of it is: `Overlays.fadeLevel`, the S a lift already dims a page with. DESIGN.md
+gives `--ease-in` to a thing entering and `--ease-out` to a thing leaving, and both are
+right for a shape and only one of them is right for an alpha: `--ease-out` accelerates, so
+read as an opacity it spends half its window between 1.00 and 0.68 and crosses the whole
+readable range in the last third. A step badge given 220 ms to leave was gone inside 83 of
+them. So what leaves moves on `--ease-out` and fades on the S, over three fifths of its own
+arrival, never under `--dur-1`, and badges that share an end clear in the order they
+arrived rather than all on one frame. A redaction is the exception and always was: a fade
+shows the secret, so it is on from its first frame to its last.
+
+A pair of fades is cut to the room it has (`Overlays.fitFades`), keeping its ratio. A
+caption phrase is floored at one arrival's worth of screen time (`phraseTimes`), so a
+phrase handed straight on to the next one is exactly as long as its own arrival, and
+asked for both ends anyway it never reached full here and libass read the two knots of
+a `\fad` out of order over there: the words ramped up across the whole line and cut out
+in a single frame. Cut to fit, a short phrase still comes up and still leaves, and the
+stage and the ASS the classic renderer writes still agree.
+
 Two things travel through these targets: a picture, and a mask. Alpha is never opacity
 here, it is how much of a pixel is the recording. The frame pass writes it (1 on the
 take and the camera, 0 on the ground and the border), the steps, the cursor and the text
@@ -88,6 +107,54 @@ scaled to whatever the compositor draws at: the export's size, or the stage's. W
 drawn on the recording itself is in content pixels (the cropped take at its own size),
 scaled to the texture it is drawn into.
 
+Since M5 the framed take lies on a plane rather than on the frame. `frame.tilt` turns
+that plane about the vertical axis through its own centre and projects it from a camera
+2.2 frames away, and the frame pass reads the turn backwards: every output pixel is
+asked which point of the flat plane it shows, and the rounded mask, the border, the
+shadow, the camera bubble and the device's shell are then worked out on the plane
+exactly as they were before tilt existed. So the mask follows the perspective because it
+is the same mask, and the shadow follows it because it is cast on the plane rather than
+painted under the finished picture: neither is a skew of anything. The plane is shrunk
+by as much as the projection's near edge grows, so a tilted take asks for exactly the
+room the flat one had and its near corner cannot reach past the frame. The ground is
+still read where the pixel is and the shadow where the plane is, which are the same
+place until a tilt separates them; the grade is held to the picture, so the treatment
+pass reads the plane too (`uTilt` there is the same three numbers). At tilt 0 there is
+no plane at all: the substitution is the pixel itself and every frame is byte for byte
+what it was.
+
+The device (`device.kind`, and `frame.chrome: clean`, which is the browser one on its
+own) takes the place the layout gave the take and hands back what is left, so the
+margins, the shadow and the whole composition stay where they were and only the take
+gets smaller. It is one Canvas2D picture with a hole where the screen is, made once per
+plan and size, so a frame costs one textured quad. Its two edges are each a pair of
+tones a range apart, the shell and a hairline just inside it: whatever an edge meets,
+the page inside or the ground outside, it cannot be within the edge floor of both, so
+the contract pass 9 measures per pixel is met here by construction and the two decode
+paths cannot land on opposite sides of a threshold. That is why `spec.edge` is null
+under a device: a second line inside the screen would be a line drawn on a line.
+Every shape is generic by construction and by intent. Nothing is traced, nothing carries
+a wordmark, a window's three dots are the shell's own tone and never one desktop's three
+colours, a laptop is a slab and a shallow foot with no keyboard and no hinge, and a
+phone has a speaker slit and nothing else.
+
+Two things about it are decided later than the rest of the plan. Its tone goes the way
+the take's own hairline goes, graphite on a dark ground and bone on a light one, and a
+photo is the ground neither can read until it is decoded: the plan calls every image
+light, which is the safe end for a hairline and the wrong one for a shell, so a device
+on a photo starts graphite and `gl.js` re-picks it from the decoded mean (`deviceOf`,
+beside `edgeOf`, off the same eight by eight read). And the browser frame
+`frame.chrome: clean` asks for is drawn only where the page's own place in the window is
+known, because that is what let the real chrome be cropped away: with no viewport
+nothing was cropped, a drawn bar would sit above the recording's own tabs, and Fetch
+draws none and says so (`Look.warnings`).
+
+Captions are laid out against the take's own place on the frame rather than against the
+screen inside the shell. The band a burned caption sits in is the room the layout left
+under the take, and a device stands in the take's place rather than beside it, so laid
+out from the screen a caption walked down into the device and landed on a laptop's foot.
+A lower third still rides the screen, because it lies on the product.
+
 | # | Pass | Target | Per frame | Notes |
 |---|---|---|---|---|
 | 1 | source | `content` (RGBA, mipmapped) | when the frame changed | NV12 from ffmpeg (export) or the `<video>` (stage). BT.709 limited, chroma centre-sited; BT.601 under 720 lines, as Chromium does. Mips so a Retina take minified into 1080 does not alias. |
@@ -97,8 +164,9 @@ scaled to the texture it is drawn into.
 | 5 | clean | `contA` (the crop's size, mipmapped) | while anything is drawn on the take | The crop copied out; the Mac's pointer filled from its box's edges (delogo's weighting); redactions as cells, each the mean of what it covers (16 finished px or a third of the box's short side, whichever is larger). Clean patches of a resting pointer (`prepare.js`) laid over as pictures. |
 | 6 | blur marks | `contA` | while one shows | The box and its margin shrunk from a mip level, blurred, and laid back through a round-cornered mask at the mark's opacity. A plate, with its own corner, an edge feathered over about two finished pixels and no further, and a hairline just inside it off the plate's own tone, drifting with that tone rather than choosing between its two ends at mid grey (a two-way choice at a step is 67 levels wide and the two decode paths differ by one, so a ring pixel either side of it landed on opposite ends): a blur has to read as something someone put there, and a patch that fades out over twenty pixels with no boundary reads as a render that went soft. |
 | 7 | focus | `contB` | while a lift or spotlight shows | Spotlight: a feathered window at full light in a dimmed, lightly blurred page. Lift: the element's own pixels scaled 3 to 6 percent about its centre (and moved in from a frame edge), cut with its own corner radius, over a wide key shadow and a tight contact shadow (analytic), the page behind blurred and dimmed by multiplication, less by the piece and more with distance. Up to four at once. |
-| 8 | steps and cursor | the content target | while they show | Canvas2D pictures drawn once per size (`pic`): step badges popping in, riding a lifted card; the agent's arrow pressing on clicks, its gold ripple, the Biscuit tag and badge. Mipmapped after, so a zoom samples them like the take. None of it was on the screen that was recorded, so each carves its own coverage out of the mask in that target's alpha and the grade leaves it alone. Its coverage, not its alpha: a badge's drop shadow and a caption's blurred glyph cloud lie over the recording at a third of an alpha, and the recording under them is still the recording. Carved by the whole of that alpha, a look that takes the colour out of a take left a soft coloured halo ninety pixels wide round every badge, the agent's cursor and every caption over the picture. |
-| 9 | frame | `scene` (mipmapped) | yes | Writes the mask as well as the picture: 1 where the take or the camera is, 0 on the ground, under the border and the camera's ring, and less wherever pass 8 drew something of Fetch's own, carried through the same taps and mip level so a badge minified by a zoom masks exactly what it covers. Background with the ground's tooth on it (or the blur ground: luma 30%, chroma 80%, cos^4 vignette, the same tooth), the tooth being on the ground the eye sees and not on the ground the edge floor reads below, since the floor is a distance between two tones and three levels of tooth is not a tone, the analytic rounded-box shadow (wider than the classic boxblur, because a shadow nine levels deep and gone inside 25 px reads as a hairline of dark rather than as elevation, and capped against the margin the frame leaves so the pool resolves before the canvas ends rather than darkening the last row by a tenth), the take (or the content target) inside an SDF rounded mask with a 1 px edge, zoomed (`Overlays.zoomView`, lifts re-framing the zooms they ride and the moment after a re-framed one panning from where it actually landed) with the window margin trimmed and covered, the ease-back in the middle of a far pan bounded so the window is never wider than the frame, motion blur as samples across the shutter scaled with pixel travel (up to 32), the travel being the
+| 7a | loupe | `contC` | while one shows | A magnified inset of a small area, beside the area it magnifies, over a key and a contact shadow, with a hairline round its own edge and a thin outline round the area. Its own target, because a pass that magnifies part of a picture has to read that picture somewhere other than where it writes. Last of the marks, so what it magnifies is what the frame now shows: a redaction under a loupe is redacted inside it, and a lifted card comes up inside it. Its pixels are the recording's, so they keep the mask and the grade grades them; the two lines are Fetch's own and carve themselves out of it. Placed inside what the zoom it rides shows rather than inside the recording, and sized against that window too, the way a lift is pulled back in (`Focus.nudge`): picked against the whole frame, an inset on a 2x window went off the side of it and the viewer saw a cut sliver with its hairline chopped. Up to two at once. |
+| 8 | steps and cursor | the content target | while they show | Canvas2D pictures drawn once per size (`pic`): step badges popping in and shrinking away, riding a lifted card; the agent's arrow pressing on clicks, its gold ripple, the Biscuit tag and badge. Mipmapped after, so a zoom samples them like the take. None of it was on the screen that was recorded, so each carves its own coverage out of the mask in that target's alpha and the grade leaves it alone. Its coverage, not its alpha: a badge's drop shadow and a caption's blurred glyph cloud lie over the recording at a third of an alpha, and the recording under them is still the recording. Carved by the whole of that alpha, a look that takes the colour out of a take left a soft coloured halo ninety pixels wide round every badge, the agent's cursor and every caption over the picture. |
+| 9 | frame | `scene` (mipmapped) | yes | Writes the mask as well as the picture: 1 where the take or the camera is, 0 on the ground, under the border and the camera's ring, and less wherever pass 8 drew something of Fetch's own, carried through the same taps and mip level so a badge minified by a zoom masks exactly what it covers. Background with the ground's tooth on it (or the blur ground: luma 30%, chroma 80%, cos^4 vignette, the same tooth), the tooth being on the ground the eye sees and not on the ground the edge floor reads below, since the floor is a distance between two tones and three levels of tooth is not a tone, the analytic rounded-box shadow (wider than the classic boxblur, because a shadow nine levels deep and gone inside 25 px reads as a hairline of dark rather than as elevation, and capped against the margin the frame leaves so the pool resolves before the canvas ends rather than darkening the last row by a tenth), the take (or the content target) inside an SDF rounded mask with a 1 px edge, zoomed (`Overlays.zoomView`, lifts re-framing the zooms they ride and the moment after a re-framed one panning from where it actually landed) with the window margin trimmed and covered, the focus held inside the picture by where it sits in the travel a window of that scale has rather than by a clamp read at every instant (`Overlays.focusFrac`): the constraint is the same one and it is met by construction, since the travel is concave in the ease and so never falls under the line the focus rides, and the one frame a pan used to stop riding the frame's edge on no longer changes speed by a fifth. The ease-back in the middle of a far pan is bounded so the window is never wider than the frame, motion blur as samples across the shutter scaled with pixel travel (up to 32), the travel being the
 zoom's own velocity at that instant (the analytic derivative of `Overlays.easeAt`, not a
 difference between two drawn frames) and the shutter being the camera's: 180 degrees by
 default, which is what `treatment.motionBlur` sets and all it sets. So a fast pass smears,
@@ -110,6 +178,7 @@ than sitting beside it: the same scale about the frame's centre, the same drop a
 same opacity, so it arrives with the take, leaves with it and goes with it through a dip.
 Drawn in its landed place it sat at full size over a take that had not arrived yet and
 stayed lit over bare ground on the one frame a dip takes the take off the screen. The pass also keeps the edge floor: the take's outermost pixels stand at least 24 levels of luma off the ground two and a half pixels outside them, read along the edge's own normal with the shadow at that point, and where they do not a hairline about a pixel and a quarter wide makes up the difference at exactly the opacity that lands on the floor. Clear of the further of the two by the floor, take or ground: measured off the ground alone the line landed inside the take's own tone wherever a lift had dimmed the page to the ground's own level, a Paper page at 194 wearing a line at 193 under a ground at 214, and a third of Mono print's perimeter went under the floor that way. The floor is a distance: an edge already clear gives the requirement back over a window rather than at a step, whichever way it stands clear, two floors wide where the line would be going on past the ground and one where the take itself is the far one of the pair. The opacity is a distance rather than a signed target, so what arrives is the smaller of what was asked for and what the tone it has can carry, and it is continuous where that tone passes through the take's own: read as a signed target, the denominator through zero swung the full range across half a level of the take's pixels and left a solid rim in one decode path and none in the other. It goes to the warm end that ground leaves open, ink over a light ground and a warm light over a dark one, chosen once per plan from the background the look asked for (`plan.edgeEnd`) rather than per pixel: a gradient crosses mid grey along one edge, and a line that changed ends where it crossed would put a seam down the frame and land the two decode paths on opposite sides of it. One end, and it does not travel: letting it drift to the other one where a lift had dimmed the take onto the plan's own tone was tried and taken out. The two ends are the range apart, so the drift carried the line's tone across the take's own luma, and one level of the take either side of that crossing took the finished pixel from a floor above the take to a floor below it, thirty levels of swing where the rest of the plane moves under three. That is a hairline that pops while a lift fades a page and crawls along an edge, and since the two decode paths differ by a level it is a solid rim in one and none in the other, which is the fault the line exists to stop. What is left is the honest shortfall: where the plan's end sits within a floor of the take's own edge the line delivers what that tone can carry and fades out over the last few levels. On the seven presets that is a percent or two of one perimeter under a lift, all of it between 20 and 24 levels and none of it under 20, which is the grain and the lens in front of the line rather than the line. The line is a colour Fetch chose, like the border, so it carves itself out of the grade's mask by its own share of the pixel. Under an opening title card the take waits, then rises into place; under a closing one it settles back (`text.frameMove`). |
+| 9a | device | `scene` | while a look draws one | The drawn frame round the take (`device.kind`, `frame.chrome: clean`): one Canvas2D picture with a hole where the screen is, lying on the take's own plane, blended over the frame pass and carving its own coverage out of the grade's mask. A browser (a bar, three dots in the shell's tone, an address pill that shows `device.title` and nothing when there is none, because Fetch records no page address and never invents one), a plain window, a laptop (a chin and a shallow tapered foot with a thumb notch) or a phone (a uniform bezel and a speaker slit). Made once per plan and size like every other picture here, so a frame costs one textured quad; a look that asks for no device draws no pass at all. |
 | 10 | card ground | `scene` | while a title card shows | An opening card's near-black scrim; a closing card's frame blurred about 130 px at 1080 and half desaturated under the scrim. |
 | 11 | caption plate | `scene` | while a caption over the take shows | The frame blurred at a quarter size, through a feathered rounded patch at the words' own bounds, with a scrim mixed into it: the far end of the words' own colour, so a light caption gets a dark plate and an ink one a light plate. Glass alone is the frame's own luma, and a white caption over a blurred white page is still a white caption. Framed or not, and unframed is the case that needs it: with no band to sit in, the caption fell back to the shade's own blurred cloud of glyphs, a smudge with no boundary, on the default look, at every caption. The classic renderer frosts only a framed caption, because libass cannot blur what is under it and the alphamerge wants a band whose size is known exactly, so this is a divergence and a deliberate one: the compositor knows the frame it is drawing. |
 | 12 | text | `scene` | while text shows | Captions (their shade, which is the blurred cloud of their own glyphs where the words have no plate and the drop under the glyphs alone where they have one, so nothing a plated caption draws reaches past the plate's own bounds and the thing that shades the words goes wherever the dodge puts them; a pill under the spoken word, the words with the spoken one re-tinted), titles rising out of a blur (a crossfade to a blurred copy), lower thirds, labels. Laid out by `text.js` with `overlays.js`, rasterised with Canvas2D once per item and size. Every word and a title card's scrim carve themselves out of the mask; the caption plate of pass 11 does not, because it is mostly the frame's own light through a patch and belongs to whatever it lies on. |
@@ -133,9 +202,27 @@ Sources and sinks (M0 decided, M2 measured):
   container's own timestamps with `-copyts`); sample and hold is `plan.frameMap`.
   `scale_vt` shrinks a take far larger than the deepest zoom needs before the download.
   A still (preview_frame) decodes its one frame and stops (`-frames:v 1`).
-- Encode: x264 veryfast at the classic export's CRF, fed packed NV12 over loopback TCP (a
-  pipe from the renderer took 144 fps, a socket 740). On the Songscription tour at 1080p60
-  it wrote 5.9 MB where VideoToolbox and WebCodecs wrote 71 to 73 MB at the bitrate that
-  keeps text sharp; those two stay as `sink: 'vt'` and `sink: 'webcodecs'` for measuring.
+  The rate it holds onto is `Timeline.outFps`, 30 or 60, and which one is read off the
+  take's cadence (the median gap between its frames) rather than off the average ffmpeg
+  reports: a native take has no single rate, so the average is the refresh less every
+  still passage, and a take whose screen steps at 1/60 of a page that sits still for
+  half its length reads 26, went out at 30, and had 516 of the 1234 frames it did
+  catch thrown away. No rate makes sample and
+  hold clean on a take whose frames land 15 to 20 ms apart, so the one to ask for is
+  the one a player runs at 1:1 (`.context/survey/m5-timing.md`).
+- Encode: x264, fed packed NV12 over loopback TCP (a pipe from the renderer took 144 fps,
+  a socket 740). On the Songscription tour at 1080p60 it wrote 5.9 MB where VideoToolbox
+  and WebCodecs wrote 71 to 73 MB at the bitrate that keeps text sharp; those two stay as
+  `sink: 'vt'` and `sink: 'webcodecs'` for measuring. What this encoder is handed is not
+  what the classic renderer hands it: the ground has a tooth and four looks put a roll of
+  film in front of the frame, and an encoder's first move on fine noise over a flat field
+  is to throw it away, so the tooth three taste passes scored off PNGs was not in the file
+  anyone played (`.context/survey/m5-fades.md`). At `high` the encoder is told what it is
+  looking at (`sinks.js`, psy-rd, aq-mode 3, no-dct-decimate, a softer deblock, on the
+  `fast` preset with one step of rate factor to pay for them): the delivered picture is
+  the one it was, mean absolute difference 1.22 levels against the drawn frames where it
+  was 1.25, and the ground moves on every frame of a still passage where it used to stand
+  still for up to seventeen. At `balanced` and `small` nothing carries it at any tuning,
+  and they keep the encoder they had.
 - Sound: ffmpeg in the main process at the same time (`processor.renderAudio`), then a
   stream-copy mux and the music bed.

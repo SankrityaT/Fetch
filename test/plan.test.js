@@ -250,6 +250,22 @@ console.log('a caption over live content, and the shade that used to travel with
     box: { x: 100, y: 60, w: 1720, h: 800 }, prepared })
   const bandAt = Text.textAt(band, 2)
   is('a caption in the band keeps its cloud', [bandAt.frost.length, bandAt.items[0].bounds.h > at.items[0].bounds.h], [0, true])
+
+  // The band belongs to the take's own place on the frame. A device sits in that place
+  // rather than beside it, so a caption laid out from the screen inside the shell
+  // walked down into the shell: a 50 px line landed on a laptop's foot.
+  const m = { width: 1920, height: 1080, duration: 10, fps: 30 }
+  const capAt = look => {
+    const s = Plan.prepare({ backdrop: 'dusk', inset: 0.06, captions: true, cues, look }, m, { prepared })
+    const it = Text.textAt(s.text, 2)
+    return { s, top: Math.min(...it.items.map(i => i.bounds.y)) }
+  }
+  const flat = capAt({}), lap = capAt({ device: { kind: 'laptop' } })
+  const d = lap.s.device
+  is('a caption under a device sits where it sits without one', Math.abs(lap.top - flat.top) < 1, true)
+  // and that is below the whole of what the device draws, its foot included
+  const L = O.captionLayout(lap.s.W, lap.s.H, {}, lap.s.text.capBox)
+  is('and clear of everything the device draws', L.y - L.px * 0.59 > d.foot.y + d.foot.h, true)
 }
 
 console.log('the frame\'s own texture: the ground\'s tooth under the film, and the film\'s clock')
@@ -271,6 +287,71 @@ console.log('the frame\'s own texture: the ground\'s tooth under the film, and t
   is('and a heavy one leaves it where it was', spec(1).tooth, 1)
   is('the film is exposed once per output frame at 30', spec(0.2, 30).grainHold, 1)
   is('and twice as slowly at 60, so a look grains the same at both', spec(0.2, 60).grainHold, 2)
+}
+
+console.log('the drawn device, and the tilt')
+{
+  const meta = { width: 1920, height: 1080, duration: 10, fps: 30 }
+  const of = (look, extra = {}) => Plan.prepare({ backdrop: 'dusk', inset: 0.08, ...extra, look }, meta)
+  const bare = of({})
+  is('no device by default, and no tilt', [bare.device, bare.tilt], [null, null])
+  for (const kind of ['browser', 'window', 'laptop', 'phone']) {
+    const s = of({ device: { kind } })
+    const d = s.device, b = d.box, sc = d.screen
+    is(`${kind}: the take is the screen inside the shell`, [s.rect.x === sc.x, s.rect.y === sc.y, s.rect.w === sc.w], [true, true, true])
+    is(`${kind}: the screen is inside the shell`, [sc.x >= b.x, sc.y >= b.y, sc.x + sc.w <= b.x + b.w, sc.y + sc.h <= b.y + b.h], [true, true, true, true])
+    // the device takes the take's place and never more of the frame than it had
+    const r = bare.rect
+    is(`${kind}: and the shell is no larger than the take was`,
+      [b.x >= r.x - 1, b.y >= r.y - 1, b.x + b.w <= r.x + r.w + 1, (d.foot ? d.foot.y + d.foot.h : b.y + b.h) <= r.y + r.h + 1], [true, true, true, true])
+    // the take keeps its own shape inside the frame it is given
+    is(`${kind}: the screen keeps the take's shape`, Math.abs(sc.w / sc.h - r.w / r.h) < 0.01, true)
+    is(`${kind}: and a device answers for the take's edge itself`, s.edge, null)
+  }
+  // frame.chrome clean is the browser frame with no device asked for by name, and it
+  // only draws where the real chrome could be cropped off: round a real browser bar it
+  // would be two browsers, and Look.warnings says so in the same case
+  const page = { x: 0, y: 0.12, w: 1, h: 0.88 }
+  is('frame.chrome clean draws the browser frame', of({ frame: { chrome: 'clean' } }, { viewport: page }).device.kind, 'browser')
+  is('and keep draws none', of({ frame: { chrome: 'keep' } }, { viewport: page }).device, null)
+  is('nor does clean where the page\'s place is unknown', of({ frame: { chrome: 'clean' } }).device, null)
+  is('a device asked for by name is still drawn there', of({ frame: { chrome: 'clean' }, device: { kind: 'laptop' } }).device.kind, 'laptop')
+
+  // The shell's tone. A photo is the one ground the plan cannot read (edgeEnd calls
+  // every image light, which is the safe end for the take's hairline and the wrong one
+  // for a shell), so it starts on graphite and gl.js re-picks it from the decoded mean.
+  const img = Plan.prepare({ backdrop: 'img:deep-space.jpg', inset: 0.08, look: { device: { kind: 'browser' } } },
+    meta, { imageFile: '/tmp/deep-space.jpg' })
+  is('an auto shell on a photo ground stays graphite until the picture is read', [img.bg.kind, img.device.light, img.device.auto], ['image', false, true])
+  is('and a light ground it can read gets the bone one', of({ device: { kind: 'browser' } }, { backdrop: 'color:#F5F2EC' }).device.light, true)
+  is('and a named theme is not re-picked', of({ device: { kind: 'browser', theme: 'light' } }).device.auto, false)
+  // the shell and the hairline are the range apart, which is what lets a fixed pair of
+  // tones answer for an edge nothing measured: nothing can be within the floor of both
+  const tone = of({ device: { kind: 'browser' } }).device
+  const lum = c => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+  is('the shell and its hairline are further apart than two edge floors',
+    Math.abs(lum(Plan.rgb(tone.shell)) - lum(Plan.rgb(tone.line))) > 2 * 24 / 255, true)
+
+  // The tilt is a plane a camera turns, and the plane is shrunk by as much as the
+  // projection's near edge grows, so a tilted take asks for exactly the room the flat
+  // one had and its near corner cannot reach past the frame.
+  const project = (t, x, y) => {
+    const s = t.D / (t.D - (x - t.cx) * t.sin)
+    return [t.cx + (x - t.cx) * (t.m / t.D) * s * t.fit, t.cy + (y - t.cy) * s * t.fit]
+  }
+  for (const deg of [-20, -7, 5, 14, 20]) {
+    const s = of({ frame: { tilt: deg } })
+    const r = s.rect, t = s.tilt
+    const xs = [r.x, r.x + r.w], ys = [r.y, r.y + r.h]
+    const corners = xs.flatMap(x => ys.map(y => project(t, x, y)))
+    is(`tilt ${deg} stays inside the take's own box`,
+      corners.every(([x, y]) => x >= r.x - 0.5 && x <= r.x + r.w + 0.5 && y >= r.y - 0.5 && y <= r.y + r.h + 0.5), true)
+  }
+  is('a tilt of nothing is no tilt at all', of({ frame: { tilt: 0 } }).tilt, null)
+  const t14 = of({ frame: { tilt: 14 } }).tilt
+  // positive turns the take's right edge toward the viewer, so that edge is the taller
+  const left = project(t14, of({ frame: { tilt: 14 } }).rect.x, 0)[0]
+  is('and the turn is a perspective, not a skew', r3(t14.fit) < 1 && t14.sin > 0 && Number.isFinite(left), true)
 }
 
 console.log('which engine')

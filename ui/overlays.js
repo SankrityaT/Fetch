@@ -48,6 +48,27 @@ const MOVE = p => (p <= 0 ? 0 : p >= 1 ? 1 : p * p * (3 - 2 * p))   // travellin
 // A small overshoot, for the one thing allowed to pop: a step badge landing
 const POP = p => { const c = 1.9, q = p - 1; return p >= 1 ? 1 : 1 + (c + 1) * q * q * q + c * q * q }
 
+// ── arriving and leaving ────────────────────────────────────────────────────
+// DESIGN.md gives --ease-in to a thing entering and --ease-out to a thing leaving, and
+// both are right for a shape: a panel arrives fast and settles, and goes away by
+// accelerating off. Read as an alpha, --ease-out lies. It spends its first half between
+// 1.00 and 0.68, where nothing visible happens, and crosses the whole readable range in
+// its last third, so a step badge given 220 ms to leave was gone inside 83 of them and
+// read as a blink rather than as an edit (`.context/survey/motion-taste.md`). On a
+// 120 ms hover nobody counts those frames. At 60 fps they are countable.
+//
+// So a thing leaving still moves on --ease-out, and its alpha rides the S a lift
+// already dims a page with, which spends its frames in the middle of the range where
+// the eye is. That S is symmetric, 1 - S(p) = S(1 - p), so one function says how far in
+// anything on screen is: MOVE of whichever of its two ends is nearer.
+const fadeLevel = (t, a, b, tin, tout) => (t < a || t >= b ? 0
+  : MOVE(Math.min(tin > 0 ? (t - a) / tin : 1, tout > 0 ? (b - t) / tout : 1, 1)))
+// And how long the leave gets. Quicker than its own arrival, never instant: three
+// fifths of it, floored at --dur-1, the shortest step DESIGN.md has, and never longer
+// than the room the object's own life leaves.
+const LEAVE_MIN = 0.12
+const leaveOf = (tin, room = Infinity) => Math.max(0, Math.min(Math.max(LEAVE_MIN, tin * 0.6), room))
+
 // ── the zoom's own curve ────────────────────────────────────────────────────
 // The camera is not a badge, and smoothstep was never good enough for it. Its
 // velocity is zero at both ends, but its acceleration is not: 6 at rest and -6 at the
@@ -569,12 +590,30 @@ const blockRect = (L, B, px, py) => ({ x: L.x - B.lw / 2 - L.px * px, y: B.top -
   w: B.lw + L.px * px * 2, h: B.h + L.px * py * 2 })
 // A phrase handing straight on to the next fades all the way out before the next
 // fades in: the two crossing left a grey ghost of both over a dim or a light UI.
-const CAP_IN = 0.15, CAP_OUT = 0.16, CAP_HANDOFF = 0.12
+// The arrival is the longer of the pair, as DESIGN.md has it; the compositor puts the S
+// on both (`ui/compositor/text.js`) and libass cannot, since \fad is two straight lines
+// and there is nothing here to hang a curve on.
+const CAP_IN = 0.2, CAP_OUT = 0.16, CAP_HANDOFF = 0.12
 const capOut = p => (p.cut ? CAP_HANDOFF : CAP_OUT)
-const capFade = p => `\\fad(${Math.round(CAP_IN * 1000)},${Math.round(capOut(p) * 1000)})`
+// ...and both of them cut to fit the phrase they are on. phraseTimes floors a phrase's
+// life at 0.2 s, which is exactly the arrival, so a floored phrase asked for two fades
+// longer than itself: libass reads \fad knots that overlap in the order they were
+// written, so the words ramped up over the whole line and cut to nothing in one frame,
+// and the stage's own S never reached the top. Scaled together the pair keeps its shape
+// and a short phrase still arrives and leaves.
+// Two fades that have to fit in the room they are given, scaled together when they do
+// not so each keeps its share of it.
+const fitFades = (room, fin, fout) => {
+  const s = Math.min(1, Math.max(0, room) / (fin + fout))
+  return { in: fin * s, out: fout * s }
+}
+// k scales the pair before the cut, for the shadow below; on a phrase with no room to
+// spare the two end up the same, which is the right way for them to run out of room.
+const capFades = (p, k = 1) => fitFades(+p.hide - +p.show, CAP_IN * k, capOut(p) * k)
+const capFade = p => { const f = capFades(p); return `\\fad(${Math.round(f.in * 1000)},${Math.round(f.out * 1000)})` }
 // The shadow fades in slower and out sooner than the words over the same span, so it
 // is never darker than the words are legible: it read as a dark blob a frame early
-const shadeFade = p => `\\fad(${Math.round(CAP_IN * 1600)},${Math.round(capOut(p) * 1600)})`
+const shadeFade = p => { const f = capFades(p, 1.6); return `\\fad(${Math.round(f.in * 1000)},${Math.round(f.out * 1000)})` }
 // The shadow under the words, drawn from the glyphs themselves so it follows the
 // letters and has no shape of its own: a measured cloud behind the block read as a
 // grey rectangle on a light UI. A wide faint glow, then a closer one. Over a frosted
@@ -602,14 +641,14 @@ function captionEvents(evs, phrases, W, H, st = {}, measure = estimate, box = nu
   const inkText = /^[0-9a-f]{6}$/i.test(hex) &&
     (0.2126 * parseInt(hex.slice(0, 2), 16) + 0.7152 * parseInt(hex.slice(2, 4), 16) + 0.0722 * parseInt(hex.slice(4, 6), 16)) / 255 < 0.25
   const hl = st.highlight === 'none' ? null : st.highlight === 'pill' ? 'pill' : 'word'
-  const IN = CAP_IN
   const glow = frosted ? GLOW.frosted : GLOW.plain
   for (const p of phraseTimes(phrases)) {
     const L = fitLayout(p, W, H, st, box, measure)
     const lineH = Math.round(L.px * 1.18)
     const base = `\\an${L.an}\\pos(${n1(L.x)},${n1(L.y)})\\fn${FONT.caption}\\fs${L.px}\\bord0\\shad0\\fsp${n1(L.px * -0.005)}`
     const a = p.show, b = p.hide
-    const fadeOut = capOut(p)      // straight on to the next phrase, or fade away
+    // straight on to the next phrase, or fade away, and never longer than this phrase
+    const { in: IN, out: fadeOut } = capFades(p)
     const blk = captionBlock(p, L, lineH, measure), lines = blk.lines
     const plain = lines.map(l => l.map(w => esc(w.text)).join(' ')).join('\\N')
     const fad = capFade(p), sfad = shadeFade(p)
@@ -1054,6 +1093,39 @@ const stepSize = (H, out = 0) => {
   return { D, ring: Math.max(out > 0 ? 1.8 / out : 1.5, D * 0.05) }
 }
 
+// How long a badge takes to land and to clear, from its own life alone.
+const stepFade = (a, b) => {
+  const IN = Math.min(0.34, (b - a) / 3)
+  return { IN, OUT: leaveOf(IN, (b - a) / 4) }
+}
+
+// Five badges that arrived a beat apart all leaving on the same frame is one blink
+// rather than five leaves (`.context/survey/motion-taste.md`). Badges that share an end
+// clear in the order they arrived, four frames apart at 60, so the group reads as a
+// list being ticked off rather than as a light switch. Each lead is bounded by that
+// badge's own life, so a short step keeps its hold; the whole group is bounded too, or
+// a long list would start clearing before the last of it had landed.
+const STEP_STAGGER = 1 / 15, STEP_LEAD_MAX = 0.28
+function stepLeads(steps) {
+  const leads = steps.map(() => 0)
+  const groups = new Map()
+  steps.forEach((s, i) => {
+    const key = Math.round(s.b * 120)          // the same end, to half a frame at 60
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(i)
+  })
+  for (const idx of groups.values()) {
+    if (idx.length < 2) continue
+    idx.sort((p, q) => steps[p].a - steps[q].a)
+    const gap = Math.min(STEP_STAGGER, STEP_LEAD_MAX / (idx.length - 1))
+    idx.forEach((i, j) => {
+      const s = steps[i], { OUT } = stepFade(s.a, s.b)
+      leads[i] = Math.min((idx.length - 1 - j) * gap, Math.max(0, (s.b - s.a) / 2 - OUT))
+    })
+  }
+  return leads
+}
+
 function stepEvents(evs, m, W, H) {
   const a = m.start, b = m.end
   if (!(b > a + 0.1)) return
@@ -1066,7 +1138,8 @@ function stepEvents(evs, m, W, H) {
   const cx = Math.min(W - edge, Math.max(edge, (+m.x || 0) * W + ox))
   const cy = Math.min(H - edge, Math.max(edge, (+m.y || 0) * H + oy))
   const n = String(m.n != null ? m.n : '').replace(/[^0-9A-Za-z]/g, '').slice(0, 3) || '1'
-  const IN = Math.min(0.34, (b - a) / 3), OUT = Math.min(0.22, (b - a) / 4)
+  const { IN, OUT } = stepFade(a, b)
+  const gone = b - (+m.lead || 0)                // its own place in the group's stagger
   const fs = Math.round(D * (n.length > 1 ? 0.46 : 0.56))
   const draw = (s, op) => {
     const sc = `\\fscx${n1(s * 100)}\\fscy${n1(s * 100)}`
@@ -1078,8 +1151,9 @@ function stepEvents(evs, m, W, H) {
     ]
   }
   for (let i = 0; i < 3; i++) {
-    evs.bake(20 + i, a, IN, p => draw(0.35 + 0.65 * POP(p), Math.min(1, p * 2.2))[i], b - OUT)
-    evs.bake(20 + i, b - OUT, OUT, p => { const e = EASE_OUT(p); return draw(1 - 0.18 * e, 1 - e)[i] })
+    evs.bake(20 + i, a, IN, p => draw(0.35 + 0.65 * POP(p), Math.min(1, p * 2.2))[i], gone - OUT)
+    // the badge shrinks away on --ease-out and fades on the S (see fadeLevel)
+    evs.bake(20 + i, gone - OUT, OUT, p => draw(1 - 0.2 * EASE_OUT(p), MOVE(1 - p))[i])
   }
 }
 
@@ -1374,10 +1448,9 @@ function focusTiming(m, zooms = [], kind) {
   const Tout = Math.min(Tb != null && Tb > 0.04 ? Tb : T0, (b - a) - Tin)
   return { a, b, Tin, Tout }
 }
-// How far in a lift or spotlight is at t, 0 to 1, on the zoom's curve
+// How far in a lift or spotlight is at t, 0 to 1. The ramp everything else now borrows.
 function focusLevel(tm, t) {
-  if (!tm || t <= tm.a || t >= tm.b) return 0
-  return MOVE(Math.min((t - tm.a) / tm.Tin, (tm.b - t) / tm.Tout, 1))
+  return tm ? fadeLevel(t, tm.a, tm.b, tm.Tin, tm.Tout) : 0
 }
 const smooth01 = v => { const p = Math.max(0, Math.min(1, v)); return p * p * (3 - 2 * p) }
 
@@ -1531,15 +1604,18 @@ function frameScript({ W, H, phrases, capStyle, texts, span, measure, box, frost
 function contentScript({ W, H, marks, zooms, px = null, kind }) {
   const evs = events()
   let k = 0
+  const live = (marks || []).filter(m => m && m.kind === 'step' && m.end > m.start)
+  const leads = stepLeads(live.map(m => ({ a: +m.start, b: +m.end })))
   for (const m of marks || []) {
     if (!m) continue
     // counted before the time check, so a step cut away keeps the others' numbers
     const n = m.kind === 'step' ? stepLabel(m, ++k) : null
     if (!(m.end > m.start)) continue
     if (m.kind !== 'step') continue
+    const lead = leads[live.indexOf(m)] || 0
     // sized through the zoom it is mostly seen in, as a lift's edges are
     const seen = Math.max(1, ...(zooms || []).filter(z => z && Math.min(z.end, m.end) - Math.max(z.start, m.start) > 0.3).map(z => +z.scale || 1))
-    stepEvents(evs, { ...m, n, out: px > 0 ? px * seen : 0, ...stepOnLift(m, marks, zooms, W, H, px, kind) }, W, H)
+    stepEvents(evs, { ...m, n, lead, out: px > 0 ? px * seen : 0, ...stepOnLift(m, marks, zooms, W, H, px, kind) }, W, H)
   }
   return evs.list.length ? script(W, H, evs) : null
 }
@@ -1569,27 +1645,22 @@ function stepOnLift(st, marks, zooms, W, H, px, kind) {
  * derivative of the same closed form, per second, not a difference between two frames:
  * a frame has to draw from its own time alone, and the motion blur reads these.
  *
- * Mirrors processor.js explicitZoomFilter and zoompan (same ease, same curve, the focus
- * held centred and clamped at the frame edge), so the editor previews the move the
- * export makes. Overlapping zooms: the earliest one wins, as there.
+ * Mirrors processor.js explicitZoomFilter and zoompan (same ease, same curve, the same
+ * focus in the same coordinate), so the editor previews the move the export makes.
+ * Overlapping zooms: the earliest one wins, as there.
  */
 function zoomWindow(zooms, t, kind) {
   for (const m of zoomPlan(zooms, kind)) {
     if (t < m.inStart || t > m.outEnd) continue
     const q = sampleMoment(m, t, kind)
     const w = 1 / q.s, dw = -q.ds * w * w
-    // the focus held centred, and held inside the frame: at the edge the window stops
-    // travelling and only the zoom's own opening moves it
-    // the far edge first and the near one last, which is zoompan's own max(0, min(...)):
-    // with a window as wide as the frame 1 - w is zero or under, and the other order
-    // handed back a negative origin where ffmpeg clamps to 0
-    const hold = (f, df) => {
-      let c = f - w / 2, dc = df - dw / 2
-      if (c >= 1 - w) { c = 1 - w; dc = -dw }
-      if (c <= 0) return [0, 0]
-      return [c, dc]
-    }
-    const [x, dx] = hold(q.fx, q.dfx), [y, dy] = hold(q.fy, q.dfy)
+    // The window's origin is how far along its own travel the focus sits, which is what
+    // sampleMoment eases (focusFrac). Travel is 1 - w, so the origin is inside the frame
+    // for any n in 0..1 and there is nothing left to clamp: zoompan's own
+    // x = iw*(1-1/zoom)*n, and the same expression the classic export writes.
+    const R = 1 - w, dR = -dw
+    const x = R * q.nx, dx = dR * q.nx + R * q.dnx
+    const y = R * q.ny, dy = dR * q.ny + R * q.dny
     return { s: q.s, x, y, w, h: w, ds: q.ds, dx, dy, dw, dh: dw }
   }
   return { s: 1, x: 0, y: 0, w: 1, h: 1, ds: 0, dx: 0, dy: 0, dw: 0, dh: 0 }
@@ -1601,13 +1672,35 @@ function zoomView(zooms, t, kind) {
   return { s: v.s, x: v.x, y: v.y, w: v.w, h: v.h }
 }
 
-// One moment at t: its scale and focus, and the rate of each.
+/**
+ * Where a point of the frame sits in the travel a window of that scale has: 0 against
+ * the left or top edge, 1 against the right or bottom, 0.5 dead centre. A focus the
+ * frame cannot reach lands on 0 or 1, which is the same picture the edge clamp gave.
+ *
+ * The zoom's focus is put in this coordinate once, at the scale the move is aiming at,
+ * and eased there. Read at every instant against the window of that instant instead,
+ * which is what a clamp is, the constraint is met and the speed is not continuous: the
+ * frame a pan stops riding the edge on changed speed by 11 to 19 percent, on six of the
+ * nine moves of one real edit (.context/survey/motion-taste.md, and m5-timing.md beside
+ * it for the numbers after). Eased here the move is one curve from rest to the frame it asked for,
+ * and the window is inside the picture by construction, since the travel 1 - scale^-E
+ * is concave in the ease and so never falls under the straight line the focus rides.
+ */
+function focusFrac(f, scale) {
+  const R = 1 - 1 / Math.max(1, +scale || 1)
+  if (!(R > 0)) return 0.5
+  return Math.min(1, Math.max(0, (f - (1 - R) / 2) / R))
+}
+
+// One moment at t: its scale and its focus as a fraction of the window's own travel,
+// and the rate of each.
 // Scale moves geometrically, s = scale^E, rather than s = 1 + (scale-1)E. What the eye
 // reads is the rate of magnification, ds/s, and interpolating the scale itself spent
 // most of a deep zoom's apparent speed in its first third: a 4x dive was already past
 // 2.5x when the curve said it was halfway. In the log the ease's shape is what arrives.
 function sampleMoment(m, t, kind) {
   const lt = Math.log(m.scale)
+  const nx = focusFrac(m.x, m.scale), ny = focusFrac(m.y, m.scale)
   if (m.from && t < m.inEnd) {
     // panning across from the zoom before: focus and scale move together
     const T = m.inEnd - m.inStart, u = T > 0 ? (t - m.inStart) / T : 1
@@ -1615,15 +1708,23 @@ function sampleMoment(m, t, kind) {
     const lf = Math.log(m.from.scale), dip = m.from.dip || 0
     const s = Math.exp(lf + (lt - lf) * q - dip * 4 * q * (1 - q))
     const dl = (lt - lf) - dip * (4 - 8 * q)
+    // from where the zoom before actually landed, so the ease back in the middle of a
+    // far pan carries the focus towards the centre with it rather than against it
+    const px = focusFrac(m.from.x, m.from.scale), py = focusFrac(m.from.y, m.from.scale)
     return { s, ds: s * dl * dq,
-      fx: m.from.x + (m.x - m.from.x) * q, dfx: (m.x - m.from.x) * dq,
-      fy: m.from.y + (m.y - m.from.y) * q, dfy: (m.y - m.from.y) * dq }
+      nx: px + (nx - px) * q, dnx: (nx - px) * dq,
+      ny: py + (ny - py) * q, dny: (ny - py) * dq }
   }
   let p = 1, dp = 0
   if (t < m.inEnd) { const T = m.inEnd - m.inStart; if (T > 0) { p = (t - m.inStart) / T; dp = 1 / T } }
   else if (t > m.outStart) { const T = m.outEnd - m.outStart; if (T > 0) { p = (m.outEnd - t) / T; dp = -1 / T } }
-  const s = Math.exp(lt * easeAt(p, kind))
-  return { s, ds: s * lt * easeVel(p, kind) * dp, fx: m.x, dfx: 0, fy: m.y, dfy: 0 }
+  // the frame is all there is at rest, so the focus rides the ease out of the centre
+  // and back into it, arriving and leaving with the scale
+  const e = easeAt(p, kind), de = easeVel(p, kind) * dp
+  const s = Math.exp(lt * e)
+  return { s, ds: s * lt * de,
+    nx: 0.5 + (nx - 0.5) * e, dnx: (nx - 0.5) * de,
+    ny: 0.5 + (ny - 0.5) * e, dny: (ny - 0.5) * de }
 }
 
 // Explicit zooms as moves: { inStart, inEnd, outStart, outEnd, x, y, scale, from }.
@@ -1694,7 +1795,8 @@ function dipMax(from, to) {
 }
 
 module.exports = {
-  bezier, EASE_IN, EASE_OUT, MOVE, FOCUS_EASE, POP, FONT, GOLD, zoomView, zoomWindow, zoomPlan,
+  bezier, EASE_IN, EASE_OUT, MOVE, FOCUS_EASE, POP, FONT, GOLD, zoomView, zoomWindow, zoomPlan, focusFrac,
+  fadeLevel, leaveOf, LEAVE_MIN, stepFade, stepLeads, fitFades, capFades,
   EASES, ZOOM_EASE_DEFAULT, easeAt, easeVel, easeAcc, easeSpan, panSpan, panDip, ZOOM_SETTLE, ZOOM_FIT, fitScale,
   easeS: EASE_S, easeSVel: EASE_dS,
   alignWords, snapToSpeech, spokenWords, captionPhrases, phraseTimes, captionLayout, CAP_BAND, BAND_WRAP, backdropGeometry, titleParts, textStyle, titleCards,

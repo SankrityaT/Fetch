@@ -46,11 +46,13 @@ const estimate = (text, px) => String(text).length * px * 0.56
  *   span      output length
  *   W, H      the output frame
  *   box       the framed take's rect on it, or null
+ *   capBox    what the captions are laid out against, which is the take's own place on
+ *             the frame: with a device drawn, box is the screen inside it (plan.js)
  *   prepared  { captions: { cues, words, busy } } from prepare.js
  *   zooms     explicit zooms on the output clock (captions stay down inside one)
- * Returns { phrases, cards, labels, st, box, frosted, reveal, close }.
+ * Returns { phrases, cards, labels, st, box, capBox, frosted, reveal, close }.
  */
-function planText(opts = {}, { clock, span, W, H, box = null, prepared = null, zooms = [] } = {}) {
+function planText(opts = {}, { clock, span, W, H, box = null, capBox = null, prepared = null, zooms = [] } = {}) {
   const st = opts.captionStyle || {}
   const band = !!(box && (!st.position || st.position === 'bottom') && st.fx == null)
   let phrases = null
@@ -81,7 +83,7 @@ function planText(opts = {}, { clock, span, W, H, box = null, prepared = null, z
   const closing = cards.find(k => !k.opens && k.b >= span - 0.05)
   return {
     phrases: phrases && phrases.length ? O.phraseTimes(phrases) : [],
-    cards, labels, st, box, W, H, span,
+    cards, labels, st, box, capBox: capBox || box, W, H, span,
     // Every caption over the product gets the plate, framed or not. Unframed is the
     // case that needs it most: with no band to sit in, the caption fell back to the
     // shade's own blurred cloud of glyphs, a smudge with no boundary, on the default
@@ -96,8 +98,22 @@ function planText(opts = {}, { clock, span, W, H, box = null, prepared = null, z
 }
 
 // ── one moment ──────────────────────────────────────────────────────────────
-// The fades and glow strengths of the classic captions (ui/overlays.js captionEvents)
-const CAP_IN = 0.15, CAP_OUT = 0.16, CAP_HANDOFF = 0.12
+// A caption was the one object in a film that appeared and disappeared rather than
+// arriving and leaving (`.context/survey/motion-taste.md`). Measured as an alpha rather
+// than as a count of ink over a threshold, its leave was never the two frames that
+// reading said: it took 200 ms and no frame of it moved more than a tenth. What it did
+// not have was a curve. Both ramps were straight lines with a corner at each end, the
+// only object in the film that left in one, and the leave was the longer of the two.
+//
+// So the leave keeps its 160 ms and rides the S (O.fadeLevel), and the arrival goes to
+// --dur-2, which makes it the longer of the pair, the way round DESIGN.md has it. A
+// phrase handing straight on to the next one leaves quicker, because the incoming
+// phrase's own arrival is already covering the last of it.
+const CAP_IN = 0.2, CAP_OUT = 0.16, CAP_HANDOFF = 0.12
+// The plate outlasts the words it holds by 60 ms, so the caption reads as the words
+// going out and then the glass closing rather than as one object switching off. That is
+// well inside FROST_JOIN, so a plate never reaches the next plate.
+const CAP_TRAIL = 0.06
 const GLOW = { frosted: { wide: 0.3, near: 0.42 }, plain: { wide: 0.52, near: 0.66 } }
 const FROST_PAD = [0.45, 0.22], FROST_FEATHER = 0.3, FROST_JOIN = 0.3
 // how much of the plate is scrim rather than the frame's own blurred light
@@ -120,7 +136,7 @@ function blockOf(p, L, measure, role = 'caption') {
 }
 
 function captionItems(tp, t, measure, out) {
-  const { W, H, st, box } = tp
+  const { W, H, st } = tp, box = tp.capBox || tp.box
   const fill = st.colour || '#FFFFFF'
   const hex = String(fill).replace('#', '')
   const inkText = /^[0-9a-f]{6}$/i.test(hex) &&
@@ -131,10 +147,14 @@ function captionItems(tp, t, measure, out) {
   const ph = tp.phrases
   for (let i = 0; i < ph.length; i++) {
     const p = ph[i]
-    const fo = p.cut ? CAP_HANDOFF : CAP_OUT
+    // Both fades cut to the phrase's own life, as the classic path cuts them
+    // (O.capFades): phraseTimes floors a phrase at the length of one arrival, and a
+    // caption that spends all of itself arriving never reaches full.
+    const fade = O.fitFades(p.hide - p.show, CAP_IN, p.cut ? CAP_HANDOFF : CAP_OUT)
     // the frosted glass stays through a straight hand-on until the next phrase's is in
     const next = ph[i + 1], joined = next && next.show - p.hide < FROST_JOIN
-    const frostEnd = joined ? next.show + CAP_IN + CAP_OUT : p.hide
+    const frostEnd = joined ? next.show + CAP_IN + CAP_OUT : p.hide + CAP_TRAIL
+    const ffade = O.fitFades(frostEnd - p.show, CAP_IN, CAP_OUT)
     if (t < p.show || t >= Math.max(p.hide, frostEnd)) continue
     const L = layoutFor(p, W, H, st, box, measure, role)
     const B = blockOf(p, L, measure, role)
@@ -142,9 +162,7 @@ function captionItems(tp, t, measure, out) {
     // glass under the words, when the take is framed: the frame blurred through a
     // feathered rounded patch hugging the block
     if (frosted) {
-      const fin = Math.min(1, (t - p.show) / CAP_IN)
-      const fout = joined ? Math.min(1, (frostEnd - t) / CAP_OUT) : Math.min(1, (p.hide - t) / fo)
-      const op = clamp(Math.min(fin, fout), 0, 1)
+      const op = O.fadeLevel(t, p.show, frostEnd, ffade.in, ffade.out)
       if (op > 0.002) {
         // and a scrim with it: the glass is the frame's own light, and a white caption
         // on a blurred white page is still a white caption. The scrim is the far end of
@@ -156,9 +174,10 @@ function captionItems(tp, t, measure, out) {
       }
     }
     if (t >= p.hide) continue
-    const op = clamp(Math.min((t - p.show) / CAP_IN, (p.hide - t) / fo), 0, 1)
+    const op = O.fadeLevel(t, p.show, p.hide, fade.in, fade.out)
     // the shadow comes in slower and leaves sooner than the words
-    const sop = clamp(Math.min((t - p.show) / (CAP_IN * 1.6), (p.hide - t) / (fo * 1.6)), 0, 1)
+    const sf = O.fitFades(p.hide - p.show, CAP_IN * 1.6, (p.cut ? CAP_HANDOFF : CAP_OUT) * 1.6)
+    const sop = O.fadeLevel(t, p.show, p.hide, sf.in, sf.out)
     const g = L.band || frosted ? GLOW.frosted : GLOW.plain
     const px = L.px, font = fontFor('caption', px, st.font && st.font !== 'SF Pro' ? st.font : null)
     const track = px * -0.005
@@ -283,7 +302,7 @@ function cardItems(tp, t, measure, out) {
     const cy = H * (tt.fy != null && +tt.fy !== 0.5 ? +tt.fy : 0.47)
     const top = cy - blockH / 2, ty = top + lineT / 2, sy = top + lineT + gap + subH / 2
     const fill = tt.color && tt.color !== 'white' ? tt.color : WHITE
-    const IN = 0.5, OUT = 0.36, stagger = 0.12, rise = 16 * u, blurIn = 8 * u
+    const IN = 0.5, OUT = O.leaveOf(IN), stagger = 0.12, rise = 16 * u, blurIn = 8 * u
     const inAt = card.opens ? Math.max(0.2, card.text) : card.a + card.fade
     const outAt = card.opens ? card.b - land - 0.32 : (card.b < tp.span - 0.05 ? card.b - OUT : null)
     const phase = delay => {
@@ -292,7 +311,8 @@ function cardItems(tp, t, measure, out) {
       if (t < at) return null
       if (t < at + IN) { const e = O.EASE_IN((t - at) / IN); return { op: Math.min(1, e * 1.2), dy: rise * (1 - e), blur: blurIn * (1 - e) } }
       if (outAt == null || t < end) return { op: 1, dy: 0, blur: 0 }
-      if (t < end + OUT) { const e = O.EASE_OUT((t - end) / OUT); return { op: 1 - e, dy: -rise * 0.4 * e, blur: blurIn * 0.75 * e } }
+      // the line rises away and softens on --ease-out; its alpha takes the S
+      if (t < end + OUT) { const p = (t - end) / OUT, e = O.EASE_OUT(p); return { op: O.MOVE(1 - p), dy: -rise * 0.4 * e, blur: blurIn * 0.75 * e } }
       return null
     }
     const a = phase(0)
@@ -347,9 +367,12 @@ function labelItems(tp, t, measure, out) {
     const a = tt.start != null ? Math.max(0, +tt.start) : 0
     const b = tt.end != null && tt.end > tt.start ? Math.min(+tt.end, tp.span || Infinity) : (tp.span || a + 3600)
     if (!(b > a + 0.1) || t < a || t >= b) continue
-    const IN = Math.min(0.32, (b - a) / 3), OUT = Math.min(0.24, (b - a) / 4)
+    const IN = Math.min(0.32, (b - a) / 3), OUT = O.leaveOf(IN, (b - a) / 4)
     const e = t < a + IN ? O.EASE_IN((t - a) / IN) : 1
-    const op = t >= b - OUT ? 1 - O.EASE_OUT((t - (b - OUT)) / OUT) : e
+    // it slides in on --ease-in and goes on out the same way it came, on --ease-out,
+    // with the alpha on the S (O.fadeLevel) so the leave is not spent standing still
+    const leaving = t >= b - OUT ? O.EASE_OUT((t - (b - OUT)) / OUT) : 0
+    const op = t >= b - OUT ? O.MOVE((b - t) / OUT) : e
     const fill = tt.color && tt.color !== 'white' ? tt.color : '#FFFFFF'
     if (tt.style === 'lower-third') {
       const { title, subtitle } = O.titleParts(tt)
@@ -361,7 +384,7 @@ function labelItems(tp, t, measure, out) {
       const x = tt.fx != null && tt.fx !== 0.5 ? W * +tt.fx : B.x + B.w * (tp.box ? 0.05 : 0.07)
       const y = tt.fy != null && tt.fy !== 0.5 ? H * +tt.fy : B.y + B.h * 0.8
       const barH = px * 1.05 + (subtitle ? sp * 1.3 : 0)
-      const dx = t < a + IN ? -px * 0.4 * (1 - e) : 0
+      const dx = t < a + IN ? -px * 0.4 * (1 - e) : -px * 0.15 * leaving
       const fT = fontFor('title', px), fS = fontFor('sub', sp)
       const w = Math.max(measure(title, px, 'title'), subtitle ? measure(subtitle, sp, 'sub') : 0) + px * 2
       const m = px * 1.8
@@ -397,7 +420,7 @@ function labelItems(tp, t, measure, out) {
     const x = Math.min(Math.max(lo, W * (tt.fx != null ? +tt.fx : 0.5)), Math.max(lo, hi))
     const half = px * (0.5 + rows.length / 2)
     const y = Math.min(Math.max(half, H * (tt.fy != null ? +tt.fy : 0.5)), H - half)
-    const dy = t < a + IN ? px * 0.25 * (1 - e) : 0
+    const dy = t < a + IN ? px * 0.25 * (1 - e) : -px * 0.1 * leaving
     const font = fontFor('caption', px, name)
     const left = align === 'left' ? x : align === 'right' ? x - w : x - w / 2
     const padX = px * 0.55, mm = px * 1.7

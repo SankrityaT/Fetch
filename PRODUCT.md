@@ -65,7 +65,7 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   Claude Code's model ids), grouped by CLI, searchable, with the effort levels each
   model accepts. It starts on the person's own CLI default and remembers their pick.
 - Editor: beats strip named from speech, zoom track (`Z1 2.0x`), marks track
-  (redact, lift, spotlight, step), trim, cuts, text, captions, look, camera, audio, voiceover.
+  (redact, lift, spotlight, step, loupe), trim, cuts, text, captions, look, camera, audio, voiceover.
   A lasso in the transport, off until it is armed, draws a rectangle over the stage at
   the moment the person is paused on; while they drag it snaps to the real element under
   it, found by the same Elements pass `find_on_screen` uses, and stays exactly as drawn
@@ -117,9 +117,9 @@ typography, focus. Seven presets ship in `ui/looks/` (Fetch, Clean, Studio, Film
 Paper, Mono print); "Save look" keeps a person's own in `userData/looks/`. A preset
 restyles and keeps the shape, captions, motion and cursor. Fields the ffmpeg renderer
 does not draw yet are stored, hidden from the inspector, and named in `look_warnings`.
-That flag has not caught up with M4: the Treatment and grain fields the compositor now
-draws still carry it, so the inspector hides them and `look_warnings` calls them undrawn
-while every MP4 export draws them. The flag has to become "the classic renderer cannot
+That flag has not caught up with M4 or M5: the Treatment and grain fields, and now the
+whole device section, `frame.tilt` and `focus.loupe`, still carry it, so the inspector
+hides them and `look_warnings` calls them undrawn while every MP4 export draws them. The flag has to become "the classic renderer cannot
 draw this", said only where that renderer is the one running. `motion.cutTransition` is
 the first field to go the other way on purpose: the compositor draws it, the classic
 renderer cuts hard, and it carries no flag, because a flag that hides a working control
@@ -180,7 +180,10 @@ as a bar. A blur redaction and an unframed caption are drawn shapes now, a plate
 corner and a hairline and a plate of the caption's own glass, rather than a smudge: the
 caption on a plate draws no blurred cloud of its glyphs at all, so nothing it puts on
 the product reaches past the plate's own bounds, and the words and what shades them move
-together when the caption dodges live content.
+together when the caption dodges live content. A caption arrives and leaves rather than
+blinking, and where the phrase is too short to hold both ends the pair is cut to fit it,
+on the stage and in the subtitles the classic renderer writes alike, so the shortest
+phrase in a take still comes all the way up and still fades away.
 The ground is a surface rather than one number across 1920x1080: it carries three levels
 of tooth whatever luma the look chose (and less of it on a stage drawn below the file's
 size, because that is what the file's own tooth becomes there) and the app's own two
@@ -195,6 +198,31 @@ compresses a white page's row separators into the page; the vignette dial is how
 fall-offs rather than a share of one; and the take's hairline goes to the one warm end
 the plan picked and delivers what that tone can carry, because a line that changed ends
 under a lift swung thirty levels on a level of the picture.
+Since M5 it also draws the frame round the take and the take's own plane. A device
+(`device.kind`, and `frame.chrome: clean`, which is the browser one on its own) is a
+browser, a plain window, a laptop or a phone, drawn from rectangles, radii and two
+tones: generic by construction, nothing traced, no wordmark, a window's three dots in
+the shell's own tone rather than one desktop's three colours, and a browser bar that
+shows the page's address when the agent driving the page says what it is and an empty
+bar when nobody does, because Fetch records no address and never invents one. That
+browser is the one frame drawn in place of a real one, so it is drawn only where the
+real one could be cropped away: on a take that never recorded where the page sits,
+`frame.chrome: clean` draws nothing and says why, rather than standing Fetch's bar above
+the recording's own tabs. The device
+takes the place the layout gave the take and hands back what is left, so the margins and
+the shadow stay where they were and only the take gets smaller, and its two edges are a
+pair of tones a range apart, which is how it keeps the take's edge contract without
+measuring anything. It takes that place for the captions too: a burned caption sits in
+the band under the take, which is where it sat before there was a device, and not on the
+shell. Its shell is graphite on a dark ground and bone on a light one, read off a photo
+backdrop's own decoded mean the way the take's hairline is, since four of the five
+photos we ship are dark. `frame.tilt` turns the whole of it in perspective, a plane a camera
+turns rather than a skew, with the mask and the shadow following because they are worked
+out on that plane. And a `loupe` mark magnifies a small area into an inset beside it,
+for the detail too small to read and too small to zoom to without losing the context it
+sits in; it reads the frame after the redactions and the blurs, so what the edit hides
+stays hidden at magnification, and it is sized and placed inside what the zoom it rides
+shows, so the inset never hangs off the side of the window.
 It is the default renderer:
 every MP4 or MOV export runs
 it in a hidden window (`ui/render-host.js`, `render.html`), several times real time, with
@@ -255,7 +283,7 @@ are what auto-zoom follows. The track is `pointer` in the edit document, so it c
 supplied or corrected afterwards.
 
 **Not built**, and not to be claimed: driving apps (Fetch records, other tools drive),
-arrows, loupes, multi-device frames, reading the project's source code.
+arrows, more than one device in a frame, reading the project's source code.
 
 ## Strategic principles
 

@@ -38,6 +38,26 @@ console.log('the output clock')
 console.log('frames')
 {
   is('60 fps for a 60 fps take, 30 below 45', [T.outFps({ fps: 59.94 }), T.outFps({ fps: 30 }), T.outFps({})], [60, 30, 30])
+  // A ScreenCaptureKit take has no one rate: it writes a frame when the screen changes,
+  // so the average ffmpeg reports is the refresh less every still passage. The rate is
+  // read off the take's own frame times instead (see .context/survey/m5-timing.md).
+  const pts = (n, step, holes = []) => {
+    const out = []
+    for (let i = 0, t = 0; i < n; i++, t += step) if (!holes.some(([a, b]) => i >= a && i < b)) out.push(+t.toFixed(6))
+    return out
+  }
+  is('a clean 60 fps take reads 60', Math.round(T.takeFps(pts(200, 1 / 60))), 60)
+  is('a clean 30 fps take reads 30', Math.round(T.takeFps(pts(200, 1 / 30))), 30)
+  // 3 s of 60 Hz screen and two long stills: the average is 26, the cadence is 60
+  const still = pts(600, 1 / 60, [[100, 340], [400, 520]])
+  is('a 60 Hz take that stands still for half of it still reads 60', Math.round(T.takeFps(still)), 60)
+  is('...where its own average would say 30',
+    T.outFps({ fps: (still.length - 1) / (still[still.length - 1] - still[0]) }), 30)
+  is('...and the cadence takes it to 60', T.outFps({ fps: 26, cadence: 60 }), 60)
+  // and it cannot be talked up: a take that really does deliver every other frame is 30
+  is('a take that delivers every other 60 Hz frame reads 30',
+    Math.round(T.takeFps(pts(400, 1 / 60).filter((_, i) => i % 2 === 0 || i % 17 === 0))), 30)
+  is('too few frames to say is no answer at all', [T.takeFps([]), T.takeFps(pts(10, 1 / 60))], [0, 0])
   // a native take writes a frame only when the screen changes: sample and hold
   const frames = [0, 0.5, 0.52, 2.0, 2.4]
   const keep = [[0, 3]]

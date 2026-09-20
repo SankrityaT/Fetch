@@ -642,9 +642,9 @@ function regionLabel(box, elements, element) {
 }
 
 /**
- * Why a lift cannot be placed, in words, or null. A lift raises a piece of the
- * picture, so it needs to know which piece: times alone raise nothing, and used to
- * apply quietly as a mark with no geometry.
+ * Why a lift or a loupe cannot be placed, in words, or null. Both work on a piece of
+ * the picture, so both need to know which piece: times alone raise nothing and magnify
+ * nothing, and used to apply quietly as a mark with no geometry.
  */
 function liftNeedsBox(mark) {
   const m = mark || {}
@@ -655,7 +655,8 @@ function liftNeedsBox(mark) {
   const start = Number.isFinite(+m.start) ? +m.start : 0
   const span = Number.isFinite(+m.end) && +m.end > start ? +m.end - start : 0
   const aim = Math.round((start + Math.min(1, span / 3)) * 100) / 100
-  return 'A lift needs the box of the thing it raises, and this one has only a time.\n' +
+  const what = m.kind === 'loupe' ? 'A loupe needs the box of the area it magnifies' : 'A lift needs the box of the thing it raises'
+  return what + ', and this one has only a time.\n' +
     `Call find_on_screen at ${aim} s and send element: its E id, or ask the person to lasso ` +
     'the area in the editor and send element: its R id.'
 }

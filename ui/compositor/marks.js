@@ -19,9 +19,9 @@ const Pointer = require('../pointer')
 const Focus = require('./focus')
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
-const kinds = new Set(['redact', 'blur', 'lift', 'spotlight', 'step'])
+const kinds = new Set(['redact', 'blur', 'lift', 'spotlight', 'step', 'loupe'])
 // the most of each kind one frame draws: the shaders take fixed-size arrays
-const MAX = { erase: 8, redact: 8, blur: 4 }
+const MAX = { erase: 8, redact: 8, blur: 4, loupe: 2 }
 
 // Whether a step's point is on a mark's box, give or take 2 percent of the frame
 const onBox = (st, m, W, H) => {
@@ -48,7 +48,7 @@ const seenIn = (zooms, a, b) => Math.max(1, ...(zooms || []).filter(z => z && Ma
  */
 function planMarks(marks, { W, H, px, clock, span, zooms, ease, look = {} }) {
   const on = (marks || []).filter(m => m && kinds.has(m.kind)).map(m => ({ ...m, a: clock(+m.start), b: clock(+m.end) }))
-  const out = { redact: [], blur: [], focus: [], steps: [], zooms }
+  const out = { redact: [], blur: [], focus: [], steps: [], loupe: [], zooms }
 
   for (const m of on) {
     if (!(m.b > m.a)) continue
@@ -73,9 +73,11 @@ function planMarks(marks, { W, H, px, clock, span, zooms, ease, look = {} }) {
       // no further, with its own hairline inside the edge.
       const F = Math.max(1, 2 / (px || 1))
       const T = Math.min(0.35, (m.b - m.a) / 3)
+      // it arrives deliberately and gets out of the way: the leave is the shorter one
+      const TO = Overlays.leaveOf(T, (m.b - m.a) / 3)
       out.blur.push({ a: m.a, b: m.b, x, y, w, h, r: Math.min(H * 0.014, w / 2, h / 2), feather: F, hair: Math.max(1, 1.5 / (px || 1)),
         sigma: clamp(+m.strength || 18, 4, 60),
-        Tin: T < 0.04 || m.a <= 0.05 ? 0 : T, Tout: T < 0.04 || m.b >= span - 0.05 ? 0 : T })
+        Tin: T < 0.04 || m.a <= 0.05 ? 0 : T, Tout: T < 0.04 || m.b >= span - 0.05 ? 0 : TO })
     }
   }
 
@@ -105,6 +107,21 @@ function planMarks(marks, { W, H, px, clock, span, zooms, ease, look = {} }) {
     out.focus.push({ tm: f.tm, shape: s })
   }
 
+  // Loupes, after the zooms are settled: sized through the zoom each is mostly seen in,
+  // like a lift, so the inset's gap, its corner and its hairline are for the finished
+  // frame rather than for the recording's own resolution, and placed inside what that
+  // zoom shows, so the inset never lands off the side of the window.
+  for (const m of on) {
+    if (m.kind !== 'loupe' || !(m.b > m.a)) continue
+    const T = Math.min(0.32, (m.b - m.a) / 3)
+    const mid = Math.max(m.a + T, Math.min(m.b - T, (m.a + m.b) / 2))
+    const v = Overlays.zoomView(out.zooms, mid)
+    const s = Focus.loupeShape(m, W, H, px * seenIn(out.zooms, m.a, m.b), look.loupe, { x: v.x, y: v.y, w: v.w, h: v.h })
+    if (!s) continue
+    out.loupe.push({ a: m.a, b: m.b, ...s,
+      Tin: T < 0.04 ? 0 : T, Tout: T < 0.04 ? 0 : Overlays.leaveOf(T, (m.b - m.a) / 3) })
+  }
+
   // Numbered steps, sized for the finished frame through the zoom they are seen in, a
   // step with no number of its own counting in order among the steps
   let k = 0
@@ -121,9 +138,10 @@ function planMarks(marks, { W, H, px, clock, span, zooms, ease, look = {} }) {
     const lift = out.focus.findIndex(f => f.shape.kind === 'lift' && m.a < f.tm.b && m.b > f.tm.a &&
       (+m.x || 0) * W >= f.shape.x - 0.02 * W && (+m.x || 0) * W <= f.shape.x + f.shape.w + 0.02 * W &&
       (+m.y || 0) * H >= f.shape.y - 0.02 * H && (+m.y || 0) * H <= f.shape.y + f.shape.h + 0.02 * H)
-    out.steps.push({ a: m.a, b: m.b, IN: Math.min(0.34, (m.b - m.a) / 3), OUT: Math.min(0.22, (m.b - m.a) / 4),
-      cx, cy, D, ring, label, lift })
+    out.steps.push({ a: m.a, b: m.b, ...Overlays.stepFade(m.a, m.b), cx, cy, D, ring, label, lift })
   }
+  // badges that end together clear in the order they arrived, not all on one frame
+  Overlays.stepLeads(out.steps).forEach((lead, i) => { out.steps[i].gone = out.steps[i].b - lead })
   return out
 }
 
@@ -205,12 +223,20 @@ function at(m, t) {
   const out = {
     erase: (m.erase || []).filter(live).slice(0, MAX.erase + 16),
     redact: (m.redact || []).filter(live).slice(0, MAX.redact),
-    blur: [], focus: [], steps: [], pointer: null,
+    blur: [], focus: [], steps: [], loupe: [], pointer: null,
   }
   for (const b of m.blur || []) {
     if (!live(b)) continue
-    const op = Math.min(1, b.Tin > 0 ? (t - b.a) / b.Tin : 1, b.Tout > 0 ? (b.b - t) / b.Tout : 1)
-    if (op > 0.002 && out.blur.length < MAX.blur) out.blur.push({ ...b, op: Math.max(0, op) })
+    const op = Overlays.fadeLevel(t, b.a, b.b, b.Tin, b.Tout)
+    if (op > 0.002 && out.blur.length < MAX.blur) out.blur.push({ ...b, op })
+  }
+  for (const g of m.loupe || []) {
+    if (!live(g)) continue
+    const op = Overlays.fadeLevel(t, g.a, g.b, g.Tin, g.Tout)
+    // it arrives by settling out of its own area rather than by appearing: the inset
+    // grows the last twelfth of the way in while it fades, which is the same arrival a
+    // step badge has without the overshoot
+    if (op > 0.002 && out.loupe.length < MAX.loupe) out.loupe.push({ ...g, op, scale: 0.94 + 0.06 * op })
   }
   const lifted = []
   for (const f of m.focus || []) {
@@ -219,11 +245,16 @@ function at(m, t) {
     if (level > 0.001) out.focus.push({ shape: f.shape, level })
   }
   for (const s of m.steps || []) {
-    if (!live(s)) continue
+    if (t < s.a || t >= s.gone) continue
     let scale, op
+    // It lands with a pop and clears by shrinking away: the shape rides --ease-out, as
+    // DESIGN.md says a leave should, and the alpha rides the S (Overlays.fadeLevel),
+    // which is what stops 200 ms of leaving reading as 80 ms of blink.
     if (t < s.a + s.IN) { const p = (t - s.a) / s.IN; scale = 0.35 + 0.65 * Overlays.POP(p); op = Math.min(1, p * 2.2) }
-    else if (t >= s.b - s.OUT) { const e = Overlays.EASE_OUT((t - (s.b - s.OUT)) / s.OUT); scale = 1 - 0.18 * e; op = 1 - e }
-    else { scale = 1; op = 1 }
+    else if (t >= s.gone - s.OUT) {
+      const p = (t - (s.gone - s.OUT)) / s.OUT
+      scale = 1 - 0.2 * Overlays.EASE_OUT(p); op = Overlays.MOVE(1 - p)
+    } else { scale = 1; op = 1 }
     let cx = s.cx, cy = s.cy
     // on a lifted card: the same scale about the same centre, and the same move in
     const f = s.lift >= 0 && m.focus[s.lift]
