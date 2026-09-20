@@ -41,7 +41,7 @@ part, and the hard part is exactly what Fetch does.
 | | records | edits by | where |
 |---|---|---|---|
 | **Clueso** | a cloud browser, web apps only, needs your staging login | clicks | their cloud |
-| **a competitor** | the iOS Simulator | taps | your Mac |
+| **A simulator-first tool** | the iOS Simulator | taps | your Mac |
 | **HyperFrames** | HTML it renders itself, never a real app | code | their cloud |
 | **Fetch** | **any real window: native apps, terminals, editors, browsers** | **what you said** | **your Mac** |
 
@@ -50,7 +50,7 @@ Two structural wins, both real:
 1. **The real machine.** A cloud browser can only ever record a web app, and a
    simulator only a phone. Fetch records Xcode, Figma, a terminal, your own Electron
    build, anything on screen.
-2. **The transcript is the spine.** a competitor's caption track is empty in every one of its
+2. **The transcript is the spine.** The simulator-first tools show an empty caption track in every one of their
    screenshots, because a simulator recording has no audio. Fetch transcribes on device,
    so the timeline is named from your words: `B2 And pick only the family label`, not
    `Tap`. An agent can be told "zoom into the bit where I pick the family label" and find
@@ -118,7 +118,7 @@ feature cards (see Anti-patterns).
   What you see is the file, proven frame by frame to within 1 to 2 colour steps out of
   255. No competitor's page claims this, because most of them cannot.
 - Seven looks: Fetch, Clean, Studio, Paper, Mono print, Noir, Film. Scored **7 to 9 out
-  of 10** by an adversarial judge working to a Screen Studio and a competitor bar, on real
+  of 10** by an adversarial judge working to a Screen Studio bar, on real
   1080p frames of a real recording.
 - The whole treatment section: levels, tint, haze, blur, vignette, bloom, halation,
   chromatic aberration, bokeh, film grain, dither, mesh gradients and photo backdrops.
@@ -226,7 +226,7 @@ See `BRAND.md`. Plain, short, a little warm. **No em dashes, anywhere.**
 ## Visual direction
 
 Dark and warm: retriever gold on a warm near-black. **This is the differentiation, not a
-default.** The whole agent-tool category is light and airy (a competitor, Claude, Replit),
+default.** The whole agent-tool category is light and airy (Claude, Replit),
 and the screen-recorder category is violet (Loom, Screen Studio). If the page could
 belong to either, it is wrong.
 

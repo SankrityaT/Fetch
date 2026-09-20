@@ -118,7 +118,7 @@ Anything an agent can change has extra obligations, because the person did not d
   the nouns natural language needs, they render in `--font-mono`, and the same id
   appears in the UI, the history and the agent's tool call.
 - **Both can edit; the log says who.** An earlier draft made agent-driven surfaces
-  read-only, copying a competitor. That was wrong for Fetch: a competitor locks its timeline
+  read-only, copying an agent-first tool we looked at. That was wrong for Fetch: it locks its timeline
   because it has no editor, and Fetch's editor is an advantage. Divergence is handled by
   one edit document both write to, and by the activity log attributing every change.
 - **Attribute every change.** Agent name, vendor mark, timestamp, duration, outcome.

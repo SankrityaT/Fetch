@@ -441,7 +441,7 @@ arrows, more than one device in a frame, reading the project's source code.
    core. Recordings are files in `~/Movies/Fetch`, one folder per take. Say this plainly
    wherever an agent touches the machine. The single exception is principle 8.
 2. **The competition cannot record a real machine.** Clueso drives a cloud browser, web
-   apps only, and wants your staging login. a competitor drives the iOS Simulator.
+   apps only, and wants your staging login. Another drives the iOS Simulator.
    HyperFrames renders its own HTML. Fetch records any real window: native apps,
    terminals, editors, browsers. Every surface should make that concrete rather than
    claimed.
@@ -476,7 +476,7 @@ where he is introducing himself. Everywhere else, and in anything a model reads,
 voice is plain and he is not mentioned.
 
 Warm, not cool. The whole category is violet (Loom, Screen Studio) or pure black
-(Mosaic), and the agent-tool category is bright and airy (a competitor). Fetch is retriever
+(Mosaic), and the agent-tool category is bright and airy. Fetch is retriever
 gold on a warm near-black. If a surface could belong to Loom, it is wrong.
 
 ## Tone
@@ -496,12 +496,12 @@ Trust is built from **named exclusions, not adjectives**. "Private" means nothin
 ## Anti-references
 
 - **Loom / Screen Studio.** Cool violet, subscription, cloud. The colour alone is a fail.
-- **a competitor.** Light, airy, cream, photographic. Excellent work and the bar for craft,
-  but copying its palette would make Fetch look like a a competitor clone. Take the
+- **The light agent-tool look.** Airy, cream, photographic. Good work and a real bar
+  for craft, but copying that palette would make Fetch look like a clone of it. Take the
   structural ideas (stable ids, audit log, provenance, carve-out copy), not the skin.
-  Do not take its read-only timeline: a competitor locks editing because it has no editor,
-  and Fetch does. Attribution in the activity log solves the same problem without
-  removing hand editing.
+  Do not take the read-only timeline: those tools lock editing because they have no
+  editor, and Fetch does. Attribution in the activity log solves the same problem
+  without removing hand editing.
 - **Generic dev-tool dark.** Blue-grey, monospace everywhere, dense tables. Fetch is
   warm and roomy.
 - **Consumer AI slop.** Gradient text, glass cards, sparkle icons on everything.
