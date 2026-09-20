@@ -108,6 +108,9 @@ const TITLES = {
   'edit.direct': 'Wrote the brief and the plan',
   'edit.review': 'Checked the edit against the brief',
   'edit.fit': 'Fitted the edit to a length',
+  'edit.loop': 'Checked whether the clip loops',
+  'chat.ask': 'Asked a question',
+  'chat.propose': 'Proposed a change',
   'edit.revert': 'Took back its own last change',
   'voice.list': 'Listed the voices',
   'voice.speak': 'Generated a voiceover',
@@ -384,6 +387,8 @@ const ops = {
       'Re-aim or retime the one already there rather than adding a second.')]
     const rates = rateNotes(FD, args.doc)
     if (rates.length) warn.push(...rates)
+    const gains = gainNotes(FD, args.doc, doc)
+    if (gains.length) warn.push(...gains)
     if (warn.length) out.warnings = (out.warnings || []).concat(warn)
     const along = FD.focusAlongside(prev, doc)
     if (along.length) {
@@ -484,13 +489,20 @@ const ops = {
     const lv = await takeLevels(args.path, doc, meta)
     try {
       const Review = require('./review')
-      const c = Review.review({ doc, ...briefAndBeats(args.path, meta), path: args.path,
+      const c = Review.review({ doc: withCues(args.path, doc), ...briefAndBeats(args.path, meta), path: args.path,
         looks: require('./look').list(looksDir()), levels: lv })
       checked = { verdict: c.verdict, score: c.score, summary: c.summary, blocking: Review.blocking(c), look_at: c.look_at }
     } catch {}
+    // A clip meant to autoplay on a page is judged by its wrap, and the person is
+    // holding the file now. Only where the look asks for a loop: it costs a plan.
+    let loop = null
+    if ((require('./look').resolve(doc.look).motion || {}).loop) {
+      try { loop = await loopCheckOf(args.path, doc, meta) } catch {}
+    }
     return { path: r && r.file, mb, seconds: +FD.outDuration(doc).toFixed(2), ...engine,
       ...(lw.length ? { look_warnings: lw } : {}),
       ...(checked ? { review: checked } : {}),
+      ...(loop ? { loop } : {}),
       ...jobState(args.path, doc, null, meta) }
   },
 
@@ -544,7 +556,10 @@ const ops = {
     if (!args.path) throw new Error('path is required')
     if (!fs.existsSync(args.path)) throw new Error('no such file')
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
-    let doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    // args.doc is a whole document to draw in place of the saved one, which is how a
+    // proposal shows an edit that has not been applied. No tool takes it: nothing is
+    // written either way, so the only caller is chat.propose.
+    let doc = args.doc || deps.proc.readDoc(args.path, meta && meta.duration)
     // a look to try, drawn without saving it
     if (args.look && typeof args.look === 'object') doc = require('./fetchdoc').mergeDoc(doc, { look: args.look })
     // several moments in one call: the start of a move and its middle are both checked
@@ -668,7 +683,7 @@ const ops = {
     if (!args.path) throw new Error('path is required')
     const Director = require('./director')
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
-    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    const doc = withCues(args.path, deps.proc.readDoc(args.path, meta && meta.duration))
     const patch = { brief: args.brief, plan: args.plan, done: args.done, open: args.open, drop: args.drop, note: args.note }
     if (Object.values(patch).every(v => v === undefined)) {
       const job = Director.read(args.path)
@@ -683,7 +698,7 @@ const ops = {
   async 'edit.review'(args = {}) {
     if (!args.path) throw new Error('path is required')
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
-    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    const doc = withCues(args.path, deps.proc.readDoc(args.path, meta && meta.duration))
     return require('./review').review({
       doc, ...briefAndBeats(args.path, meta), path: args.path,
       looks: require('./look').list(looksDir()),
@@ -694,13 +709,27 @@ const ops = {
     })
   },
 
+  // Can this clip play round again with no visible jump, and what is stopping it?
+  // Answered off the plan, before a pixel is drawn: every pass draws from the plan and
+  // the frame's own time (ui/compositor/PASSES.md), so the two ends can be compared
+  // without rendering either. look tries one without saving it, which is how an agent
+  // asks "would it loop with the fades off" and gets an answer in one call.
+  async 'edit.loop'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    if (!fs.existsSync(args.path)) throw new Error('no such file')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    let doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    if (args.look && typeof args.look === 'object') doc = require('./fetchdoc').mergeDoc(doc, { look: args.look })
+    return await loopCheckOf(args.path, doc, meta)
+  },
+
   // A length is a decision about what to keep, so it writes clips. remove_dead_air
   // writes a new file whose edit is empty; this leaves the take alone.
   async 'edit.fit'(args = {}) {
     if (!args.path) throw new Error('path is required')
     const Fit = require('./fit')
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
-    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    const doc = withCues(args.path, deps.proc.readDoc(args.path, meta && meta.duration))
     let w = null
     try { w = JSON.parse(fs.readFileSync(deps.proc.sidecarIn(args.path, '.words.json'), 'utf8')) } catch {}
     // Beats are worked out from the take, not stored on the document, so reading
@@ -765,6 +794,50 @@ const ops = {
       ...jobState(args.path, doc, null, await takeShape(args.path)) }
   },
 
+  // ── the two that wait on the person ────────────────────────────────────
+  // Guessing on a request with two readings costs an edit and an undo, and the undo is
+  // the person's work rather than the agent's. These two put the fork, or the whole
+  // change, in front of them instead. Both come back whether or not anybody answered,
+  // and every branch of both carries a do_next (ui/edit-assist.js), because a result
+  // that says only "nobody answered" gets asked again a second later.
+  async 'chat.ask'(args = {}) {
+    const Assist = require('./edit-assist')
+    const spec = Assist.askSpec({ ...args, timeoutMs: waitMs(args.timeout_seconds) })
+    if (!spec.ok) throw new Error(spec.error)
+    spec.ask.id = 'Q' + (++waitSeq)
+    return Assist.askResult(await putToPane('ask', spec.ask))
+  },
+
+  async 'chat.propose'(args = {}) {
+    if (!args.path) throw new Error('path is required')
+    if (!args.doc || typeof args.doc !== 'object') throw new Error('doc is required: the change itself, exactly as apply_edit takes it')
+    const Assist = require('./edit-assist')
+    const spec = Assist.proposalSpec({ ...args, timeoutMs: waitMs(args.timeout_seconds) })
+    if (!spec.ok) throw new Error(spec.error)
+    spec.proposal.id = 'P' + (++waitSeq)
+    // The edit as it would be, drawn off a copy of the document and never saved, so
+    // the person is looking at the change rather than reading about it.
+    spec.proposal.preview = await proposedFrame(args)
+    const out = await putToPane('propose', spec.proposal)
+    // Nothing is written on any other branch, which is the whole promise of this tool.
+    if (out.how !== 'apply') return Assist.proposalResult(out)
+    // Applied through the call the agent would have made itself, so the plan, the
+    // distance, the warnings and the one undo level are the same either way.
+    try {
+      return { ...(await ops['edit.apply']({ path: args.path, doc: args.doc, step: args.step })),
+        ...Assist.proposalResult(out) }
+    } catch (err) {
+      // The card read "Applied." the moment it was clicked, because the click is the
+      // answer. The edit refused after that, so the pane and the log are told, or the
+      // thread goes on saying a document was written that was not.
+      try {
+        require('./agent-chat').say({ kind: 'settled', id: spec.proposal.id, how: 'failed', choice: null },
+          deps.getWindow && deps.getWindow())
+      } catch {}
+      throw err
+    }
+  },
+
   // ── what is still true next week ───────────────────────────────────────
   // A brief lives in the job file and dies with the job. This is the other half: what
   // the person said about themselves and their product, which the next conversation
@@ -807,7 +880,7 @@ const ops = {
     const voice = require('./voice')
     if (!(await voice.status()).connected) throw new Error(NO_VOICE_ACCOUNT)
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
-    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    const doc = withCues(args.path, deps.proc.readDoc(args.path, meta && meta.duration))
     // With no script the take's own captions are the script: re-narrating what was
     // said, in a clean voice, over the same footage, is what this is for.
     const script = String(args.script || voice.scriptFromCues(doc.cues) || '').trim()
@@ -881,7 +954,26 @@ const ops = {
   async probe(args = {}) {
     if (!args.path) throw new Error('path is required')
     if (!fs.existsSync(args.path)) throw new Error('no such file')
-    return await deps.proc.probeMeta(args.path)
+    const meta = await deps.proc.probeMeta(args.path)
+    if (!args.loudness) return meta
+    // Which piece of the take is under the rest, and by how many decibels, in the same
+    // unit the -14 LUFS target is in (processor.clipLevels). "This bit is too quiet" is
+    // a measurement, not a taste: the gain it hands back is the number to write onto
+    // that clip. Only on request, since it is one decode per clip.
+    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    const clips = doc.clips.length ? doc.clips : [{ id: 'C1', start: 0, end: (meta && meta.duration) || 0 }]
+    const lv = await deps.proc.clipLevels(args.path, clips)
+    // A gain is held to what one clip can be lifted or dropped by, so a clip sitting at
+    // the limit is not a clip the number fixes: it was recorded too far off the mic, and
+    // the person is the one who can do something about that.
+    const GAIN = require('./fetchdoc').GAIN_DB
+    const held = (lv.clips || []).filter(c => c.gain != null && Math.abs(c.gain) >= GAIN).map(c => c.id || `${c.start}s`)
+    return { ...meta, audio_levels: { ...lv,
+      how: 'gain is the number to put in that clip\'s audio.gain (apply_edit clips). quiet is set where ' +
+        'that is 3 dB or more, which is where somebody would reach for the fader.',
+      ...(held.length ? { held: `${held.join(', ')} asked for more than the ${GAIN} dB Fetch lifts or drops one clip by, ` +
+        'so the gain named there is as far as it goes. Write it, and tell the person that stretch was recorded too ' +
+        'quietly to fix with a number.' } : {}) } }
   },
 
   async transcribe(args = {}) {
@@ -893,6 +985,98 @@ const ops = {
     if (args.include_text) out.text = r.text
     return out
   },
+}
+
+// ── waiting on the person ────────────────────────────────────────────────
+// A question and a proposal are the only two ops that wait on somebody, so they are the
+// only two that could hang a turn. One entry each, keyed by an id this process mints,
+// and every path out of here resolves exactly once.
+let waitSeq = 0
+const waiting = new Map()      // id -> { kind, spec, resolve, timer }
+const waitMs = secs => (+secs > 0 ? +secs * 1000 : undefined)
+
+function putToPane(kind, spec) {
+  return new Promise(resolve => {
+    const win = deps.getWindow && deps.getWindow()
+    // A question opens the pane itself (ui/chat.js), so a window nobody can see is the
+    // only unattended case. Burning ninety seconds to find that out is ninety seconds
+    // of somebody's turn, and the result says plainly that it was never seen.
+    const seen = win && !win.isDestroyed() && win.isVisible() &&
+      require('./agent-chat').say({ kind, ...spec }, win)
+    if (!seen) return resolve({ how: 'unattended', timeoutMs: spec.timeoutMs })
+    // Two seconds behind the pane's own clock, so the pane wins in the ordinary case
+    // and the agent is freed anyway if the window goes away with the card still up.
+    const timer = setTimeout(() => settleWait(spec.id, 'timeout'), spec.timeoutMs + 2000)
+    waiting.set(spec.id, { kind, spec, resolve, timer })
+  })
+}
+
+// Idempotent and one way: the click, the pane's clock, this process's backstop and the
+// turn ending all land here, and the first one wins. How it settled is always said back,
+// even for the click the pane has already drawn: the pane ignores a card it has settled,
+// and that one event is what puts the outcome in the log, so a restart replays the answer
+// instead of a dead question.
+function settleWait(id, how, choice) {
+  const e = waiting.get(id)
+  if (!e) return false
+  waiting.delete(id)
+  clearTimeout(e.timer)
+  try {
+    require('./agent-chat').say({ kind: 'settled', id, how, choice: choice || null },
+      deps.getWindow && deps.getWindow())
+  } catch {}
+  e.resolve({ how, timeoutMs: e.spec.timeoutMs,
+    choice: (e.spec.choices || []).find(c => c.id === choice) || null })
+  return true
+}
+
+// One frame of the proposed edit, drawn off a copy of the document. Nothing is saved,
+// no undo level is spent and the frame is a temp still like preview_frame's own, so a
+// card the person turned down still shows what they turned down when the thread is
+// read back. A frame that cannot be drawn is null: the card reads fine without one.
+async function proposedFrame(args) {
+  try {
+    const FD = require('./fetchdoc')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    // The same two steps edit.apply takes before the document sees the change, on a deep
+    // copy so the agent's own arguments go to Apply untouched and are resolved there
+    // once. Without them the card showed a generic 1.8x centre zoom and a lift with no
+    // box, and Apply then framed the element: a picture of a change that is not the
+    // change, which is worse than no picture.
+    const sent = JSON.parse(JSON.stringify(args.doc))
+    const prev = ['marks', 'zooms', 'texts', 'remove'].some(k => Array.isArray(sent[k]))
+      ? await inEditor(args.path, 'window.fetchDoc.get()').catch(() => null) : null
+    const resolved = withElements(args.path, sent, prev)
+    await aimZooms(args.path, resolved, prev).catch(() => null)
+    const doc = FD.mergeDoc(deps.proc.readDoc(args.path, meta && meta.duration), resolved)
+    const p = await ops['edit.preview']({ path: args.path, at: firstChange(resolved, doc), doc })
+    return p.image || null
+  } catch { return null }
+}
+
+// Whether an edit loops, off the plan alone (ui/compositor/gl.js, loopCheck). Two
+// halves: what Fetch draws, which the plan answers in full, and the take's own pixels
+// at the two ends, which no plan can answer and which this says out loud rather than
+// guessing at.
+async function loopCheckOf(src, doc, meta) {
+  const FD = require('./fetchdoc')
+  const dur = (meta && meta.duration) || (doc && +doc.dur) || 0
+  const d = FD.normalize(doc, src, dur)
+  if (!d.clips.length) d.clips = [{ id: 'C1', start: 0, end: dur }]
+  const spec = await require('./render-host').planFor(src, FD.toExportOpts(d), { ...meta, duration: dur }, null)
+  const r = require('./compositor/gl').loopCheck(spec)
+  const on = !!((require('./look').resolve(d.look).motion || {}).loop)
+  // What the switch does and does not do, said exactly: it changes no exported byte,
+  // because every frame an export draws is already inside the loop. It changes what a
+  // player counting on past the end draws, which is the stage playing the clip again.
+  const do_next = r.faults.length
+    ? 'Each fault carries the fix that makes it wrap. Apply them, then call this again before you export.'
+    : on
+      ? 'Nothing Fetch draws stops it. Export it and play the file round twice.'
+      : 'Nothing Fetch draws stops it. Export it and play the file round twice. Set look motion.loop true ' +
+        'as well if the stage is going to play it round: the file is the same either way, and the switch ' +
+        'is what keeps a second pass on the frames the file holds.'
+  return { ...r, loop_set: on, do_next }
 }
 
 // Whether the take running is paused. The renderer holds it: a native take carries it
@@ -1320,6 +1504,33 @@ function rateNotes(FD, sent) {
   return out
 }
 
+// The same for a clip's own sound. A gain is clamped as quietly as a rate was, and one
+// thing more is worth saying out loud: a piece running faster than 1 is silent by
+// default, so a gain on it does nothing until the take's speedAudio is keep. That is
+// the right default and the surprising one.
+function gainNotes(FD, sent, doc) {
+  const out = []
+  const keeps = ((doc && doc.audio) || {}).speedAudio === 'keep'
+  for (const c of (sent && sent.clips) || []) {
+    const a = c && c.audio
+    if (!a || typeof a !== 'object') continue
+    const name = c.id ? `${c.id}'s` : 'a clip\'s'
+    const n = +a.gain
+    if (a.gain != null && Number.isFinite(n) && Math.abs(n) > FD.GAIN_DB) {
+      out.push(`${name} gain ${n} dB was held to ${n < 0 ? -FD.GAIN_DB : FD.GAIN_DB}, which is as far as Fetch lifts or ` +
+        'drops one clip. A passage further under the rest than that was recorded too quietly to rescue with a number: ' +
+        'probe with loudness true measures every clip, and say so to the person rather than asking for more decibels.')
+    }
+    const fast = Math.max(...[].concat(c.rate == null ? [1] : c.rate).map(v => +v || 1))
+    if (!keeps && fast > 1 && (a.gain != null || a.denoise != null) && !a.mute) {
+      out.push(`${name} own sound is set and that clip runs at ${fast}, and a piece faster than 1 is silent unless ` +
+        'audio.speedAudio is keep, so the gain and the denoise on it do nothing. Send audio: { speedAudio: \'keep\' } ' +
+        'beside the clips if the person wants to hear that stretch.')
+    }
+  }
+  return out
+}
+
 // A new or moved zoom placed by centre and scale rather than by what it frames. Fine
 // for "zoom in on the first two seconds"; for a thing on screen, Fetch's own fit from
 // the box is what lands it, so the result says so.
@@ -1502,6 +1713,23 @@ function jobState(file, doc, step, meta) {
 
 // What review reads beside the document: the brief from the job sidecar and the beats
 // from the transcript. A take with neither still reviews, and says so in its findings.
+// The captions of a take that nobody has opened in the editor. transcribe writes a
+// .srt beside the recording, and the cues reach the document only when the editor loads
+// the take and saves it back, so an agent that transcribed and went straight to review
+// handed the rubric a document with no captions in it: the rubric then said the take was
+// untranscribed and told it to call transcribe again. The same shape as edit.fit and the
+// beats, and the same fix, in the two places that reason about cues rather than draw
+// them (the renderers both fall back to the .srt themselves). Nothing is written back:
+// the .srt is where a caption lives until somebody edits one.
+function withCues(src, doc) {
+  if (!doc || (doc.cues || []).length) return doc
+  try {
+    const cues = deps.proc.readCues(src) || []
+    if (cues.length) return { ...doc, cues: cues.map((c, i) => ({ id: 'S' + (i + 1), ...c })) }
+  } catch {}
+  return doc
+}
+
 function briefAndBeats(file, meta) {
   let brief = null, beats = null, silent = false
   try { brief = (require('./director').read(file) || {}).brief || null } catch {}
@@ -1597,6 +1825,13 @@ function looksDir() {
 // Warnings for a look an agent sent: values clamped or unknown (validate), then what
 // the look as a whole does on this take (Look.warnings: fields not drawn yet, a shape
 // filled rather than letterboxed, chrome that cannot be removed).
+// Whether this take carries the keys that were pressed during it: on the document, or
+// in the sidecar the capture side will write beside .cursor.json.
+function hasKeyTrack(doc, file) {
+  if (doc && (doc.keys || []).length) return true
+  try { return fs.existsSync(deps.proc.sidecarIn(file, '.keys.json')) } catch { return false }
+}
+
 function lookWarnings(patch, doc, file, ctx) {
   const Look = require('./look')
   const out = patch ? Look.validate(patch, { userDir: looksDir() }).warnings : []
@@ -1610,6 +1845,16 @@ function lookWarnings(patch, doc, file, ctx) {
   } catch {}
   let images
   try { images = deps.proc.backdropList().filter(b => b.image).map(b => b.id) } catch {}
+  // Keystrokes are drawn from a key track on the take (ui/compositor/marks.js), and
+  // Fetch does not capture the keyboard yet: reading it needs an event tap and the Input
+  // Monitoring permission, which is a different promise to the person than "Fetch
+  // watches the screen you pointed it at". Only where the agent asked for keys, because
+  // keys.show is true by default and a take with no track simply draws none.
+  if (patch && patch.keys && !hasKeyTrack(doc, file)) {
+    out.push('keys are drawn from the keystrokes recorded with the take, and this take has none, so nothing ' +
+      'is drawn. Fetch does not capture the keyboard yet. Say so rather than sending the look again, and use ' +
+      'texts (a label) or marks (a step badge) to name a shortcut the person asks you to show.')
+  }
   // Which renderer draws a field is a question about the engine, not about a release,
   // so the engine that will draw this output is passed where it is known (the export
   // knows both). Nothing given, the compositor answers, which is what draws the stage.
@@ -1719,6 +1964,9 @@ function logOp(op, ctx, t0, args, result, error) {
   else if (op === 'edit.direct' && result) detail = result.plan && result.plan.line
   else if (op === 'edit.review' && result) detail = result.summary
   else if (op === 'edit.fit' && result) detail = `${result.was}s to ${result.now}s`
+  else if (op === 'edit.loop' && result) detail = result.loops ? 'it loops' : (result.faults || []).map(f => f.id).join(', ')
+  else if (op === 'chat.ask' && result) detail = result.answered ? `they chose ${result.label}` : result.why
+  else if (op === 'chat.propose' && result) detail = result.applied ? 'applied' : result.why
   else if (op === 'voice.speak' && result) detail = `${result.characters} characters, ${result.voice}`
   else if (op === 'edit.enhance' && result) detail = result.path
   else if (op === 'recordings.trash' && result) detail = result.trashed
@@ -1803,6 +2051,10 @@ function start(d) {
       const p = pendingTake; pendingTake = null
       p.resolve(r)
     })
+    // The person's answer to a question or a proposal, from the pane's own buttons and
+    // from its own clock. The card has already settled itself there, so nothing is sent
+    // back; this only frees the op that is waiting.
+    ipcMain.on('chat-reply', (e, r = {}) => { if (r && r.id) settleWait(r.id, r.how || 'timeout', r.choice) })
     ipcMain.on('take-failed', (e, info) => {
       endingAt = 0
       // A take that failed before it went live never sent the idle rec-state that
@@ -1814,6 +2066,12 @@ function start(d) {
       p.reject(new Error((info && info.error) || 'the take failed'))
     })
   }
+
+  // A question cannot outlive the turn that asked it: the tool has long since been
+  // handed its do_next, and a button still lit would answer into nothing.
+  try { require('./agent-chat').onTurnEnd(how => {
+    for (const id of [...waiting.keys()]) settleWait(id, how)
+  }) } catch {}
 
   const sp = socketPath()
   try { fs.unlinkSync(sp) } catch {}          // a stale socket from a crash blocks bind
@@ -1861,4 +2119,7 @@ module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEnde
   // drew, and apply_edit resolves R ids out of the same store
   noteFound, noteRegion, regionFor, forgetRegion,
   // the two rules that are code rather than prose, exercised by test/lasso.test.js
-  withElements, aimZooms }
+  withElements, aimZooms,
+  // the person's answer to a question or a proposal. main.js does not call it: the
+  // pane's reply is picked up here. test/tools.test.js does, to answer one for real.
+  settleWait }

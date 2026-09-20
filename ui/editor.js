@@ -1023,10 +1023,14 @@ function wireEditor() {
     // not moved keeps the name an agent already used for it.
     const fresh = FD.clipsFromTrim(ed.in, ed.out, ed.cuts, ed.dur)
     const old = doc.clips || []
-    doc.clips = fresh.map((c, i) => ({
-      id: (old[i] && Math.abs(old[i].start - c.start) < 0.02) ? old[i].id : FD.mintId(doc, 'clips'),
-      start: c.start, end: c.end,
-    }))
+    doc.clips = fresh.map((c, i) => {
+      // A clip that has not moved keeps everything it was carrying, not only its id:
+      // its rate and its own sound are nobody's on this screen to change, and rebuilding
+      // the list from the trim and the cuts used to drop both. An agent set a gain on one
+      // passage, the person opened the editor, and saving took it off again.
+      const was = old[i] && Math.abs(old[i].start - c.start) < 0.02 ? old[i] : null
+      return { ...(was || {}), id: was ? was.id : FD.mintId(doc, 'clips'), start: c.start, end: c.end }
+    })
 
     doc.texts = (ed.texts || []).map((t, i) => ({ ...t, id: t.id || (old.texts && old.texts[i]?.id) || FD.mintId(doc, 'texts') }))
     doc.cues = (ed.cues || []).map(c => ({ ...c }))
@@ -2750,6 +2754,10 @@ function stageGLSpec(fresh) {
     stageGL.clock = Timeline.outClock(opts.cuts, stageGL.spec.start, stageGL.spec.end, opts.rates)
     // what a sped piece does with the take's own sound, so play sounds like the export
     stageGL.speedAudio = opts.speedAudio
+    // and the stretches a clip muted outright, source seconds, for the same reason: the
+    // one per-clip sound setting the stage can honour without applying the take's own
+    // gain, which it has never applied either
+    stageGL.muted = (opts.clipAudio || []).filter(c => c && c[2] && c[2].mute).map(c => [c[0], c[1]])
   }
   return stageGL.spec
 }
@@ -2764,7 +2772,9 @@ function syncStageRate(v) {
   const r = stageGL.clock.rate(v.currentTime)
   const rate = Math.min(16, Math.max(0.0625, +r || 1))
   if (Math.abs(v.playbackRate - rate) > 0.005) v.playbackRate = rate
-  const mute = stageGL.speedAudio !== 'keep' && rate > 1 + 1e-9
+  const t = v.currentTime
+  const clipMuted = (stageGL.muted || []).some(([a, b]) => t >= a && t <= b)
+  const mute = clipMuted || (stageGL.speedAudio !== 'keep' && rate > 1 + 1e-9)
   if (v.muted !== mute) v.muted = mute
 }
 

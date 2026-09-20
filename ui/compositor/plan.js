@@ -383,8 +383,12 @@ function camAt(cam, t) {
 // The compositor draws everything an edit places (M3): the framed look, zooms, fades,
 // cuts, the camera, marks, lifts and spotlights, steps, the agent's cursor, the Mac's
 // pointer lifted out, captions, titles, labels and auto zoom (its moments worked out by
-// prepare.js). Other formats than MP4 and MOV go to the classic renderer whole.
-const GL_FORMATS = new Set(['mp4', 'mov'])
+// prepare.js). Every format that carries a picture is drawn here now and differs only at
+// the sink: H.264 for MP4 and MOV, VP9 for WebM, a palette pass for GIF (sinks.js). A
+// GIF used to be the old product, missing the treatment, the lift, the device frames and
+// the easing, which is the one deliverable a landing page autoplays. What is left for the
+// classic renderer is a file with no picture in it (m4a, mp3, wav) and a still frame.
+const GL_FORMATS = new Set(['mp4', 'mov', 'webm', 'gif'])
 function unsupported(opts = {}, ctx = {}) {
   const why = []
   const fmt = opts.format || 'mp4'
@@ -725,6 +729,12 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     // instead would be a fade from black, which is motion.fadeIn and the person's call.
     reveal: L('motion').reveal === 'none' || bg.kind === 'none' ? null : { in: REVEAL_IN, out: REVEAL_OUT },
     text: text.phrases.length || text.cards.length || text.labels.length ? text : null,
+    // The keys as they were pressed, over the finished frame rather than on the take, so
+    // a zoom neither carries nor scales them (marks.js planKeys). Laid out against the
+    // same box the captions are, so the two never land on each other.
+    keys: Marks.planKeys(opts.keys, { W: g.outW, H: g.outH, box: framed ? { ...rect } : { x: 0, y: 0, w: g.outW, h: g.outH },
+      capBox, caption: opts.captions ? (opts.captionStyle || {}) : null, clock, span,
+      place: L('keys').place, size: L('keys').size, show: L('keys').show !== false }),
     // the schema's own default: 0.5 is a 180 degree shutter, the film standard
     motionBlur: clamp(num(T.motionBlur, 0.5), 0, 1),
     treat,
@@ -755,6 +765,13 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     // rates: at 60 every draw lasts exactly two frames, at 30 it lasts one, and the
     // grain of a 30 fps export is what it always was.
     grainHold: Math.max(1, Math.round(fps / 30)),
+    // A clip meant to autoplay and repeat: the loop's length in output frames, which is
+    // the index gl.js seeds the grain, the tooth and the dither by (loopIndex). A caller
+    // that counts frames on past the end, which a stage playing the clip round again
+    // does, then draws the frames the file holds rather than a second cycle of fresh
+    // noise. 0 where the look does not ask for a loop, and the index passes straight
+    // through.
+    loop: L('motion').loop ? frames : 0,
     fadeIn: Math.max(0, num(opts.fadeIn, 0)), fadeOut: Math.max(0, num(opts.fadeOut, 0)),
     dither: L('grain').dither !== false,
   }

@@ -63,12 +63,40 @@ const ALLOWED = [
   'get_look_schema', 'list_looks', 'apply_look', 'save_look',
   // the job: plan it, hit the length, check the result, take back what was wrong
   'direct', 'fit_to_length', 'review', 'revert_my_edit',
+  // whether a clip wraps with no visible jump, for a demo that autoplays on a page
+  'can_loop',
+  // put the fork to the person instead of guessing, and show a wide change before it lands
+  'ask', 'propose',
   // what the person said that is still true next week, so a new chat is not a stranger
   'remember',
   'list_voices', 'voiceover',
 ].map(t => `mcp__fetch__${t}`)
 
 let current = null          // the one running turn, if any
+
+// A card raised by a tool rather than by the CLI's own stream: a question with buttons,
+// a proposal with Apply and Discard (ui/agent-bridge.js, chat.ask and chat.propose).
+// It has to join the same thread the turn is writing, or the person reads an answer to
+// a question that is not above it.
+//
+// During a turn that is the turn's own sink, which main.js has already wrapped in the
+// chat log, so the card replays after a restart. An outside agent over MCP has no turn
+// running here, so the window is the only route and the log is written here instead.
+// Nowhere to put it is not an error: the bridge settles the card unattended and the
+// agent is told in as many words that nobody saw it.
+let sink = null
+const enders = []
+function say(ev, win) {
+  if (sink) { sink(ev); return true }
+  if (!win || win.isDestroyed()) return false
+  try { chatLog.append(ev) } catch {}
+  try { win.webContents.send('chat-event', ev) } catch { return false }
+  return true
+}
+// Called when a turn ends, however it ends. A question outliving its turn is a live
+// button wired to a conversation that is over.
+const onTurnEnd = fn => { enders.push(fn) }
+const turnEnded = why => { for (const fn of enders) { try { fn(why) } catch {} } }
 
 // The conversation this pane is in. Without it every message was a stranger: each
 // send spawned a fresh CLI that had never heard of the last one, so "now transcribe
@@ -211,6 +239,7 @@ function send({ engine = 'claude', model = null, effort = null, prompt, attachme
     env: { ...process.env, PATH: `${path.dirname(connect.nodeBin())}:${process.env.PATH || ''}`, ENABLE_TOOL_SEARCH: 'false' },
   })
   current = child
+  sink = onEvent
   if (viaStdin) {
     const content = images.map(im => ({ type: 'image',
       source: { type: 'base64', media_type: im.type, data: fs.readFileSync(im.file).toString('base64') } }))
@@ -240,6 +269,10 @@ function send({ engine = 'claude', model = null, effort = null, prompt, attachme
   const finish = (ok, error) => {
     if (current !== child) return
     current = null
+    sink = null
+    // Anything still waiting on the person goes with the turn: the tool that asked has
+    // long since been handed its do_next and moved on.
+    turnEnded(child.cancelled ? 'cancelled' : 'timeout')
     // Stopped on purpose is not a failure, so it does not carry the CLI's exit noise.
     if (child.cancelled) onEvent({ kind: 'done', ms: Date.now() - t0, ok: false, cancelled: true, error: null })
     else onEvent({ kind: 'done', ms: Date.now() - t0, ok, error: error || null })
@@ -367,4 +400,6 @@ function summarise(content) {
 const cancel = () => { if (current) { current.cancelled = true; try { current.kill('SIGTERM') } catch {} } }
 const busy = () => !!current
 
-module.exports = { send, cancel, busy, newConversation, translate, argsFor, ALLOWED }
+module.exports = { send, cancel, busy, newConversation, translate, argsFor, ALLOWED,
+  // a card a tool raised, into this thread, and the end of the turn it belongs to
+  say, onTurnEnd }

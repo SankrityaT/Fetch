@@ -17,7 +17,7 @@ WindowList
 .DS_Store
 .context/
 .playwright-mcp/
-mosaic-home.png
+reference-home.png
 
 # recordings and scratch media. The mascot clips are real assets, keep those.
 *.webm

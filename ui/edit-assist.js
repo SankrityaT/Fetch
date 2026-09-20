@@ -99,7 +99,27 @@ const STATE = [
     'list_recordings call in this turn, even if an earlier turn already answered it; the newest is the ' +
     'first take it lists. Name the recording you acted on in your reply.',
   'For an edit, fill anything the person left out with a sensible default and make the change, rather ' +
-    'than asking; they can see it and undo it.',
+    'than asking; they can see it and undo it. The one exception is the narrow one under Asking.',
+]
+
+// ── asking, and proposing ───────────────────────────────────────────────
+// The bar for a question is damage, not doubt. An agent that asks about everything is
+// worse than one that guesses, because the whole promise of the pane is that it does
+// the work. But "hide the sidebar" when they meant one button inside it costs an edit
+// and an undo, and two buttons cost one click.
+const ASKING = [
+  'Ask with ask only when the request has two or more readings that would touch different parts of the ' +
+    'take, and the wrong one costs an edit and an undo: "the whole sidebar, or just the Practice button". ' +
+    'Offer two to four choices, each one a thing you would then go and do. Never ask twice about the same ' +
+    'thing, and never ask what you can find out yourself with find_on_screen, get_edit or list_recordings.',
+  'Everything else you decide: a default they can see and undo beats a question. Styling, timing, wording, ' +
+    'easing and which preset to use are never worth asking about.',
+  'Show it with propose instead of applying it when the change is wide or awkward to take back: cutting ' +
+    'more than half the take, changing or deleting something they made by hand, touching a redact or a ' +
+    'blur, or replacing the look. propose takes the same arguments apply_edit takes and writes nothing ' +
+    'until they press Apply.',
+  'Both come back whether or not anyone answered, and the result\'s do_next says what to do with that. ' +
+    'Follow it. Do not ask the same question again, and never apply a proposal they did not accept.',
 ]
 
 // Sent once per conversation, not once per message. Plain text, since both CLIs take
@@ -123,6 +143,9 @@ function systemPrompt({ memory = '' } = {}) {
     '',
     'What is true only right now:',
     ...STATE.map(l => `- ${l}`),
+    '',
+    'Asking:',
+    ...ASKING.map(l => `- ${l}`),
     '',
     // nothing at all when the store is empty, rather than a heading over a blank
     ...(known ? ['What this person has already told you, from earlier conversations:', known, ''] : []),
@@ -355,6 +378,130 @@ function undoSummary(was, now) {
 
 const anyChange = c =>!!(c && (c.zooms.length || c.marks.length || c.texts.length || c.cues.length || c.clips || c.frame))
 
+// ── a question, and a proposal ──────────────────────────────────────────
+// Two chat events that are not a report. A question is buttons the person clicks; a
+// proposal is a change shown before it lands, which writes nothing until Apply.
+//
+// Both are checked here, in one place, because both cross a process boundary twice
+// (agent to app, person back to agent) and a malformed one must fail at the tool call
+// with a sentence the agent can act on, not half-draw in the pane.
+//
+// Neither may block forever. Both carry their own deadline, the pane runs it and main
+// runs it a moment later as a backstop, and the tool comes back either way.
+const ASK_MS = 90000
+const PROPOSE_MS = 240000
+const MAX_CHOICES = 4              // the pane is 380px wide, and five readings is not a question
+const MAX_CHANGES = 12
+const trim = (v, n) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n)
+
+// Choice ids are the agent's own words for what it would do, so the result reads as
+// a decision ("choice: sidebar") rather than as an index into a list it has forgotten.
+function choiceList(raw) {
+  const out = []
+  for (const c of arr(raw)) {
+    const o = typeof c === 'string' ? { label: c } : (c || {})
+    const label = trim(o.label || o.id, 60)
+    if (!label) continue
+    const id = trim(o.id || label, 40).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
+    // A blank or repeated choice is dropped rather than counted, so a sloppy list
+    // does not push a real reading off the end of the card.
+    if (!id || out.some(x => x.id === id)) continue
+    out.push({ id, label, hint: trim(o.hint, 90) || null })
+  }
+  return out.slice(0, MAX_CHOICES)
+}
+
+function askSpec(spec = {}) {
+  const question = trim(spec.question, 140)
+  if (!question) return { ok: false, error: 'A question needs its question, in the person\'s own words.' }
+  const choices = choiceList(spec.choices)
+  if (choices.length < 2) {
+    return { ok: false, error: 'A question needs two to four choices, each one a thing you would then go and do. ' +
+      'With one reading there is nothing to ask: make the change.' }
+  }
+  const ms = Math.max(10000, Math.min(600000, +spec.timeoutMs || ASK_MS))
+  return { ok: true, ask: { id: trim(spec.id, 24) || 'Q', question, note: trim(spec.note, 160) || null, choices, timeoutMs: ms } }
+}
+
+function proposalSpec(spec = {}) {
+  const title = trim(spec.title, 80)
+  if (!title) return { ok: false, error: 'A proposal needs a title: what it would do, in one short line.' }
+  const changes = arr(spec.changes).slice(0, MAX_CHANGES)
+    .map(c => ({ id: trim(c && c.id, 12) || null, line: trim(c && (c.line || c.what || c), 120) }))
+    .filter(c => c.line)
+  const ms = Math.max(10000, Math.min(900000, +spec.timeoutMs || PROPOSE_MS))
+  return { ok: true, proposal: {
+    id: trim(spec.id, 24) || 'P', title, what: trim(spec.what, 160) || null,
+    changes, preview: typeof spec.preview === 'string' ? spec.preview : null, timeoutMs: ms } }
+}
+
+// What the tool hands back, every branch carrying a do_next. A result that says only
+// "nobody answered" gets asked again a second later, which is the failure this whole
+// feature exists to stop.
+const secsOf = ms => Math.round((+ms || ASK_MS) / 1000)
+function askResult(o = {}) {
+  const how = o.how || 'timeout'
+  if (how === 'answered' && o.choice && o.choice.id) {
+    return { answered: true, choice: o.choice.id, label: o.choice.label || o.choice.id,
+      do_next: `They chose "${o.choice.label || o.choice.id}". Do that, and do not ask about it again in this job.` }
+  }
+  if (how === 'cancelled') {
+    return { answered: false, reason: how, why: 'They stopped the turn while the question was up.',
+      do_next: 'Stop here. Change nothing else and keep your reply to one line.' }
+  }
+  const why = {
+    dismissed: 'They waved the question away.',
+    unattended: 'The chat pane was not on screen, so the question was never seen.',
+  }[how] || `Nobody answered in ${secsOf(o.timeoutMs)} s.`
+  return { answered: false, reason: how === 'answered' ? 'timeout' : how, why,
+    do_next: 'Take the narrowest choice you offered, make that change, and say in your reply which one you ' +
+      'took and that they can undo it. Do not ask again.' }
+}
+
+function proposalResult(o = {}) {
+  const how = o.how || 'timeout'
+  if (how === 'apply') {
+    return { applied: true, decision: 'apply',
+      do_next: 'It is applied already, so do not send it again through apply_edit. Check it with preview_frame and carry on.' }
+  }
+  if (how === 'discard' || how === 'dismissed') {
+    return { applied: false, decision: 'discard', why: 'They looked at it and said no. Nothing was written.',
+      do_next: 'Do not apply it, and do not propose the same thing again. Ask in one short question what to change instead.' }
+  }
+  if (how === 'cancelled') {
+    return { applied: false, decision: 'none', reason: how, why: 'They stopped the turn while the proposal was up. Nothing was written.',
+      do_next: 'Stop here. Nothing needs undoing.' }
+  }
+  const why = how === 'unattended'
+    ? 'The chat pane was not on screen, so the proposal was never seen. Nothing was written.'
+    : `Nobody answered in ${secsOf(o.timeoutMs)} s. Nothing was written.`
+  return { applied: false, decision: 'none', reason: how === 'apply' ? 'timeout' : how, why,
+    do_next: 'Leave it unapplied. Say in your reply what you proposed and that it is still waiting. Never apply it behind their back.' }
+}
+
+// The one line the card shows once it is settled. An answered question needs none:
+// the chosen button, ticked, is the record of what was said.
+const SETTLED = {
+  ask: {
+    answered: '', timeout: 'No answer, so Biscuit carried on.',
+    dismissed: 'Waved away, so Biscuit carried on.', unattended: 'Not seen, so Biscuit carried on.',
+    cancelled: 'Stopped before you answered.', stale: 'From an earlier chat.',
+    superseded: 'Asked again, below.',
+  },
+  propose: {
+    apply: 'Applied.', discard: 'Discarded. Nothing was changed.',
+    // The card says Applied the moment Apply is pressed, because the click is the
+    // answer. The edit runs after that and can still refuse, so there is one line that
+    // arrives later and corrects it (ui/agent-bridge.js, chat.propose).
+    failed: 'That could not be applied, so nothing was changed.',
+    dismissed: 'Discarded. Nothing was changed.', timeout: 'No answer, so nothing was applied.',
+    unattended: 'Not seen, so nothing was applied.', cancelled: 'Stopped. Nothing was changed.',
+    stale: 'From an earlier chat. Nothing was changed.',
+    superseded: 'Proposed again, below. Nothing was changed.',
+  },
+}
+const settleLine = (kind, how) => (SETTLED[kind] || {})[how] || ''
+
 // Undo for agent edits. One level per burst: an agent often applies an edit in
 // several passes, and undoing a third of what it did is not what anyone asks for. A
 // new level starts on a new chat turn (mark), after a pause, or once the person has
@@ -384,4 +531,5 @@ function createUndo({ max = 20, gapMs = 60000 } = {}) {
   }
 }
 
-module.exports = { editFacts, systemPrompt, contextHeader, planState, plainDashes, suggestions, changedIds, anyChange, revert, createUndo, undoSummary }
+module.exports = { editFacts, systemPrompt, contextHeader, planState, plainDashes, suggestions, changedIds, anyChange, revert, createUndo, undoSummary,
+  askSpec, proposalSpec, askResult, proposalResult, settleLine, ASK_MS, PROPOSE_MS }

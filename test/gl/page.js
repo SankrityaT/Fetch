@@ -116,14 +116,17 @@ async function renderFrame(job) {
   // a frame inside a dissolve is drawn once per side, both sides through this path
   const xi = fp.mix > 0 ? Plan.crossFrames(spec, pts).pick[n] : -1
   // job.seed holds the frame index the ground's tooth, the film grain and the dither are
-  // seeded by, so a run of frames can be compared with only the move between them
+  // seeded by, so a run of frames can be compared with only the move between them, and a
+  // caller can count on past the end the way a stage playing the clip round again does.
+  // job.loop is the window that index wraps in; left out, the plan's own spec.loop is it.
   const sn = job.seed != null ? job.seed : n
+  const lp = job.loop != null ? job.loop : undefined
   if (xi >= 0 && !job.oneSide) {
-    c.render(spec, fp, { n: sn, cropUV, cam, camUV, side: 'a' })
+    c.render(spec, fp, { n: sn, loop: lp, cropUV, cam, camUV, side: 'a' })
     await upload(xi)
-    c.render(spec, fp, { n: sn, cropUV, cam, camUV, side: 'b' })
+    c.render(spec, fp, { n: sn, loop: lp, cropUV, cam, camUV, side: 'b' })
   } else {
-    c.render(spec, fp, { n: sn, cropUV, cam, camUV })
+    c.render(spec, fp, { n: sn, loop: lp, cropUV, cam, camUV })
   }
   return { W: c.W, H: c.H, px: c.readRGBA(), i, i2: xi, mix: +fp.mix.toFixed(4), taps: fp.taps }
 }

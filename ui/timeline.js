@@ -149,6 +149,33 @@ function rateSteps(seg, step = RATE_STEP) {
 }
 
 /**
+ * Kept ranges cut again at source times of someone else's choosing, so a setting that
+ * changes partway through a range can be applied to each piece on its own. A time in a
+ * gap, or on an end, changes nothing.
+ *
+ * Rates split their own ranges as they are applied (applyRates). Sound needs the same
+ * knife for a reason of its own: two clips meeting with no gap leave no cut, so the
+ * whole run comes back as one range, and a clip asking to be louder would lift its
+ * neighbour with it. Each piece is the parent's own map restricted (slice), so the
+ * pieces are exactly as long as the range they came from and a ramp survives the cut.
+ */
+function splitAt(keep, times) {
+  const pts = (times || []).map(Number).filter(n => Number.isFinite(n)).sort((a, b) => a - b)
+  if (!pts.length) return keep || []
+  const out = []
+  for (const seg of keep || []) {
+    let t = seg[0]
+    for (const p of pts) {
+      if (p <= t + 1e-9 || p >= seg[1] - 1e-9) continue
+      out.push(slice(seg, t, p))
+      t = p
+    }
+    out.push(t === seg[0] ? seg : slice(seg, t, seg[1]))
+  }
+  return out
+}
+
+/**
  * Source time to output time, as a function. A moment inside a cut lands where the
  * cut closed (the start of the next kept range). clock.kept(t) says whether t survives
  * at all: a click inside a cut has to be dropped, not snapped, or a zoom lands on
@@ -296,4 +323,4 @@ function camTime(cam, s) {
 }
 
 module.exports = { keepRanges, outClock, srcTime, outLength, outFps, takeFps, frameAt, camTime,
-  applyRates, outSpan, srcIn, outIn, rateIn, rateEnds, rateAt, rateSteps, RATE_MIN, RATE_MAX }
+  applyRates, outSpan, srcIn, outIn, rateIn, rateEnds, rateAt, rateSteps, splitAt, RATE_MIN, RATE_MAX }

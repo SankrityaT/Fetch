@@ -267,11 +267,12 @@ function compact(look, userDir) {
 }
 
 // ── which renderer draws it ─────────────────────────────────────────────
-// The compositor draws every field in the schema and is the renderer for MP4 and MOV,
-// so it is the default answer. GIF, WebM and a still frame go to the classic ffmpeg
-// renderer (ui/compositor/plan.js), which leaves the classic: false fields out. Asking
-// the engine rather than reading a flag is what keeps this true when the engines move.
-const GL_FORMATS = new Set(['mp4', 'mov'])
+// The compositor draws every field in the schema and is the renderer for every format
+// with a picture in it, so it is the default answer. A sound file and a still frame go
+// to the classic ffmpeg renderer (ui/compositor/plan.js), which leaves the classic:
+// false fields out. Asking the engine rather than reading a flag is what keeps this
+// true when the engines move, and they moved this round: GIF and WebM came over.
+const GL_FORMATS = new Set(['mp4', 'mov', 'webm', 'gif'])
 // An export with no picture in it. A look has nothing to say about an m4a, and saying
 // that grain.film is not drawn on a sound file is noise an agent has to read past.
 const SOUND_FORMATS = new Set(['m4a', 'mp3', 'wav'])
@@ -320,14 +321,14 @@ function sections({ engine = 'gl', hidden = false, advanced = true, all = false 
 // Which engine a field needs, marked in as few characters as will carry it: the legend
 // below says it once, and the whole schema is read on every look job.
 const engineNote = x => x.undrawn ? ' [undrawn]'
-  : x.classic === false ? ' [gif]'
-  : x.classicOptions ? ` [gif: ${x.classicOptions.join(', ')}]` : ''
+  : x.classic === false ? ' [classic]'
+  : x.classicOptions ? ` [classic: ${x.classicOptions.join(', ')}]` : ''
 
 // The schema as an agent reads it: one line a field, grouped by section. Every field,
 // including the two a person sets by dragging the captions on the stage.
 function describe() {
-  const lines = ['A field marked [gif] is drawn in MP4 and MOV and left out of GIF, WebM and stills, ' +
-    'which the classic renderer draws. [undrawn] is a field nothing draws yet.']
+  const lines = ['A field marked [classic] is drawn in every format with a picture in it and left out of a ' +
+    'still frame and a sound file, which the classic renderer draws. [undrawn] is a field nothing draws yet.']
   for (const s of sections({ hidden: true, all: true })) {
     lines.push(`${s.id}: ${s.doc}`)
     for (const x of s.fields) {

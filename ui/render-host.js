@@ -6,6 +6,12 @@
 // goes to the classic ffmpeg renderer, and the result says why. FETCH_ENGINE=classic
 // or gl forces one (gl leaves out what it cannot draw yet, for measuring).
 //
+// Every container with a picture in it comes from the same drawn frames and differs only
+// at the encoder: MP4 and MOV H.264, WebM VP9, GIF a palette pass. What changes here is
+// what has to be muxed alongside. A GIF has no sound at all, so none is rendered and the
+// picture file is the deliverable; a WebM cannot carry the AAC the app's one audio graph
+// writes, so its track is turned into Opus at the mux and nowhere earlier.
+//
 // The compositor runs in one hidden window, kept warm between exports and closed after
 // a while idle. Throttling is off and it paints while hidden (M0: a never-painted
 // window stops rVFC; GL and MessageChannel run at full speed either way). The window
@@ -20,6 +26,7 @@ const path = require('path')
 const proc = require('../processor')
 const Plan = require('./compositor/plan')
 const Prepare = require('./compositor/prepare')
+const Sinks = require('./compositor/sinks')
 
 const IDLE_MS = 3 * 60 * 1000
 let win = null, ready = null, idleTimer = null
@@ -120,12 +127,27 @@ function pickEngine(src, opts = {}) {
   return Plan.engineFor(opts, {}, mode)
 }
 
-// The plan of an edit with everything its take says worked out (prepare.js)
-async function planFor(src, opts, meta, jobId) {
+// The plan of an edit with everything its take says worked out (prepare.js). extra goes
+// into the plan's ctx: { fps } is how a GIF asks for its own slower clock.
+async function planFor(src, opts, meta, jobId, extra = null) {
   const prepared = await Prepare.prepareRender(src, opts, { meta, jobId })
   const camera = opts.camera && opts.camera.file && fs.existsSync(opts.camera.file) ? opts.camera : null
-  const ctx = { prepared, gutter: prepared.gutter || null, imageFile: prepared.imageFile || null }
+  const ctx = { prepared, gutter: prepared.gutter || null, imageFile: prepared.imageFile || null, ...(extra || {}) }
   return Plan.prepare({ ...opts, camera }, meta, ctx)
+}
+
+// The sound the mux carries. renderAudio writes the app's one audio graph, and what it
+// writes is AAC; a WebM cannot hold AAC, so Opus is made here from the finished track
+// rather than by giving that graph a second codec to know about.
+function audioCopy(fmtId, sound) {
+  if (!sound) return []
+  return fmtId === 'webm' ? ['-c:a', 'libopus', '-b:a', '128k', '-ar', '48000', '-ac', '2'] : ['-c:a', 'copy']
+}
+
+// tmpdir and the save folder are not always the same volume, and a rename across two
+// fails; a GIF is the only deliverable that arrives whole and has no mux to move it
+function moveInto(from, to) {
+  try { fs.renameSync(from, to) } catch { fs.copyFileSync(from, to); try { fs.unlinkSync(from) } catch {} }
 }
 
 async function classic(src, opts, onProgress, jobId, why) {
@@ -157,8 +179,18 @@ async function glExport(src, opts, onProgress, jobId, why) {
   if (!meta.width || !(meta.duration > 0)) throw new Error('the recording has no readable length or size')
   const fmtId = opts.format || 'mp4'
   const fmt = proc.FORMATS[fmtId] || proc.FORMATS.mp4
+  const gif = !!fmt.gif
 
-  const spec = await planFor(src, opts, meta, jobId)
+  // A GIF is delivered slow and small, as the classic renderer delivered it, and the plan
+  // is made at that rate so nothing is drawn only to be thrown away by a scaler. The rate
+  // is snapped to one GIF's centisecond clock can actually hold (sinks.js, gifRate).
+  const gifFps = gif ? Sinks.gifRate(+opts.gifFps > 0 ? +opts.gifFps : 12.5) : null
+  // 640 wide unless the edit asked for a size, as the classic renderer had it: a chosen
+  // scale is a chosen scale whatever the container, and null draws the plan's own frame
+  const gifWidth = !gif ? null
+    : +opts.gifWidth > 0 ? Math.max(120, +opts.gifWidth)
+      : (opts.scale === 1080 || opts.scale === 720) ? null : 640
+  const spec = await planFor(src, opts, meta, jobId, gif ? { fps: gifFps } : null)
   if (spec.span < 0.2) throw new Error('trim range is too short')
 
   // As applyEdit: a take folder's deliverable is encoded beside itself and swapped in
@@ -167,7 +199,10 @@ async function glExport(src, opts, onProgress, jobId, why) {
   const dest = opts.dest || proc.exportDest(src, fmt.ext)
   const out = deliverable ? path.join(path.dirname(dest), `.${path.parse(dest).name}.partial.${fmt.ext}`) : dest
   const tag = `fetch-gl-${process.pid}-${Date.now()}`
-  const video = path.join(os.tmpdir(), `${tag}.mp4`), audio = path.join(os.tmpdir(), `${tag}.m4a`)
+  // the picture is written in its own container, so the mux is a stream copy on every
+  // format rather than a second encode of what the compositor already drew
+  const vext = gif ? 'gif' : fmtId === 'webm' ? 'webm' : 'mp4'
+  const video = path.join(os.tmpdir(), `${tag}.${vext}`), audio = path.join(os.tmpdir(), `${tag}.m4a`)
   const tmp = [video, audio]
   if (out !== dest) tmp.push(out)
   const t0 = Date.now()
@@ -177,12 +212,17 @@ async function glExport(src, opts, onProgress, jobId, why) {
     // either failing stops the other, so a fallback to the classic renderer does not run
     // beside a render window still drawing (or an ffmpeg still writing) for nothing
     const [stats, sound] = await Promise.all([
-      renderPicture({ spec, src, out: video, ffmpeg: proc.FFMPEG, quality: opts.quality || 'balanced', sink: opts.sink }, onP, jobId),
-      proc.renderAudio(src, opts, spec.keep, spec.span, meta, audio, jobId),
+      renderPicture({ spec, src, out: video, ffmpeg: proc.FFMPEG, quality: opts.quality || 'balanced', sink: opts.sink,
+        format: fmtId, width: gifWidth }, onP, jobId),
+      gif ? null : proc.renderAudio(src, opts, spec.keep, spec.span, meta, audio, jobId),
     ]).catch(e => { proc.cancel(jobId); throw e })
-    await proc.run(proc.FFMPEG, ['-y', '-i', video, ...(sound ? ['-i', sound] : []), '-map', '0:v:0', ...(sound ? ['-map', '1:a:0'] : []),
-      '-c', 'copy', '-movflags', '+faststart', out], null, jobId)
-    if (opts.music) {
+    if (gif) moveInto(video, out)
+    else {
+      await proc.run(proc.FFMPEG, ['-y', '-i', video, ...(sound ? ['-i', sound] : []), '-map', '0:v:0', ...(sound ? ['-map', '1:a:0'] : []),
+        '-c:v', 'copy', ...audioCopy(fmtId, sound), ...(vext === 'mp4' ? ['-movflags', '+faststart'] : []), out], null, jobId)
+    }
+    // a GIF has no track to put a bed under, as the classic renderer has it
+    if (opts.music && !gif) {
       const bed = await proc.musicBed(out, opts.music, fmt, spec.span, meta.hasAudio, jobId)
       if (bed) fs.renameSync(bed, out)
     }
@@ -193,7 +233,8 @@ async function glExport(src, opts, onProgress, jobId, why) {
       file: dest, duration: +spec.span.toFixed(1), cuts: (opts.cuts || []).filter(c => Array.isArray(c) && c.length === 2).length,
       format: fmt.ext, mb: +(fs.statSync(dest).size / 1e6).toFixed(1),
       engine: 'gl', why,
-      render: { ...stats, size: `${spec.W}x${spec.H}`, fps: spec.fps, ms, realtime: +(spec.span * 1000 / ms).toFixed(2), pictureFps: stats.fps },
+      // size is what was drawn, which for a GIF is smaller than the plan's own frame
+      render: { size: `${spec.W}x${spec.H}`, ...stats, fps: spec.fps, ms, realtime: +(spec.span * 1000 / ms).toFixed(2), pictureFps: stats.fps },
     }
   } finally {
     for (const f of tmp) { try { fs.unlinkSync(f) } catch {} }

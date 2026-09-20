@@ -31,6 +31,7 @@ const SECTIONS = [
   { id: 'motion', label: 'Motion', doc: 'Zoom depth and easing, fades and cut transitions.' },
   { id: 'camera', label: 'Camera', doc: 'The style of the camera bubble, when a camera was recorded.' },
   { id: 'cursor', label: 'Cursor', doc: 'The drawn cursor and the Mac\'s own pointer.' },
+  { id: 'keys', label: 'Keys', doc: 'The keys drawn on screen as they were pressed, where a take has a key track.' },
   { id: 'captions', label: 'Captions', doc: 'Burned-in captions and their style.' },
   { id: 'typography', label: 'Typography', doc: 'Faces for titles and labels.' },
   { id: 'focus', label: 'Focus', doc: 'How spotlights, lifts, loupes, steps and arrows are drawn.' },
@@ -157,6 +158,18 @@ const FIELDS = [
     doc: 'How a zoom moves. All four leave rest and arrive at rest with no jolt and no overshoot; they differ in how long the move takes and how early it is over. smooth: seven tenths of the way in half the time, then a long arrival. snappy: eight tenths, and a shorter move. gentle: even and half again as long. settle: nearly there at once, then a slow last tenth.' }),
   f('motion.fadeIn', 'number', 0, { min: 0, max: 3, step: 0.1, unit: 's', label: 'Fade in', doc: 'Fade from black, picture and sound, at the start.' }),
   f('motion.fadeOut', 'number', 0, { min: 0, max: 3, step: 0.1, unit: 's', label: 'Fade out', doc: 'Fade to black at the end.' }),
+  // A clip meant to autoplay on a page and repeat forever. It changes one thing about
+  // the drawing, the index the grain, the ground's tooth and the dither are seeded by,
+  // which becomes the frame's place inside the loop so a preview playing the clip round
+  // again draws the frames the file holds. Everything else it does is say so: Fetch
+  // names what is stopping a clean loop rather than rewriting the edit to force one,
+  // because that answer is the useful one (gl.js, loopCheck).
+  f('motion.loop', 'bool', false, { label: 'Seamless loop',
+    doc: 'The clip autoplays and repeats with no visible jump at the join. Fetch names what stops the last frame handing over ' +
+      'to the first rather than forcing it: a fade at either end, reveal opening and closing the take once a cycle, a zoom, ' +
+      'bubble, mark or caption still running at the last frame, or a recording that does not come back to where it began. A ' +
+      'player counting frames on past the end seeds grain and dither on the frame\'s place inside the loop, so a second pass ' +
+      'draws the frames the file holds.', classic: false }),
   f('motion.reveal', 'enum', 'rise', { options: ['none', 'rise'], label: 'Open and close',
     doc: 'How the take arrives and leaves. rise brings it up into its frame over a third of a second and settles it back out. Only where something is behind it.' }),
   f('motion.cutTransition', 'enum', 'none', { options: ['none', 'crossfade', 'dip', 'zoom'], label: 'Cut transition',
@@ -178,6 +191,21 @@ const FIELDS = [
   f('cursor.size', 'number', 1, { min: 0.6, max: 2, step: 0.05, unit: 'x', label: 'Cursor size', doc: 'Size of the drawn cursor.', classic: false }),
   f('cursor.smoothing', 'number', 0.5, { min: 0, max: 1, step: 0.05, label: 'Smoothing', doc: 'How much the cursor\'s path is smoothed.', undrawn: true }),
   f('cursor.ripple', 'bool', true, { label: 'Click ripple', doc: 'A gold ripple on each click.', classic: false }),
+
+  // ── keys ──
+  // Drawn from the take's own key track (marks.js planKeys), which the recorder does not
+  // yet fill: reading the keyboard needs an event tap and its own permission, so it is
+  // its own piece and its own decision. These three are the whole of what a look gets to
+  // say about them. Whether a character is drawn at all is not a preference and is not
+  // here: Fetch draws one only where the capture vouched for it.
+  f('keys.show', 'bool', true, { label: 'Show keys',
+    doc: 'Draw the keys as they were pressed, where the take has a key track. A chord is drawn as caps with the key that acted in gold; a run of typing is one pill, and reads as typing rather than as the letters wherever Fetch cannot tell the field was safe to show.',
+    classic: false }),
+  f('keys.place', 'enum', 'left', { options: ['left', 'centre', 'right'], label: 'Key place',
+    doc: 'Which bottom corner the keys sit in. They stand on the ground under the take where the look leaves room for them, and inside its bottom corner where it does not, clear of any burned-in caption.',
+    classic: false, when: { 'keys.show': true } }),
+  f('keys.size', 'number', 1, { min: 0.7, max: 1.6, step: 0.05, unit: 'x', label: 'Key size',
+    doc: 'How large the caps are drawn. 1 is about 60 px tall at 1080.', classic: false, when: { 'keys.show': true } }),
 
   // ── captions ──
   f('captions.show', 'bool', true, { label: 'Burn in captions', doc: 'Burn the transcript into the video when there is one.' }),

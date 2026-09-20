@@ -9,6 +9,10 @@
 // before any zoom, so anything sized for the finished frame (a badge 60 px across at
 // 1080, a feather) is the same however large the recording is.
 //
+// The keys are the one thing here drawn in the output's own space instead (planKeys,
+// keysAt): a keycap is Fetch's furniture rather than something on the recording, so a
+// zoom must not carry it and must not scale it.
+//
 // What needs the take's pixels to place (a lift's measured box and corners, a step on
 // its card's corner, a cursor rest moved off the words, the clean patches under the
 // Mac's pointer) is worked out once per take by prepare.js in the main process and
@@ -332,6 +336,229 @@ function planPointer(points, { W, H, clock, crop, scale, span, px, zooms, size =
   }
 }
 
+// ── keys on screen ──────────────────────────────────────────────────────────
+// A demo where someone hits Cmd+K and a palette appears is incomprehensible without the
+// keys, so Fetch draws them. Not as a gamer overlay: they are caps made of the step
+// badge's own furniture (a soft shadow, a keyline, the badge's gold on the one key that
+// did something), in the take's bottom corner, where a product's own content rarely is
+// and the palette a chord opens never is.
+//
+// **Fetch does not capture keystrokes today and this round does not add it.** Reading
+// the keyboard needs a CGEvent tap and the Input Monitoring permission, which is a
+// privacy surface of its own: the recorder polls the mouse buttons for exactly that
+// reason (Recorder.swift, pollClick). So this is the drawing side alone, against one
+// clear input shape, source seconds, on the edit document:
+//
+//   edit.keys = [{ t, key, mods, char }]
+//     key   what went down: 'k', 'enter', 'esc', 'tab', 'space', 'up', 'f5', ...
+//     mods  what was held with it: 'cmd', 'ctrl', 'alt', 'shift', 'fn'
+//     char  what it typed, and only where the capture knows it was safe to show
+//
+// The last line is the privacy rule and it is one line of code: a character is drawn
+// only where the event carries one. Nothing here infers a character from `key`, so a run
+// of typing nobody vouched for reads `typing…` and never the letters, and a run with one
+// unvouched key in it is hidden whole rather than in part. A password is typed into a
+// field macOS has put into secure input, which the capture can ask about and the drawing
+// side cannot, so the drawing side assumes it cannot tell. A modified key is a command
+// rather than content and is named from `key`: nobody's password is Cmd+Shift+P.
+const MOD_CANON = { cmd: 'cmd', meta: 'cmd', command: 'cmd', ctrl: 'ctrl', control: 'ctrl',
+  alt: 'alt', opt: 'alt', option: 'alt', shift: 'shift', fn: 'fn' }
+// The Mac's own glyphs, in the Mac's own order, because that is what is printed on the
+// keys in front of the person watching. Everything else is a word or the arrow itself,
+// which survives being read at a glance on a phone.
+const MOD_GLYPH = { fn: 'fn', ctrl: '⌃', alt: '⌥', shift: '⇧', cmd: '⌘' }
+const MOD_ORDER = ['fn', 'ctrl', 'alt', 'shift', 'cmd']
+const KEY_NAMES = {
+  enter: 'Return', return: 'Return', escape: 'Esc', esc: 'Esc', tab: 'Tab', space: 'Space',
+  backspace: 'Delete', delete: 'Delete', up: '↑', down: '↓', left: '←', right: '→',
+  home: 'Home', end: 'End', pageup: 'Page up', pagedown: 'Page down',
+}
+const keyName = k => {
+  const s = String(k == null ? '' : k).toLowerCase()
+  return KEY_NAMES[s] || (/^f([1-9]|1[0-2])$/.test(s) ? s.toUpperCase() : null)
+}
+
+const KEY = {
+  h: 0.056,      // a cap's height, a share of the output's own height: 60 px at 1080
+  gap: 0.010,    // between the caps of one chord
+  inset: 0.030,  // from the corner it sits in
+  pad: 0.34,     // a cap's side padding, a share of its height
+  text: 0.40,    // and its label, ditto
+  radius: 0.22,  // the compact 10 px corner (BRAND.md), grown with the cap
+  hold: 0.9,     // how long a chord stays up: long enough to read, short enough to keep up
+  join: 0.6,     // typing this close carries on the same run
+  tail: 0.7,     // and a run leaves this long after its last key
+  arrive: 0.14,  // --dur-1 and a little, since it travels as well as fades
+  chars: 22,     // the most a typing pill shows, which is its tail
+  life: 0.08,    // under this a group is not drawn at all: a flash is worse than nothing
+  max: 6,        // caps in one frame
+}
+
+/**
+ * The keys of an edit, placed on the output clock and on the frame.
+ *   keys      the edit's key track, source clock
+ *   W, H      the output frame
+ *   box       what the strip sits in the corner of: the framed take, or the whole frame
+ *   capBox    what the captions are laid out against (plan.js), for staying off them
+ *   caption   the look's caption style while captions are burned in, else null
+ *   clock     source seconds to output seconds (Timeline.outClock)
+ *   span      output length
+ *   place     the look's keys.place, size its keys.size, show its keys.show
+ * Returns the anchor, the metrics and the groups, or null where nothing shows.
+ */
+function planKeys(keys, { W, H, box, capBox = null, caption = null, clock, span, place = 'left', size = 1, show = true }) {
+  if (show === false || !Array.isArray(keys) || !keys.length) return null
+  const k = clamp(+size || 1, 0.7, 1.6)
+  const capH = H * KEY.h * k
+  const on = keys
+    .filter(e => e && Number.isFinite(+e.t) && (!clock.kept || clock.kept(+e.t)))
+    .map(e => ({ ...e, t: clock(+e.t) }))
+    .filter(e => e.t >= 0 && e.t < span)
+    .sort((a, b) => a.t - b.t)
+  const groups = []
+  let run = null
+  const closeRun = () => {
+    if (!run) return
+    // A run with a single unvouched key in it is hidden whole: half a sentence with the
+    // secret parts missing is still the secret's shape.
+    const shown = run.chars.every(c => typeof c[1] === 'string')
+    // A vouched run is typed out as it was typed, so the pill grows under the person's
+    // own hands (keysAt); an unvouched one says the same thing at every moment of itself,
+    // because how many keys went down is the length of what was typed.
+    groups.push({ a: run.a, last: run.t, hold: KEY.tail, ...(shown ? { chars: run.chars } : {}),
+      caps: [{ label: 'typing…', role: 'hint', face: 'sub' }] })
+    run = null
+  }
+  for (const e of on) {
+    const mods = [...new Set((Array.isArray(e.mods) ? e.mods : []).map(m => MOD_CANON[String(m).toLowerCase()]).filter(Boolean))]
+    const command = mods.some(m => m !== 'shift')
+    const named = keyName(e.key)
+    const char = typeof e.char === 'string' && e.char.length ? e.char : null
+    // A space with a run open is that run's own space, not a cap of its own: broken into
+    // caps, a typed sentence reads as three chords and a word.
+    if (!command && named === 'Space' && run && e.t - run.t <= KEY.join) { run.chars.push([e.t, char || ' ']); run.t = e.t; continue }
+    if (command || named) {
+      closeRun()
+      const label = named || String(char || e.key || '').toUpperCase()
+      if (!label) continue
+      const caps = mods.sort((a, b) => MOD_ORDER.indexOf(a) - MOD_ORDER.indexOf(b))
+        .map(m => ({ label: MOD_GLYPH[m], role: 'mod', face: 'sub' }))
+      caps.push({ label, role: 'action', face: 'caption' })
+      const prev = groups[groups.length - 1]
+      // A key held down, or hit three times: one cap with a count, rather than the same
+      // cap flashing three times in half a second. The count is kept off the comparison,
+      // or the third press would no longer look like the first two.
+      if (prev && prev.hold === KEY.hold && e.t - prev.last <= KEY.hold && sameCaps(prev.base, caps)) {
+        prev.n = (prev.n || 1) + 1; prev.last = e.t
+        prev.caps = [...prev.base.slice(0, -1), { ...caps[caps.length - 1], label: `${label} ×${prev.n}` }]
+        continue
+      }
+      groups.push({ a: e.t, last: e.t, hold: KEY.hold, caps, base: caps })
+      continue
+    }
+    if (run && e.t - run.t <= KEY.join) { run.chars.push([e.t, char]); run.t = e.t }
+    else { closeRun(); run = { a: e.t, t: e.t, chars: [[e.t, char]] } }
+  }
+  closeRun()
+
+  // A burst nobody can read one cap at a time is one sequence, not nothing. Each group's
+  // end is clamped to the next one's start below, so keys landing a twentieth of a second
+  // apart, which is a vim run or a shortcut run, used to clamp each other under KEY.life
+  // and drop the lot: the demo the feature exists for drew an empty strip. Folded in the
+  // order they were pressed and held to the last KEY.max of them, which is the tail the
+  // typing pill keeps for the same reason. A run of typing keeps its own pill: it is
+  // already one object and folding a chord into it would read as a typo.
+  const packed = []
+  for (const g of groups) {
+    const prev = packed[packed.length - 1]
+    if (prev && !prev.chars && !g.chars && g.a - prev.last <= KEY.life) {
+      prev.seq = prev.seq || [[prev.last, prev.caps]]
+      prev.seq.push([g.last, g.caps])
+      prev.base = g.base; prev.last = g.last; prev.n = g.n
+      continue
+    }
+    packed.push(g)
+  }
+
+  // One group is on screen at a time: a new one pushes the one before it out rather than
+  // landing on top of it, so the strip stays a single object in a fixed place.
+  const out = []
+  packed.forEach((g, i) => {
+    const next = packed[i + 1]
+    const b = Math.min(g.last + g.hold, next ? next.a : Infinity, span)
+    if (!(b - g.a > KEY.life)) return
+    const Tin = Math.min(KEY.arrive, (b - g.a) / 2)
+    out.push({ a: g.a, b, Tin, Tout: Overlays.leaveOf(Tin, (b - g.a) / 2), caps: g.caps.slice(0, KEY.max),
+      ...(g.seq ? { seq: g.seq } : {}), ...(g.chars ? { chars: g.chars } : {}) })
+  })
+  if (!out.length) return null
+
+  const B = box && box.w > 0 ? box : { x: 0, y: 0, w: W, h: H }
+  const inset = H * KEY.inset
+  const below = H - (B.y + B.h)
+  const band = caption ? Overlays.captionLayout(W, H, caption, capBox || B) : null
+  // Outside the picture wherever the look leaves room under the take, because furniture
+  // standing on the ground cannot cover what is being demonstrated at all. The caption
+  // band is that same room and it was there first.
+  const outside = below >= capH + 2 * inset && !(band && band.band)
+  // Hung an inset under the take rather than centred in whatever ground there is: on a
+  // 9:16 clip the ground is half the frame, and the strip belongs to the picture.
+  let y = outside ? B.y + B.h + inset + capH : B.y + B.h - inset
+  // Inside the take with the captions inside it too, the strip goes above them: two
+  // lines up, because a phrase may wrap to a second line and a cap may not land on it.
+  if (!outside && band && !band.band && band.an === 2) y = Math.min(y, band.y - 2.4 * band.px - inset * 0.5)
+  y = Math.max(capH + inset, y)
+  const dir = place === 'right' || place === 'centre' ? place : 'left'
+  const x = dir === 'right' ? B.x + B.w - inset : dir === 'centre' ? B.x + B.w / 2 : B.x + inset
+  return { groups: out, dir, x, y, capH, gap: H * KEY.gap * k, pad: capH * KEY.pad, text: capH * KEY.text, r: capH * KEY.radius }
+}
+
+const sameCaps = (a, b) => a.length === b.length && a.every((c, i) => c.label === b[i].label && c.role === b[i].role)
+// What a group says at a moment. A chord says one thing for its whole life; a run of
+// typing is typed out, so the pill holds what had been typed by t and grows the way a
+// field does, and past what it can hold it keeps the tail, which is where the caret is.
+const capsOf = (g, t) => {
+  // A folded burst grows the same way, so the strip never shows a key that has not been
+  // pressed yet, and it keeps the tail for the same reason the pill does.
+  if (g.seq) return g.seq.filter(x => x[0] <= t).flatMap(x => x[1]).slice(-KEY.max)
+  if (!g.chars) return g.caps
+  const s = g.chars.filter(c => c[0] <= t).map(c => c[1]).join('')
+  if (!s) return []
+  return [{ label: s.length > KEY.chars ? '…' + s.slice(-KEY.chars) : s, role: 'text', face: 'SF Mono' }]
+}
+// A width when no canvas is at hand (loopCheck, tests): the two ends of a loop are
+// compared against each other, so a guess that is wrong the same way at both is enough.
+const KEY_MEASURE = (s, px) => String(s).length * px * 0.6
+
+/**
+ * The caps on screen at output time t, in the plan's own pixels: where each sits, how
+ * far in it is, and what it says. measure(text, px, face) is the compositor's (text.js
+ * canvasMeasure), which caches per string and size.
+ */
+function keysAt(K, t, measure = KEY_MEASURE) {
+  if (!K) return null
+  const caps = []
+  for (const g of K.groups) {
+    const op = Overlays.fadeLevel(t, g.a, g.b, g.Tin, g.Tout)
+    if (!(op > 0.002)) continue
+    // it comes up from under its own line and settles, the way everything else in the
+    // house arrives: --ease-in on the move, the S on the alpha (DESIGN.md, Motion)
+    const p = g.Tin > 0 ? clamp((t - g.a) / g.Tin, 0, 1) : 1
+    const rise = (1 - Overlays.MOVE(p)) * K.capH * 0.22
+    const grow = 0.96 + 0.04 * Overlays.MOVE(p)
+    const list = capsOf(g, t)
+    if (!list.length) continue
+    const w = list.map(c => Math.max(K.capH, 2 * K.pad + measure(c.label, K.text, c.face)))
+    const total = w.reduce((a, b) => a + b, 0) + K.gap * (list.length - 1)
+    let x = K.dir === 'right' ? K.x - total : K.dir === 'centre' ? K.x - total / 2 : K.x
+    list.forEach((c, i) => {
+      caps.push({ ...c, x, y: K.y - K.capH + rise, w: w[i], h: K.capH, r: K.r, text: K.text, op, grow })
+      x += w[i] + K.gap
+    })
+  }
+  return caps.length ? { caps } : null
+}
+
 // ── one moment ───────────────────────────────────────────────────────────
 const RIPPLE = 0.56, FADE_IN = 0.16
 
@@ -440,4 +667,4 @@ function at(m, t) {
   return out
 }
 
-module.exports = { planMarks, planErase, planPointer, at, seenIn, MAX }
+module.exports = { planMarks, planErase, planPointer, planKeys, keysAt, at, seenIn, MAX, KEY }

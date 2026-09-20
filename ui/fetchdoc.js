@@ -76,13 +76,52 @@ const LEGACY = ['backdrop', 'backdropFile', 'outAspect', 'capStyle', 'hideMacCur
 // a take where neither can happen.
 const CROPS_CHROME = Look.CROPS_CHROME
 
+// Every level in the document is decibels against the take as recorded, and the same
+// ten either way wherever it is asked for: enough to rescue a passage a metre off the
+// mic, short of the level war a bigger number invites in front of loudnorm.
+const GAIN_DB = 10
+const oneGain = v => { const g = +v; return Number.isFinite(g) ? Math.max(-GAIN_DB, Math.min(GAIN_DB, g)) : 0 }
+
 function cleanAudio(a, base = AUDIO_DEFAULTS) {
   const o = { ...base, ...(a && typeof a === 'object' ? a : {}) }
-  const g = +o.gain
   const music = o.music == null || o.music === '' ? null
     : typeof o.music === 'string' ? o.music : (o.music && o.music.bed ? { bed: String(o.music.bed), ...(o.music.level != null ? { level: +o.music.level } : {}) } : null)
-  return { denoise: !!o.denoise, loudnorm: o.loudnorm !== false, gain: Number.isFinite(g) ? Math.max(-10, Math.min(10, g)) : 0, music,
+  return { denoise: !!o.denoise, loudnorm: o.loudnorm !== false, gain: oneGain(o.gain), music,
     speedAudio: o.speedAudio === 'keep' ? 'keep' : 'mute' }
+}
+
+/**
+ * A clip's own sound: `{ gain, denoise, mute }`, and whatever it does not say falls
+ * back to the take's own `audio`. That fallback is the whole compatibility story: a
+ * clip that says nothing is written back as nothing at all, hands the exporter no
+ * clipAudio, and gets the one filter chain over the whole take that it always got.
+ *
+ * Loudness is deliberately not here. loudnorm measures the finished sound once and
+ * lifts all of it to -14 LUFS; run per clip it would pull every piece to the same
+ * level, which flattens a take rather than balancing it, and its own resampling would
+ * fight the sample-exact pinning a sped-up piece needs (processor.rateAudio). The per
+ * clip answer to "this passage is too quiet" is a measured gain, and
+ * processor.clipLevels says how many decibels that is.
+ */
+function cleanClipAudio(a) {
+  if (!a || typeof a !== 'object') return null
+  const out = {}
+  // A clip may say 0 dB on purpose, to hold its own level while the take is lifted
+  // around it, so an explicit gain is kept whatever it is. mute has no take-level
+  // counterpart, so only the true of it is worth writing down.
+  if (a.gain != null && Number.isFinite(+a.gain)) out.gain = oneGain(a.gain)
+  if (a.denoise != null) out.denoise = !!a.denoise
+  if (a.mute) out.mute = true
+  return Object.keys(out).length ? out : null
+}
+// What a clip does to its own sound, or null where it asked for nothing.
+const clipAudioOf = clip => cleanClipAudio(clip && clip.audio)
+
+// The spans that really do something the take does not, against the take's own sound.
+const clipAudioFor = (spans, take) => {
+  const live = (spans || []).filter(([, , a]) =>
+    a.mute || (a.gain != null && a.gain !== take.gain) || (a.denoise != null && a.denoise !== take.denoise))
+  return live.length ? live : null
 }
 
 /**
@@ -204,8 +243,10 @@ const rateOf = clip => cleanRate(clip && clip.rate) || [1, 1]
 // the gaps between them at export time. `rates` is the one thing that shape cannot
 // say, so it comes back beside the cuts as source spans the clock reads
 // (Timeline.outClock's fourth argument), and it is null unless a clip asked.
+// `clipAudio` rides along the same way, source spans carrying what that clip does to
+// its own sound, and null unless a clip asked for something of its own.
 function trimFromClips(clips) {
-  if (!clips || !clips.length) return { start: 0, end: 0, cuts: [], rates: null }
+  if (!clips || !clips.length) return { start: 0, end: 0, cuts: [], rates: null, clipAudio: null }
   const sorted = clips.slice().sort((a, b) => a.start - b.start)
   const start = sorted[0].start
   const end = sorted[sorted.length - 1].end
@@ -216,7 +257,9 @@ function trimFromClips(clips) {
   }
   const rates = sorted.filter(c => cleanRate(c.rate))
     .map(c => { const [a, b] = rateOf(c); return [c.start, c.end, a, b] })
-  return { start: r3(start), end: r3(end), cuts, rates: rates.length ? rates : null }
+  const clipAudio = sorted.map(c => [c.start, c.end, clipAudioOf(c)]).filter(s => s[2])
+  return { start: r3(start), end: r3(end), cuts, rates: rates.length ? rates : null,
+    clipAudio: clipAudio.length ? clipAudio : null }
 }
 
 /**
@@ -282,12 +325,19 @@ function normalize(doc, src, dur) {
   for (const kind of Object.keys(KINDS)) {
     out[kind] = Array.isArray(doc[kind]) ? doc[kind].filter(Boolean) : []
   }
-  // A clip's speed is written back as the pair it means, or dropped where it is 1, so
-  // a document that never asked for speed is the document it was.
+  // A clip's speed is written back as the pair it means, or dropped where it is 1, and
+  // its own sound as the keys it really set, or dropped where it set none. A document
+  // that asked for neither is untouched, which is what keeps it the document it was.
   out.clips = out.clips.map(c => {
-    const rate = cleanRate(c && c.rate)
-    if (!rate) { if (c && 'rate' in c) { const { rate: _drop, ...rest } = c; return rest } return c }
-    return { ...c, rate: rate[0] === rate[1] ? rate[0] : rate }
+    if (!c || typeof c !== 'object' || !('rate' in c || 'audio' in c)) return c
+    const clip = { ...c }
+    const rate = cleanRate(clip.rate)
+    if (rate) clip.rate = rate[0] === rate[1] ? rate[0] : rate
+    else delete clip.rate
+    const audio = cleanClipAudio(clip.audio)
+    if (audio) clip.audio = audio
+    else delete clip.audio
+    return clip
   })
   out.pointer = Array.isArray(doc.pointer) ? normalizeTrack(doc.pointer) : null
   // A zoom sent with times alone gets the export's own defaults written in, so the
@@ -372,12 +422,17 @@ function toExportOpts(doc, extra = {}) {
     doc = normalize(doc, doc.src, doc.dur)
     if (Array.isArray(clips)) doc.clips = clips
   }
-  const { start, end, cuts, rates } = trimFromClips(doc.clips)
+  const { start, end, cuts, rates, clipAudio } = trimFromClips(doc.clips)
   const L = Look.toClassic(doc.look)
   const A = cleanAudio(doc.audio)
   const at = doc.audioTrack
   return {
     start, end, cuts,
+    // What each clip does to its own sound, where it differs from the take's. A clip
+    // asking for exactly what the take already does is not per-clip sound at all, and
+    // dropping it here is what keeps such an edit on the single chain and the input
+    // seek it had (processor.applyEdit).
+    clipAudio: clipAudioFor(clipAudio, A),
     // the speed of each surviving piece, source spans (Timeline.outClock). null where
     // nothing runs at anything but 1, which is what keeps an old edit's graph the same
     rates,
@@ -387,6 +442,10 @@ function toExportOpts(doc, extra = {}) {
     // where the page sits in a browser take, for the compositor: frame.chrome clean
     // only draws its own browser where the real one could be cropped off
     viewport: doc.viewport || null,
+    // the keys as they were pressed, for the strip marks.js draws over the finished
+    // frame. Nothing is drawn until a take carries a key track, which is the capture
+    // side and its own round, and without this line nothing ever would be.
+    keys: doc.keys || null,
     texts: doc.texts,
     // the waveform peaks drawn on the timeline are the editor's, not the export's
     audioTrack: at && at.file ? { file: at.file, volume: at.volume, offset: at.offset, replace: !!at.replace,
@@ -430,13 +489,14 @@ function toExportOpts(doc, extra = {}) {
  */
 function toRenderSpec(doc) {
   const d = doc && doc.v === 2 ? doc : normalize(doc, doc && doc.src, doc && doc.dur)
-  const { start, end, cuts, rates } = trimFromClips(d.clips)
+  const { start, end, cuts, rates, clipAudio } = trimFromClips(d.clips)
   const keep = Timeline.applyRates(
     d.clips.length ? Timeline.keepRanges(cuts, start, end) : [[0, d.dur || 0]], rates)
+  const A = cleanAudio(d.audio)
   return {
     v: 2, src: d.src, dur: d.dur,
     keep, length: +Timeline.outLength(keep).toFixed(3),
-    look: Look.resolve(d.look), audio: cleanAudio(d.audio),
+    look: Look.resolve(d.look), audio: A, clipAudio: clipAudioFor(clipAudio, A),
     crop: d.crop || null, viewport: d.viewport || null,
     zooms: d.zooms, marks: d.marks, texts: d.texts, cues: d.cues,
     pointer: d.pointer, camera: d.camera && d.camera.on !== false ? d.camera : null,
@@ -668,6 +728,6 @@ function focusAlongside(prev, doc) {
 module.exports = {
   KINDS, emptyDoc, mintId, ensureIds, normalize, fromLegacy, AUDIO_DEFAULTS, cleanAudio, lookPatchOf, chromeCrop,
   clipsFromTrim, trimFromClips, toExportOpts, toRenderSpec, outDuration, byId, mergeDoc, settleFocus,
-  cleanRate, rateOf, RATE_MIN, RATE_MAX,
+  cleanRate, rateOf, RATE_MIN, RATE_MAX, cleanClipAudio, clipAudioOf, GAIN_DB,
   mergeMarks, adoptIds, sameItem, focusClashes, zoomClashes, focusAlongside,
 }

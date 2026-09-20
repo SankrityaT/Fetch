@@ -10,6 +10,9 @@
 // dither are seeded by frame index (the first two through the film's own clock, which
 // is that index divided down), the glow family comes off this frame's own bright pass,
 // auto level is measured once per take on the CPU, so any frame can be drawn alone.
+// A clip that loops seeds those three on its frame's place inside the loop instead
+// (loopIndex, and loopCheck below, which says whether an edit can loop at all); t mod L
+// is a function of the frame's own time too, so the rule stands.
 'use strict'
 const Text = require('./text')
 const Marks = require('./marks')
@@ -1555,14 +1558,24 @@ class Compositor {
    *               wants: the near side alone beats the frame before.
    *   n           frame index, seeds the dither and, through the film's own clock, the
    *               grain and the ground's tooth
+   *   src.loop    the loop's length in output frames, where this clip is one, so those
+   *               three are seeded by the frame's place inside it (loopIndex). Defaults
+   *               to spec.loop, which is the plan's answer for the whole clip; a caller
+   *               drawing a window of its own gives its own length here.
    */
   render(spec, fp, src = {}) {
     const { W, H } = this
     const k = W / spec.W
+    // A looping clip has no frame L: frame L is frame 0 again. So everything seeded by
+    // the index is seeded by the frame's place inside the loop, and a preview playing
+    // the clip round again draws the frames the file holds rather than a second cycle
+    // of fresh noise. Still a function of this frame's own time, so any frame still
+    // draws alone.
+    const n = loopIndex(src.n || 0, Math.max(0, Math.round(src.loop != null ? src.loop : spec.loop || 0)))
     // The frame's own texture: one draw of grain and tooth lasts grainHold output
     // frames, so an export at 60 fps renews it at the same rate one at 30 does. A
     // function of this frame's index and nothing else, like the index itself.
-    const tn = Math.floor((src.n || 0) / (spec.grainHold || 1))
+    const tn = Math.floor(n / (spec.grainHold || 1))
     const c = this.slots.content
     if (!c || !c.ready) return false
     const cropUV = src.cropUV || [0, 0, 1, 1]
@@ -1634,6 +1647,7 @@ class Compositor {
     this.draw('frame', this.scene, u, { uBg: this.bg, uFill: this.fillA || this.dummy, uContent: marked ? marked.tex : c.rgba, uCamTex: cam ? this.slots.cam.rgba : this.dummy })
     if (spec.device) this.devicePass(spec, this.moved(spec.device.extent, r0, mv), k, tilt, mv.alpha)
     if (spec.text) this.textPass(spec, fp)
+    if (spec.keys) this.keysPass(spec, fp)
     // auto level touches the take alone, so the treatment pass is told where it is: the
     // same rect the frame pass drew it in, fading with it under a title card
     const finished = spec.treat ? this.treatPass(spec, u.uRect, u.uRadius, mv.alpha, tilt) : this.scene
@@ -1662,7 +1676,7 @@ class Compositor {
       last = this.keep('sideB', W, H)
       this.draw('dissolve', last, { uMix: fp.mix }, { uA: this.keep('sideA', W, H), uB: finished })
     }
-    this.draw('final', this.out, { uFade: fp.fade, uDither: spec.dither ? 1 : 0, uFrame: src.n || 0, uGrainFrame: tn,
+    this.draw('final', this.out, { uFade: fp.fade, uDither: spec.dither ? 1 : 0, uFrame: n, uGrainFrame: tn,
       uGrain: gr ? gr.amp * Math.min(1, cell) : 0, uCell: Math.max(0.25, cell) }, { uScene: last })
     return true
   }
@@ -2083,6 +2097,54 @@ class Compositor {
     }
   }
 
+  // The keys as they were pressed (marks.js, planKeys), over the finished frame and in
+  // the output's own space: a keycap is Fetch's furniture, so a zoom neither carries it
+  // nor scales it, and it carves itself out of the grade's mask like the badges and the
+  // words. One picture per cap per size, so a chord costs three textured quads.
+  //
+  // The cap is the step badge's furniture squared off, which is DESIGN.md's elevation in
+  // order: tone first (an ink surface on the picture), then one wide soft shadow, then a
+  // hairline and a 1 px top light. Gold is spent on the one key that did something, so a
+  // chord reads at a glance as modifiers and the key, and a run of typing, which has no
+  // action key in it, never goes gold at all.
+  keysPass(spec, fp) {
+    const K = Marks.keysAt(spec.keys, fp.t, this.measure)
+    if (!K) return
+    const k = this.W / spec.W
+    for (const c of K.caps) {
+      const w = c.w * k, h = c.h * k, r = c.r * k, px = c.text * k
+      const gold = c.role === 'action'
+      const p = this.pic(`key|${c.role}|${c.face}|${c.label}|${w.toFixed(2)}|${h.toFixed(2)}`, () => {
+        const m = Math.ceil(h * 0.34)
+        const cv = canvas(Math.ceil(w + 2 * m), Math.ceil(h + 2 * m)), g = cv.getContext('2d')
+        const box = dy => { g.beginPath(); g.roundRect(m, m + dy, w, h, r) }
+        g.save(); g.filter = `blur(${(h * 0.13).toFixed(2)}px)`; g.fillStyle = 'rgba(0,0,0,0.42)'
+        box(h * 0.09); g.fill(); g.restore()
+        box(0); g.fillStyle = gold ? Text.GOLD : 'rgba(26,23,20,0.93)'; g.fill()
+        const hair = Math.max(1, h * 0.022)
+        g.save(); box(0); g.clip()
+        // the 1 px top light, inside the cap so the corner keeps its shape
+        g.strokeStyle = gold ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.10)'
+        g.lineWidth = hair * 2; g.beginPath(); g.moveTo(m, m + hair); g.lineTo(m + w, m + hair); g.stroke()
+        g.restore()
+        box(0); g.strokeStyle = gold ? 'rgba(10,9,8,0.30)' : 'rgba(55,48,43,0.95)'; g.lineWidth = hair; g.stroke()
+        // the label's face is the one its width was measured with (text.js canvasMeasure):
+        // a known role, or a family name set the way that measure sets it
+        const role = c.face === 'sub' || c.face === 'caption' ? c.face : 'caption'
+        g.font = Text.fontFor(role, px, role === c.face ? null : c.face)
+        g.letterSpacing = role === 'caption' ? `${px * -0.005}px` : '0px'
+        g.fillStyle = gold ? Text.INK : c.role === 'hint' ? '#BDB5AC' : '#FBFAF8'
+        g.textAlign = 'center'
+        const mm = g.measureText(c.label)
+        g.fillText(c.label, m + w / 2, m + h / 2 + (mm.actualBoundingBoxAscent - mm.actualBoundingBoxDescent) / 2)
+        return { canvas: cv, x: -m, y: -m, w: cv.width, h: cv.height }
+      })
+      // scaled about its own centre, so a cap settles into place rather than sliding
+      const s = c.grow, cx = c.x * k + w / 2, cy = c.y * k + h / 2
+      this.sprite(this.scene, p, [cx + (p.x - w / 2) * s, cy + (p.y - h / 2) * s, p.w * s, p.h * s], c.op, 0, null, true)
+    }
+  }
+
   present() { this.draw('present', null, { uRes: [this.W, this.H] }, { uSrc: this.out }) }
   pack() { this.draw('pack', this.packed, { uH: this.H, uW: this.W }, { uSrc: this.out }) }
 
@@ -2141,4 +2203,167 @@ class Readback {
   destroy() { for (const s of this.slots) this.gl.deleteBuffer(s.buf) }
 }
 
-module.exports = { Compositor, Readback }
+// ── a clip that loops ───────────────────────────────────────────────────────
+//
+// A clip that autoplays on a landing page plays its last frame and then its first one,
+// forever. That hand-over is seamless when the step across it is no bigger than the step
+// between any two ordinary frames, and every pass here draws from the plan and the time
+// alone, so the question can be answered before a pixel is: ask the plan what varies at
+// the two ends and compare that step to the steps either side of it.
+//
+// Two halves, and only one of them is Fetch's. What Fetch draws over the recording (the
+// zoom, the bubble, the marks, the text, the fades) this answers exactly. Whether the
+// recording itself comes back to where it began is a question about the person's own
+// screen, and no plan can answer it, so loopCheck hands back the take's time at both
+// ends and says so instead of guessing. Nothing here rewrites an edit to make it wrap:
+// saying plainly what is stopping a clean loop is worth more than forcing a bad one.
+
+// The index everything seeded by the frame index should use: the frame's place inside
+// the loop. A function of the frame's own time, so any frame still draws alone. What it
+// buys is the first rule of the project, that the editor shows exactly what exports: a
+// stage playing the loop round again counts frames past the end, and without this its
+// second cycle carried grain and dither the file never holds.
+function loopIndex(n, L) {
+  return L > 0 ? ((n % L) + L) % L : n
+}
+
+// Everything that varies with time at one output time: the frame's own plan, and the
+// text laid out for it, which is the other half of what a frame is drawn from (pass 12).
+// The pure estimate does the measuring rather than a canvas: the two ends are compared
+// against each other, so a measure that is wrong the same way at both is enough.
+function loopState(spec, t) {
+  return { ...Plan.framePlan(spec, t), text: Text.textAt(spec.text, t), keys: Marks.keysAt(spec.keys, t) }
+}
+
+// |a - b| for every number under two of those states, by path, and Infinity wherever the
+// two are not the same shape: a mark alive at one end and gone at the other, a different
+// caption, a badge one end has and the other does not. Nothing interpolates a shape, so
+// it is an infinite step and reads as one.
+function loopDelta(a, b, path = '', out = new Map()) {
+  const put = d => { if (d > 0) out.set(path, Math.max(out.get(path) || 0, d)) }
+  if (typeof a === 'number' && typeof b === 'number') put(Math.abs(a - b))
+  else if (a === b || (typeof a === 'function' && typeof b === 'function')) { /* the same, or not a picture */ }
+  else if (Array.isArray(a) && Array.isArray(b) && a.length === b.length) {
+    // the index is left out of the path: what wants naming is the kind of thing that
+    // moved, not which of three badges it was
+    for (let i = 0; i < a.length; i++) loopDelta(a[i], b[i], path, out)
+  } else if (a && b && typeof a === 'object' && typeof b === 'object' && !Array.isArray(a) && !Array.isArray(b)) {
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) loopDelta(a[k], b[k], path ? path + '.' + k : k, out)
+  } else put(Infinity)
+  return out
+}
+
+// The take's own time moves the length of the clip across the wrap by definition, so
+// these say nothing about whether the loop shows.
+const LOOP_SOURCE = ['t', 's', 's2', 'camT']
+
+// path, what someone reads, and what to do about it. The longest matching path wins.
+// The sentences are written to be true whether the thing moved a little across the wrap
+// or is simply there at one end and not the other, because both are the same fault to
+// the eye: the clip does not end the way it starts.
+const ZOOM_FIX = 'end the clip where the zoom has landed and released, or drop the zoom'
+const MARK_FIX = 'end it before the last frame, or run it across the whole clip'
+const LOOP_NAMES = [
+  ['view0', 'a zoom has not landed back where it starts by the last frame', ZOOM_FIX],
+  ['view1', 'a zoom has not landed back where it starts by the last frame', ZOOM_FIX],
+  ['taps', 'a zoom is still moving at the last frame, so it is smeared and the first frame is sharp', ZOOM_FIX],
+  ['speed', 'a zoom is still moving at the last frame', ZOOM_FIX],
+  ['mix', 'a cut is still dissolving at the last frame', 'move the cut, or set motion.cutTransition to none'],
+  ['rate', 'the clip ends at a speed it does not start at', 'end the loop inside a region running at the speed it opens with'],
+  ['fade', 'the clip is part way through a fade at the last frame', 'set motion.fadeIn and motion.fadeOut to 0'],
+  ['bubble', 'the camera bubble is not where it opens by the last frame', 'key it back to where it opens before the end'],
+  ['move', 'the take is still arriving or settling at the last frame', 'set motion.reveal to none, or move the title card off the ends'],
+  ['marks.arrow', 'an arrow does not end the clip the way it starts it', MARK_FIX],
+  ['marks.steps', 'a step badge does not end the clip the way it starts it', MARK_FIX],
+  ['marks.loupe', 'a loupe does not end the clip the way it starts it', MARK_FIX],
+  ['marks.blur', 'a blur mark does not end the clip the way it starts it', MARK_FIX],
+  ['marks.focus', 'a lift or a spotlight does not end the clip the way it starts it', MARK_FIX],
+  ['marks.redact', 'a redaction covers one end of the loop and not the other', 'run it across the whole clip, or none of it'],
+  ['marks.erase', 'an erase covers one end of the loop and not the other', 'run it across the whole clip, or none of it'],
+  ['marks.pointer', 'the cursor is not where it starts by the last frame', 'end the take with the pointer where it began, or set cursor.show false'],
+  ['marks', 'a mark does not end the clip the way it starts it', MARK_FIX],
+  ['text', 'a caption or a title is mid-phrase at the last frame', 'end the phrase before the last frame; captions.show false takes them all off'],
+  ['keys', 'a key is still on screen at the last frame', 'leave the last second of the clip without a keystroke in it; keys.show false takes them off'],
+]
+function loopName(p) {
+  const hit = LOOP_NAMES.filter(([k]) => p === k || p.startsWith(k + '.')).sort((x, y) => y[0].length - x[0].length)[0]
+  return hit || [p, 'something drawn over the take does not end the clip the way it starts it', 'hold it still across the wrap, or take it off the ends']
+}
+
+/**
+ * Can this edit loop, and what is stopping it? spec from plan.prepare; no GL and no
+ * pixels. Returns
+ *   { loops, frames, seconds, faults: [{ id, what, fix, path, step, ordinary }], source }
+ * where `loops` is about what Fetch draws and `source` is the take's own time at the two
+ * ends, which is the recording's business and the one half measured rather than reasoned
+ * about (test/gl/harness.js, the loop group, measures it off the GPU).
+ */
+function loopCheck(spec) {
+  const N = spec.frames, fps = spec.fps
+  const faults = []
+  const add = (id, what, fix, extra) => { if (!faults.some(f => f.id === id)) faults.push({ id, what, fix, ...extra }) }
+  const r = x => (Number.isFinite(x) ? +x.toFixed(4) : 'a different shape')
+
+  // Both fades is the one fault the wrap itself does not show: a fade out running into a
+  // fade in is continuous across the hand-over, and the clip simply goes dark once a
+  // cycle, which is exactly what a landing page loop must not do. Named first, so the
+  // generic walk below does not report the same thing less plainly.
+  if (spec.fadeIn > 0 && spec.fadeOut > 0)
+    add('fade', 'the clip dips to black once a cycle', 'set motion.fadeIn and motion.fadeOut to 0: a loop has no start to open and no end to close')
+  else if (spec.fadeIn > 0)
+    add('fade', 'the clip opens from black, so the wrap is a cut from full to black', 'set motion.fadeIn to 0')
+  else if (spec.fadeOut > 0)
+    add('fade', 'the clip closes to black, so the wrap is a cut from black back to full', 'set motion.fadeOut to 0')
+
+  // motion.reveal is that same fault in different clothes, and it is on by default: the
+  // take settles back through the ground at the end and rises into place at the start,
+  // which is continuous across the hand-over and once a cycle is the picture dropping
+  // away and coming back. A loop has no arrival to make and no exit to take.
+  if (spec.reveal)
+    add('reveal', 'the take settles out and rises back in once a cycle', 'set motion.reveal to none')
+
+  if (N < 4) add('short', `${N} output frames is too short to say anything about`, 'record more than a handful of frames')
+  else {
+    const at = n => loopState(spec, n / fps)
+    const first = at(0), last = at(N - 1)
+    const wrap = loopDelta(last, first)
+    // The neighbouring steps rather than the whole clip's: a 300 px jump is motion where
+    // the frames around it travel that far too, and a jump where they are at rest.
+    const near = loopDelta(at(N - 2), last), near2 = loopDelta(first, at(1))
+    for (const [p, d] of [...wrap].sort((x, y) => y[1] - x[1])) {
+      if (LOOP_SOURCE.some(k => p === k || p.startsWith(k + '.'))) continue
+      const ok = Math.max(near.get(p) || 0, near2.get(p) || 0)
+      // a tenth over its neighbours is the same move carrying on; more than that is the
+      // wrap showing
+      if (d <= ok * 1.1 + 1e-4) continue
+      const [key, what, fix] = loopName(p)
+      add(key, what, fix, { path: p, step: r(d), ordinary: r(ok) })
+    }
+  }
+
+  // The film's clock holds one draw of grain and tooth for grainHold output frames, one
+  // at 30 and two at 60 (plan.js). A loop whose length that does not divide has a cell
+  // one frame short at the wrap: not a flash, but a tick in a boil that is otherwise
+  // even, and one frame of length is the whole fix.
+  // Guarded on what is actually drawn, not on what the plan carries: plan.js gives tooth
+  // a value of 1 wherever there is no film, and the tooth is only laid on a ground, so an
+  // edge to edge frame with the grain off draws neither and has no clock to tick.
+  const hold = spec.grainHold || 1
+  const toothOn = spec.bg && spec.bg.kind !== 'none' && spec.tooth > 0
+  if (hold > 1 && N % hold !== 0 && ((spec.grain && spec.grain.amp > 0) || toothOn))
+    add('grain-clock', `the film's clock does not divide ${N} frames, so grain and tooth hold one frame instead of ${hold} at the wrap`,
+      `make the clip ${N - (N % hold)} or ${N + hold - (N % hold)} frames long`)
+
+  const s0 = Plan.srcPair(spec, 0).s, s1 = Plan.srcPair(spec, (N - 1) / fps).s
+  return {
+    loops: faults.length === 0,
+    frames: N, seconds: +(N / fps).toFixed(3), faults,
+    // The recording's own half. The loop hands the take's time from one of these back to
+    // the other, and only the take's pixels can say whether that is a jump; the plan
+    // cannot and does not try.
+    source: { start: +s0.toFixed(3), end: +s1.toFixed(3),
+      note: 'the take has to show the same thing at both of these, and only its own pixels can say whether it does' },
+  }
+}
+
+module.exports = { Compositor, Readback, loopIndex, loopCheck }

@@ -44,9 +44,9 @@ const rt = (inT, outT, cuts, dur) => {
   const clips = d.clipsFromTrim(inT, outT, cuts, dur)
   return d.trimFromClips(clips)
 }
-is('round trip preserves the holes', rt(0, 10, [[4, 6]], 10), { start: 0, end: 10, cuts: [[4, 6]], rates: null })
-is('round trip preserves trim', rt(2, 8, [[4, 6]], 10), { start: 2, end: 8, cuts: [[4, 6]], rates: null })
-is('round trip of a single clip has no cuts', rt(0, 10, [], 10), { start: 0, end: 10, cuts: [], rates: null })
+is('round trip preserves the holes', rt(0, 10, [[4, 6]], 10), { start: 0, end: 10, cuts: [[4, 6]], rates: null, clipAudio: null })
+is('round trip preserves trim', rt(2, 8, [[4, 6]], 10), { start: 2, end: 8, cuts: [[4, 6]], rates: null, clipAudio: null })
+is('round trip of a single clip has no cuts', rt(0, 10, [], 10), { start: 0, end: 10, cuts: [], rates: null, clipAudio: null })
 
 // ---- ids ----
 {
@@ -152,6 +152,70 @@ is('a corrupt array is dropped, not fatal', d.normalize({ clips: 'nope' }, '/a.m
   is('an id with one field changes only that', (x => [x.kind, x.start, x.x])(kept.marks.find(x => x.id === 'M49')), ['step', 6.5, .3])
   const moved = d.mergeMarks(doc.marks, [{ id: 'M53', kind: 'lift', box: { x: .6, y: .6, w: .1, h: .1 } }]).marks.find(x => x.id === 'M53')
   is('a new box replaces the old placement', [moved.kind, moved.x, moved.box.x, moved.start], ['lift', undefined, .6, 40])
+}
+
+// ---- a clip's own sound ----
+{
+  is('a clip says only what it really set',
+    [d.cleanClipAudio({ gain: 6 }), d.cleanClipAudio({ denoise: true }), d.cleanClipAudio({ mute: true })],
+    [{ gain: 6 }, { denoise: true }, { mute: true }])
+  is('nothing, or nonsense, is nothing at all',
+    [d.cleanClipAudio(null), d.cleanClipAudio({}), d.cleanClipAudio({ gain: 'loud' }), d.cleanClipAudio({ mute: false })],
+    [null, null, null, null])
+  is('a level is clamped where the take\'s is', [d.cleanClipAudio({ gain: 40 }).gain, d.cleanClipAudio({ gain: -40 }).gain], [10, -10])
+  // 0 is a real answer: hold this clip's own level while the take is lifted around it
+  is('and an explicit nought is kept', d.cleanClipAudio({ gain: 0 }), { gain: 0 })
+
+  const doc = d.normalize({ v: 2, clips: [
+    { id: 'C1', start: 0, end: 4 },
+    { id: 'C2', start: 4, end: 9, audio: { gain: 5, denoise: true, junk: 1 } },
+    { id: 'C3', start: 9, end: 12, audio: {} },
+  ] }, '/x.mov', 12)
+  is('a clip that asked for nothing carries nothing', doc.clips[0], { id: 'C1', start: 0, end: 4 })
+  is('a clip that asked carries what it asked, and only that', doc.clips[1].audio, { gain: 5, denoise: true })
+  is('an empty bag is dropped rather than kept as clutter', 'audio' in doc.clips[2], false)
+
+  const opts = d.toExportOpts(doc)
+  is('the spans reach the exporter beside the cuts', opts.clipAudio, [[4, 9, { gain: 5, denoise: true }]])
+  is('and the take keeps saying what it always said', [opts.gain, opts.denoise], [0, false])
+
+  // A clip asking for exactly what the take already does is not per-clip sound. It has
+  // to come back null, or an edit would be put on the cut graph for nothing.
+  const same = d.normalize({ v: 2, audio: { gain: 5, denoise: true }, clips: [
+    { id: 'C1', start: 0, end: 4, audio: { gain: 5 } }, { id: 'C2', start: 4, end: 9, audio: { denoise: true } },
+  ] }, '/x.mov', 9)
+  is('a clip agreeing with the take is not per-clip sound', d.toExportOpts(same).clipAudio, null)
+  is('and one disagreeing by a decibel is',
+    d.toExportOpts(d.mergeDoc(same, { clips: [{ id: 'C1', start: 0, end: 4, audio: { gain: 4 } }, { id: 'C2', start: 4, end: 9 }] })).clipAudio,
+    [[0, 4, { gain: 4 }]])
+  is('the compositor is told the same thing', d.toRenderSpec(doc).clipAudio, [[4, 9, { gain: 5, denoise: true }]])
+}
+
+// ---- and a document saved before any of that ----
+{
+  // A v1 file as it was written to disk: the trim and cuts, the slider bag, the sound
+  // spread over look. It has to load, and to reach the exporter asking for nothing per
+  // clip, so the one chain over the whole take is the chain it gets (test/timeline.test.js
+  // holds that chain, character for character).
+  const saved = JSON.parse(JSON.stringify({
+    src: '/old.mov', dur: 30, in: 2, out: 28, cuts: [[10, 12]],
+    capStyle: { font: 'Georgia' }, backdrop: 'ink',
+    texts: [{ text: 'hello', start: 1, end: 3 }],
+  }))
+  const doc = d.fromLegacy(saved, { gain: 4, denoise: true, loudnorm: true, zoomAmt: 2 })
+  const o = d.toExportOpts(doc)
+  is('it still loads', [doc.v, doc.clips.length, doc.texts.length], [2, 2, 1])
+  is('its sound is the take\'s, where it has always been', [o.gain, o.denoise, o.loudnorm], [4, true, true])
+  is('no clip of it asks for anything of its own', o.clipAudio, null)
+  is('and normalizing it twice changes nothing', JSON.stringify(d.normalize(doc, '/old.mov', 30)), JSON.stringify(doc))
+
+  // the same claim for a v2 document from before this round: its clips come back
+  // exactly as they were written, with no audio key invented for them
+  const v2 = { v: 2, src: '/x.mov', dur: 12, audio: { gain: 3, denoise: true, loudnorm: false, music: null, speedAudio: 'mute' },
+    clips: [{ id: 'C1', start: 0, end: 5 }, { id: 'C2', start: 6, end: 12, rate: 4 }] }
+  const back = d.normalize(JSON.parse(JSON.stringify(v2)), '/x.mov', 12)
+  is('a v2 document\'s clips come back as they were written', back.clips, v2.clips)
+  is('and it asks for nothing per clip either', d.toExportOpts(back).clipAudio, null)
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`)

@@ -195,5 +195,213 @@ console.log('the camera take')
   is('no camera, no time', T.camTime(null, 1), null)
 }
 
-console.log(`\n  ${pass} passed, ${fail} failed`)
-process.exit(fail ? 1 : 0)
+console.log('a clip with sound of its own')
+{
+  // splitAt is the knife per-clip sound needs and rates did not: two clips meeting
+  // with no gap leave no cut, so the run comes back as one range.
+  is('a boundary inside a range splits it', T.splitAt([[0, 10]], [4]), [[0, 4], [4, 10]])
+  is('a boundary on an end changes nothing', T.splitAt([[0, 10]], [0, 10]), [[0, 10]])
+  is('a boundary in a gap changes nothing', T.splitAt([[0, 4], [6, 10]], [5]), [[0, 4], [6, 10]])
+  is('and the pieces are as long as what they came from',
+    r3(T.outLength(T.splitAt([[0, 6, 1, 3]], [2, 5]))), r3(T.outLength([[0, 6, 1, 3]])))
+  {
+    // a ramp cut this way is the parent's own map restricted, exactly as a cut leaves it
+    const whole = [[0, 10, 1, 4]]
+    const parts = T.splitAt(whole, [5])
+    is('a split ramp keeps the rates it really had',
+      [r3(parts[0][3]), r3(parts[1][2])], [r3(T.rateAt(whole, T.outIn(whole[0], 5))), r3(T.rateAt(whole, T.outIn(whole[0], 5)))])
+  }
+
+  // the take's settings are what a clip that asked for nothing falls back to
+  const take = { gain: 2, denoise: false }
+  const spans = [[0, 4, { gain: 6 }], [4, 10, { denoise: true }]]
+  const ak = proc.audioKeep([[0, 10]], 'mute', { spans, ...take })
+  is('abutting clips with their own sound are separate pieces', ak.map(({ seg }) => seg), [[0, 4], [4, 10]])
+  // A piece carries its clip's level as a difference from the take's, not the whole of
+  // it: the take's own gain sits after loudnorm and stays there, and a piece runs before
+  // loudnorm, so applying the whole of it here let loudnorm measure the lifted sound and
+  // take the take's lift straight back out. +6 over a take at +2 is +4 on the piece, and
+  // a clip that asked for nothing is bare.
+  is('each piece carries its clip\'s level as a difference from the take\'s',
+    ak.map(p => [p.gain, p.denoise]), [[4, false], [0, true]])
+  is('and the level is written on the piece, not over the whole take',
+    proc.rateAudio(ak[0].seg, ak[0]), ['volume=4dB'])
+  // and the take's own gain is still where it was, after loudnorm, so setting one clip's
+  // level cannot cancel it
+  is('the take\'s own gain stays after loudnorm when a clip asks for its own sound',
+    proc.audioGraph({ hasAudio: true, loudnorm: true, ...proc.takeAudioLeft({ gain: 2, denoise: true }, { spans }) }).af,
+    ['loudnorm=I=-14:TP=-1:LRA=11', 'volume=2dB'])
+  // A level that is not the level of the piece before it arrives as a ramp rather than a
+  // step, because the step is the click a person hears at an otherwise clean join. Both
+  // sides of the ramp are the same audio, so it is the level moving and not two moments
+  // mixed. Measured on a steady tone through renderAudio, the join comes out the same
+  // size step as the material either side of it (0.0275 against 0.0275, where the switch
+  // gave 0.135 against 0.0103).
+  const ramped = proc.clipAudioParts(proc.audioKeep([[0, 10]], 'mute', { spans, ...take }))
+  is('a clip whose level is not its neighbour\'s ramps into it rather than switching',
+    [ramped.some(x => /afade=t=out:st=0:d=0.02:curve=tri/.test(x)), ramped.some(x => /amix=inputs=2:normalize=0/.test(x))],
+    [true, true])
+  is('and an edit with no per-clip sound is one trim and one chain a piece, as it was',
+    proc.clipAudioParts(proc.audioKeep([[0, 4], [6, 10]], 'mute')).length, 2)
+  is('denoise goes before the retime, on the take\'s own timescale',
+    proc.rateAudio([0, 4, 2, 2], { denoise: true, gain: 3 })[0], 'afftdn=nr=12:nf=-25:tn=1')
+  is('a clip can drop its own sound outright',
+    proc.audioKeep([[0, 10]], 'mute', { spans: [[4, 10, { mute: true }]], gain: 0, denoise: false })
+      .map(p => p.mute), [false, true])
+
+  // the speed question: a gain inside a slowed region rides the same piece the rate
+  // does, after the pinning, so the level lands on sound that is already the length
+  // of the picture it goes with
+  const slow = proc.audioKeep([[0, 4, 0.5, 0.5]], 'mute', { spans: [[0, 4, { gain: 5 }]], gain: 0, denoise: false })
+  is('a slowed clip is one piece and keeps its sound', [slow.length, slow[0].mute, slow[0].gain], [1, false, 5])
+  is('and its level comes after the length is pinned',
+    proc.rateAudio(slow[0].seg, slow[0]),
+    ['atempo=0.5', 'apad=whole_dur=8', 'atrim=end=8', 'asetpts=PTS-STARTPTS', 'volume=5dB'])
+  // a ramp is a staircase of pieces, and every step of one clip carries the same level
+  const ramp = proc.audioKeep([[0, 8, 1, 3]], 'keep', { spans: [[0, 8, { gain: -4 }]], gain: 0, denoise: false })
+  is('every step of a ramped clip is at the one level', [...new Set(ramp.map(p => p.gain))], [-4])
+  is('and the sound is still as long as the picture',
+    r3(ramp.reduce((n, { seg }) => n + T.outSpan(seg), 0)), r3(T.outLength([[0, 8, 1, 3]])))
+  // a piece sped up past 1 is muted before its own gain can matter, as it always was
+  const fast = proc.audioKeep([[0, 8, 4, 4]], 'mute', { spans: [[0, 8, { gain: 8 }]], gain: 0, denoise: false })
+  is('a sped-up clip is still muted, level or no level', fast[0].mute, true)
+}
+
+console.log('the sound an older document makes, byte for byte')
+{
+  // The compatibility claim, not asserted but compared: these are the filter chains
+  // the committed code built for the same four documents, read out of it with
+  // processor.audioKeep, rateAudio and audioGraph and pasted here. A document written
+  // before per-clip sound existed carries no clipAudio, so audioKeep splits nothing
+  // and the take's own chain does the work: the strings have to match character for
+  // character, and any change to the sound of an old edit breaks this.
+  const soundOf = (doc, extra = null) => {
+    const opts = FD.toExportOpts(doc), spec = FD.toRenderSpec(doc)
+    const keep = spec.keep, span = spec.length
+    const hasCuts = (opts.cuts || []).some(c => Array.isArray(c) && c.length === 2) || !!(opts.rates && opts.rates.length)
+    const perClip = Array.isArray(opts.clipAudio) && opts.clipAudio.length
+      ? { spans: opts.clipAudio, gain: opts.gain, denoise: opts.denoise } : null
+    const parts = []
+    const ak = proc.audioKeep(keep, opts.speedAudio, perClip)
+    ak.forEach(({ seg, ...own }, i) => {
+      parts.push(`[0:a]atrim=${seg[0].toFixed(6)}:${seg[1].toFixed(6)},` +
+        ['asetpts=PTS-STARTPTS', ...proc.rateAudio(seg, own)].join(',') + `[ca${i}]`)
+    })
+    parts.push(ak.map((_, i) => `[ca${i}]`).join('') + `concat=n=${ak.length}:v=0:a=1[cuta]`)
+    const level = perClip ? { gain: 0, denoise: false } : { gain: opts.gain, denoise: opts.denoise }
+    const { af, extraGraph, extraMap } = proc.audioGraph({
+      hasAudio: true, loudnorm: opts.loudnorm, ...level,
+      fadeIn: +opts.fadeIn > 0 ? +opts.fadeIn : 0, fadeOut: +opts.fadeOut > 0 ? +opts.fadeOut : 0,
+      span, extra, extraInput: 1, keep: hasCuts ? keep : null, base: '[cuta]',
+    })
+    if (extraGraph) { parts.push(extraGraph); return parts.join(';') + ' => ' + extraMap }
+    parts.push(`[cuta]${af.length ? af.join(',') : 'anull'}[aout]`)
+    return parts.join(';') + ' => [aout]'
+  }
+  const N = (d, dur) => FD.normalize(d, '/x.mov', dur)
+
+  is('a whole take, untouched',
+    soundOf(N({ v: 2, clips: [{ id: 'C1', start: 0, end: 10 }] }, 10)),
+    '[0:a]atrim=0.000000:10.000000,asetpts=PTS-STARTPTS[ca0];[ca0]concat=n=1:v=0:a=1[cuta];' +
+    '[cuta]loudnorm=I=-14:TP=-1:LRA=11[aout] => [aout]')
+  is('a cut, with the take\'s denoise and gain over the whole of it',
+    soundOf(N({ v: 2, audio: { denoise: true, gain: 4 }, clips: [{ id: 'C1', start: 1, end: 4 }, { id: 'C2', start: 7, end: 12 }] }, 12)),
+    '[0:a]atrim=1.000000:4.000000,asetpts=PTS-STARTPTS[ca0];[0:a]atrim=7.000000:12.000000,asetpts=PTS-STARTPTS[ca1];' +
+    '[ca0][ca1]concat=n=2:v=0:a=1[cuta];[cuta]afftdn=nr=12:nf=-25:tn=1,highpass=f=70,loudnorm=I=-14:TP=-1:LRA=11,volume=4dB[aout] => [aout]')
+  is('a clip held at 4x, muted and pinned',
+    soundOf(N({ v: 2, clips: [{ id: 'C1', start: 0, end: 4 }, { id: 'C2', start: 4, end: 12, rate: 4 }] }, 12)),
+    '[0:a]atrim=0.000000:4.000000,asetpts=PTS-STARTPTS[ca0];[0:a]atrim=4.000000:12.000000,asetpts=PTS-STARTPTS,' +
+    'atempo=2,atempo=2,apad=whole_dur=2,atrim=end=2,asetpts=PTS-STARTPTS,volume=0[ca1];' +
+    '[ca0][ca1]concat=n=2:v=0:a=1[cuta];[cuta]loudnorm=I=-14:TP=-1:LRA=11[aout] => [aout]')
+  is('an added track under a cut, mixed and limited',
+    soundOf(N({ v: 2, audioTrack: { file: '/m.m4a', volume: 0.4, offset: 1 }, clips: [{ id: 'C1', start: 0, end: 5 }, { id: 'C2', start: 6, end: 12 }] }, 12),
+      { file: '/m.m4a', volume: 0.4, offset: 1 }),
+    '[0:a]atrim=0.000000:5.000000,asetpts=PTS-STARTPTS[ca0];[0:a]atrim=6.000000:12.000000,asetpts=PTS-STARTPTS[ca1];' +
+    '[ca0][ca1]concat=n=2:v=0:a=1[cuta];[1:a]atrim=start=0,asetpts=PTS-STARTPTS,adelay=1000|1000,volume=0.40[extraRaw];' +
+    '[extraRaw]asplit=2[extraSplit0][extraSplit1];[extraSplit0]atrim=0.000000:5.000000,asetpts=PTS-STARTPTS[extraCut0];' +
+    '[extraSplit1]atrim=6.000000:12.000000,asetpts=PTS-STARTPTS[extraCut1];[extraCut0][extraCut1]concat=n=2:v=0:a=1[extra];' +
+    '[cuta]loudnorm=I=-14:TP=-1:LRA=11[base];[base][extra]amix=inputs=2:duration=first:dropout_transition=0,alimiter=limit=0.95[amixed] => [amixed]')
+
+  // and one clip asking for its own level is the only thing that moves the chain
+  const lifted = soundOf(N({ v: 2, audio: { loudnorm: false }, clips: [{ id: 'C1', start: 0, end: 5 }, { id: 'C2', start: 5, end: 12, audio: { gain: 6 } }] }, 12))
+  is('per-clip sound writes the level onto the piece and leaves the take\'s chain empty',
+    lifted,
+    '[0:a]atrim=0.000000:5.000000,asetpts=PTS-STARTPTS[ca0];[0:a]atrim=5.000000:12.000000,asetpts=PTS-STARTPTS,volume=6dB[ca1];' +
+    '[ca0][ca1]concat=n=2:v=0:a=1[cuta];[cuta]anull[aout] => [aout]')
+}
+
+// ---- and the same thing, rendered and measured -------------------------
+// Everything above is strings. This renders two seconds of a take whose second half
+// was recorded 20 dB down, once as it is and once with the quiet clip lifted, and
+// measures both: the graph is only right if the level really moves, and only on the
+// clip that asked. Skipped where there is no ffmpeg to render with.
+async function rendered() {
+  const fs = require('fs'), os = require('os'), path = require('path'), { execFileSync } = require('child_process')
+  const dir = path.join(os.tmpdir(), `fetch-t4-${process.pid}`)
+  const src = path.join(dir, 'take.mp4')
+  console.log('rendered, and measured')
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    // a tone at full level for three seconds, then the same tone 20 dB down
+    execFileSync(proc.FFMPEG, ['-hide_banner', '-v', 'error', '-y',
+      '-f', 'lavfi', '-i', 'testsrc2=s=160x120:r=10:d=6',
+      '-f', 'lavfi', '-i', "aevalsrc='0.5*sin(440*2*PI*t)*if(lt(t,3),1,0.1)':d=6:s=48000",
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', src])
+  } catch (e) {
+    console.log(`  skip ffmpeg could not build the fixture (${String(e.message).split('\n')[0]})`)
+    return
+  }
+  try {
+    const meta = await proc.probeMeta(src)
+    // loudnorm off, so what is measured is the clips and not the normaliser
+    const base = { v: 2, src, dur: 6, audio: { loudnorm: false },
+      clips: [{ id: 'C1', start: 0, end: 3 }, { id: 'C2', start: 3, end: 6 }] }
+    const halves = [{ start: 0, end: 3 }, { start: 3, end: 6 }]
+    const render = async (doc, name) => {
+      const d = FD.normalize(doc, src, 6)
+      const spec = FD.toRenderSpec(d)
+      const out = path.join(dir, name)
+      await proc.renderAudio(src, FD.toExportOpts(d), spec.keep, spec.length, meta, out, null)
+      return proc.clipLevels(out, halves)
+    }
+    const flat = await render(base, 'flat.m4a')
+    const gap = l => +(l.clips[0].lufs - l.clips[1].lufs).toFixed(1)
+    is('the take really is recorded with its second half 20 dB down', Math.abs(gap(flat) - 20) < 1.5, true)
+    is('and the two clips abut, so nothing but per-clip sound could tell them apart',
+      FD.toExportOpts(FD.normalize(base, src, 6)).cuts, [])
+    is('the quiet one is named as quiet, with the gain that would fix it',
+      [flat.clips[1].quiet, flat.clips[1].gain > 5], [true, true])
+    is('and the loud one is not', flat.clips[0].quiet, false)
+
+    const lift = await render({ ...base, clips: [base.clips[0], { ...base.clips[1], audio: { gain: 10 } }] }, 'lift.m4a')
+    is('lifting C2 by ten closes ten of the twenty', Math.abs(gap(flat) - gap(lift) - 10) < 1.5, true)
+    is('and C1, which asked for nothing, is where it was',
+      Math.abs(flat.clips[0].lufs - lift.clips[0].lufs) < 0.5, true)
+
+    // the same document as it was before this round: same file, same measurement
+    const again = await render(base, 'flat2.m4a')
+    is('a document that asks for nothing renders the same sound twice',
+      again.clips.map(c => c.lufs), flat.clips.map(c => c.lufs))
+
+    // A clip's sound must not reach the picture. It puts the export on the trim and
+    // concat graph a cut uses, so this is worth proving rather than reasoning about:
+    // the same frame of the same edit, with and without a level on C2.
+    const frame = async doc => {
+      const shot = await proc.previewFrame(src, doc, 4)
+      const bytes = fs.readFileSync(shot.file)
+      try { fs.unlinkSync(shot.file) } catch {}
+      return bytes
+    }
+    const plainFrame = await frame(base)
+    const liftedFrame = await frame({ ...base, clips: [base.clips[0], { ...base.clips[1], audio: { gain: 10 } }] })
+    is('and the picture of a frame inside a lifted clip is the same picture, byte for byte',
+      plainFrame.equals(liftedFrame), true)
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+}
+
+rendered().then(() => {
+  console.log(`\n  ${pass} passed, ${fail} failed`)
+  process.exit(fail ? 1 : 0)
+})

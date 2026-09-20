@@ -240,6 +240,102 @@ t('an undo reports what it did, including things that are now gone', () => {
   assert.ok(!/\u2014/.test(A.undoSummary(was, now)))
 })
 
+// ── a question, and a proposal ──────────────────────────────────────────
+// The agent used to guess when an ask had two readings, and a wrong guess costs an
+// edit and an undo. These two kinds are the alternative: one click, or a look before
+// it lands.
+
+t('a question needs a question and two to four choices, or it is refused at the call', () => {
+  assert.strictEqual(A.askSpec({ choices: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }).ok, false)
+  const one = A.askSpec({ question: 'Which?', choices: [{ id: 'a', label: 'A' }] })
+  assert.strictEqual(one.ok, false)
+  assert.ok(/two to four/.test(one.error) && /make the change/.test(one.error), one.error)
+
+  const r = A.askSpec({ id: 'Q1', question: 'Which part do you mean?  ', note: 'It is in the sidebar.',
+    choices: [
+      { label: 'The whole sidebar' },
+      { id: 'Practice Button', label: 'Just the Practice button', hint: 'Leaves the rest alone' },
+      { label: 'The whole sidebar' },                 // the same thing twice is one choice
+      { label: '' }, { label: 'A fifth' }, { label: 'A sixth' },
+    ] })
+  assert.ok(r.ok)
+  assert.strictEqual(r.ask.question, 'Which part do you mean?')
+  assert.deepStrictEqual(r.ask.choices.map(c => c.id), ['the_whole_sidebar', 'practice_button', 'a_fifth', 'a_sixth'])
+  assert.strictEqual(r.ask.choices[1].hint, 'Leaves the rest alone')
+  assert.strictEqual(r.ask.choices[0].hint, null)
+})
+
+// A question the person never sees must not hold the agent, and an agent must not be
+// able to park itself for an hour either.
+t('a question always has a deadline, inside sane bounds', () => {
+  const q = { question: 'Which?', choices: [{ label: 'A' }, { label: 'B' }] }
+  assert.strictEqual(A.askSpec(q).ask.timeoutMs, A.ASK_MS)
+  assert.strictEqual(A.askSpec({ ...q, timeoutMs: 5 }).ask.timeoutMs, 10000)
+  assert.strictEqual(A.askSpec({ ...q, timeoutMs: 99999999 }).ask.timeoutMs, 600000)
+  assert.strictEqual(A.proposalSpec({ title: 'x' }).proposal.timeoutMs, A.PROPOSE_MS)
+})
+
+t('every answer, and every non-answer, comes back with what to do about it', () => {
+  const said = A.askResult({ how: 'answered', choice: { id: 'practice', label: 'Just the Practice button' } })
+  assert.strictEqual(said.answered, true)
+  assert.strictEqual(said.choice, 'practice')
+  assert.ok(/do not ask about it again/i.test(said.do_next))
+
+  for (const how of ['timeout', 'dismissed', 'unattended']) {
+    const r = A.askResult({ how, timeoutMs: 90000 })
+    assert.strictEqual(r.answered, false)
+    assert.strictEqual(r.reason, how)
+    assert.ok(r.why && /narrowest choice/.test(r.do_next), how)
+    assert.ok(/they can undo it/.test(r.do_next), how)
+  }
+  assert.ok(/90 s/.test(A.askResult({ how: 'timeout', timeoutMs: 90000 }).why))
+  // a turn the person stopped is not a question to work around
+  assert.ok(/Stop here/.test(A.askResult({ how: 'cancelled' }).do_next))
+})
+
+// The whole promise of a proposal is that nothing happens until Apply, so every
+// branch but Apply has to say, in the result the agent reads, that nothing was written.
+t('a proposal writes nothing unless it was applied, and says so', () => {
+  const yes = A.proposalResult({ how: 'apply' })
+  assert.strictEqual(yes.applied, true)
+  assert.ok(/do not send it again through apply_edit/i.test(yes.do_next))
+
+  for (const how of ['discard', 'dismissed', 'timeout', 'unattended', 'cancelled']) {
+    const r = A.proposalResult({ how, timeoutMs: 240000 })
+    assert.strictEqual(r.applied, false, how)
+    assert.ok(/Nothing was written/.test(r.why), how)
+  }
+  assert.ok(/do not propose the same thing again/i.test(A.proposalResult({ how: 'discard' }).do_next))
+  assert.ok(/behind their back/.test(A.proposalResult({ how: 'timeout' }).do_next))
+})
+
+t('the pane has a line for every way a card can settle, and none of them blames anyone', () => {
+  for (const how of ['timeout', 'dismissed', 'unattended', 'cancelled', 'stale']) {
+    assert.ok(A.settleLine('ask', how), how)
+    assert.ok(A.settleLine('propose', how), how)
+  }
+  // an answered question needs no line: the chosen button, ticked, is the record
+  assert.strictEqual(A.settleLine('ask', 'answered'), '')
+  assert.strictEqual(A.settleLine('propose', 'discard'), 'Discarded. Nothing was changed.')
+  assert.strictEqual(A.settleLine('nonsense', 'timeout'), '')
+  const all = [...Object.values(A.settleLine('ask', 'timeout')), A.settleLine('propose', 'timeout')].join('')
+  assert.ok(!/\u2014/.test(all))
+})
+
+t('the doctrine says when to ask and when to just do it', () => {
+  const sys = A.systemPrompt()
+  assert.ok(/Ask with ask only when/.test(sys))
+  assert.ok(/two or more readings/.test(sys), 'the bar is damage, not doubt')
+  assert.ok(/Never ask twice about the same thing/.test(sys))
+  assert.ok(/a default they can see and undo beats a question/.test(sys))
+  assert.ok(/Show it with propose/.test(sys))
+  assert.ok(/writes nothing\s*until they press Apply/.test(sys))
+  assert.ok(/do_next/.test(sys), 'the result steers the next move, so the prompt points at it')
+  // and the standing rule is still "decide it yourself", with this as the exception
+  assert.ok(/sensible default and make the change, rather than asking/.test(sys))
+  assert.ok(!/\u2014/.test(sys))
+})
+
 t('a take still loading reports no edit rather than a blank one', () => {
   const h = A.contextHeader({ open: { path: '/a.mov', dur: 5, doc: null } })
   assert.ok(h.includes('/a.mov (0:05)'))

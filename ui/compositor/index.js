@@ -49,11 +49,13 @@ async function loadAssets(comp, spec) {
 /**
  * How big to decode the take. Decoding is cheap next to what it saves when a 5K take
  * goes to a 1080 frame, and scale_vt does it on the GPU before the download; a take
- * already near the size the deepest zoom needs is decoded as it is.
+ * already near the size the deepest zoom needs is decoded as it is. share is how much
+ * of the plan's own size the frame is drawn at, so a GIF at 640 wide does not pay to
+ * decode 1080p and throw four fifths of it away.
  */
-function decodeSize(spec) {
+function decodeSize(spec, share = 1) {
   const deepest = Math.max(1, ...spec.zooms.map(z => +z.scale || 1))
-  const need = spec.rect.w / spec.inner.w * deepest
+  const need = spec.rect.w * share / spec.inner.w * deepest
   const c = spec.crop
   if (c.w <= need * 1.5) return { scale: null, crop: c, w: c.w, h: c.h }
   const k = need * 1.15 / c.w
@@ -77,18 +79,37 @@ function camSquare(size, d) {
 }
 
 /**
+ * What a GIF is drawn from. A GIF holds at most 256 colours, and neither the ground's
+ * tooth nor the film's grain survives that: what a texture of one or two levels becomes
+ * after quantising is a different dither pattern on every pixel of every frame, and a
+ * frame that differs everywhere is a frame the GIF writer has to write out whole. The
+ * texture is invisible in the file and multiplies it, so a GIF is drawn without it, and
+ * the last pass's own dither goes for the same reason. Nothing else about the plan moves:
+ * the frame, the device, the lift, the grade and the easing are all still drawn.
+ */
+const forGif = spec => ({ ...spec, grain: null, tooth: 0, dither: false })
+
+/**
  * Render the picture of one export to job.out (video only).
- *   job    { spec, src, out, ffmpeg, quality }
+ *   job    { spec, src, out, ffmpeg, quality, format, width }
  *   hooks  { progress(frame, total), pid(pid), cancelled() -> bool }
+ * format is the container (mp4, mov, webm, gif); width draws the plan smaller than its
+ * own size, which is how a GIF is delivered at 640 wide.
  */
 async function renderVideo(job, hooks = {}) {
   const { spec, ffmpeg } = job
+  const format = job.format || 'mp4'
+  const draw = format === 'gif' ? forGif(spec) : spec
+  // The plan is one plan at one size; a smaller frame is the same plan drawn at a share
+  // of it (gl.js scales every placement by W / spec.W), as a contact sheet's stills are.
+  const k = job.width ? Math.min(1, job.width / spec.W) : 1
+  const outW = even(spec.W * k), outH = even(spec.H * k)
   const t0 = performance.now()
   const pid = hooks.pid || (() => {})
   const pts = await framePts(ffmpeg, job.src)
   if (!pts.length) throw new Error('the recording has no video frames')
   const map = Plan.screenFrames(spec, pts)
-  const size = decodeSize(spec)
+  const size = decodeSize(spec, k)
   const open = (m, hw) => new FfmpegSource(ffmpeg, decodeArgs(job.src, pts, m.runs, { crop: size.crop, scale: size.scale, hw }),
     m, size.w, size.h, { onPid: pid })
   let screen = open(map, true)
@@ -109,22 +130,26 @@ async function renderVideo(job, hooks = {}) {
     } catch (e) { console.warn('camera left out: ' + e.message) }
   }
 
-  const comp = new Compositor(spec.W, spec.H)
+  const comp = new Compositor(outW, outH)
   if (spec.bg.kind === 'image') {
     try { comp.setImage(spec.bg.file, await loadImage(spec.bg.file)) } catch (e) { console.warn(e.message) }
   }
   await loadAssets(comp, spec)
-  // The encoder: packed NV12 read back into ffmpeg's x264, as the classic export encodes
-  // (sinks.js says why); VideoToolbox (sink 'vt') or Chromium's encoder on the canvas
-  // (sink 'webcodecs') when asked, for measuring
+  // The encoder: packed NV12 read back into ffmpeg, which is where the container's own
+  // codec lives (sinks.js: x264 for MP4 and MOV, VP9 for WebM, a palette pass for GIF).
+  // Same drawn frames either way. VideoToolbox (sink 'vt') or Chromium's encoder on the
+  // canvas (sink 'webcodecs') when asked, for measuring; both are H.264 alone.
   const q = job.quality || 'balanced'
-  const webcodecs = job.sink === 'webcodecs' && await WebCodecsSink.supported(spec.W, spec.H, spec.fps)
+  const h264 = format === 'mp4' || format === 'mov'
+  const webcodecs = h264 && job.sink === 'webcodecs' && await WebCodecsSink.supported(outW, outH, spec.fps)
   const rb = webcodecs ? null : new Readback(comp, 3)
+  const codec = h264 && job.sink === 'vt' ? 'vt' : 'x264'
   const sink = webcodecs
-    ? await new WebCodecsSink(ffmpeg, job.out, comp.canvas, spec.W, spec.H, spec.fps, { quality: q, onPid: pid }).open()
-    : new Nv12PipeSink(ffmpeg, encodeArgs(job.out, spec.W, spec.H, spec.fps, { quality: q, W4: comp.packed.w * 4, codec: job.sink === 'vt' ? 'vt' : 'x264' }), rb.bytes, { onPid: pid })
+    ? await new WebCodecsSink(ffmpeg, job.out, comp.canvas, outW, outH, spec.fps, { quality: q, onPid: pid }).open()
+    : new Nv12PipeSink(ffmpeg, encodeArgs(job.out, outW, outH, spec.fps, { quality: q, W4: comp.packed.w * 4, codec, format }), rb.bytes, { onPid: pid })
   let stale = false
-  const stats = { frames: spec.frames, uploads: 0, camUploads: 0, dissolved: 0, decodeRetry: false, sink: webcodecs ? 'webcodecs' : job.sink === 'vt' ? 'vt' : 'x264' }
+  const stats = { frames: spec.frames, format, size: `${outW}x${outH}`, uploads: 0, camUploads: 0, dissolved: 0, decodeRetry: false,
+    sink: webcodecs ? 'webcodecs' : format === 'gif' ? 'gif' : format === 'webm' ? 'vp9' : codec }
   // where the time goes, in ms over the whole export: waiting on the decode, uploading
   // and drawing, waiting on the readback and the encoder
   const ms = { decode: 0, draw: 0, encode: 0 }
@@ -137,7 +162,7 @@ async function renderVideo(job, hooks = {}) {
   try {
     for (let n = 0; n < spec.frames; n++) {
       if (hooks.cancelled && hooks.cancelled()) throw Object.assign(new Error('cancelled'), { cancelled: true })
-      const fp = Plan.framePlan(spec, n / spec.fps)
+      const fp = Plan.framePlan(draw, n / spec.fps)
       let f
       const t1 = performance.now()
       try { f = await screen.frameAt(n) } catch (e) {
@@ -168,10 +193,10 @@ async function renderVideo(job, hooks = {}) {
           stats.decodeRetry = true; cross.close(); cross = open(xmap, false); xf = await cross.frameAt(n)
         }
       }
-      if (!comp.render(spec, fp, { n, cam: camOn, side: xf ? 'a' : null })) throw new Error('no frame of the recording to draw')
+      if (!comp.render(draw, fp, { n, cam: camOn, side: xf ? 'a' : null })) throw new Error('no frame of the recording to draw')
       if (xf) {
         comp.uploadNV12('content', xf.data, xf.w, xf.h, spec.src.h); stats.uploads++; stale = true
-        comp.render(spec, fp, { n, cam: camOn, side: 'b' })
+        comp.render(draw, fp, { n, cam: camOn, side: 'b' })
         stats.dissolved++
       }
       if (webcodecs) {

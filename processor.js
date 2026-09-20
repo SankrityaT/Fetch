@@ -1291,6 +1291,91 @@ async function waveform(srcArg, opts, onProgress, jobId) {
   } finally { done() }
 }
 
+// ---- how loud it really is ---------------------------------------------
+//
+// Gain is per clip now, and decibels are no use to anyone who cannot hear the take.
+// This measures each clip the way a platform measures a finished video, EBU R128
+// integrated loudness, so the number is in the same unit the -14 LUFS target is in
+// and the gain to set is a subtraction.
+//
+// Per clip rather than per take, because that is the fault it exists to name: most of
+// a take is fine and one passage was said a metre further from the mic. Loudnorm lifts
+// the whole thing together and can never fix the relation between the two.
+const LUFS_FLOOR = -70          // ebur128 says this, or -inf, for something with no signal
+const lufsOf = out => {
+  const m = [...String(out).matchAll(/I:\s+(-?[\d.]+|-inf)\s+LUFS/g)].pop()
+  const v = m ? parseFloat(m[1]) : NaN
+  return Number.isFinite(v) && v > LUFS_FLOOR ? +v.toFixed(1) : null
+}
+const peakOf = out => {
+  const m = [...String(out).matchAll(/Peak:\s+(-?[\d.]+|-inf)\s+dBFS/g)].pop()
+  const v = m ? parseFloat(m[1]) : NaN
+  return Number.isFinite(v) ? +v.toFixed(1) : null
+}
+
+// One span of a take, measured. Seeks the input rather than reading up to it, so a
+// clip late in a long take costs what the clip is worth and not what the take is.
+function measureSpan(src, a, len, jobId) {
+  return new Promise(resolve => {
+    let buf = ''
+    const p = spawn(FFMPEG, ['-hide_banner', '-nostats', '-ss', a.toFixed(3), '-t', len.toFixed(3),
+      '-i', src, '-vn', '-af', 'ebur128=peak=true', '-f', 'null', '-'])
+    register(jobId, p)
+    p.stderr.on('data', d => { buf += d })
+    p.on('close', () => { unregister(jobId, p); resolve(buf) })
+    p.on('error', () => { unregister(jobId, p); resolve('') })
+  })
+}
+
+/**
+ * How loud each clip of an edit is, and what gain would bring it level with the rest.
+ *
+ * `clips` is the document's, [{ id, start, end }]; without it the whole take is one.
+ * Returns { target, take, clips }, each clip carrying lufs, peak, the gain to set on
+ * clips[].audio, and quiet when that gain is worth setting. A clip with no signal at
+ * all comes back silent: no lufs and no gain, because no number of decibels fixes it.
+ *
+ * The take's own loudness is the clips' energies averaged over their lengths rather
+ * than another pass over the file. Each clip's measurement is gated (R128 drops what
+ * is below the threshold), so treating it as the level of the whole clip is an
+ * approximation, and it is the right one here: what is wanted is the level the
+ * finished video sits at, to lift the odd passage up to.
+ */
+const QUIET_LU = 3              // under this nobody reaches for the fader
+async function clipLevels(srcArg, clips, { target = -14, jobId = null } = {}) {
+  const { src, meta, done } = await ensureSeekable(srcArg, jobId)
+  try {
+    if (!meta.hasAudio) return { target, take: null, clips: [] }
+    const spans = (Array.isArray(clips) && clips.length ? clips : [{ start: 0, end: meta.duration || 0 }])
+      .map(c => ({ id: c.id || null, start: Math.max(0, +c.start || 0), end: +c.end || 0 }))
+      .filter(c => c.end - c.start > 0.05)
+    const out = []
+    for (const c of spans) {
+      const text = await measureSpan(src, c.start, c.end - c.start, jobId)
+      out.push({ ...c, lufs: lufsOf(text), peak: peakOf(text) })
+    }
+    const heard = out.filter(c => c.lufs != null)
+    const energy = heard.reduce((n, c) => n + (c.end - c.start) * Math.pow(10, (c.lufs + 0.691) / 10), 0)
+    const len = heard.reduce((n, c) => n + (c.end - c.start), 0)
+    const takeLufs = len > 0 ? +(-0.691 + 10 * Math.log10(energy / len)).toFixed(1) : null
+    const peak = out.reduce((p, c) => (c.peak != null && (p == null || c.peak > p) ? c.peak : p), null)
+    return {
+      target,
+      // A take this far under the target is lifted by loudnorm on the way out, and its
+      // room noise comes up with it, which is worth saying before it is exported.
+      take: { lufs: takeLufs, peak, quiet: takeLufs != null && takeLufs < target - 10 },
+      clips: out.map(c => {
+        if (c.lufs == null) return { id: c.id, start: c.start, end: c.end, lufs: null, peak: c.peak, gain: 0, silent: true, quiet: true }
+        // clamped where the document clamps it, so the number handed back is one a
+        // clip can actually be set to
+        const raw = takeLufs != null ? takeLufs - c.lufs : 0
+        const gain = +Math.max(-fetchdoc.GAIN_DB, Math.min(fetchdoc.GAIN_DB, raw)).toFixed(1)
+        return { id: c.id, start: c.start, end: c.end, lufs: c.lufs, peak: c.peak, gain, quiet: gain >= QUIET_LU }
+      }),
+    }
+  } finally { done() }
+}
+
 // ---- recordings list ---------------------------------------------------
 function libraryIndexPath() {
   let dir
@@ -2219,7 +2304,7 @@ function autoZoomFilter(srcArg, meta, opts = {}, clock = 0, frame, crop) {
 
 // ---- background: the framed look --------------------------------------
 // Video is inset with rounded corners and a soft shadow over a generated
-// backdrop, the way Loom and Screen Studio present a recording.
+// backdrop, the way the polished recorders present a recording.
 const BACKDROPS = {
   dusk:    { label: 'Dusk',    c0: '0xF0A93C', c1: '0x7A3E12' },
   ember:   { label: 'Ember',   c0: '0xFF6B4A', c1: '0x7A1F3D' },
@@ -2447,30 +2532,109 @@ function atempoChain(r) {
 // only ever grows. Pinned, the error is one segment's rounding and never accumulates.
 // `mute` is the default for a piece running faster than 1 (Fetchdoc AUDIO_DEFAULTS):
 // the reason to speed a stretch up is that nothing is being said over it.
-function rateAudio(seg, { mute = false } = {}) {
+// `gain` and `denoise` are this piece's own, where the clip it belongs to asked for
+// something the take does not do (audioKeep). Denoise goes first, on the take's own
+// timescale: afftdn is matching a noise spectrum, and atempo moves every partial in it.
+// Level goes last, after the pinning, so a piece's length is the retime's business and
+// nothing else's.
+function rateAudio(seg, { mute = false, gain = 0, denoise = false, level = true } = {}) {
   const [r0, r1] = Timeline.rateEnds(seg)
   const span = Timeline.outSpan(seg)
   const bits = []
+  if (denoise) bits.push('afftdn=nr=12:nf=-25:tn=1', 'highpass=f=70')
   const mean = (seg[1] - seg[0]) / span
   if (r0 !== 1 || r1 !== 1) {
     bits.push(...atempoChain(mean))
     const pin = String(+span.toFixed(6))
     bits.push(`apad=whole_dur=${pin}`, `atrim=end=${pin}`, 'asetpts=PTS-STARTPTS')
   }
-  if (mute) bits.push('volume=0')
+  // level false leaves the level off, for a piece whose level arrives as a ramp and is
+  // therefore applied twice, once at each end of it (clipAudioParts)
+  if (level) {
+    if (gain) bits.push(`volume=${gain}dB`)
+    if (mute) bits.push('volume=0')
+  }
   return bits
 }
 
-// The sound's own list of ranges: the picture's, with every ramp cut into pieces one
-// atempo can cover (Timeline.rateSteps). Whether a piece plays is decided once for the
-// range it came from, so a ramp crossing 1 does not gate itself on and off mid-slide.
-function audioKeep(keep, speedAudio) {
+// How long a level change at a clip's edge takes, rather than happening between two
+// samples. A step from one clip's level to the next is a click, and the click is what a
+// person hears in an otherwise clean join: on a steady tone a +10 dB step moves 0.135 in
+// one sample against a natural slope of 0.004. 20 ms is under a frame of picture, so it
+// is inaudible as a move, and it takes that step down to 0.012.
+const CLIP_XF = 0.02
+
+// The pieces of the take's own sound, trimmed, retimed and levelled, ready to concat.
+// Where a piece's level is not the one before it (audioKeep sets `from`), the change is
+// ramped rather than switched: the piece is drawn twice, at the level before and the
+// level after, and one is faded into the other. Both sides are the same audio, so it is
+// a ramp of the level and not a mix of two moments, and the piece is the same length to
+// the sample, which is what the pinning in rateAudio exists to hold.
+function clipAudioParts(ak, src = '[0:a]', tag = 'ca') {
+  const parts = []
+  ak.forEach(({ seg, from, ...own }, i) => {
+    // a piece shorter than the ramp would end part way through it and never reach its
+    // own level, so it switches, as it did before any of this
+    const ramp = from && Timeline.outSpan(seg) > 2 * CLIP_XF
+    const head = `${src}atrim=${seg[0].toFixed(6)}:${seg[1].toFixed(6)},` +
+      ['asetpts=PTS-STARTPTS', ...rateAudio(seg, { ...own, level: !ramp })].join(',')
+    if (!ramp) { parts.push(`${head}[${tag}${i}]`); return }
+    const vol = o => (o.mute ? 'volume=0,' : o.gain ? `volume=${o.gain}dB,` : '')
+    parts.push(`${head}[${tag}${i}s]`,
+      `[${tag}${i}s]asplit=2[${tag}${i}a][${tag}${i}b]`,
+      `[${tag}${i}a]${vol(from)}afade=t=out:st=0:d=${CLIP_XF}:curve=tri[${tag}${i}x]`,
+      `[${tag}${i}b]${vol(own)}afade=t=in:st=0:d=${CLIP_XF}:curve=tri[${tag}${i}y]`,
+      `[${tag}${i}x][${tag}${i}y]amix=inputs=2:normalize=0[${tag}${i}]`)
+  })
+  return parts
+}
+
+/**
+ * The sound's own list of ranges: the picture's, with every ramp cut into pieces one
+ * atempo can cover (Timeline.rateSteps). Whether a piece plays is decided once for the
+ * range it came from, so a ramp crossing 1 does not gate itself on and off mid-slide.
+ *
+ * `perClip` is { spans, gain, denoise } where some clip wants its own sound: the spans
+ * Fetchdoc.trimFromClips found, and the take's own settings for every clip that asked
+ * for nothing to fall back to. It splits the ranges again at the clips' edges, because
+ * two clips meeting with no gap leave no cut and would otherwise be one range, and it
+ * is the only thing that moves gain and denoise off the whole take and onto the piece.
+ * Left out, every piece comes back bare and the take's one chain does the work it did.
+ */
+function audioKeep(keep, speedAudio, perClip = null) {
+  const spans = perClip && perClip.spans && perClip.spans.length ? perClip.spans : null
+  const ranges = spans ? Timeline.splitAt(keep, spans.flatMap(s => [s[0], s[1]])) : keep
   const out = []
-  for (const seg of keep) {
-    const mute = rateMutes(seg, speedAudio)
-    for (const sub of Timeline.rateSteps(seg)) out.push({ seg: sub, mute })
+  // the level the piece before this one ran at, so a change of level can arrive as a
+  // ramp. Only where some clip asked for its own sound: an edit written before that
+  // existed keeps the graph it always had, character for character.
+  let last = null
+  for (const seg of ranges) {
+    const own = spans ? clipAudioAt(spans, (seg[0] + seg[1]) / 2) : null
+    // A piece's gain is what its clip asks for over what the take already asks for, not
+    // the whole of it: the take's own gain stays where it was, after loudnorm, and this
+    // runs before it. Applied whole here, loudnorm would measure the lifted sound and
+    // take the lift straight back out, so setting one clip's level quietly cancelled the
+    // take's. A clip that asks for nothing comes back at 0 and its piece is bare.
+    const part = !spans ? {} : {
+      gain: own && own.gain != null ? own.gain - (perClip.gain || 0) : 0,
+      denoise: own && own.denoise != null ? own.denoise : !!perClip.denoise,
+    }
+    const mute = rateMutes(seg, speedAudio) || !!(own && own.mute)
+    const now = { gain: part.gain || 0, mute }
+    const from = spans && last && (last.gain !== now.gain || last.mute !== now.mute) ? last : null
+    // the level is one thing for the whole range, so only its first piece is a change
+    Timeline.rateSteps(seg).forEach((sub, i) => out.push({ seg: sub, mute, ...part, ...(from && !i ? { from } : {}) }))
+    last = now
   }
   return out
+}
+
+// Which clip's sound a moment of the take belongs to. Asked at a piece's midpoint, so
+// a boundary shared by two spans never has to be broken by a rule about its ends.
+const clipAudioAt = (spans, t) => {
+  for (const s of spans || []) if (t >= s[0] && t <= s[1]) return s[2]
+  return null
 }
 
 // Does this piece of the take play its own sound? Only asked where a rate was set.
@@ -2584,6 +2748,22 @@ function audioGraph({ hasAudio, denoise, loudnorm, gain, fadeIn = 0, fadeOut = 0
     `[base][extra]amix=inputs=2:duration=first:dropout_transition=0,alimiter=limit=0.95[amixed]` }
 }
 
+// What the clips asked of their own sound, ready for audioKeep, or null where none of
+// them asked. Only where the take has sound of its own: a clip's gain over silence is
+// still silence, and building the graph for it would cost an export its input seek.
+const clipAudioPlan = (opts, hasAudio) =>
+  hasAudio && Array.isArray(opts.clipAudio) && opts.clipAudio.length
+    ? { spans: opts.clipAudio, gain: opts.gain, denoise: opts.denoise } : null
+
+// The take's own level and denoise, once the pieces have taken theirs. Denoise is the
+// half that has to move: a clip can turn it off as well as on, so every piece carries
+// its own answer and the whole concatenation carries none. The take's gain does not
+// move, because where it sits is the point of it: after loudnorm, as an offset from the
+// normalised target, and a piece carries only its clip's difference from it (audioKeep).
+// Loudness and the fades stay put too: they are about the finished thing, not a piece.
+const takeAudioLeft = (opts, perClip) =>
+  perClip ? { gain: opts.gain, denoise: false } : { gain: opts.gain, denoise: opts.denoise }
+
 // The sound of an export on its own, for the compositor (ui/render-host.js), which draws
 // the picture elsewhere and muxes the two: the same kept ranges and the same audioGraph
 // as applyEdit, AAC at 48 kHz stereo, span seconds long. Resolves to out, or null when
@@ -2592,20 +2772,18 @@ async function renderAudio(srcArg, opts, keep, span, meta, out, jobId) {
   const extra = opts.audioTrack && opts.audioTrack.file && fs.existsSync(opts.audioTrack.file) ? opts.audioTrack : null
   if (!meta.hasAudio && !extra) return null
   const hasCuts = (opts.cuts || []).some(c => Array.isArray(c) && c.length === 2) || !!(opts.rates && opts.rates.length)
+  const perClip = clipAudioPlan(opts, meta.hasAudio)
   const parts = []
   if (meta.hasAudio) {
-    const ak = audioKeep(keep, opts.speedAudio)
-    ak.forEach(({ seg, mute }, i) => {
-      const af = ['asetpts=PTS-STARTPTS', ...rateAudio(seg, { mute })]
-      parts.push(`[0:a]atrim=${seg[0].toFixed(6)}:${seg[1].toFixed(6)},${af.join(',')}[ca${i}]`)
-    })
+    const ak = audioKeep(keep, opts.speedAudio, perClip)
+    parts.push(...clipAudioParts(ak))
     parts.push(ak.map((_, i) => `[ca${i}]`).join('') + `concat=n=${ak.length}:v=0:a=1[cuta]`)
   }
   const fadeIn = +opts.fadeIn > 0 ? +opts.fadeIn : 0
   const fadeOut = +opts.fadeOut > 0 ? +opts.fadeOut : 0
   // an added track follows the cuts only when there are cuts, as in applyEdit
   const { af, extraGraph, extraMap } = audioGraph({
-    hasAudio: meta.hasAudio, denoise: opts.denoise, loudnorm: opts.loudnorm, gain: opts.gain,
+    hasAudio: meta.hasAudio, loudnorm: opts.loudnorm, ...takeAudioLeft(opts, perClip),
     fadeIn, fadeOut, span, extra, extraInput: 1, keep: hasCuts ? keep : null,
     base: meta.hasAudio ? '[cuta]' : '[0:a]',
   })
@@ -2624,7 +2802,12 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
   // A still (previewFrame) is one picture of the edit at opts.still, source seconds:
   // the same graph, no sound, stopped at that frame.
   const still = opts.still != null && Number.isFinite(+opts.still) ? +opts.still : null
-  const meta = still != null ? { ...probed, hasAudio: false } : probed
+  // A GIF carries no sound, and the graph below asks meta.hasAudio rather than the
+  // format whether to build the audio half. Left true, a GIF with a cut, a rate or a
+  // clip of its own sound built a mapped audio output for a container with no encoder
+  // for it, and the export failed on a file the same call wrote without them.
+  const noSound = still != null || (FORMATS[opts.format || 'mp4'] || FORMATS.mp4).gif
+  const meta = noSound ? { ...probed, hasAudio: false } : probed
   const tmpFiles = []
   let overlayDir = null
   try {
@@ -2906,14 +3089,18 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     // piece, so a take with speed and no cut at all still goes through it rather than
     // through the input seek.
     const hasRate = !!(opts.rates && opts.rates.length)
-    const camG = camTake ? camChain(camTake, srcW, srcH, (!hasCuts && !hasRate && start > 0) ? start : 0) : null
+    // And a clip with sound of its own needs it for the same reason: volume and afftdn
+    // are per piece too. Two clips meeting with no gap leave no cut, so without this
+    // the louder one would be concatenated into its neighbour and lift both.
+    const perClip = clipAudioPlan(opts, meta.hasAudio)
+    const camG = camTake ? camChain(camTake, srcW, srcH, (!hasCuts && !hasRate && !perClip && start > 0) ? start : 0) : null
     const VSRC = camG ? '[csrc]' : '[0:v]'
 
     // cut list: removed ranges become a trim and concat graph feeding the vf chain,
     // and the rate each surviving range runs at rides the same trim as a setpts
     const cuts = (opts.cuts || []).filter(c => Array.isArray(c) && c.length === 2)
     let cutGraph = null, cutDur = 0
-    if (cuts.length || hasRate) {
+    if (cuts.length || hasRate || perClip) {
       const keep = Timeline.applyRates(
         cuts.length ? keepRanges(cuts, start, end || dur) : [[start, end || dur]], opts.rates)
       if (!keep.length) throw new Error('those cuts remove the whole clip')
@@ -2922,11 +3109,8 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
       keep.forEach((seg, i) => {
         parts.push(`${VSRC}trim=${seg[0].toFixed(3)}:${seg[1].toFixed(3)},${ratePts(seg)}[cv${i}]`)
       })
-      const ak = meta.hasAudio ? audioKeep(keep, opts.speedAudio) : []
-      ak.forEach(({ seg, mute }, i) => {
-        const af = ['asetpts=PTS-STARTPTS', ...rateAudio(seg, { mute })]
-        parts.push(`[0:a]atrim=${seg[0].toFixed(6)}:${seg[1].toFixed(6)},${af.join(',')}[ca${i}]`)
-      })
+      const ak = meta.hasAudio ? audioKeep(keep, opts.speedAudio, perClip) : []
+      parts.push(...clipAudioParts(ak))
       parts.push(keep.map((_, i) => `[cv${i}]`).join('') + `concat=n=${keep.length}:v=1:a=0[cutv]`)
       if (meta.hasAudio) parts.push(ak.map((_, i) => `[ca${i}]`).join('') + `concat=n=${ak.length}:v=0:a=1[cuta]`)
       cutGraph = parts.join(';')
@@ -2937,9 +3121,12 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     // backdrop image. It used to be read as input 2 whenever an image backdrop was on,
     // which swapped the two and failed the export.
     const { af, extraGraph, extraMap } = audioGraph({
-      hasAudio: meta.hasAudio, denoise: opts.denoise, loudnorm: opts.loudnorm, gain: opts.gain,
+      hasAudio: meta.hasAudio, loudnorm: opts.loudnorm, ...takeAudioLeft(opts, perClip),
       fadeIn, fadeOut, span, extra, extraInput: 1,
-      keep: cutGraph ? Timeline.applyRates(
+      // An added track follows the cuts and the rates, and nothing else: per-clip sound
+      // builds the same graph but takes no moment out of the take, so a line laid under
+      // it must not be trimmed to the take's window as a cut would trim it.
+      keep: (cuts.length || hasRate) ? Timeline.applyRates(
         cuts.length ? keepRanges(cuts, start, end || dur) : [[start, end || dur]], opts.rates) : null,
       base: cutGraph && meta.hasAudio ? '[cuta]' : '[0:a]',
     })
@@ -3194,13 +3381,13 @@ module.exports = {
   frameAt, findOnScreen, boxSamples, previewFrame, frameGutter, audioGraph,
   backdropList, musicList, filmstrip,
   toMp4, convert, removeSilence, enhanceAudio, trim, transcribe, burnCaptions, toGif,
-  thumbnail, waveform, applyEdit, listRecordings, importFile, forgetFile,
+  thumbnail, waveform, clipLevels, applyEdit, listRecordings, importFile, forgetFile,
   probeMeta, readCues, writeCues, cancel, runningJobs, formatList, FFMPEG, flattenAudio,
   sidecarOut, sidecarIn, migrateSidecars,
   setTakesRoot, takeDir, deliverablePath, exportDest, renameTake, readNameNote, writeNameNote, takeName,
   speechRegions, buildBeats, buildCues, beatsFromCursor, readCursor, readPointer, pointerTrack, macCursorSpans, cursorPlates, cursorEraseFilters,
   zoomMoments, zoomExpr, autoZoomFilter, explicitZoomFilter, focusFilters, outClock, backdropGeometry,
-  ratePts, rateAudio, audioKeep, atempoChain,
+  ratePts, rateAudio, audioKeep, takeAudioLeft, clipAudioParts, atempoChain,
   readDoc, writeDoc, beatsFor,
   // for the compositor's export (ui/render-host.js)
   renderAudio, musicBed, register, unregister, run, FORMATS, imageBackdrops,

@@ -162,11 +162,29 @@ t('the doctrine is sent once, not on every message', () => {
 // this list and the MCP server's agree; this one proves the new names are here at all.
 t('the new tools are allowed in the pane', () => {
   for (const name of ['record_pause', 'contact_sheet', 'direct', 'review', 'fit_to_length',
-    'revert_my_edit', 'list_voices', 'voiceover']) {
+    'revert_my_edit', 'list_voices', 'voiceover', 'ask', 'propose']) {
     assert.ok(agentChat.ALLOWED.includes(`mcp__fetch__${name}`), name)
   }
   assert.ok(agentChat.ALLOWED.every(x => x.startsWith('mcp__fetch__')))
   assert.strictEqual(new Set(agentChat.ALLOWED).size, agentChat.ALLOWED.length, 'no name twice')
+})
+
+// A question and a proposal land in the thread as their own event kinds, so the log
+// that replays the pane has to carry them and what was decided. Without the settled
+// event a restart would redraw a live question wired to a conversation that is over.
+t('a question, a proposal and how each was settled all survive a restart', () => {
+  fs.writeFileSync(chatLog.logPath(), '')
+  chatLog.append({ kind: 'user', text: 'hide the sidebar' })
+  chatLog.append({ kind: 'ask', id: 'Q1', question: 'Which part?', timeoutMs: 90000,
+    choices: [{ id: 'sidebar', label: 'The whole sidebar' }, { id: 'practice', label: 'Just the Practice button' }] })
+  chatLog.append({ kind: 'settled', id: 'Q1', how: 'answered', choice: 'practice' })
+  chatLog.append({ kind: 'propose', id: 'P1', title: 'Blur the Practice button', changes: [{ id: 'M4', line: 'Blur at 0:12' }] })
+  chatLog.append({ kind: 'settled', id: 'P1', how: 'discard' })
+  const r = chatLog.read()
+  assert.deepStrictEqual(r.map(e => e.kind), ['user', 'ask', 'settled', 'propose', 'settled'])
+  assert.strictEqual(r[1].choices.length, 2, 'the choices are what makes it answerable, so they are kept')
+  assert.strictEqual(r[2].choice, 'practice')
+  assert.strictEqual(r[4].how, 'discard')
 })
 
 fs.rmSync(dir, { recursive: true, force: true })

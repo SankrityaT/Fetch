@@ -198,6 +198,114 @@
 .chat-verdict svg { flex:none; color:var(--warn); }
 .chat-verdict[data-verdict="ready"] svg { color:var(--good); }
 
+/* ── a question, and a proposal ───────────────────────────────────────────
+   The two things in the thread that wait on the person rather than telling them
+   something. Both are panels, not bubbles: raised by tone with a soft shadow, a
+   little wider than a message, and each one holds its own deadline as a hairline
+   that runs out along the bottom. */
+.chat-ask, .chat-prop {
+  position:relative; overflow:hidden;
+  display:flex; flex-direction:column; gap:var(--s-2);
+  padding:var(--s-3) 14px calc(var(--s-3) + 2px);
+  border-radius:var(--r-md); background:var(--ink-2);
+  box-shadow:var(--shadow-1), var(--sheen);
+}
+/* once it is settled it is a record of what happened, so it steps back into the
+   thread rather than still asking for a decision */
+.chat-ask[data-settled], .chat-prop[data-settled] { background:rgba(255,255,255,.035); box-shadow:none; }
+
+.chat-wait-head {
+  display:flex; align-items:flex-start; gap:var(--s-2);
+  font-size:var(--t-12); font-weight:600; color:var(--text-0); line-height:1.4;
+}
+.chat-wait-head svg { flex:none; margin-top:1px; color:var(--fur-1); }
+.chat-ask-note { font-size:var(--t-11); color:var(--text-2); line-height:1.5; }
+
+.chat-ask-picks { display:flex; flex-direction:column; gap:6px; align-items:stretch; }
+/* Every choice is an equal. A gold one would be a recommendation, and a question
+   that recommends its own answer is a guess wearing buttons. */
+.chat-pick {
+  display:flex; flex-direction:column; align-items:flex-start; gap:2px; width:100%;
+  text-align:left; padding:8px 11px; border-radius:var(--r-sm);
+  background:var(--ink-1); border:var(--edge); color:var(--text-1); cursor:pointer;
+  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in),
+             border-color var(--dur-1) var(--ease-in);
+}
+.chat-pick:hover:not(:disabled) { background:var(--ink-3); color:var(--text-0); border-color:var(--ink-4); }
+.chat-pick:active:not(:disabled) { background:var(--ink-2); }
+.chat-pick:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
+.chat-pick:disabled { opacity:.35; cursor:default; }
+.chat-pick-lab { font-size:var(--t-12); font-weight:500; line-height:1.35; }
+.chat-pick-hint { font-size:var(--t-11); color:var(--text-2); line-height:1.4; }
+/* what was chosen: a tick and full opacity, never the tint alone */
+.chat-pick[data-chosen] {
+  opacity:1; color:var(--text-0); border-color:var(--fur-2);
+  flex-direction:row; align-items:center; gap:7px;
+}
+.chat-pick[data-chosen] svg { flex:none; color:var(--fur-1); }
+
+/* The proposal leads with the picture, because the whole point is that you look at
+   it before it lands. Its shape is the frame's, not a square. */
+.chat-prop-top { display:flex; align-items:flex-start; gap:var(--s-3); }
+.chat-prop-shot {
+  flex:none; width:96px; border-radius:var(--r-sm); overflow:hidden;
+  background:var(--ink-1); display:block;
+}
+.chat-prop-shot img { width:100%; height:auto; display:block; }
+.chat-prop-txt { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
+.chat-prop-title { font-size:var(--t-12); font-weight:600; color:var(--text-0); line-height:1.4; overflow-wrap:anywhere; }
+.chat-prop-what { font-size:var(--t-11); color:var(--text-2); line-height:1.5; }
+
+/* What it would do, by id, so the same handle is on the card, on the timeline and in
+   the agent's next tool call. */
+.chat-prop-list { display:flex; flex-direction:column; gap:3px; margin:0; padding:0; list-style:none; }
+.chat-prop-list li { display:flex; align-items:baseline; gap:6px; font-size:var(--t-11); color:var(--text-1); line-height:1.45; }
+.chat-prop-list li .mono { flex:none; color:var(--text-2); }
+
+.chat-prop-acts { display:flex; align-items:center; gap:var(--s-2); margin-top:2px; }
+.chat-prop-acts .chat-wait-left { flex:1; text-align:right; }
+.chat-prop-yes, .chat-prop-no {
+  display:inline-flex; align-items:center; gap:6px; height:30px; flex:none;
+  padding:0 14px; border-radius:var(--r-pill); font:600 var(--t-12)/1 var(--font-ui); cursor:pointer;
+  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in),
+             transform var(--dur-1) var(--ease-in);
+}
+/* Apply is the thing to act on, so it gets the gold. Discard destroys nothing,
+   because nothing was written, so it can sit beside it as the quiet one. */
+.chat-prop-yes { background:var(--fur-1); color:#231703; }
+.chat-prop-yes:hover:not(:disabled) { background:var(--fur-0); }
+.chat-prop-yes:active:not(:disabled) { background:var(--fur-2); transform:translateY(1px); }
+.chat-prop-no { background:transparent; color:var(--text-1); padding:0 11px; font-weight:500; }
+.chat-prop-no:hover:not(:disabled) { background:var(--ink-3); color:var(--text-0); }
+.chat-prop-no:active:not(:disabled) { background:var(--ink-1); transform:translateY(1px); }
+.chat-prop-yes:focus-visible, .chat-prop-no:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
+.chat-prop-yes:disabled, .chat-prop-no:disabled { opacity:.35; cursor:default; }
+/* the decision that was taken stays legible: the tick borrows the button's own text
+   colour, since a gold tick on the gold Apply is no tick at all */
+.chat-prop-yes[data-chosen], .chat-prop-no[data-chosen] { opacity:1; }
+.chat-prop-no[data-chosen] { background:var(--ink-3); color:var(--text-0); }
+.chat-prop-yes[data-chosen] svg, .chat-prop-no[data-chosen] svg { flex:none; color:currentColor; }
+
+/* What happened in the end, and how long is left. Both quiet: this line only ever
+   appears once the decision is out of the person's hands. */
+.chat-wait-foot { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s-2); }
+/* nothing to say yet, so it takes no room: an empty row would still spend the
+   panel's gap and push the buttons off the 8px grid */
+.chat-wait-foot:not(:has(:not(:empty))) { display:none; }
+.chat-wait-said { font-size:var(--t-11); color:var(--text-2); line-height:1.4; }
+.chat-wait-left { font-size:var(--t-11); color:var(--text-2); flex:none; }
+
+/* The deadline, drawn rather than counted at you. transform only, so no layout
+   animates, and it runs the width of the card along its bottom edge. */
+.chat-wait-bar {
+  position:absolute; left:0; right:0; bottom:0; height:2px;
+  background:var(--fur-2); transform-origin:left center; transform:scaleX(1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-wait-bar { display:none; }
+  .chat-pick, .chat-prop-yes, .chat-prop-no { transition:none; }
+}
+
 .chat-composer { flex:none; padding:var(--s-3); border-top:var(--edge); }
 .chat-ctx { margin-bottom:var(--s-2); }
 

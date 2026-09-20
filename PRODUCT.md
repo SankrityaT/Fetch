@@ -159,20 +159,30 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
 field in one table: type, range, default, label, a line of doc. The inspector (Look tab,
 `ui/inspector.js`), validation and the agent docs are generated from it. Sections:
 frame, device, background, treatment, grain, motion, camera, cursor, captions,
-typography, focus. Seven presets ship in `ui/looks/` (Fetch, Clean, Studio, Film, Noir,
+typography, focus, keys. `motion.loop` is the one field that changes how a frame is seeded
+rather than how it looks: grain, the ground's tooth and the dither take the frame's place
+inside the loop, which is still a function of that frame's own time, so a preview playing the
+clip round again draws the frames the file holds. The `keys` section draws the keystrokes of
+a take, and **Fetch does not capture the keyboard**: reading it needs an event tap and the
+Input Monitoring permission, which is a different promise to a person than watching the screen
+they pointed Fetch at, so it is its own round and its own word from them. What exists is the
+drawing side, built against the shape that capture will write, with the rule that matters
+already in it: a character is drawn only where the capture vouched for it, so a run nobody
+vouched for reads as typing and never as the letters, and a take with no key track draws
+nothing and the tool result says why. Seven presets ship in `ui/looks/` (Fetch, Clean, Studio, Film, Noir,
 Paper, Mono print); "Save look" keeps a person's own in `userData/looks/`. A preset
 restyles and keeps the shape, captions, motion and cursor, and each one carries a `for:` line
 naming the take it suits (Clean is a dark app or a terminal, Mono print a white SaaS page),
 which `list_looks` returns and `review` reads, so choosing a look stops being a guess at a
 name. Whether a field is drawn is a question about the engine rather than a flag about a
 release: the compositor draws every field in the schema and is the renderer for MP4 and MOV,
-so the Look tab offers all of them and `look_warnings` says nothing. GIF, WebM and stills go
-to the classic ffmpeg renderer, which leaves out the fields marked `classic: false`, and
-there the warning names them and the output that caused it. Five fields nothing draws yet
+so the Look tab offers all of them and `look_warnings` says nothing. It draws WebM and GIF
+now too, so what is left for the classic ffmpeg renderer is a sound file and a still frame,
+which leave out the fields marked `classic: false`, and there the warning names them and the
+output that caused it. Five fields nothing draws yet
 (`frame.scale`, `frame.offsetX`, `frame.offsetY`, `cursor.smoothing`, `typography.titleFont`)
-are named whatever runs. `motion.cutTransition` carries no mark at all: the compositor draws
-it, a GIF cuts hard. The inspector shows what the engine drawing the stage draws, 56 of 63
-fields with the three subtlest behind an Advanced disclosure, which is 39 controls a person
+are named whatever runs. The inspector shows what the engine drawing the stage draws, 61 of 68
+fields with the three subtlest behind an Advanced disclosure, which is 44 controls a person
 could not reach at all before.
 Output keeps the take's shape; a chosen shape is filled by the background, and with no
 background by a soft blur of the take, never black bars. Browser chrome is a setting:
@@ -284,8 +294,14 @@ preset was: at `veryfast` there is no rate-distortion mode decision at all, so t
 the whole of it. `balanced` now runs at `fast` with the same grain tuning `high` has, at CRF
 23 untouched, for 22 to 36 percent more file and a slightly better picture, and the ground
 renews on every delivered frame.
- GIF and
-WebM and a take the compositor cannot read go to the classic ffmpeg renderer; auto zoom
+ A take the
+compositor cannot read goes to the classic ffmpeg renderer. GIF and WebM come off the same
+drawn frames as an MP4 and differ only at the encoder: a GIF is drawn at a rate its own
+centisecond clock can hold, so every frame is held the same time rather than one in three
+being held 11 percent longer, and without the ground's tooth or the film's grain, which a
+256 colour palette cannot carry and which cost five times the file. Picking a GIF's colours
+is a function of all its frames at once, so the palette pass is at the sink and not in the
+compositor, where every pass is a function of one. Auto zoom
 is drawn here too, from the moments `prepare.js` hands over whole. Activity and the MCP export result name the engine that drew each
 file (`gl` or `classic`, and why). What only the take's pixels say (a lift's element and
 its corners, a step's card corner, the Mac's pointer and clean patches, the cursor's rests,
@@ -301,9 +317,10 @@ frame's edge coming up a little inward. Sample and hold is exact: an output fram
 the last frame the take wrote at or before its moment, across cuts.
 `FETCH_ENGINE=classic|gl` forces one.
 
-**MCP tools** (`mcp/index.js`), 35: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `pointer`,
+**MCP tools** (`mcp/index.js`), 38: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `pointer`,
 `list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
 `list_beats`, `get_edit`, `apply_edit`, `direct`, `review`, `fit_to_length`, `revert_my_edit`,
+`ask`, `propose`, `can_loop`,
 `export`, `rename_recording`,
 `remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`, `delete_recording`,
 `get_frame`, `find_on_screen`, `preview_frame`, `contact_sheet`, `list_voices`, `voiceover`, `remember`.
@@ -315,7 +332,8 @@ is a feature that does not exist. The server also says **how to work** before an
 it: `mcp/index.js` sets MCP's `instructions` to what Fetch is, the six line loop the in-app
 agent is handed word for word (see the job below), aim at a box and never at a coordinate,
 read the state that comes back rather than calling again to find it, write down what is still
-true next week, and never an em dash. It is the shape of a job and nothing about any one tool,
+true next week, decide rather than ask except in the one narrow case `ask` is for, and never
+an em dash. It is the shape of a job and nothing about any one tool,
 because what a tool takes and gives back belongs in that tool's own description where it
 cannot fall out of step with the tool. For a whole round that loop reached the pane's agent
 and nobody else, so Claude Code, Codex, Cursor and Zed each worked it out or did not.
@@ -337,6 +355,40 @@ installed font, caption style and position, zooms, backdrops, camera, denoise, l
 gain, fades, music (an added track, or one of three beds made in `tools/make-beds.js`, `look.music`, ducked under the voice), redaction, lift, spotlight, loupe, numbered steps and arrows (a gold arrow that stands outside the box it aims at and points at the middle of its nearest edge, so the thing is never under it; it is sized and sided against what the zoom shows at its own hold, so a half second push somewhere else in its life never shrinks it and a box outside the window gets no arrow rather than one pointing at unrelated content). The camera bubble takes `keys` as well as a corner: where it is, how big it is and what shape it is over the take, a span like `{start: 12, end: 20.4, size: 0.1}` saying "small while the lift is up" and putting it back after, and the editor carries that track through a round trip rather than dropping it on the way back in. `export` writes m4a, mp3 and wav as well as MP4, MOV, WebM and GIF, since the edited sound on its own is a deliverable somebody wants, and it names its quality with the three words the person sees in the Export dialog rather than three of its own. The pipeline runs with the
 window closed. Settings that decide what may be recorded, and telemetry, are refused
 to agents in code.
+
+**The three tools that are not about a field.** `can_loop` answers whether a clip plays round
+again with no visible jump, and names what is stopping it: a fade, the take rising into place,
+a zoom still moving at the last frame, a caption mid-phrase, a mark or a cursor somewhere else
+at the end, each with the fix. It is answered off the plan before anything is drawn, because
+every pass draws from the plan and the frame's own time, and it hands back the take's own time
+at both ends for the half no plan can answer, whether the recording itself comes back to where
+it began. `export` runs it too where the look asks for a loop, on the file the person now has.
+`ask` and `propose` are the two that wait on a person: a fork put as buttons in the chat, and a
+change shown with Apply and Discard before it lands. The bar for both is damage rather than
+doubt, said in their descriptions and in the server's instructions, because an agent that asks
+about everything is worse than one that decides: a default they can see and undo beats a
+question. Neither can hang a turn. A window nobody can see comes back at once as unattended, a
+backstop clock runs two seconds behind the pane's own, the end of a turn settles whatever is
+left, and every branch of both carries a `do_next`, since a result that says only "nobody
+answered" gets asked again a second later. Nothing is written until Apply, so Discard leaves
+nothing behind by construction rather than by cleanup. The frame on the card is drawn off the
+document Apply itself builds, elements resolved and zooms aimed, or the person would be
+approving a picture of a change that is not the change; and the card says Applied the moment it
+is clicked, so an apply that then refuses sends one later word that corrects it rather than
+leaving a thread that says a document was written that was not.
+Sound is per clip now as well as per take: a clip takes `audio {gain, denoise, mute}` and
+anything it leaves out is the take's own, so one passage said a metre off the mic is lifted
+without the keyboard coming up with it, and `probe` with `loudness` measures every clip in the
+same unit the target is in and names the decibels to write. A clip asking for more than Fetch
+lifts one clip by is a stretch recorded too quietly to fix with a number, and the result says
+so rather than handing back a bigger one. A clip's level is a difference from the take's own
+rather than the whole of it, because the take's gain sits after loudness normalisation and a
+piece runs before it: applied whole, the normaliser measured the lifted sound and took the
+take's own lift straight back out, so setting one clip quietly cancelled the take. And a level
+that is not its neighbour's arrives as a twenty millisecond ramp rather than a step, since the
+step between two abutting clips is the click a person hears in an otherwise clean join: both
+sides of the ramp are the same audio, so it is the level moving and not two moments mixed, and
+measured on a steady tone the join is the same size step as the material either side of it.
 
 **A job an agent can finish.** Twenty-six tools and sixty-three look fields still could not
 answer "make this a 60 second demo for my landing page", because nothing in the product knew

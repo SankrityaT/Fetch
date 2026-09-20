@@ -95,17 +95,22 @@ console.log('warnings and the engine that will draw them')
   is('a look the renderer draws is not warned about', L.warnings(film), [])
   is('no shipped preset warns against itself on the engine that will draw it',
     L.list().filter(p => L.warnings(L.merge(L.defaults(), { preset: p.name }).look).length).map(p => p.name), [])
-  is('a GIF names the renderer that will draw it and what it leaves out',
-    L.warnings(film, { format: 'gif' }).some(w => /GIF output is drawn by the classic renderer/.test(w) && /grain\.film/.test(w)), true)
+  // A still frame is the classic renderer now that GIF and WebM came over to the
+  // compositor, so it is the case that names what the classic one leaves out.
+  is('a still frame names the renderer that will draw it and what it leaves out',
+    L.warnings(film, { still: 2 }).some(w => /A still frame is drawn by the classic renderer/.test(w) && /grain\.film/.test(w)), true)
   is('and an engine picked already says the same', L.warnings(film, { engine: 'classic' }).length, 1)
   is('a still frame is the classic renderer too', L.warnings(film, { still: 2 }).length, 1)
-  is('an MP4 or a MOV leaves the whole look alone', [L.warnings(film, { format: 'mp4' }), L.warnings(film, { format: 'mov' })], [[], []])
+  is('every format with a picture in it leaves the whole look alone',
+    ['mp4', 'mov', 'webm', 'gif'].map(format => L.warnings(film, { format })), [[], [], [], []])
   // a loupe would simply not appear there, which is the silence worth breaking
-  is('a loupe on a GIF is named with the fields',
-    L.warnings(L.defaults(), { format: 'gif', marks: [{ id: 'M2', kind: 'loupe' }] }).some(w => /the loupe M2/.test(w)), true)
+  is('a loupe on a still frame is named with the fields',
+    L.warnings(L.defaults(), { still: 2, marks: [{ id: 'M2', kind: 'loupe' }] }).some(w => /the loupe M2/.test(w)), true)
   is('and on an MP4 it is not', L.warnings(L.defaults(), { format: 'mp4', marks: [{ id: 'M2', kind: 'loupe' }] }), [])
+  is('and on a GIF it is not either, since the compositor draws it now',
+    L.warnings(L.defaults(), { format: 'gif', marks: [{ id: 'M2', kind: 'loupe' }] }), [])
   is('an option only the compositor draws is named by its value',
-    L.warnings(L.merge(L.defaults(), { frame: { chrome: 'clean' } }).look, { format: 'webm' }).some(w => /frame\.chrome clean/.test(w)), true)
+    L.warnings(L.merge(L.defaults(), { frame: { chrome: 'clean' } }).look, { still: 2 }).some(w => /frame\.chrome clean/.test(w)), true)
   // the five dead fields are the ones the old flag was accidentally right about
   is('a field nothing draws is named whatever runs',
     ['mp4', 'gif'].map(format => L.warnings(L.merge(L.defaults(), { frame: { scale: 0.9 } }).look, { format })
@@ -149,11 +154,13 @@ console.log('the inspector and the agent docs')
   is('and the options it cannot draw', cl.find(s => s.id === 'frame').fields.find(x => x.path === 'frame.chrome').options, ['keep', 'remove'])
   const doc = L.describe()
   is('every field is described, including the two a person drags', S.FIELDS.every(x => doc.includes(x.path)), true)
-  is('and each says which engine draws it', [/captions\.fx/.test(doc), /treatment\.bloom \(0 to 1, default 0\) \[gif\]/.test(doc),
+  is('and each says which engine draws it', [/captions\.fx/.test(doc), /treatment\.bloom \(0 to 1, default 0\) \[classic\]/.test(doc),
     /frame\.scale .*\[undrawn\]/.test(doc)], [true, true, true])
   // about 4 characters a token: the whole schema stays inside a couple of thousand of
-  // them. It grew a section at M5 (the drawn device), which is what the extra buys.
-  is('the agent docs fit a token budget', doc.length < 9000, true)
+  // them. It grew a section at M5 (the drawn device), and again at R3: motion.loop, the
+  // three keys fields, and [gif] becoming [classic] on every field the classic renderer
+  // leaves out, which is a longer word on a lot of lines and a truer one.
+  is('the agent docs fit a token budget', doc.length < 10600, true)
   is('no em dashes in the agent docs', /\u2014/.test(doc), false)
   is('when hides a field that does not apply', L.visible(S.BY_PATH.get('background.color'), L.defaults()), false)
   is('the advanced fields are a handful, so one disclosure holds them',

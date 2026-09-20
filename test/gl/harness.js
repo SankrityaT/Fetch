@@ -23,6 +23,12 @@
 //              a dissolve at a dead air cut against the hard cut it is supposed to be
 //              invisible beside, and the dip, the push, the dissolve and the reveal
 //              frame by frame off the GPU, each landing on the frame the timeline names
+//   loop       a clip that autoplays and repeats forever: what the plan says about the
+//              hand-over from the last frame to the first, measured against the pixels,
+//              and the frame index wrapping so a looping preview draws the file's frames
+//   keys       the keys as they were pressed: what is drawn for a chord, a run of typing
+//              and a run Fetch cannot vouch for, where the strip sits, and how long a
+//              key stays up
 //   blur       the shutter is the travel: a moving frame smears, a held one is byte for
 //              byte the frame it was at any shutter angle
 //   sheet      the contact sheet an agent sees motion in: every cell is the frame
@@ -93,6 +99,22 @@ function psnr(a, b) {
   return mse ? 10 * Math.log10(255 * 255 / mse) : 99
 }
 
+// A frame the page wrote, as RGB bytes at full size. The page's own diff compares two
+// draws of one frame; a seam is the step between two different frames, so the loop
+// group reads the frames back here and measures the steps itself.
+function rgbOf(file) {
+  const r = spawnSync('/opt/homebrew/bin/ffmpeg', ['-v', 'error', '-i', file, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { maxBuffer: 1 << 30 })
+  if (!r.stdout || !r.stdout.length) throw new Error('could not read ' + file + ': ' + String(r.stderr || r.error).slice(0, 300))
+  return r.stdout
+}
+// One step between two frames, in levels: what the eye gets is the mean, what a single
+// speck of noise gets is the max, and a seam has to be judged on both.
+function step(a, b) {
+  let sum = 0, max = 0
+  for (let k = 0; k < a.length; k++) { const d = Math.abs(a[k] - b[k]); sum += d; if (d > max) max = d }
+  return { mean: +(sum / a.length).toFixed(4), max }
+}
+
 app.whenReady().then(async () => {
   try {
     if (!fs.existsSync(path.join(FIX, 'take.mov'))) throw new Error('run bash test/gl/fixtures.sh first')
@@ -114,6 +136,28 @@ app.whenReady().then(async () => {
     await pageReady
     const call = (fn, ...a) => page.webContents.executeJavaScript(`${fn}(...${JSON.stringify(a)})`)
 
+    // R3 T5: the keys. plan.js is not this round's file, and the one line it needs is in
+    // .context/survey/r3-t5.md; until that lands the page gets it here, off the finished
+    // spec, so the goldens draw what the compositor will draw the moment it does. It
+    // fills a spec.keys nobody set, so it becomes a no-op rather than a second opinion.
+    const mod = p => JSON.stringify(path.join(__dirname, '../..', p))
+    await page.webContents.executeJavaScript(`(() => {
+      const Plan = require(${mod('ui/compositor/plan')})
+      const Marks = require(${mod('ui/compositor/marks')})
+      const Timeline = require(${mod('ui/timeline')})
+      const prepare = Plan.prepare
+      Plan.prepare = (opts, meta, ctx) => {
+        const s = prepare(opts, meta, ctx)
+        const K = (opts.look && opts.look.keys) || {}
+        if (!s.keys && opts.keys) s.keys = Marks.planKeys(opts.keys, {
+          W: s.W, H: s.H, box: s.framed ? s.rect : { x: 0, y: 0, w: s.W, h: s.H },
+          capBox: s.framed ? s.rect : null, caption: opts.captions ? (opts.captionStyle || {}) : null,
+          clock: Timeline.outClock(opts.cuts, s.start, s.end, opts.rates), span: s.span,
+          place: K.place || 'left', size: K.size == null ? 1 : K.size, show: K.show !== false })
+        return s
+      }
+    })()`)
+
     const camera = { file: cam, x: 0.84, y: 0.78, size: 0.2, camStartedAt: 1000, screenStartedAt: 1400, gaps: [] }
     // A keyframed bubble. The first entry is the one an agent writes: a stretch of the
     // take where the face is not the point, said as a size and a corner and nothing
@@ -128,6 +172,28 @@ app.whenReady().then(async () => {
     ] }
     const look = { treatment: { motionBlur: 0.5 }, frame: { border: 0 }, camera: { shape: 'circle', ring: true }, grain: { dither: false } }
     const base = { ffmpeg, src: take, meta }
+
+    // R3, the loop: a take whose screen never changes is a recording that does come back
+    // to where it began, so everything left moving between two of its frames is Fetch's
+    // own. 6 s at 30 fps, which is 180 output frames, and the film's clock divides it.
+    // The look turns the grain and the dither on, because they are what a loop is said
+    // to flash at, and the ground is a gradient so the tooth is on the frame too.
+    // motion.reveal is off, and that is the point rather than an aside: on, the take
+    // settles out at the end and rises in at the start, and the ordinary steps near the
+    // ends are that move rather than the noise, which would let the wrap hide behind it.
+    const loopSrc = path.join(FIX, 'still.mov')
+    const loopMeta = await proc.probeMeta(loopSrc)
+    const loopLook = { treatment: { motionBlur: 0.5 }, frame: { border: 0 }, motion: { reveal: 'none' }, grain: { film: 0.4, dither: true } }
+    const loopOpts = { backdrop: 'dusk', inset: 0.08, look: loopLook }
+    // the same edit with the switch on, which is the only thing that differs: motion.loop
+    // puts the loop's length on the plan and nothing else in the frame moves for it
+    const loopLoop = { ...loopOpts, look: { ...loopLook, motion: { ...loopLook.motion, loop: true } } }
+    const loopBase = { ffmpeg, src: loopSrc, meta: loopMeta }
+    const LOOP_N = 180
+    // Someone typing, at about eleven characters a second, each key carrying the
+    // character it typed because the capture knew the field was safe to show. The same
+    // presses without those characters are what Fetch has when it cannot tell.
+    const TYPED = 'fetch the take'.split('').map((c, i) => ({ t: 2.6 + i * 0.09, key: c === ' ' ? 'space' : c, char: c }))
     const cases = {
       'framed-dusk': { opts: { backdrop: 'dusk', inset: 0.08, shadow: 0.6, look }, n: 90 },
       'framed-16x9-crop': { opts: { backdrop: 'ink', inset: 0.06, backdropAspect: 16 / 9, crop: { x: 0.1, y: 0.1, w: 0.7, h: 0.6 }, look }, n: 200 },
@@ -333,6 +399,36 @@ app.whenReady().then(async () => {
         treatment: { motionBlur: 0.5, brightness: 0.05, contrast: 0.12, saturation: -0.25, tint: '#F0A93C', tintAmount: 0.25,
           haze: 0.15, blur: 0.15, bokeh: 0.5, bloom: 0.4, halation: 0.3, aberration: 0.5, vignette: 0.3 },
         grain: { film: 0.4, dither: true } } }, n: 150 },
+      // R3: the two frames a loop hands to each other, on a take whose screen never
+      // changes. Everything that moves between them is Fetch's own (the ground's tooth,
+      // the film and the dither, each seeded by the frame's place inside the loop), so
+      // the pair is the hand-over itself. Both ends, because a golden of one of them
+      // holds still while the other one drifts.
+      'loop-first': { ...loopBase, opts: loopOpts, n: 0 },
+      'loop-last': { ...loopBase, opts: loopOpts, n: LOOP_N - 1 },
+      // R3 T5: the keys as they were pressed. This take goes out at 30 fps, so frame 105
+      // is 3.5 s, half a second into a press made at 3 s: every one of these is a group
+      // at rest, which is the frame someone actually reads.
+      //
+      // One key: a named key gets the word rather than the Mac's glyph, because a clip
+      // on a landing page is read at a glance and by people who are not on a Mac.
+      'keys-key': { opts: { backdrop: 'ink', inset: 0.06, look, keys: [{ t: 3, key: 'enter' }] }, n: 105 },
+      // A chord: the modifiers in the Mac's own order (⇧⌘) as glyphs, then the key that
+      // acted, on the step badge's gold. The gold is the whole of how a chord reads at a
+      // glance as modifiers and one key.
+      'keys-chord': { opts: { backdrop: 'ink', inset: 0.06, look, keys: [{ t: 3, key: 'p', mods: ['cmd', 'shift'] }] }, n: 105 },
+      // A run of typing the capture vouched for: one pill in the mono face, holding what
+      // had been typed by this frame and not a letter of what comes after it.
+      'keys-run': { opts: { backdrop: 'ink', inset: 0.06, look, keys: TYPED }, n: 105 },
+      // The same run with nothing vouched for, which is what a password looks like from
+      // here: the pill says someone is typing and never what. Fetch draws a character
+      // only where the event carries one, so this is the default rather than a mode.
+      'keys-secret': { opts: { backdrop: 'ink', inset: 0.06, look, keys: TYPED.map(e => ({ t: e.t, key: e.key })) }, n: 105 },
+      // And the placement ladder: a 9:16 output leaves a deep ground under the take, so
+      // the strip stands on it, outside the picture entirely, where it can cover nothing
+      // at all. Centred here, which is the one place a 9:16 clip has room for it.
+      'keys-ground': { opts: { backdrop: 'ink', inset: 0.08, backdropAspect: 9 / 16,
+        look: { ...look, keys: { place: 'centre' } }, keys: [{ t: 3, key: 'k', mods: ['cmd'] }] }, n: 105 },
     }
 
     // Every built-in look, drawn end to end: the preset as the editor and the MCP
@@ -382,7 +478,7 @@ app.whenReady().then(async () => {
       // zoom-glide is here now that the shutter is open by default: it is the one case
       // that draws through the multi-tap blur, and preview and export have to agree on it
       for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'bokeh-ground', 'zoom-hold', 'zoom-glide', 'cut-dissolve', 'reveal', 'camera', 'marks', 'lift', 'pointer', 'text', 'caption-plate', 'glow',
-        'auto-level', 'auto-level-hard', 'treat-furniture', 'treat-all', 'device-browser', 'tilt-device', 'loupe', 'arrow']) {
+        'auto-level', 'auto-level-hard', 'treat-furniture', 'treat-all', 'device-browser', 'tilt-device', 'loupe', 'arrow', 'keys-chord']) {
         const c = cases[name]
         const r = await call('parity', { ...base, ...c })
         // A crop's first and last rows can differ at a sharp colour edge: the <video>
@@ -427,6 +523,11 @@ app.whenReady().then(async () => {
       // middle of one of its moves is the same frame drawn out of turn
       const cb = await call('stateless', { ...base, ...cases['camera-tween'] }, [90, 285, 20])
       is('a camera bubble in the middle of a move', cb.max === 0, `max ${cb.max}`)
+      // a key cap is a picture kept by its label and its size, and the pill's own word is
+      // read off the frame's output time, so a frame in the middle of a typed word comes
+      // back byte for byte drawn out of turn
+      const ky = await call('stateless', { ...base, ...cases['keys-run'] }, [92, 150, 40])
+      is('a key cap, and a typing pill part way through its word', ky.max === 0, `max ${ky.max}`)
       // a dissolve draws the frame twice and mixes the two: still the frame's own time
       // and nothing else, so it comes back byte for byte after other frames
       const d = await call('stateless', { ...base, ...cases['cut-dissolve'] }, [30, 91, 200])
@@ -454,6 +555,205 @@ app.whenReady().then(async () => {
         is(`${ns.length} moving frames of ${name}, drawn in a shuffled order`, rs.every(q => q.max === 0),
           `max ${worst.max} LSB on frame ${worst.n}, order ${shuffle(ns).join(' ')}`)
       }
+    }
+
+    if (want('loop')) {
+      console.log('a clip that loops with no seam')
+      const GL = require('../../ui/compositor/gl')
+      const check = o => GL.loopCheck(Plan.prepare(o, loopMeta, {}))
+      const capCtx = { prepared: { captions: { cues: [], busy: [], words: { words: [{ w: 'Every', t: 4.6 }, { w: 'row', t: 5.0 }, { w: 'shows', t: 5.4 }, { w: 'the', t: 5.8 }] } } } }
+
+      // The plan half, with nothing drawn. Every pass is a function of the plan and the
+      // time, so what the hand-over shows can be read off the plan before a pixel is:
+      // the step from the last frame to the first, against the steps either side of it.
+      // Each case leaves exactly one thing running across the wrap, or does not.
+      const checks = [
+        ['a still take with nothing over it', loopOpts, true, null],
+        ['a redaction over the whole clip', { ...loopOpts, marks: [{ kind: 'redact', start: 0, end: 9, x: 0.05, y: 0.06, w: 0.25, h: 0.14 }] }, true, null],
+        ['a zoom that lands and releases inside the clip', { ...loopOpts, zooms: [{ start: 1, end: 4, scale: 2, x: 0.5, y: 0.5 }] }, true, null],
+        ['a caption that ends before the last frame', { ...loopOpts, captions: true, captionStyle: {}, cues: [{ start: 1, end: 3, text: 'Every row shows the' }] }, true, null, capCtx],
+        ['the take rising in and settling out, which is the default', { ...loopOpts, look: { ...loopLook, motion: { reveal: 'rise' } } }, false, 'reveal'],
+        ['a fade in alone', { ...loopOpts, fadeIn: 0.5 }, false, 'fade'],
+        ['a fade at both ends', { ...loopOpts, fadeIn: 0.5, fadeOut: 0.5 }, false, 'fade'],
+        ['a zoom still moving at the last frame', { ...loopOpts, zooms: [{ start: 5.5, end: 6, scale: 2, x: 0.5, y: 0.5 }] }, false, 'taps'],
+        ['a step badge up at the end and not at the start', { ...loopOpts, marks: [{ kind: 'step', start: 5, end: 9, x: 0.35, y: 0.3 }] }, false, 'marks.steps'],
+        ['an arrow up at the end and not at the start', { ...loopOpts, marks: [{ kind: 'arrow', start: 5, end: 9, x: 0.45, y: 0.4, w: 0.14, h: 0.1 }] }, false, 'marks.arrow'],
+        ['a caption mid-phrase at the last frame', { ...loopOpts, captions: true, captionStyle: {}, cues: [{ start: 4.5, end: 7, text: 'Every row shows the' }] }, false, 'text', capCtx],
+        ['the cursor somewhere else at the end', { ...loopOpts, pointer: [{ t: 0.5, x: 0.2, y: 0.3 }, { t: 3, x: 0.6, y: 0.5, click: true }, { t: 6, x: 0.4, y: 0.7 }] }, false, 'marks.pointer'],
+        ['the take still settling under a closing title card', { ...loopOpts, texts: [{ text: 'Fetch', subtitle: 'fetch.app', start: 0, end: 2, style: 'title' }] }, false, 'move'],
+      ]
+      for (const [label, opts, loops, id, ctx] of checks) {
+        const r = GL.loopCheck(Plan.prepare(opts, loopMeta, ctx || {}))
+        is(`${label}: ${loops ? 'loops' : 'refused'}`, r.loops === loops && (!id || r.faults.some(f => f.id === id)),
+          r.loops ? 'no faults' : r.faults.map(f => `${f.id}${f.step != null ? ` (${f.step} against ${f.ordinary})` : ''}: ${f.what}`).join('; '))
+      }
+      // And what stops it is said in words, with something to do about it: an answer
+      // worth more than a forced loop, and the reason nothing here rewrites an edit.
+      const said = GL.loopCheck(Plan.prepare({ ...loopOpts, fadeIn: 0.5, fadeOut: 0.5 }, loopMeta, {}))
+      is('a refusal says what is stopping it and what to do', said.faults.every(f => f.what && f.fix),
+        said.faults.map(f => `${f.what} -> ${f.fix}`).join('; '))
+      // The recording's own half, which the plan cannot answer and does not pretend to
+      is('and it hands back the take\'s time at both ends rather than guessing at the pixels',
+        said.source.start === 0 && said.source.end > 5.9, JSON.stringify(said.source))
+
+      // The seeding. A looping preview counts frames on past the end for as long as the
+      // page is open, and the file holds L of them, so the index the grain, the tooth
+      // and the dither are seeded by is the frame's place inside the loop.
+      is('the frame index wraps at the loop, and passes through where there is none',
+        [0, 1, 179, 180, 181, 359, 360].map(n => GL.loopIndex(n, LOOP_N)).join(' ') === '0 1 179 0 1 179 0' &&
+        [0, 180, 361].map(n => GL.loopIndex(n, 0)).join(' ') === '0 180 361',
+        [0, 1, 179, 180, 181, 359, 360].map(n => GL.loopIndex(n, LOOP_N)).join(' '))
+
+      // The pixels. A run of frames either side of the hand-over, each drawn alone, read
+      // back and stepped here: a seam is the step between two different frames, which is
+      // not a thing the page's own diff of one frame against itself can see.
+      // seed is the frame index the texture is seeded by, left out where it is n itself.
+      // Nothing here wraps it by hand: the plan's own spec.loop is what the compositor
+      // wraps it in, so these frames come off the chain an export and a stage use.
+      const frameAt = async (tag, opts, n, seed, ctx) => {
+        const f = path.join(OUT, `loop-${tag}-${n}-${seed == null ? 'n' : seed}.png`)
+        await call('shot', { ...loopBase, opts, ctx, n, ...(seed == null ? {} : { seed }), width: 640 }, f)
+        return rgbOf(f)
+      }
+      const NS = [0, 1, 2, LOOP_N - 3, LOOP_N - 2, LOOP_N - 1]
+      const PAIRS = [[0, 1], [1, 2], [LOOP_N - 3, LOOP_N - 2], [LOOP_N - 2, LOOP_N - 1]]
+      const measure = async (tag, opts, ctx) => {
+        const px = new Map()
+        for (const n of NS) px.set(n, await frameAt(tag, opts, n, null, ctx))
+        const wrap = step(px.get(LOOP_N - 1), px.get(0))
+        const ord = PAIRS.map(([a, b]) => step(px.get(a), px.get(b)))
+        return { px, wrap, worst: ord.reduce((m, x) => (x.mean > m.mean ? x : m)), ord }
+      }
+      // A loop is seamless when the wrap is no bigger a step than a normal one. On a
+      // take that never changes, every ordinary step is the grain, the tooth and the
+      // dither renewing, and so is the wrap: that is the whole claim, in levels.
+      const clean = await measure('clean', loopOpts)
+      is('the wrap is no bigger a step than an ordinary frame to frame one',
+        clean.wrap.mean <= clean.worst.mean * 1.05 && clean.wrap.max <= clean.worst.max + 2,
+        `wrap mean ${clean.wrap.mean} max ${clean.wrap.max}, ordinary up to mean ${clean.worst.mean} max ${clean.worst.max}`)
+      console.log('  (ordinary steps ' + clean.ord.map(o => o.mean).join(' ') + ', wrap ' + clean.wrap.mean + ')')
+
+      // And the check is holding up the pixels rather than an opinion about them: an
+      // edit it refuses has a hand-over the measurement can see from across the room.
+      const bad = await measure('fade', { ...loopOpts, fadeIn: 0.5 })
+      is('an edit the check refuses has a wrap the measurement finds',
+        !check({ ...loopOpts, fadeIn: 0.5 }).loops && bad.wrap.mean > bad.worst.mean * 4,
+        `wrap mean ${bad.wrap.mean} max ${bad.wrap.max}, ordinary up to mean ${bad.worst.mean} max ${bad.worst.max}`)
+
+      // The switch, end to end. motion.loop is what puts the loop's length on the plan
+      // (plan.js), and the plan is what the compositor wraps the index in, so the whole
+      // chain is one assertion rather than arithmetic checked on its own.
+      is('the look asking for a loop is what puts its length on the plan',
+        Plan.prepare(loopLoop, loopMeta, {}).loop === LOOP_N && Plan.prepare(loopOpts, loopMeta, {}).loop === 0,
+        `${Plan.prepare(loopLoop, loopMeta, {}).loop} with the switch on, ${Plan.prepare(loopOpts, loopMeta, {}).loop} with it off`)
+
+      // The second cycle. A stage playing the clip round again counts on past the end,
+      // and the frame it draws has to be the frame the file holds, or the editor is
+      // showing something no export ever wrote. Frame 12 of the file, the same frame a
+      // cycle later with the raw count, and the same frame a cycle later with the same
+      // raw count and the loop switched on, which is the compositor doing the wrapping.
+      const a = await frameAt('cycle', loopOpts, 12, 12)
+      const raw = await frameAt('cycle', loopOpts, 12, 12 + LOOP_N)
+      const wrapped = await frameAt('cycle', loopLoop, 12, 12 + LOOP_N)
+      const drift = step(a, raw)
+      is('a second cycle counted straight on is not the frame the file holds', drift.mean > 0.2, `mean ${drift.mean}, max ${drift.max} levels`)
+      is('and with the loop on the compositor wraps it back to the file\'s own frame, to the bit',
+        step(a, wrapped).max === 0, `max ${step(a, wrapped).max} LSB`)
+      // Frame L is frame 0 again, which is the hand-over itself in pixels.
+      const handOver = await frameAt('cycle', loopLoop, 0, LOOP_N)
+      is('frame L of a looping clip is frame 0 again', step(clean.px.get(0), handOver).max === 0,
+        `max ${step(clean.px.get(0), handOver).max} LSB`)
+
+      // The rule the loop work was most likely to break, so it is checked on the loop's
+      // own terms: a third cycle's frames, drawn in a shuffled order, are the frames the
+      // file holds. t mod L is a function of the frame's own time like the index it
+      // replaces, so nothing here reads another frame to know what to draw.
+      const third = new Map()
+      for (const n of shuffle(NS)) third.set(n, await frameAt('cycle3', loopLoop, n, n + 2 * LOOP_N))
+      const off = NS.map(n => step(clean.px.get(n), third.get(n))).reduce((m, x) => (x.max > m.max ? x : m))
+      is('a third cycle drawn in a shuffled order is the file\'s own frames, byte for byte', off.max === 0,
+        `max ${off.max} LSB, order ${shuffle(NS).join(' ')}`)
+    }
+
+    if (want('keys')) {
+      console.log('the keys as they were pressed')
+      const GL = require('../../ui/compositor/gl')
+      const Marks = require('../../ui/compositor/marks')
+      const Timeline = require('../../ui/timeline')
+      const clock = Timeline.outClock(null, 0, 12, null)
+      // a 1080p frame with a framed take in it, which is what the plan hands over
+      const box = { x: 115, y: 65, w: 1690, h: 890 }
+      const plan = (keys, o = {}) => Marks.planKeys(keys, { W: 1920, H: 1080, box, capBox: box, clock, span: 12, ...o })
+      const said = (K, t) => ((Marks.keysAt(K, t) || { caps: [] }).caps.map(c => c.label))
+
+      // The privacy rule first, because it is the one thing here that has to be right
+      // the first time. A character is drawn only where the event carries one.
+      const run = plan(TYPED)
+      is('a run the capture vouched for is typed out as it was typed',
+        JSON.stringify([said(run, 2.65), said(run, 3.5), said(run, 3.94)]) === JSON.stringify([['f'], ['fetch the t'], ['fetch the take']]),
+        JSON.stringify([said(run, 2.65), said(run, 3.5), said(run, 3.94)]))
+      const secret = plan(TYPED.map(e => ({ t: e.t, key: e.key })))
+      is('the same keys with nothing vouched for say someone is typing and never what',
+        [2.65, 3.5, 3.94].every(t => JSON.stringify(said(secret, t)) === JSON.stringify(['typing…'])), JSON.stringify(said(secret, 3.5)))
+      // A password field is not always a whole run of its own: the letters either side of
+      // one key nobody vouched for are the rest of the same secret.
+      const mixed = plan(TYPED.map((e, i) => (i === 4 ? { t: e.t, key: e.key } : e)))
+      is('one unvouched key in a run hides the whole run', JSON.stringify(said(mixed, 3.94)) === JSON.stringify(['typing…']), JSON.stringify(said(mixed, 3.94)))
+      is('and nothing infers a character from the key it was',
+        !JSON.stringify(said(plan([{ t: 3, key: 'a' }]), 3.3)).includes('A'), JSON.stringify(said(plan([{ t: 3, key: 'a' }]), 3.3)))
+
+      // What a chord looks like. A modified key is a command rather than content, so it
+      // is named from the key itself, in the Mac's own order and the Mac's own glyphs.
+      is('a chord is the modifiers in the Mac\'s order and then the key that acted',
+        JSON.stringify(said(plan([{ t: 3, key: 'p', mods: ['cmd', 'shift'] }]), 3.5)) === JSON.stringify(['⇧', '⌘', 'P']),
+        JSON.stringify(said(plan([{ t: 3, key: 'p', mods: ['cmd', 'shift'] }]), 3.5)))
+      is('and the gold is on that key alone, so a chord reads as modifiers and one key',
+        (Marks.keysAt(plan([{ t: 3, key: 'k', mods: ['cmd'] }]), 3.5).caps.filter(c => c.role === 'action').length === 1))
+      // A key held down, or hit three times in half a second: one cap with a count,
+      // rather than the same cap flashing three times.
+      is('a repeat is one cap with a count on it',
+        JSON.stringify(said(plan([{ t: 3, key: 'down' }, { t: 3.2, key: 'down' }, { t: 3.4, key: 'down' }]), 3.6)) === JSON.stringify(['↓ ×3']),
+        JSON.stringify(said(plan([{ t: 3, key: 'down' }, { t: 3.2, key: 'down' }, { t: 3.4, key: 'down' }]), 3.6)))
+
+      // How long one stays up, and that only one is ever up: the strip is one object in
+      // one place, so a new press pushes the last one out rather than landing on it.
+      const two = plan([{ t: 3, key: 'k', mods: ['cmd'] }, { t: 3.4, key: 'enter' }])
+      let both = 0, up = 0
+      for (let t = 2.8; t < 5; t += 1 / 120) {
+        const l = said(two, t)
+        if (l.includes('K') && l.includes('Return')) both++
+        if (l.length) up++
+      }
+      is('one group is on screen at a time', both === 0, `${both} frames of both`)
+      is('a key stays up long enough to read and not long enough to be in the way',
+        said(two, 4.2).length === 1 && said(two, 4.5).length === 0, `up for ${(up / 120).toFixed(2)} s over two presses`)
+      // It arrives the way everything else in the house does: it comes up from under its
+      // own line while it fades, rather than switching on.
+      const one = plan([{ t: 3, key: 'enter' }])
+      const mid = Marks.keysAt(one, 3.07).caps[0], rest = Marks.keysAt(one, 3.5).caps[0]
+      is('and arrives by coming up into place rather than switching on',
+        mid.op > 0.05 && mid.op < 0.95 && mid.y > rest.y && mid.grow < 1, `op ${mid.op.toFixed(2)}, ${(mid.y - rest.y).toFixed(1)} px low`)
+
+      // Where it sits. Never on the thing being demonstrated: on the ground under the
+      // take where the look leaves room, inside its bottom corner where it does not, and
+      // above a burned-in caption either way.
+      const tall = Marks.planKeys([{ t: 3, key: 'enter' }], { W: 1080, H: 1920, box: { x: 40, y: 600, w: 1000, h: 562 }, clock, span: 12 })
+      is('a deep ground under the take puts the strip on it, outside the picture', tall.y - tall.capH > 1162, `${(tall.y - tall.capH).toFixed(0)} px down, take ends at 1162`)
+      const capped = plan([{ t: 3, key: 'enter' }], { box: { x: 0, y: 0, w: 1920, h: 1080 }, capBox: { x: 0, y: 0, w: 1920, h: 1080 }, caption: {} })
+      const capY = require('../../ui/overlays').captionLayout(1920, 1080, {}, { x: 0, y: 0, w: 1920, h: 1080 })
+      is('a caption inside the take pushes the strip above it', capY.y - capped.y > capY.px * 2, `caption bottom ${capY.y.toFixed(0)}, cap bottom ${capped.y.toFixed(0)}`)
+
+      // And what a loop makes of it: a key still on screen at the last frame is the same
+      // fault as a badge that is, and is named the same way rather than fixed quietly.
+      const spec = Plan.prepare(loopOpts, loopMeta, {})
+      // the one line plan.js needs, applied here (see the shim above)
+      spec.keys = Marks.planKeys([{ t: 5.9, key: 'k', mods: ['cmd'] }], { W: spec.W, H: spec.H, box: spec.rect, clock: Timeline.outClock(null, 0, 6, null), span: spec.span })
+      const lc = GL.loopCheck(spec)
+      is('a key still on screen at the last frame stops the loop, by name',
+        !lc.loops && lc.faults.some(f => f.id === 'keys'), lc.faults.map(f => `${f.id}: ${f.what}`).join('; ') || 'no faults')
+      const clear = Plan.prepare(loopOpts, loopMeta, {})
+      clear.keys = Marks.planKeys([{ t: 1, key: 'k', mods: ['cmd'] }], { W: clear.W, H: clear.H, box: clear.rect, clock: Timeline.outClock(null, 0, 6, null), span: clear.span })
+      is('and a chord that is over before the end does not', GL.loopCheck(clear).loops, GL.loopCheck(clear).faults.map(f => f.id).join(' ') || 'no faults')
     }
 
     if (want('hold')) {

@@ -47,6 +47,12 @@ const INSTRUCTIONS = [
     'and send the id it hands back. A zoom or a mark placed from numbers read off a picture lands on ' +
     'the wrong thing, and the result will say so after the fact.',
   '',
+  'Decide rather than ask: a default they can see and undo beats a question, and an agent that asks ' +
+    'about everything is worse than one that gets on with it. The exception is narrow and it is what ask ' +
+    'is for, a request with two readings that would touch different parts of the take where the wrong one ' +
+    'costs an edit and an undo. A change that is wide or awkward to take back, show with propose before ' +
+    'it lands rather than after.',
+  '',
   'Every result carries the state it changed: the plan that is left, how far the edit still is from ' +
     'what was asked for, a frame of it, and what is wrong with it. Read that rather than calling again ' +
     'to find out.',
@@ -274,13 +280,18 @@ export function build() {
         'an id changes that mark, one without an id is added, and every mark you leave out stays. ' +
         'To delete anything, name it: remove: [\'M12\', \'Z3\'] (any list). The result lists every ' +
         'id the edit took out under removed and replaced; tell the person.\n' +
-        '- clips [{id,start,end,rate}]: the kept pieces in order. Trimming or cutting is ' +
+        '- clips [{id,start,end,rate,audio}]: the kept pieces in order. Trimming or cutting is ' +
         'changing these. rate is how fast a piece plays: 2 is twice speed, 0.5 is half, and a pair ' +
         '[1, 4] ramps from the first to the second across it. Left out it is 1, and 0.1 to 20 is the range: ' +
         'anything outside it is held to the nearest end and said under warnings, and there is no rate that ' +
         'freezes a frame. A piece running faster ' +
         'than 1 is silent unless audio.speedAudio is keep, and the finished length in the result is ' +
-        'measured at the rates set.\n' +
+        'measured at the rates set. ' +
+        'audio {gain (dB, -10 to 10), denoise, mute} is that clip\'s own sound, and anything it leaves ' +
+        'out is the take\'s own audio setting: lift one quiet passage without lifting the rest, pull a ' +
+        'loud keyboard down on its own, or mute a stretch outright. probe with loudness measures every ' +
+        'clip and names the gain to write. A clip running faster than 1 is silent whatever its gain says, ' +
+        'unless audio.speedAudio is keep.\n' +
         '- zooms [{id,start,end,element} or {id,start,end,box} or {id,start,end,scale,x,y}]: ' +
         'element is an E id from your last find_on_screen on this recording; box {x,y,w,h} is the thing ' +
         'to frame (from find_on_screen): Fetch centres on it with room around it and picks the ' +
@@ -334,8 +345,12 @@ export function build() {
         'SETTINGS (merged, so send only the fields you change):\n' +
         '- look: how the video looks, by section, e.g. {preset: \'studio\'} or ' +
         '{frame: {aspect: \'16:9\', padding: 0.08}, background: {kind: \'gradient\', gradient: \'ink\'}, ' +
-        'captions: {font, scale, colour, position, highlight}, motion: {fadeIn, fadeOut, zoomDepth, zoomEase, reveal, cutTransition}, ' +
-        'cursor: {show, hideSystem}}. Every field, range and default: get_look_schema; whole looks: ' +
+        'captions: {font, scale, colour, position, highlight}, motion: {fadeIn, fadeOut, zoomDepth, zoomEase, reveal, cutTransition, loop}, ' +
+        'cursor: {show, hideSystem}, keys: {show, place, size}}. motion.loop is for a clip that autoplays and ' +
+        'repeats on a page: a player counting frames on past the end seeds the grain, the tooth and the ' +
+        'dither on each frame\'s place in the loop, so a second pass draws the frames the file holds, ' +
+        'and can_loop says whether the edit wraps at all and what is stopping it. keys draws the keystrokes ' +
+        'recorded with the take, and a take without a key track draws none. Every field, range and default: get_look_schema; whole looks: ' +
         'list_looks and apply_look. A field left out is kept, null resets it, {preset} starts from that look. ' +
         'Output keeps the take\'s shape unless frame.aspect is set, and a chosen shape is filled by the ' +
         'background, never black bars. Values out of range are clamped and listed under look_warnings, ' +
@@ -492,6 +507,69 @@ export function build() {
     },
     async args => text(await drive('edit.revert', args, { timeoutMs: 90000 })))
 
+  // Two tools that wait on a person rather than on a machine. They are worth their
+  // latency only where a wrong guess costs an edit and an undo, and the undo is the
+  // person's work: the bar is damage, not doubt, and both descriptions say so, because
+  // an agent that asks about everything is worse than one that decides.
+  server.registerTool(
+    'ask',
+    {
+      description:
+        'Put a fork to the person as buttons in the Fetch chat, instead of guessing. Only for a request ' +
+        'with two or more readings that would touch different parts of the take, where the wrong one costs ' +
+        'an edit and an undo: "the whole sidebar, or just the Practice button". Two to four choices, each ' +
+        'one a thing you would then go and do. Never for styling, timing, wording, easing or a preset, and ' +
+        'never for anything you can find out with find_on_screen, get_edit or list_recordings: fill those ' +
+        'in yourself, since a default they can see and undo beats a question. It comes back whether or not ' +
+        'they answered, within 90 seconds by default, and the result\'s do_next says what to do either ' +
+        'way. Follow it, and do not ask about the same thing twice in one job.',
+      inputSchema: z.object({
+        question: z.string().describe('The question, in the person\'s own words, one short line.'),
+        note: z.string().optional().describe('One more line of context, only if the question needs it.'),
+        choices: z.array(z.object({
+          id: z.string().optional().describe('Short handle for this choice, e.g. "practice_button". Made from the label if you leave it out.'),
+          label: z.string().describe('What the button says, e.g. "Just the Practice button".'),
+          hint: z.string().optional().describe('One short line under the label, e.g. "Leaves the rest alone".'),
+        })).min(2).max(4).describe('Two to four choices, each one a thing you would then go and do.'),
+        timeout_seconds: z.number().min(10).max(600).optional().describe('How long to wait. 90 by default.'),
+      }),
+    },
+    // The card carries its own deadline and the app runs a backstop behind it, so this
+    // waits past the longest one either can be set to rather than racing them.
+    async args => text(await drive('chat.ask', args, { timeoutMs: 610000 })))
+
+  server.registerTool(
+    'propose',
+    {
+      description:
+        'Show an edit in the Fetch chat before it lands, with Apply and Discard, instead of applying it. ' +
+        'Takes what apply_edit takes, plus a title and the lines of what it would do, and shows one frame ' +
+        'of the edit as it would be. Nothing is written until they press Apply: on Discard the edit is ' +
+        'untouched, no undo level is spent and no file is made. Use it when the change is wide or awkward ' +
+        'to take back: cutting more than half the take, changing or deleting something they made by hand, ' +
+        'touching a redaction or a blur, or replacing the look. On Apply the result is apply_edit\'s own ' +
+        'result, plan and distance and all, and the edit is already applied, so do not send it again. On ' +
+        'every other branch the result says nothing was written and its do_next says what to do. Never ' +
+        'apply a proposal they did not accept.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        doc: z.record(z.string(), z.any()).describe('The change itself, exactly as apply_edit takes it.'),
+        title: z.string().describe('What it would do, one short line, e.g. "Blur the Practice button".'),
+        what: z.string().optional().describe('One more line: why, or what it leaves alone.'),
+        changes: z.array(z.object({
+          id: z.string().optional().describe('The id this would add or change, e.g. "M4".'),
+          line: z.string().describe('One line, e.g. "Blur at 0:12 to 0:14".'),
+        })).max(12).optional().describe('What it would do, by id, up to twelve lines.'),
+        step: z.string().optional().describe('The step of the plan an Apply finishes, e.g. "P3". Same as apply_edit\'s.'),
+        timeout_seconds: z.number().min(10).max(900).optional().describe('How long to wait. 240 by default.'),
+      }),
+    },
+    // The longest the card can be set to, the app's backstop two seconds behind it, and
+    // then the apply itself, which is apply_edit's own 90 seconds. Budgeted short, a
+    // click at the last minute lands the edit while the agent is told the call failed,
+    // and the agent sends the same document again.
+    async args => text(await drive('chat.propose', args, { timeoutMs: 900000 + 2000 + 90000 })))
+
   // What a person says about their own software outlives the chat it was said in. The
   // job file (direct) holds this edit's brief; this holds everything that is still true
   // next week, which is the half that used to be asked for again every Monday.
@@ -529,6 +607,31 @@ export function build() {
     async args => text(await drive('memory.remember', args)))
 
   server.registerTool(
+    'can_loop',
+    {
+      description:
+        'Whether this edit can play round again with no visible jump, and what is stopping it. For a clip ' +
+        'that autoplays on a landing page, where the seam is the whole of the job. Answered from the plan ' +
+        'before anything is drawn, so it is cheap and can be asked before the export. Returns loops true ' +
+        'or false and a fault for each thing that does not end the clip the way it starts it, each with ' +
+        'what it is and the fix: a fade, the take rising into place, a zoom still moving at the last ' +
+        'frame, a caption mid-phrase, a mark or a cursor somewhere else at the end. It also returns ' +
+        'source, the take\'s own time at the two ends: whether the recording itself comes back to where it ' +
+        'began is the one half no plan can answer, so look at those two moments with get_frame and say so. ' +
+        'Set the look\'s motion.loop once it passes. The file it exports is the same either way: what the ' +
+        'switch buys is that a player counting frames on past the end, which the editor\'s stage does ' +
+        'when it plays the clip round again, seeds the grain, the ground\'s tooth and the dither on each ' +
+        'frame\'s place in the loop and so draws the frames the file holds rather than fresh noise.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        look: z.record(z.string(), z.any()).optional()
+          .describe('A look to try without saving it, e.g. {motion: {fadeIn: 0, fadeOut: 0, reveal: "none"}}, ' +
+            'so you can ask whether a change would fix the wrap before making it.'),
+      }),
+    },
+    async args => text(await drive('edit.loop', args, { timeoutMs: 120000 })))
+
+  server.registerTool(
     'export',
     {
       description:
@@ -537,10 +640,16 @@ export function build() {
         'deliverable at the top of that folder, <Take>/<Take>.<format>, and exporting again ' +
         'overwrites it. An older recording on the Desktop gets a -edit copy beside it. Runs ' +
         'in the background queue, one export at a time, so it can take a while for a long ' +
-        'recording. MP4 and MOV are drawn by the compositor, several times real time; GIF, WebM ' +
-        'and the audio-only formats go to the classic ffmpeg renderer, which leaves some look ' +
-        'fields out, and look_warnings then names what it left out and what to export to get it. ' +
-        'engine in the result says which one drew it. The result also carries review, the same ' +
+        'recording. MP4, MOV, WebM and GIF are all drawn by the compositor, several times real time, off ' +
+        'the same frames: they differ at the encoder and nowhere else, so a GIF now carries the frame, ' +
+        'the ground, the shadow, the grade and the easing it used to throw away. A GIF is drawn at a rate ' +
+        'its own hundredth-of-a-second clock can hold, so every frame is held the same time, and without ' +
+        'the ground\'s tooth or the film\'s grain, which 256 colours cannot carry and which cost five ' +
+        'times the file. The audio-only formats and a take the compositor cannot read go to the classic ' +
+        'ffmpeg renderer, which leaves some look fields out, and look_warnings then names what it left ' +
+        'out and what to export to get it. ' +
+        'engine in the result says which one drew it. With the look\'s motion.loop set, the result also ' +
+        'carries loop, the same check can_loop runs, on the file you just made. The result also carries review, the same ' +
         'check the review tool runs, on the file you just made: the export happens either way, ' +
         'so read its blocking list and fix what it names before you say this is done.',
       inputSchema: z.object({
@@ -903,8 +1012,18 @@ export function build() {
   server.registerTool(
     'probe',
     {
-      description: 'Read the duration, resolution, frame rate and audio tracks of a video file.',
-      inputSchema: z.object({ path: z.string().describe('Absolute path to a video file.') }),
+      description:
+        'Read the duration, resolution, frame rate and audio tracks of a video file. With loudness, it ' +
+        'also measures each clip of the edit in LUFS against the -14 target and hands back, for each one, ' +
+        'the gain in decibels that would bring it to the rest and whether it is quiet enough to be worth ' +
+        'lifting. That is the answer to "this bit is too quiet": write the gain it names onto that clip ' +
+        '(apply_edit clips, audio.gain) rather than lifting the whole take and the keyboard with it.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to a video file.'),
+        loudness: z.boolean().optional()
+          .describe('Measure each clip\'s loudness as well. One decode per clip, so ask for it when a passage ' +
+            'sounds wrong, not on every probe.'),
+      }),
     },
     async args => text(await drive('probe', args)))
 

@@ -160,9 +160,72 @@ async function main() {
     }
     // and the ones named by a plain English word, which no pattern picks out of prose:
     // listed here so a rename breaks this rather than the sentence
-    for (const name of ['direct', 'review', 'remember']) {
+    for (const name of ['direct', 'review', 'remember', 'ask', 'propose']) {
       assert.ok(registered.includes(name), `the instructions say to call ${name}, which is not registered`)
       assert.ok(new RegExp(`\\b${name}\\b`).test(say), `${name} is listed here and the instructions no longer name it`)
+    }
+  })
+
+  t('this round\'s work reached the tool surface too', () => {
+    // The same rule as the check below, a round later: a thing the app can now do that
+    // no outside agent would find, because the only place it is written down is the
+    // description beside it.
+    const doc = name => SRC.split(`'${name}',`)[1] || ''
+    assert.ok(/clips \[\{id,start,end,rate,audio\}\]/.test(doc('apply_edit')), 'apply_edit does not name a clip\'s own sound')
+    assert.ok(/motion\.loop/.test(doc('apply_edit')), 'apply_edit does not name the loop')
+    assert.ok(/keys/.test(doc('apply_edit')), 'apply_edit does not name the keys section of the look')
+    const ex = doc('export')
+    assert.ok(/MP4, MOV, WebM and GIF are all drawn by the compositor/.test(ex),
+      'export still tells an agent that a GIF or a WebM goes to the classic renderer')
+    assert.ok(/loudness/.test(doc('probe')), 'probe does not offer the measurement that answers "this bit is too quiet"')
+    assert.ok(/source/.test(doc('can_loop')), 'can_loop does not say the recording\'s own half is the agent\'s to check')
+  })
+
+  // The answer path, run rather than read. A window the person could have seen, a
+  // question put into it, the answer sent back the way the pane sends it, and the result
+  // the tool hands the agent. Nothing here touches a real window or a real CLI.
+  await (async () => {
+    const seen = []
+    const win = { isDestroyed: () => false, isVisible: () => true,
+      webContents: { send: (ch, ev) => seen.push(ev) } }
+    bridge.start({ getWindow: () => win, proc: require('../processor'), isRecording: () => false })
+    try {
+      const asked = bridge.ops['chat.ask']({ question: 'The whole sidebar, or just the button?',
+        choices: [{ label: 'The whole sidebar' }, { label: 'Just the Practice button' }] })
+      await new Promise(r => setImmediate(r))
+      const card = seen.find(e => e.kind === 'ask')
+      t('a question reaches the pane as a card with its choices', () => {
+        assert.ok(card, 'no ask event reached the window')
+        assert.deepStrictEqual(card.choices.map(c => c.id), ['the_whole_sidebar', 'just_the_practice_button'])
+        assert.ok(card.timeoutMs > 0, 'a question with no deadline is a turn that never ends')
+      })
+      assert.ok(bridge.settleWait(card.id, 'answered', 'just_the_practice_button'))
+      const out = await asked
+      t('the answer comes back as the choice the agent named, with what to do next', () => {
+        assert.strictEqual(out.answered, true)
+        assert.strictEqual(out.choice, 'just_the_practice_button')
+        assert.ok(/do not ask about it again/i.test(out.do_next), 'nothing stops it asking the same thing twice')
+      })
+      t('the same answer twice settles nothing twice', () => {
+        assert.strictEqual(bridge.settleWait(card.id, 'answered', 'the_whole_sidebar'), false)
+      })
+    } finally { bridge.stop() }
+  })()
+
+  t('a tool that waits on a person cannot hang the turn', () => {
+    // ask and propose are the only two ops that wait on somebody, so they are the only
+    // two that could hold a turn open for ever. Three ways out, all in the source: a
+    // window nobody can see resolves at once, a backstop clock runs behind the pane's
+    // own, and the end of the turn settles whatever is left.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+    const from = src.indexOf('function putToPane(')
+    assert.ok(from > 0, 'the bridge no longer has one place where a card is put to the person')
+    const body = src.slice(from, from + src.slice(from).indexOf('\n}\n'))
+    assert.ok(/unattended/.test(body), 'a question nobody could see is not answered at once')
+    assert.ok(/setTimeout\(/.test(body), 'nothing frees the op if the pane never answers')
+    assert.ok(/onTurnEnd\(/.test(src), 'a card can outlive the turn that asked for it')
+    for (const op of ['chat.ask', 'chat.propose']) {
+      assert.ok(typeof bridge.ops[op] === 'function', `${op} is not in the bridge`)
     }
   })
 
@@ -229,6 +292,24 @@ async function main() {
     const body = src.slice(from, from + src.slice(from).indexOf('\n  },'))
     assert.ok(/Fit\.fit\(/.test(body), 'edit.fit no longer calls Fit.fit')
     assert.ok(/beatsFor\(/.test(body), 'edit.fit hands Fit a document whose beats it never fetched')
+  })
+
+  // The same shape, found by looking for it. Captions live in a .srt that transcribe
+  // writes; they reach the document only when the editor opens the take and saves it
+  // back. So every op that reads a document off disk and then reasons about what was
+  // said was reading an empty list: review told an agent to transcribe a take it had
+  // just transcribed, voiceover refused to speak a script that was already there, and
+  // direct counted no captions. The renderers were never affected, because both of them
+  // fall back to the .srt themselves.
+  t('an op that reasons about the captions fetches them itself', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+    assert.ok(/function withCues\([\s\S]*?readCues\(/.test(src), 'withCues no longer reads the .srt')
+    for (const op of ['edit.review', 'edit.direct', 'edit.fit', 'voice.speak']) {
+      const from = src.indexOf(`async '${op}'(`)
+      assert.ok(from > 0, `${op} is not in the bridge`)
+      const body = src.slice(from, from + src.slice(from).indexOf('\n  },'))
+      assert.ok(/withCues\(/.test(body), `${op} reads a document's cues and never fetches them`)
+    }
   })
 
   fs.rmSync(dir, { recursive: true, force: true })

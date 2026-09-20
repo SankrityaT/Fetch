@@ -86,24 +86,95 @@ const CRF = { high: 20, balanced: 23, small: 28 }
 const PRESET = { high: 'fast', balanced: 'fast', small: 'veryfast' }
 const TUNE = { high: ['-x264-params', X264_GRAIN], balanced: ['-x264-params', X264_GRAIN] }
 
+// VP9 exactly as the classic renderer wrote a WebM, with its rate factors written out
+// rather than derived (its `crfFor(q) + 8`: VP9's quantiser scale runs wider than x264's,
+// and eight steps up is where the two sit at the same picture). Kept identical on purpose.
+// What a quality name promises is a size, and the thing that changes here is the picture
+// going in, not what the encoder is told about it. x264 earned its grain tuning by
+// measurement and VP9 has had none, so it gets none.
+const VP9_CRF = { high: 28, balanced: 31, small: 36 }
+
+// GIF's clock is a delay in hundredths of a second per frame, so a rate that does not
+// divide 100 cannot be held. The classic renderer asked for 12 fps, which is 8.33 cs, and
+// the writer keeps the total length by alternating: measured on a 6 s export, 48 frames at
+// 8 cs and 24 at 9, so one frame in three sat 11 percent longer than its neighbours. A
+// landing page autoplays this on a loop and that judder is on every pass. At 12.5 every
+// frame is 8 cs. So a GIF is drawn at a rate GIF can hold, and the plan is made at that
+// rate too, so the drawn frames and the written delays are one clock.
+const GIF_RATES = [10, 12.5, 20, 25, 50]
+const gifRate = fps => GIF_RATES.reduce((a, b) => (Math.abs(b - fps) < Math.abs(a - fps) ? b : a))
+
+// A palette is the one thing about a GIF that cannot be a compositor pass. Every pass
+// there is a function of one frame and its own time and nothing else (PASSES.md), and
+// choosing the colours for a clip is a function of all of its frames at once. It belongs
+// at the sink, where the finished stream goes past in order anyway and no drawn frame has
+// to be read back a second time.
+//
+// Two numbers, both measured on a 6 s framed export at 640 wide, against the frames the
+// compositor drew (`.context/survey/r3-t3.md`):
+//
+//   256 colours   the ceiling, and the classic renderer took 128. 128 is 2.5 dB further
+//                 from the drawn frame and saves a quarter of the file. What the missing
+//                 half of the palette costs is the ground, which DESIGN.md calls a
+//                 surface and not a value; a look picks it and the take stands on it, and
+//                 half a palette puts contour lines through it.
+//   bayer 5       the coarse ordered dither, not the fine one and not error diffusion.
+//                 Ordered is the same pattern in the same colour on every frame, so a
+//                 still ground still compresses; sierra2_4a moves with the content and
+//                 wrote 2.31 MB where this writes 1.42. Scale 5 is the widest bayer cell,
+//                 which is the least noise that still breaks the ground's contours: no
+//                 dither at all is the smallest file of the lot at 1.27 MB and reads 0.7
+//                 dB better on flat detail, and the bands it leaves on the ground are
+//                 plainly there at any contrast.
+//
+// paletteuse's diff_mode was tried and is not here: on a moving take and on a take whose
+// screen never changes it wrote the same file to the byte, because the GIF writer already
+// holds each frame to the box that changed.
+const GIF_COLORS = 256
+const GIF_DITHER = 'bayer:bayer_scale=5'
+
+function gifChain(W, H, W4) {
+  const pre = [
+    ...(W4 !== W ? [`crop=${W}:${H}:0:0`] : []),
+    // NV12 is BT.709 limited range and a palette is RGB. Left to guess, swscale reads it
+    // full range and every ground comes out lifted, which on a flat page is a visible
+    // step away from the MP4 of the same edit.
+    'scale=flags=lanczos:in_range=tv:in_color_matrix=bt709:out_range=pc',
+    'format=rgb24',
+  ].join(',')
+  return `${pre},split[s0][s1];`
+    + `[s0]palettegen=max_colors=${GIF_COLORS}:stats_mode=full[p];`
+    + `[s1][p]paletteuse=dither=${GIF_DITHER}`
+}
+
 /**
  * The encoder's arguments. W4 x H is the packed frame (W rounded up to four); the
  * output is cropped back to W. quality: high, balanced or small, as the classic export.
+ * format is the container: mp4 and mov take H.264, webm VP9, gif the palette pass.
  */
-function encodeArgs(file, W, H, fps, { quality = 'balanced', W4 = W, codec = 'x264' } = {}) {
+function encodeArgs(file, W, H, fps, { quality = 'balanced', W4 = W, codec = 'x264', format = 'mp4' } = {}) {
   const q = CRF[QUALITY_ALIAS[quality] || quality] ? (QUALITY_ALIAS[quality] || quality) : 'balanced'
-  const venc = codec === 'vt'
-    ? ['-c:v', 'h264_videotoolbox', '-b:v', String(Math.round(W * H * fps * BPP[q])), '-profile:v', 'high', '-allow_sw', '1']
-    : ['-c:v', 'libx264', '-preset', PRESET[q], '-crf', String(CRF[q]), ...(TUNE[q] || []), '-pix_fmt', 'yuv420p']
-  return ['-hide_banner', '-loglevel', 'error', '-y',
+  const input = ['-hide_banner', '-loglevel', 'error', '-y',
     // the bytes are BT.709 limited range already, and ffmpeg has to be told on the input:
     // tagged only on the output, ffmpeg 8 converted them as another matrix (dE 5)
     '-f', 'rawvideo', '-pix_fmt', 'nv12', '-s', `${W4}x${H}`, '-r', String(fps),
-    '-colorspace', 'bt709', '-color_range', 'tv', '-i', 'tcp://127.0.0.1:0',
-    ...(W4 !== W ? ['-vf', `crop=${W}:${H}:0:0`] : []),
-    ...venc,
-    '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv',
-    '-movflags', '+faststart', '-an', file]
+    '-colorspace', 'bt709', '-color_range', 'tv', '-i', 'tcp://127.0.0.1:0']
+  const crop = W4 !== W ? ['-vf', `crop=${W}:${H}:0:0`] : []
+  // BT.709 on the way out, so a player shows what the stage showed. A GIF is sRGB by
+  // definition and carries no tags at all, which is why the conversion is explicit above.
+  const tags = ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv']
+
+  if (format === 'gif') return [...input, '-vf', gifChain(W, H, W4), '-loop', '0', '-an', file]
+  if (format === 'webm') {
+    return [...input, ...crop,
+      '-c:v', 'libvpx-vp9', '-crf', String(VP9_CRF[q]), '-b:v', '0',
+      '-deadline', 'good', '-cpu-used', '4', '-row-mt', '1',
+      '-pix_fmt', 'yuv420p', ...tags, '-an', file]
+  }
+  const venc = codec === 'vt'
+    ? ['-c:v', 'h264_videotoolbox', '-b:v', String(Math.round(W * H * fps * BPP[q])), '-profile:v', 'high', '-allow_sw', '1']
+    : ['-c:v', 'libx264', '-preset', PRESET[q], '-crf', String(CRF[q]), ...(TUNE[q] || []), '-pix_fmt', 'yuv420p']
+  return [...input, ...crop, ...venc, ...tags, '-movflags', '+faststart', '-an', file]
 }
 
 // Frames go to the encoder over loopback TCP, not its stdin: from Electron's renderer a
@@ -221,4 +292,4 @@ class WebCodecsSink {
   kill() { try { this.encoder.close() } catch {} try { this.proc.kill('SIGKILL') } catch {} }
 }
 
-module.exports = { encodeArgs, Nv12PipeSink, WebCodecsSink }
+module.exports = { encodeArgs, gifRate, Nv12PipeSink, WebCodecsSink, GIF_RATES }

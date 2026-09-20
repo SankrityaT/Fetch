@@ -332,6 +332,7 @@
     pane.querySelector('#chatForm').onsubmit = e => { e.preventDefault(); state.busy ? stop() : submit() }
     wireIntro()
     list.addEventListener('click', openCard)
+    list.addEventListener('click', decide)
     pane.querySelector('#chatOn').addEventListener('click', e => {
       if (!e.target.closest('[data-unon]')) return
       ctxOff = true
@@ -826,6 +827,7 @@
     const ok = await ipcRenderer.invoke('chat-new').catch(() => false)
     if (!ok) return
     planNode = null
+    settleAll('cancelled')             // before the nodes go, so the ticker goes with them
     list.innerHTML = introHtml()
     wireIntro()
     state.tools.clear()
@@ -1019,6 +1021,174 @@
   // wording for the same number.
   const distanceLine = x => x && typeof x.line === 'string' ? x.line : ''
 
+  // ── the agent asks, and the agent proposes ─────────────────────────────
+  // Two events that are not a report. Until now an ambiguous ask was guessed at, and
+  // a wrong guess costs an edit and an undo; "the whole sidebar, or just the Practice
+  // button" with two buttons costs one click. A proposal is the same trade for a
+  // change that is awkward to hand back: it is shown before it lands, and nothing is
+  // written until Apply, so Discard leaves nothing behind by construction.
+  //
+  // No card sits live forever. Each carries its own deadline, the turn ending settles
+  // whatever is still up, and closing the pane does not strand the agent: it reads
+  // the result's do_next and carries on either way (ui/edit-assist.js).
+  const waiting = new Map()         // id -> { node, kind, ends, replay }
+  let ticker = null
+
+  function tick() {
+    const now = Date.now()
+    for (const [id, e] of waiting) {
+      if (e.replay) continue
+      const left = Math.ceil((e.ends - now) / 1000)
+      if (left <= 0) { answer(id, 'timeout'); continue }
+      const lab = e.node.querySelector('.chat-wait-left')
+      if (lab) lab.textContent = left < 60 ? left + 's' : Math.ceil(left / 60) + 'm'
+    }
+    if (!waiting.size && ticker) { clearInterval(ticker); ticker = null }
+  }
+
+  // The deadline is drawn as a hairline that runs out, not as a number that counts
+  // down in your face: this is a nudge, not a game show. transform only, so no layout
+  // animates, and reduced motion gets the seconds alone.
+  function goLive(node, kind, spec, replay) {
+    // Two cards can never share an id: the second would orphan the first with its
+    // buttons still lit and nothing behind them.
+    if (waiting.has(spec.id)) settleCard(spec.id, 'superseded')
+    waiting.set(spec.id, { node, kind, ends: Date.now() + spec.timeoutMs, replay: !!replay })
+    if (replay) { node.querySelectorAll('button').forEach(b => { b.disabled = true }); return }
+    const bar = node.querySelector('.chat-wait-bar')
+    if (bar) {
+      bar.style.transition = `transform ${spec.timeoutMs}ms linear`
+      // a frame later, so the transition has a starting value to run from rather than
+      // being collapsed into the same style recalculation
+      requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transform = 'scaleX(0)' }))
+    }
+    if (!ticker) ticker = setInterval(tick, 500)
+    tick()
+    // A question nobody can see is a question nobody answers, so it opens the pane.
+    if (!state.open) toggle(true)
+  }
+
+  // Settling is idempotent and one-way: whoever gets there first (a click, the clock,
+  // the turn ending, main reporting back) wins, and the rest are no-ops.
+  function settleCard(id, how, choice) {
+    const e = waiting.get(id)
+    // Settled as Applied, and then the apply refused: the one later word that is not a
+    // second answer but a correction of the first, so a card cannot go on reading
+    // "Applied." over a document nothing was written to.
+    if (!e) return correctCard(id, how)
+    waiting.delete(id)
+    const n = e.node
+    n.dataset.settled = how
+    n.querySelectorAll('button').forEach(b => {
+      b.disabled = true
+      const picked = (choice && b.dataset.choice === choice) || (b.dataset.decide && b.dataset.decide === how)
+      if (!picked) return
+      // the tick, not just the tint: a state carried by colour alone is not a state
+      b.dataset.chosen = 'true'
+      b.insertAdjacentHTML('afterbegin', ico('check', 'icon-xs'))
+    })
+    const bar = n.querySelector('.chat-wait-bar')
+    if (bar) bar.remove()
+    const lab = n.querySelector('.chat-wait-left')
+    if (lab) lab.textContent = ''
+    const said = n.querySelector('.chat-wait-said')
+    if (said) said.textContent = Assist.settleLine(e.kind, how)
+  }
+
+  // The only how that lands on an already settled card, and only on one that was
+  // settled as apply: the edit behind it threw after the click.
+  function correctCard(id, how) {
+    if (how !== 'failed') return
+    const n = list && list.querySelector(`[data-wait="${id}"][data-settled="apply"]`)
+    if (!n) return
+    n.dataset.settled = how
+    const said = n.querySelector('.chat-wait-said')
+    if (said) said.textContent = Assist.settleLine('propose', how)
+  }
+
+  // The person's side of it. The card settles here and now rather than waiting for
+  // main to confirm: the click is the answer, and a button that stays waiting for a
+  // round trip invites a second press.
+  function answer(id, how, choice) {
+    if (!waiting.has(id)) return
+    settleCard(id, how, choice)
+    ipcRenderer.send('chat-reply', { id, how, choice: choice || null })
+  }
+
+  function askCard(ev, replay) {
+    const r = Assist.askSpec(ev)
+    if (!r.ok) return false
+    const q = r.ask
+    // The choices are equals. A gold one would be a recommendation, and a question
+    // that recommends an answer is a guess with extra steps, so gold stays on the
+    // focus ring alone here.
+    const n = add(
+      `<div class="chat-wait-head">${ico('dog', 'icon-sm')}<span>${esc(q.question)}</span></div>` +
+      (q.note ? `<p class="chat-ask-note">${esc(q.note)}</p>` : '') +
+      `<div class="chat-ask-picks">` + q.choices.map(c =>
+        `<button type="button" class="chat-pick" data-choice="${esc(c.id)}">` +
+          `<span class="chat-pick-lab">${esc(c.label)}</span>` +
+          (c.hint ? `<span class="chat-pick-hint">${esc(c.hint)}</span>` : '') +
+        `</button>`).join('') + `</div>` +
+      `<div class="chat-wait-foot"><span class="chat-wait-said"></span><span class="chat-wait-left mono"></span></div>` +
+      `<span class="chat-wait-bar" aria-hidden="true"></span>`, 'chat-ask')
+    n.dataset.wait = q.id
+    n.setAttribute('role', 'group')
+    n.setAttribute('aria-live', 'polite')
+    n.setAttribute('aria-label', 'Biscuit is asking: ' + q.question)
+    goLive(n, 'ask', q, replay)
+    return true
+  }
+
+  function proposeCard(ev, replay) {
+    const r = Assist.proposalSpec(ev)
+    if (!r.ok) return false
+    const p = r.proposal
+    const rows = p.changes.map(c =>
+      `<li>${c.id ? `<span class="mono">${esc(c.id)}</span>` : ''}<span>${esc(c.line)}</span></li>`).join('')
+    // Discard is not destructive, since nothing has been written yet, so it can sit
+    // beside Apply. It is still the quiet one: Apply is what you came to decide.
+    const n = add(
+      `<div class="chat-wait-head">${ico('eye', 'icon-sm')}<span>Before this lands</span></div>` +
+      `<div class="chat-prop-top">` +
+        (p.preview ? `<span class="chat-prop-shot"><img alt="" src="${esc(fileUrl(p.preview))}"></span>` : '') +
+        `<span class="chat-prop-txt"><span class="chat-prop-title">${esc(p.title)}</span>` +
+        (p.what ? `<span class="chat-prop-what">${esc(p.what)}</span>` : '') + `</span>` +
+      `</div>` +
+      (rows ? `<ul class="chat-prop-list">${rows}</ul>` : '') +
+      `<div class="chat-prop-acts">` +
+        `<button type="button" class="chat-prop-no" data-decide="discard">Discard</button>` +
+        `<span class="chat-wait-left mono"></span>` +
+        `<button type="button" class="chat-prop-yes" data-decide="apply">Apply</button>` +
+      `</div>` +
+      `<div class="chat-wait-foot"><span class="chat-wait-said"></span></div>` +
+      `<span class="chat-wait-bar" aria-hidden="true"></span>`, 'chat-prop')
+    n.dataset.wait = p.id
+    n.setAttribute('role', 'group')
+    n.setAttribute('aria-live', 'polite')
+    n.setAttribute('aria-label', 'Biscuit is proposing: ' + p.title)
+    const shot = n.querySelector('.chat-prop-shot img')
+    if (shot) shot.onerror = () => shot.parentElement.remove()
+    goLive(n, 'propose', p, replay)
+    return true
+  }
+
+  function decide(e) {
+    const b = e.target.closest('.chat-pick, .chat-prop-yes, .chat-prop-no')
+    if (!b || b.disabled) return
+    const host = b.closest('[data-wait]')
+    if (!host) return
+    const id = host.dataset.wait
+    if (b.dataset.choice) answer(id, 'answered', b.dataset.choice)
+    else answer(id, b.dataset.decide)
+  }
+
+  // A conversation that is over cannot be answered. Whatever is still up settles as
+  // the turn ended, so the pane never shows a waiting button wired to nothing.
+  function settleAll(how) {
+    for (const id of [...waiting.keys()]) settleCard(id, how)
+  }
+
   function paintUndo() {
     if (!list) return
     list.querySelectorAll('.chat-card-wrap[data-undo-for]').forEach(w => {
@@ -1111,7 +1281,15 @@
     dropIntro()
     if (ev.kind === 'user') { renderUser(ev); return }
     if (ev.kind === 'text') add(md(Assist.plainDashes(ev.text)), 'chat-msg chat-them')
+    // A question and a proposal are the row: a second line saying "ask, 43 s" beside
+    // the card the person is reading from says the same thing twice and says it worse.
+    else if (ev.kind === 'ask') { if (askCard(ev, replay) && !replay) setFace('think') }
+    else if (ev.kind === 'propose') { if (proposeCard(ev, replay) && !replay) setFace('think') }
+    // main reporting a card settled somewhere other than this pane: the clock ran out
+    // in the main process, or a second window answered it
+    else if (ev.kind === 'settled') settleCard(ev.id, ev.how, ev.choice)
     else if (ev.kind === 'tool') {
+      if (/^(ask|propose)$/.test(toolOf(ev))) return
       toolRow(ev)
       if (!replay) setFace(faceForTool(toolOf(ev)))
     }
@@ -1134,6 +1312,9 @@
     }
     else if (ev.kind === 'done') {
       settleTools(ev.cancelled ? 'stopped' : 'bad')
+      // A question outlives its turn by nothing: the agent has already been handed
+      // its do_next and moved on, so a button still lit would answer into the void.
+      settleAll(ev.cancelled ? 'cancelled' : 'timeout')
       if (ev.cancelled) add(`<span>Stopped</span>`, 'chat-note')
       else if (!ev.ok && ev.error) add(esc(ev.error), 'chat-msg chat-err')
       if (replay) return
@@ -1161,6 +1342,7 @@
     for (const ev of log) { try { render(ev, { replay: true }) } catch {} }
     // a turn cut off by quitting never said it was done
     settleTools('bad')
+    settleAll('stale')
     for (const [k, v] of liveTools) state.tools.set(k, v)
     for (const n of live) list.appendChild(n)
     if (statusEl) list.appendChild(statusEl)
