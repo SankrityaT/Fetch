@@ -494,11 +494,22 @@
 
   const atText = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}.${Math.floor(t * 10) % 10}`
 
+  // The picture of a lassoed area keeps that area's own shape. A square box with a
+  // 10px radius (--r-sm) is a circle at this size, and a circle crops a wide area to
+  // its middle, which is exactly where its text is not.
+  function regionThumb(r, h) {
+    const px = r && r.px
+    const a = px && px.w > 0 && px.h > 0 ? px.w / px.h : 3 / 2
+    const w = Math.round(h * Math.max(0.7, Math.min(2.6, a)))
+    return '<img src="' + esc(fileUrl(r.image)) + '" alt="" width="' + w + '" height="' + h + '" ' +
+      'style="width:' + w + 'px;height:' + h + 'px">'
+  }
+
   function regionHtml(r, i) {
     return '<span class="chat-region-chip">' +
       '<button type="button" class="chat-region-go" data-region="' + i + '" ' +
         'title="Show this area in the editor">' +
-        '<img src="' + esc(fileUrl(r.image)) + '" alt="">' +
+        regionThumb(r, 18) +
         '<span class="chat-region-lab">' + esc(r.label) + '</span>' +
         '<span class="chat-region-at mono">' + atText(r.at) + '</span>' +
         '<span class="chat-region-id mono">' + esc(r.id) + '</span>' +
@@ -681,7 +692,7 @@
     const sentRegions = msg.regions || []
     const regionLine = sentRegions.length
       ? '<div class="chat-me-regions">' + sentRegions.map(r =>
-        '<span><img src="' + esc(fileUrl(r.image)) + '" alt="">' + esc(r.label) +
+        '<span>' + regionThumb(r, 16) + esc(r.label) +
         '<span class="mono">' + esc(r.id) + '</span></span>').join('') + '</div>' : ''
     add((sentAtt.length ? `<div class="chat-me-att">${thumbs}</div>` : '') + (typed ? esc(typed) : '') + tagLine + regionLine,
       'chat-msg chat-me' + (typed ? '' : ' chat-me-only-att'))

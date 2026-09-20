@@ -295,7 +295,7 @@
   height:100%; padding:0 5px 0 0; border-radius:var(--r-pill); color:inherit;
 }
 .chat-region-go img {
-  width:18px; height:18px; flex:none; border-radius:var(--r-sm);
+  height:18px; flex:none; border-radius:4px;
   object-fit:cover; background:var(--ink-2); display:block;
 }
 .chat-region-lab { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--fur-0); }
@@ -318,7 +318,7 @@
   font-size:var(--t-11); color:var(--fur-0); padding:2px 8px 2px 2px; border-radius:var(--r-pill);
   background:rgba(240,169,60,.14);
 }
-.chat-me-regions img { width:16px; height:16px; border-radius:8px; object-fit:cover; background:var(--ink-2); }
+.chat-me-regions img { height:16px; border-radius:4px; object-fit:cover; background:var(--ink-2); }
 .chat-me-regions .mono { color:var(--text-2); }
 
 /* the recording open in the editor, which goes along with every message until removed */
