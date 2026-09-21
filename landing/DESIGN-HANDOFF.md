@@ -170,6 +170,35 @@ feature cards (see Anti-patterns).
 - Preview and export agree to within 1 to 2 of 255.
 - Exports run several times faster than real time at 1080p60.
 
+**Screenshots, which changes what Fetch is**
+
+Fetch is no longer a screen recorder. It is a capture tool: **stills and recordings, one
+library, one renderer.** This is the newest and least expected thing on the page and it
+deserves real space, not a bullet.
+
+- Capture a display, a window or a region at full Retina, with the never-record list
+  enforced **before a pixel lands**, not checked afterwards.
+- A still is styled by the **same renderer that draws a video frame**: backgrounds, mesh
+  gradients, photo backdrops, device frames, tilt, lift, the loupe, arrows, numbered
+  steps, redactions, blur, grain, shadows. There is no second engine, so a look saved
+  from a recording applies to a screenshot and back.
+- **Type on a still**: a headline, a subhead, a caption under the image, a label pinned
+  into the picture, a callout that points at one. The type never lies on the product; its
+  room is taken before the picture is placed. A long headline wraps, then steps down a
+  size.
+- **A phone beside a Mac**, at real relative sizes, sharing one background, one light and
+  one grade, so the group reads as one photograph rather than two pictures pasted
+  together.
+- Ships at **the density it was captured**, with exact App Store sizes, because a
+  screenshot exists to be looked at closely.
+- **Styled and Original one click apart**, and the original is never touched.
+- A library holding both kinds, with folders per product, platform as a tag, sort and
+  filter, duplicate, and **provenance**: any item says what it was styled or cut from.
+
+Judged cold by an adversarial reviewer driving the real tool surface with sentences a
+person would say: **8 out of 10**, up from 6 the day before. Safe to say a styled
+screenshot from Fetch stands beside a hand-made one.
+
 ## The hero
 
 One demo carries the page. It must show something no competitor can produce, which
@@ -197,13 +226,18 @@ These are **not** built. Putting them on the page would be false.
 - **Fetch does not drive apps or browsers.** It records. Playwright drives browsers,
   a computer-use agent drives native apps, `simctl` drives the Simulator. Say
   "composes with", never "controls your apps".
-- **Screenshots. Fetch has none.** Every capability on this page is about video. A
-  styled still is a competitor's ground and Fetch does not stand on it yet.
-- **More than one device in a single shot** (a phone beside a Mac, at real relative
-  sizes). Not built.
-- (Arrows, the loupe, lift, redaction, spotlight, numbered steps, device frames and
-  styled backdrops **are** built as of 20 September and are fine to claim, for video.
-  An earlier version of this brief said they were not. They are.)
+- **Driving apps.** Fetch records and captures. It composes with the tools that drive
+  (a browser driver, a computer-use agent, the Simulator's own command line). Say
+  "composes with", never "controls your apps".
+- **Injecting taps into a simulator.** Fetch draws the tap and records the result. It
+  does not send the touch. Do not imply otherwise.
+- Understanding your codebase or reading your source. Not built.
+- Cross-platform. macOS only (13 or later for native capture).
+- "AI-generated" anything. The agent is the person's own, not Fetch's.
+- (**Screenshots, multi-device shots, arrows, the loupe, lift, redaction, spotlight,
+  numbered steps, device frames and styled backdrops are all built** as of 20 September
+  and are fine to claim. Two earlier versions of this brief said they were not, and the
+  page was being built from that. They are.)
 - Understanding your codebase or reading your source. Not built.
 - Cross-platform. macOS only (13 or later for native capture).
 - "AI-generated" anything. The agent is the person's own, not Fetch's.
