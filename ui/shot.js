@@ -81,13 +81,19 @@ function emptyShot(src, size = {}, id = null) {
     // Where a browser's page sits in the capture, as fractions, when whoever grabbed it
     // knew. Same field and same meaning as an edit's, so frame.chrome works the same.
     viewport: null,
+    // What take_shot captured: { kind: 'window' | 'display' | 'region', app, title }. The
+    // drawn frame is the only thing that reads it, and the only thing that can.
+    captured: null,
+    // The words on the picture: a headline, the quieter line under it, a caption, a
+    // label or a callout pinned to a point. No times on any of them.
+    texts: [],
     // More than one capture in one picture. Null is a shot of one, which is nearly
     // every shot, and every field of a member is that member's own: what it captured,
     // how big the real thing is, the frame it wears and what is drawn on it. The
     // arrangement lives here rather than in the look, because which captures are in
     // this picture is not a style that travels to another one.
     group: null,
-    nextId: { M: 1, C: 1 },
+    nextId: { M: 1, C: 1, T: 1 },
   }
 }
 
@@ -125,6 +131,31 @@ function cleanMark(m) {
     : { ...rest, x: r4(b.x), y: r4(b.y), w: r4(b.w), h: r4(b.h) }
 }
 
+// The type a finished picture carries. A text says what it is rather than when it is,
+// so start and end are dropped here rather than stored and ignored: a headline has
+// nothing to do with a clock (ui/compositor/text.js).
+function cleanText(t) {
+  if (!t || typeof t !== 'object') return null
+  const { start, end, at, ...rest } = t
+  const text = String(rest.text == null ? '' : rest.text).trim()
+  if (!text) return null
+  const pt = at && typeof at === 'object' && +at.x >= 0 && +at.y >= 0
+    ? { x: r4(Math.min(1, +at.x)), y: r4(Math.min(1, +at.y)) } : null
+  return { ...rest, text, ...(pt ? { at: pt } : {}) }
+}
+
+// What a capture was of. Only a window or a display capture brings chrome of its own into
+// the picture, and a frame drawn round that is two title bars, so this is the one fact the
+// compositor needs and cannot work out (ui/compositor/plan.js, ownChrome).
+const CAPTURE_KINDS = new Set(['window', 'display', 'region'])
+function cleanCaptured(c) {
+  if (!c || typeof c !== 'object' || !CAPTURE_KINDS.has(String(c.kind))) return null
+  const out = { kind: String(c.kind) }
+  if (c.app != null) out.app = String(c.app).slice(0, 120)
+  if (c.title != null) out.title = String(c.title).slice(0, 120)
+  return out
+}
+
 /**
  * One member of a group: a capture, and what is known about how big the real thing is.
  *
@@ -143,6 +174,10 @@ function cleanMember(m) {
   // is the case this exists for: a handset and a browser window in one picture.
   if (m.device != null && DEVICE_KINDS.has(String(m.device))) out.device = String(m.device)
   if (m.title != null) out.title = String(m.title).slice(0, 80)
+  // a member answers the chrome question about its own capture, which is how a handset
+  // with no title bar stands beside a window that has one and both are drawn right
+  const cap = cleanCaptured(m.captured)
+  if (cap) out.captured = cap
   const c = Targets.cleanBox(m.crop)
   if (c) out.crop = c
   // A member's marks are in that member's own fractions and are drawn on that member's
@@ -211,6 +246,7 @@ function normalize(shot, src, size) {
   out.crop = Targets.cleanBox(shot.crop) || null
   out.cropAR = Look.CROP_ARS.includes(shot.cropAR) ? shot.cropAR : 'free'
   out.viewport = Targets.cleanBox(shot.viewport) || null
+  out.captured = cleanCaptured(shot.captured)
   // The page's place arriving for the first time crops the chrome off, once; a crop the
   // person or an agent later changed stays theirs. Same rule and same code as an edit's.
   if (out.viewport && !shot.viewportApplied) {
@@ -219,14 +255,20 @@ function normalize(shot, src, size) {
   }
 
   out.marks = (Array.isArray(shot.marks) ? shot.marks : []).map(cleanMark).filter(Boolean)
+  out.texts = (Array.isArray(shot.texts) ? shot.texts : []).map(cleanText).filter(Boolean)
 
   // A counter sitting below an id already in use would hand out a duplicate, and two
   // marks answering to M2 is worse than a gap in the sequence.
   out.nextId = { M: Math.max(1, Math.floor(+(shot.nextId && shot.nextId.M)) || 1),
-    C: Math.max(1, Math.floor(+(shot.nextId && shot.nextId.C)) || 1) }
+    C: Math.max(1, Math.floor(+(shot.nextId && shot.nextId.C)) || 1),
+    T: Math.max(1, Math.floor(+(shot.nextId && shot.nextId.T)) || 1) }
   for (const m of out.marks) {
     const hit = String(m.id || '').match(/^M(\d+)$/)
     if (hit) out.nextId.M = Math.max(out.nextId.M, +hit[1] + 1)
+  }
+  for (const t of out.texts) {
+    const hit = String(t.id || '').match(/^T(\d+)$/)
+    if (hit) out.nextId.T = Math.max(out.nextId.T, +hit[1] + 1)
   }
   out.group = cleanGroup(shot.group, out)
   return ensureIds(out)
@@ -277,7 +319,7 @@ const byId = (shot, id) => {
  * v2 place by the edit document's own router, so an agent built against either
  * document drives this one.
  */
-const SETTABLE = ['src', 'w', 'h', 'crop', 'cropAR', 'viewport', 'id']
+const SETTABLE = ['src', 'w', 'h', 'crop', 'cropAR', 'viewport', 'captured', 'id']
 function mergeShot(current, patch) {
   let out = JSON.parse(JSON.stringify(current || {}))
   if (out.kind !== 'shot') out = normalize(out, out.src, out)
@@ -288,8 +330,12 @@ function mergeShot(current, patch) {
   if (remove) {
     const gone = new Set(remove.map(x => String(x == null ? '' : x).trim().toUpperCase()))
     out.marks = (out.marks || []).filter(m => !(m && m.id && gone.has(String(m.id).toUpperCase())))
+    // texts is a whole list, the way an edit takes it: sending it replaces what was
+    // there, and remove takes one out by id without resending the rest.
+    out.texts = (out.texts || []).filter(t => !(t && t.id && gone.has(String(t.id).toUpperCase())))
   }
   if (Array.isArray(p.marks)) out.marks = mergeMarks(out.marks, p.marks, remove).marks
+  if (Array.isArray(p.texts)) out.texts = p.texts
   // A group is small, and which captures are in this picture is one decision rather
   // than a list to merge into: sent, it replaces what was there; null clears it.
   if ('group' in p) out.group = p.group
@@ -353,7 +399,8 @@ function toRenderSpec(shot) {
     // inviting someone to set a gain on it.
     audio: null, clipAudio: null,
     crop: s.crop || null, viewport: s.viewport || null,
-    zooms: [], marks: timed(s.marks), texts: [], cues: [],
+    captured: s.captured || null,
+    zooms: [], marks: timed(s.marks), texts: s.texts || [], cues: [],
     // [] is no cursor at all, as against null, which means the track the take recorded.
     // A capture has no track, so the distinction has one honest answer here.
     pointer: [], camera: null,
@@ -379,8 +426,9 @@ function toExportOpts(shot, extra = {}) {
     start: 0, end: SPAN, cuts: [], rates: null, clipAudio: null, speedAudio: 'mute',
     crop: s.crop || null,
     viewport: s.viewport || null,
+    captured: s.captured || null,
     keys: null,
-    texts: [],
+    texts: s.texts || [],
     audioTrack: null,
     autoZoom: false,
     autoZoomOpts: L.autoZoomOpts,

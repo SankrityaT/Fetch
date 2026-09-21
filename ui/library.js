@@ -7,9 +7,12 @@
 // styling a shot or cutting a take never moves it to the other side of the library.
 //
 // This file also holds the virtual folders, which never move or copy files, they only
-// group existing paths. Storage lives outside the repo, in
+// group existing paths, and the provenance store, which says which item came out of
+// which. Both live outside the repo, in
 // ~/Library/Application Support/Fetch/collections.json, since the renderer has no access
-// to electron.app to ask Electron for that path itself.
+// to electron.app to ask Electron for that path itself. Keeping provenance beside the
+// folders rather than in a sidecar means the two hooks the app already calls on a
+// rename and a delete (renamePath, forgetPath) keep it true for free.
 //
 // Pure where it can be: kindOf, platformOf, filterGroups, byDay, infoRows and
 // countLabel are plain functions over what list-recordings returned, and test/
@@ -38,12 +41,15 @@ if (!headless) {
 const DIR = path.join(os.homedir(), 'Library', 'Application Support', 'Fetch')
 const FILE = path.join(DIR, 'collections.json')
 
+const empty = () => ({ folders: [], sources: {} })
+
 function load() {
   try {
     const data = JSON.parse(fs.readFileSync(FILE, 'utf8'))
-    if (data && Array.isArray(data.folders)) return data
+    // a file written before provenance existed has folders and nothing else
+    if (data && Array.isArray(data.folders)) return { ...empty(), ...data, sources: data.sources || {} }
   } catch {}
-  return { folders: [] }
+  return empty()
 }
 function save() {
   if (headless) return
@@ -53,7 +59,21 @@ function save() {
   } catch (e) { console.error('Fetch: could not save collections.json', e) }
 }
 
-let state = headless ? { folders: [] } : load()
+let state = headless ? empty() : load()
+
+// Membership is asked thousands of times in one refresh (every card's tags, every
+// folder's count), and a library of thousands against a folder of thousands is a
+// scan inside a scan. One Set per folder, rebuilt only when the folders change.
+let rev = 0, setsRev = -1, sets = new Map()
+const stale = () => { rev++ }
+function memberSets() {
+  if (setsRev !== rev) {
+    sets = new Map(state.folders.map(f => [f.id, new Set(f.paths)]))
+    setsRev = rev
+  }
+  return sets
+}
+const holds = (f, p) => !!(f && (memberSets().get(f.id) || { has: () => false }).has(p))
 
 // What the grid is showing. The folder is one of four filters now, so it keeps its own
 // name rather than standing for the whole view.
@@ -62,11 +82,12 @@ let lastGroups = []          // the last set drawn, so a card's ⓘ can find its
 
 const genId = () => 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
 const findFolder = id => state.folders.find(f => f.id === id)
-const foldersFor = p => state.folders.filter(f => f.paths.includes(p))
+const foldersFor = p => state.folders.filter(f => holds(f, p))
 
 function addFolder(name) {
   const f = { id: genId(), name: (name || '').trim() || 'New folder', paths: [] }
   state.folders.push(f)
+  stale()
   save()
   return f
 }
@@ -79,25 +100,31 @@ function renameFolder(id, name) {
 function deleteFolder(id) {
   state.folders = state.folders.filter(f => f.id !== id)
   if (view.folder === id) view.folder = 'all'
+  stale()
   save()
 }
 function toggleMember(id, filePath) {
   const f = findFolder(id); if (!f) return false
   const i = f.paths.indexOf(filePath)
   if (i === -1) f.paths.push(filePath); else f.paths.splice(i, 1)
+  stale()
   save()
   return i === -1   // true if it just became a member
 }
-// called when a take is deleted, so folders never hold onto dead paths
+// called when a take is deleted, so folders never hold onto dead paths. What the dead
+// item was made from goes with it, but what points AT it stays: a shot whose take was
+// trashed still has to be able to say where it came from, and that it is gone.
 function forgetPath(filePath) {
   let changed = false
   for (const f of state.folders) {
     const i = f.paths.indexOf(filePath)
     if (i !== -1) { f.paths.splice(i, 1); changed = true }
   }
-  if (changed) save()
+  if (state.sources[filePath]) { delete state.sources[filePath]; changed = true }
+  if (changed) { stale(); save() }
 }
-// called when a clip is renamed, so folder membership follows the file to its new path
+// called when a clip is renamed, so folder membership and provenance follow the file
+// to its new path, from both ends: the item's own record, and every record naming it.
 function renamePath(oldPath, newPath) {
   if (oldPath === newPath) return
   let changed = false
@@ -105,7 +132,29 @@ function renamePath(oldPath, newPath) {
     const i = f.paths.indexOf(oldPath)
     if (i !== -1) { f.paths[i] = newPath; changed = true }
   }
-  if (changed) save()
+  if (state.sources[oldPath]) {
+    state.sources[newPath] = state.sources[oldPath]
+    delete state.sources[oldPath]
+    changed = true
+  }
+  for (const [p, src] of Object.entries(state.sources)) {
+    if (src && src.path === oldPath) { state.sources[p] = { ...src, path: newPath }; changed = true }
+  }
+  if (changed) { stale(); save() }
+}
+
+// ── provenance, written at the one place that makes an item out of another ──
+// `how` says which sentence the panel uses: a copy says "Copy of", everything else
+// reads as styled or cut from, by kind. `at` is the second of the take a still was
+// pulled from, when there is one.
+function noteSource(filePath, from) {
+  if (!filePath || !from || !from.path || from.path === filePath) return null
+  const rec = { path: from.path }
+  if (from.at != null) rec.at = from.at
+  if (from.how) rec.how = from.how
+  state.sources[filePath] = rec
+  save()
+  return rec
 }
 
 // ── the two kinds ──────────────────────────────────────────────────────────
@@ -152,6 +201,15 @@ const ico = (name, cls = 'icon-sm') => `<svg class="${cls}"><use href="./assets/
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
 
+// The app around this file, reached by the names it already exposes on the window, so
+// the Library can act without ui/app.js having to know these controls exist.
+const ipc = () => { try { return require('electron').ipcRenderer } catch { return null } }
+const reveal = p => { const r = ipc(); if (r) r.send('reveal', p) }
+const say = (msg, kind, ms) => { if (typeof window.toast === 'function') window.toast(msg, kind, ms) }
+const again = () => { if (typeof window.refreshLibrary === 'function') window.refreshLibrary() }
+// the original, opened the way its own card opens it; in Finder if the editor is not up
+const openItem = p => { if (typeof window.openInEditor === 'function') window.openInEditor(p); else reveal(p) }
+
 // The name on a card, without reaching into ui/take-list.js: the take or shot folder,
 // else the file's stem. Enough to sort and search by.
 function stemOf(g) {
@@ -182,7 +240,7 @@ function sortGroups(list, sort = view.sort) {
 
 function matches(g) {
   const f = view.folder === 'all' ? null : findFolder(view.folder)
-  if (view.folder !== 'all' && (!f || !f.paths.includes(item(g).path))) return false
+  if (view.folder !== 'all' && !holds(f, item(g).path)) return false
   if (view.kind !== 'all' && kindOf(g) !== view.kind) return false
   if (view.platform !== 'all' && platformOf(g) !== view.platform) return false
   const q = view.query.trim().toLowerCase()
@@ -251,21 +309,25 @@ const clock = s => {
   const t = Math.max(0, Math.round(Number(s) || 0))
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
 }
-// Nothing in Fetch writes `from` yet: every derived file so far lives in its own take's
-// folder, where the relationship is the folder. So the three provenance rows below are
-// silent on every item today, and this is the one place to write when a path is added
-// that makes a new library item out of an old one. Said in PRODUCT.md under Not built.
-const sourceOf = g => { const c = item(g); return c.from || c.styledFrom || null }
+// Duplicate is the first path in Fetch that makes a new library item out of an old
+// one, and it writes the store above. A capture path that knows its own parent can say
+// so on the item instead (`from`), and that wins: it travels with the file.
+const sourceOf = g => { const c = item(g); return c.from || c.styledFrom || state.sources[c.path] || null }
 const titleFor = (p, all) => {
   const hit = (all || []).find(g => item(g).path === p)
   return hit ? stemOf(hit) : path.basename(String(p || '')).replace(/\.[^.]+$/, '')
 }
+// A source can be trashed while the thing it made stays. The row still names it, and
+// says it is gone, rather than offering a click that opens nothing. In a test there is
+// no disk to ask, so the caller says what exists.
+const onDisk = p => { try { return fs.existsSync(p) } catch { return false } }
 
 /**
  * The rows the ⓘ shows, as plain label and value pairs so the same facts can be read
  * by a test, by the panel, and by anything else that wants them.
  */
-function infoRows(g, all = lastGroups, now = new Date()) {
+function infoRows(g, all = lastGroups, now = new Date(), opts = {}) {
+  const exists = typeof opts.exists === 'function' ? opts.exists : onDisk
   const c = item(g)
   const shot = isShot(g)
   const rows = [{ label: 'Kind', value: shot ? 'Screenshot' : 'Recording' }]
@@ -275,7 +337,9 @@ function infoRows(g, all = lastGroups, now = new Date()) {
   const src = sourceOf(g)
   if (src && src.path) {
     const at = src.at == null ? '' : `, at ${clock(src.at)}`
-    rows.push({ label: shot ? 'Styled from' : 'Cut from', value: titleFor(src.path, all) + at, path: src.path })
+    const label = src.how === 'copy' ? 'Copy of' : shot ? 'Styled from' : 'Cut from'
+    const gone = !exists(src.path)
+    rows.push({ label, value: titleFor(src.path, all) + at, path: src.path, missing: gone })
   }
   const made = (all || []).filter(o => o !== g && (sourceOf(o) || {}).path === c.path)
   if (made.length) rows.push({ label: 'Used to make', value: made.map(o => stemOf(o)).join(', ') })
@@ -301,6 +365,95 @@ function countLabel(groups) {
   if (shots && takes) return `${plural(shots, 'shot', 'shots')} · ${plural(takes, 'take', 'takes')}`
   if (shots) return plural(shots, 'shot', 'shots')
   return plural(takes, 'take', 'takes')
+}
+
+// ── duplicate ──────────────────────────────────────────────────────────────
+// A duplicate is a second capture to work on, not a second export. The capture and its
+// sidecars are copied (the look document included, so the copy opens looking the same
+// and can then be taken somewhere else), the exports are not: the copy keeps where it
+// came from and starts its own history.
+//
+// It lands as its own take folder under the save folder, <root>/<Name 2>/Original/,
+// which is where a new take and a new shot both land, so the library's own scan finds
+// it and there is no import index to keep in step.
+const SIDE_DIR = '.fetch'
+const jsonBit = s => JSON.stringify(String(s)).slice(1, -1)
+
+function saveRoot() {
+  // main owns the save folder preference. This is the one read of it a renderer can
+  // make without waiting, and the fallback is processor.js's own default.
+  if (!headless) {
+    try {
+      const prefs = require('electron').ipcRenderer.sendSync('prefs-get-sync')
+      if (prefs && prefs.saveDir) return prefs.saveDir
+    } catch {}
+  }
+  return path.join(os.homedir(), 'Movies', 'Fetch')
+}
+
+// Every file in the hidden folder that belongs to this stem, by name rather than by a
+// list of extensions, so a sidecar invented later is copied without this file knowing.
+function sidecarsOf(src) {
+  const stem = path.parse(src).name
+  const dir = path.join(path.dirname(src), SIDE_DIR)
+  try {
+    return fs.readdirSync(dir).filter(f => f.startsWith(stem + '.')).map(f => path.join(dir, f))
+  } catch { return [] }
+}
+
+/**
+ * Copy one library item into a take folder of its own. Returns the new capture's path.
+ *
+ * @param {object} g          the card, as filterGroups returned it
+ * @param {object} [opts]
+ *   @param {string}   [opts.root]   where take folders live; asked of main otherwise
+ *   @param {string[]} [opts.taken]  names already in the library, so the copy gets a free one
+ */
+async function duplicate(g, opts = {}) {
+  const c = item(g)
+  const src = c.path
+  if (!src) throw new Error('nothing to duplicate')
+  const root = opts.root || (headless ? null : saveRoot())
+  // headless is a test or a tool: it has no right to write in the person's folders
+  if (!root) throw new Error('no save folder to copy into')
+  if (!fs.existsSync(src)) throw new Error('that file is no longer there')
+
+  const { uniqueName } = require('./naming')
+  const used = new Set((opts.taken || lastGroups.map(stemOf)).map(n => String(n).toLowerCase()))
+  const stem = uniqueName(stemOf(g), n =>
+    used.has(n.toLowerCase()) || fs.existsSync(path.join(root, n)))
+
+  const dir = path.join(root, stem, 'Original')
+  fs.mkdirSync(path.join(dir, SIDE_DIR), { recursive: true })
+  const dest = path.join(dir, stem + path.extname(src))
+  // a clone where the disk format has them, so duplicating a two gigabyte take costs
+  // nothing until one of the two is written to. Falls back to a real copy elsewhere.
+  await fs.promises.copyFile(src, dest, fs.constants.COPYFILE_FICLONE)
+
+  // the same substitution processor.repointSidecars makes after a rename: a document
+  // that names its own take would otherwise still name the one it was copied from.
+  // Only a real take folder is swapped: for a loose file the folder above it is the
+  // person's own, and rewriting every mention of it would corrupt what it holds.
+  const pairs = [[src, dest]]
+  if (g && g.take) pairs.push([String(g.take) + path.sep, path.join(root, stem) + path.sep])
+  for (const side of sidecarsOf(src)) {
+    const to = path.join(dir, SIDE_DIR, stem + path.basename(side).slice(path.parse(src).name.length))
+    fs.copyFileSync(side, to)
+    if (!/\.json$/i.test(to)) continue
+    try {
+      const txt = fs.readFileSync(to, 'utf8')
+      let next = txt
+      for (const [a, b] of pairs) next = next.split(jsonBit(a)).join(jsonBit(b))
+      if (next !== txt) fs.writeFileSync(to, next)
+    } catch {}
+  }
+
+  // it is the same product, so it belongs in the same folders, and it says what it is
+  // a copy of, or inherits what its source was made from
+  for (const f of foldersFor(src)) f.paths.push(dest)
+  stale()
+  noteSource(dest, sourceOf(g) || { path: src, how: 'copy' })   // saves both
+  return { path: dest, stem, folder: path.join(root, stem) }
 }
 
 // ── generic scrim + modal, matches the pattern already used elsewhere in the app ──
@@ -407,7 +560,7 @@ function openFolderMenu(anchor, folder, onChange) {
 function openAssignMenu(anchor, filePath, onChange) {
   const rows = state.folders.map(f => `
     <button class="lib-menu-item" data-id="${f.id}">
-      ${ico(f.paths.includes(filePath) ? 'check' : 'folder')}<span>${esc(f.name)}</span>
+      ${ico(holds(f, filePath) ? 'check' : 'folder')}<span>${esc(f.name)}</span>
     </button>`).join('')
   const m = openMenu(anchor, `
     ${rows || `<div class="lib-menu-empty">No folders yet.</div>`}
@@ -425,23 +578,73 @@ function openAssignMenu(anchor, filePath, onChange) {
   }
 }
 
-// ── the ⓘ panel, opened from a card ────────────────────────────────────────
+// ── the ⓘ panel: where an item came from, and the three things done to it ──
+// The original is one click away: the row naming it opens it. A source that has been
+// trashed says so and is not clickable, because a click that opens nothing is worse
+// than a row admitting the file is gone.
+function rowHTML(r) {
+  const gone = r.missing ? `<span class="lib-gone">${ico('warning-circle')}deleted</span>` : ''
+  const body = `<span class="lib-info-k">${esc(r.label)}</span>
+    <span class="lib-info-v">${esc(r.value)}${gone}</span>`
+  return r.path && !r.missing
+    ? `<button class="lib-info-row lib-info-open" data-open="${esc(r.path)}">${body}${ico('arrow-right')}</button>`
+    : `<div class="lib-info-row">${body}</div>`
+}
+
 function openInfo(anchor, filePath) {
   const g = lastGroups.find(x => item(x).path === filePath)
   if (!g) return
-  const rows = infoRows(g, lastGroups).map(r => `
-    <div class="lib-info-row"><span class="lib-info-k">${esc(r.label)}</span>
-      <span class="lib-info-v">${esc(r.value)}</span></div>`).join('')
+  const rows = infoRows(g, lastGroups).map(rowHTML).join('')
   const where = path.dirname(item(g).path)
-  openMenu(anchor, `
+  const canTrash = typeof window.confirmDelete === 'function'
+  const m = openMenu(anchor, `
     <div class="lib-info-head">${esc(stemOf(g))}</div>
     ${rows}
     <div class="lib-info-row"><span class="lib-info-k">Where</span>
-      <span class="lib-info-v mono">${esc(where)}</span></div>`, 'lib-menu lib-info')
+      <span class="lib-info-v mono">${esc(where)}</span></div>
+    <div class="lib-info-acts">
+      <button class="lib-menu-item" data-do="copy">${ico('copy')}<span>Duplicate</span></button>
+      <button class="lib-menu-item" data-do="reveal">${ico('folder-open')}<span>Show in Finder</span></button>
+      ${canTrash ? `<button class="lib-menu-item danger" data-do="trash">${ico('trash')}<span>Move to Trash</span></button>` : ''}
+    </div>`, 'lib-menu lib-info')
+
+  m.querySelectorAll('[data-open]').forEach(b => b.onclick = () => { closeMenu(); openItem(b.dataset.open) })
+  m.querySelector('[data-do="reveal"]').onclick = () => { closeMenu(); reveal(item(g).path) }
+  const del = m.querySelector('[data-do="trash"]')
+  if (del) del.onclick = () => { closeMenu(); window.confirmDelete(g) }
+  m.querySelector('[data-do="copy"]').onclick = async () => {
+    closeMenu()
+    say('Duplicating…')
+    try {
+      const made = await duplicate(g)
+      say(`Duplicated as "${made.stem}"`, 'ok')
+    } catch (e) {
+      say('Could not duplicate it: ' + String((e && e.message) || e), 'bad', 6000)
+    }
+    again()
+  }
 }
 
 // ── the bar above the grid: kinds, search, sort, folders, platforms ────────
 function countIn(pred, groups) { return (groups || []).filter(pred).length }
+
+/**
+ * Which switches this library has any use for. A control that cannot change what is
+ * on screen is noise, and an empty library or a library of one is the case where most
+ * of the bar is exactly that: with no recordings there is nothing for a Recordings
+ * switch to hide, and a platform every item shares says nothing about any of them.
+ */
+function barShows(groups) {
+  const list = groups || []
+  const shots = countIn(isShot, list)
+  const platforms = platformsIn(list)
+  return {
+    shots,
+    takes: list.length - shots,
+    kind: shots > 0 && shots < list.length,
+    platforms: platforms.length > 1 ? platforms : [],
+  }
+}
 
 function renderBar(gridEl, groups, onChange) {
   lastGroups = groups || []
@@ -455,21 +658,19 @@ function renderBar(gridEl, groups, onChange) {
   const focused = document.activeElement
   const caret = focused && focused.id === 'libQuery' ? focused.selectionStart : null
 
-  const shots = countIn(isShot, groups)
-  const takes = (groups || []).length - shots
-  const kinds = [['all', 'All', (groups || []).length], ['shot', 'Screenshots', shots], ['take', 'Recordings', takes]]
+  const shows = barShows(groups)
+  const kinds = [['all', 'All', (groups || []).length], ['shot', 'Screenshots', shows.shots], ['take', 'Recordings', shows.takes]]
   // one kind on its own needs no switch: the library is already only that
-  const kindHtml = shots && takes ? `<div class="seg" role="group" aria-label="Kind">${kinds.map(([id, label, n]) =>
+  const kindHtml = shows.kind ? `<div class="seg" role="group" aria-label="Kind">${kinds.map(([id, label, n]) =>
     `<button data-kind="${id}" aria-selected="${view.kind === id}">${esc(label)}<span class="chip-count">${n}</span></button>`).join('')}</div>` : ''
 
-  const platforms = platformsIn(groups)
   // a tag every item shares says nothing, so platforms appear once there are two
-  const platformHtml = platforms.length > 1 ? `<span class="lib-bar-sep"></span>` + [['all', 'All platforms'], ...platforms.map(p => [p, p])]
+  const platformHtml = shows.platforms.length ? `<span class="lib-bar-sep"></span>` + [['all', 'All platforms'], ...shows.platforms.map(p => [p, p])]
     .map(([id, label]) => `<button class="chip" data-platform="${esc(id)}" aria-pressed="${view.platform === id}">${esc(label)}</button>`).join('') : ''
 
   const folders = state.folders.map(f => `
     <span class="chip folder-chip" data-id="${f.id}" aria-pressed="${view.folder === f.id}" role="button" tabindex="0">
-      ${ico('folder')}<span class="chip-label">${esc(f.name)}</span><span class="chip-count">${countIn(g => f.paths.includes(item(g).path), groups)}</span>
+      ${ico('folder')}<span class="chip-label">${esc(f.name)}</span><span class="chip-count">${countIn(g => holds(f, item(g).path), groups)}</span>
       <button class="chip-more" data-more="${f.id}" data-tip="More">${ico('dots-three')}</button>
     </span>`).join('')
 
@@ -653,9 +854,18 @@ module.exports = {
   daySpans,
   dayLabel,
   infoRows,
+  infoRowHTML: rowHTML,
   stemOf,
-  // for tests: the view and the folders, without touching the person's own
+  barShows,
+  // provenance, and the one path that writes it
+  noteSource,
+  sourceOf,
+  duplicate,
+  // for tests: the view, the folders and the sources, without touching the person's own
   _view: () => ({ ...view }),
   _setView: next => { view = { ...view, ...next } },
-  _setFolders: folders => { state = { folders: folders || [] } },
+  _setFolders: folders => { state = { ...state, folders: folders || [] }; stale() },
+  _setSources: sources => { state = { ...state, sources: sources || {} } },
+  _folders: () => state.folders.map(f => ({ ...f, paths: [...f.paths] })),
+  _sources: () => JSON.parse(JSON.stringify(state.sources)),
 }

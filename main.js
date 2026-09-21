@@ -1058,10 +1058,13 @@ ipcMain.handle('open-privacy', (e, which) => {
 // letting someone grant it and wonder why nothing changed.
 ipcMain.handle('relaunch', () => { app.relaunch(); app.exit(0) })
 
-// Whether macOS will actually let us capture, asked of the system rather than guessed
-ipcMain.handle('screen-permission', () => {
+// Whether macOS will actually let us capture, asked of the system rather than guessed.
+// Reading raises nothing: only a capture, or an outright request for the grant, puts
+// the system's dialog on somebody's screen, and neither is this.
+const screenAccessStatus = () => {
   try { return systemPreferences.getMediaAccessStatus('screen') } catch { return 'unknown' }
-})
+}
+ipcMain.handle('screen-permission', () => screenAccessStatus())
 
 // ---------- native recorder ----------
 // ScreenCaptureKit in, AVAssetWriter out, via a bundled Swift helper. The Chromium
@@ -1297,6 +1300,15 @@ const runShot = args => new Promise(resolve => {
     // The helper answers in JSON whichever way it went, so a parse failure means it
     // never got to speak: a crash, or a kill on the timeout.
     try { return resolve(JSON.parse(String(stdout).trim().split('\n').pop())) } catch {}
+    // Killed on the timeout is the one case worth naming. The helper refuses in
+    // milliseconds when it can see the answer, so the only thing that holds it for
+    // twenty seconds is macOS waiting on a person, and "said nothing" leaves whoever
+    // reads it with nowhere to go.
+    if (err && err.killed) {
+      return resolve({ ok: false, error: 'the screenshot helper did not answer in 20 seconds. ' +
+        'macOS is most likely waiting for someone to grant Fetch Screen Recording in System Settings, ' +
+        'Privacy and Security, Screen Recording.' })
+    }
     resolve({ ok: false, error: (err && err.message) || 'the screenshot helper said nothing' })
   })
 })
@@ -1315,6 +1327,15 @@ async function takeShot(opts = {}) {
   const policy = require('./ui/record-policy')
   const prefs = loadPrefs()
   const by = opts.by === 'agent' ? 'agent' : 'human'
+
+  // macOS first, before the never-record list and before anything is spawned. Without
+  // the Screen Recording grant a capture does not fail, it stops: the system puts up a
+  // dialog only a person can answer, and an agent with nobody at the Mac waits on a
+  // question it cannot see. A refusal that names the pane is something an agent can
+  // report and stop on. Fetch never asks for the grant on the person's behalf.
+  const grant = policy.screenAccess(screenAccessStatus(), by)
+  if (!grant.allow) return { ok: false, needsPermission: true, error: `Fetch refused to capture: ${grant.reason}` }
+
   const r = opts.region ? {
     x: Math.round(opts.region.x), y: Math.round(opts.region.y),
     w: Math.round(opts.region.width != null ? opts.region.width : opts.region.w),
@@ -1340,14 +1361,19 @@ async function takeShot(opts = {}) {
   if (!verdict.allow) return { ok: false, error: `Fetch refused to capture: ${verdict.reason}` }
   // 'Ask' means a person approves every agent capture. The question belongs to whoever
   // is holding the agent's request (ui/agent-bridge.js asks it once and can remember a
-  // yes for the session), so this refuses rather than raising a second dialog.
+  // yes for the session), so this refuses rather than raising a second dialog. The
+  // sentence is the policy's own, and it says what to do: "nobody approved this" tells
+  // an agent it failed and leaves it nothing to act on.
   if (verdict.needsApproval && !opts.approved) {
     return { ok: false, needsApproval: true, kind, app,
-      error: 'Fetch refused to capture: nobody at the Mac has approved this yet' }
+      error: `Fetch refused to capture: ${verdict.unanswered}` }
   }
 
   const { stem, dir, file } = newShotPath('png')
-  const args = ['--out', file]
+  // Who asked goes to the helper, because the two callers want opposite things from a
+  // Mac that has never been asked: an agent wants a refusal it can report, a person
+  // wants the system's own prompt. The helper is the only process that can raise it.
+  const args = ['--out', file, '--by', by]
   if (kind === 'window') args.push('--window', String(opts.windowId))
   else {
     if (opts.displayId) args.push('--display', String(opts.displayId))

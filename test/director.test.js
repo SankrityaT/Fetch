@@ -34,15 +34,30 @@ t('a brief is written and reads back whole', () => {
   const src = take('Brief')
   const r = D.direct(src, {
     brief: {
-      seconds: 60, aspect: '16:9', where: 'landing page', audience: 'people who have never seen it',
+      what: 'the import and export of a project', seconds: 60, aspect: '16:9',
+      where: 'landing page', audience: 'people who have never seen it',
       must_keep: ['the import step', 'the export step'], must_hide: 'the API key',
     },
   }, { now: NOW })
   assert.deepStrictEqual(r.brief, {
+    what: 'the import and export of a project',
     seconds: 60, aspect: '16:9', where: 'landing page', audience: 'people who have never seen it',
     must_keep: ['the import step', 'the export step'], must_hide: ['the API key'],
   })
   assert.deepStrictEqual(D.read(src).brief, r.brief)
+})
+
+// what a picture is for. A still has no length, so on a shot this is nearly the whole
+// brief, and review builds its find_on_screen queries out of it: dropped on write, the
+// rubric's own fixes went out with no query in them and the loop could not be closed.
+t('what the thing is survives the write, which on a still is most of the brief', () => {
+  const src = take('BriefWhat')
+  const r = D.direct(src, { brief: { what: 'a help centre hero of the library' } }, { now: NOW })
+  assert.strictEqual(r.brief.what, 'a help centre hero of the library')
+  assert.strictEqual(D.read(src).brief.what, 'a help centre hero of the library')
+  const kept = D.direct(src, { brief: { aspect: '16:9' } }, { now: NOW + 1 })
+  assert.strictEqual(kept.brief.what, 'a help centre hero of the library')
+  assert.strictEqual(D.direct(src, { brief: { what: null } }, { now: NOW + 2 }).brief.what, null)
 })
 
 t('a second call refines the brief rather than wiping it, and an explicit null clears one field', () => {

@@ -232,5 +232,159 @@ console.log('=== provenance: what it came from, what came out of it ===')
   reset()
 }
 
-console.log(`\n  ${pass} passed, ${fail} failed`)
-process.exit(fail ? 1 : 0)
+console.log('=== provenance survives a rename and outlives a delete ===')
+{
+  reset()
+  Lib._setSources({})
+  const take = g({ name: 'Demo.mov', path: '/x/Demo.mov' })
+  const still = shot({ name: 'Tempo.png', path: '/x/Tempo.png' })
+  Lib.noteSource('/x/Tempo.png', { path: '/x/Demo.mov', at: 74 })
+  is('an item says what it was made from', Lib.sourceOf(still), { path: '/x/Demo.mov', at: 74 })
+  is('and the item it names says what came out of it',
+    (Lib.infoRows(take, [take, still], NOW).find(r => r.label === 'Used to make') || {}).value, 'Tempo')
+
+  Lib.renamePath('/x/Demo.mov', '/x/Launch.mov')
+  is('renaming the source repoints what points at it', Lib.sourceOf(still).path, '/x/Launch.mov')
+  Lib.renamePath('/x/Tempo.png', '/x/Hero.png')
+  is('and renaming the item carries its own record along',
+    Lib.sourceOf(shot({ path: '/x/Hero.png' })), { path: '/x/Launch.mov', at: 74 })
+
+  const hero = shot({ name: 'Hero.png', path: '/x/Hero.png' })
+  const gone = p => p !== '/x/Launch.mov'
+  const row = Lib.infoRows(hero, [hero], NOW, { exists: gone }).find(r => r.label === 'Styled from')
+  is('a source that was trashed is still named', row.value, 'Launch, at 1:14')
+  is('and is marked as gone rather than offered as a click', row.missing, true)
+  is('so the row it draws is not a button', /<button/.test(Lib.infoRowHTML(row)), false)
+  is('while a source still there is one', /data-open="\/x\/Launch.mov"/.test(Lib.infoRowHTML({ ...row, missing: false })), true)
+
+  Lib.forgetPath('/x/Hero.png')
+  is('deleting an item forgets what it was made from', Lib._sources()['/x/Hero.png'], undefined)
+  Lib._setSources({})
+  reset()
+}
+
+console.log('=== a library of one, and of none ===')
+{
+  reset()
+  is('nothing at all offers no switches', Lib.barShows([]), { shots: 0, takes: 0, kind: false, platforms: [] })
+  is('one shot needs no kind switch to hide it from itself',
+    Lib.barShows([shot()]), { shots: 1, takes: 0, kind: false, platforms: [] })
+  is('one of each does', Lib.barShows([shot(), g()]).kind, true)
+  is('a platform every item shares says nothing', Lib.barShows([shot(), g()]).platforms, [])
+  is('two platforms are worth a filter', Lib.barShows([shot(), shot({ device: 'phone' })]).platforms, ['Mac', 'Phone'])
+  is('an empty library has no days', Lib.byDay([], NOW), [])
+  is('and no cards to deal under one', Lib.daySpans([], NOW), [])
+  is('one item is one day of one', Lib.byDay(Lib.filterGroups([shot()]), NOW).map(d => d.items.length), [1])
+}
+
+console.log('=== a name taken from a window title is somebody else\'s text ===')
+{
+  reset()
+  const nasty = '<img src=x onerror="alert(1)">'
+  Lib._setFolders([{ id: 'f1', name: nasty, paths: ['/x/a.png'] }])
+  const tags = Lib.tagHTML(shot({ path: '/x/a.png' }))
+  is('a folder named from one never becomes markup', tags.includes('<img src=x'), false)
+  is('it is shown, escaped', tags.includes('&lt;img src=x'), true)
+  Lib._setView({ query: nasty })
+  is('nor does a search for one', Lib.emptyHTML().includes('<img src=x'), false)
+  is('nor the row an information panel draws',
+    Lib.infoRowHTML({ label: 'Styled from', value: nasty, path: '/x/" onclick="b.png' }).includes('<img src=x'), false)
+  reset()
+}
+
+console.log('=== thousands of items, and a folder holding half of them ===')
+{
+  reset()
+  const many = []
+  for (let i = 0; i < 5000; i++) {
+    many.push(g({ name: `Take ${i}.mov`, path: `/x/Take ${i}.mov`, mtime: NOW.getTime() - i * 1000, mb: i % 90 }))
+  }
+  Lib._setFolders([{ id: 'f1', name: 'Songscription', paths: many.slice(0, 2500).map(x => x.original.path) }])
+  Lib._setView({ folder: 'f1' })
+  const t0 = Date.now()
+  const visible = Lib.filterGroups(many)
+  for (const x of visible) Lib.tagHTML(x)
+  Lib.byDay(visible, NOW)
+  const ms = Date.now() - t0
+  is('half of five thousand, filtered, tagged and cut into days', visible.length, 2500)
+  is(`and it takes ${ms}ms, which is under 400`, ms < 400, true)
+  reset()
+}
+
+console.log('=== duplicate: the capture, its sidecars, and none of its exports ===')
+;(async () => {
+  reset()
+  Lib._setSources({})
+  const box = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-dup-'))
+  const root = path.join(box, 'Fetch')
+  const dir = path.join(root, 'Tempo row', 'Original')
+  fs.mkdirSync(path.join(dir, '.fetch'), { recursive: true })
+  const src = path.join(dir, 'Tempo row.png')
+  fs.writeFileSync(src, 'a picture')
+  fs.writeFileSync(path.join(dir, '.fetch', 'Tempo row.fetchshot.json'), JSON.stringify({ kind: 'shot', src }))
+  const deliverable = path.join(root, 'Tempo row', 'Tempo row.png')
+  fs.writeFileSync(deliverable, 'the styled one')
+  try {
+    const card = { take: path.join(root, 'Tempo row'), copy: null,
+      original: { name: 'Tempo row.png', path: src, ext: 'png', mb: 1.2, mtime: NOW.getTime() },
+      derived: [{ name: 'Tempo row.png', path: deliverable, ext: 'png', mb: 2, mtime: NOW.getTime(), deliverable: true }] }
+    Lib._setFolders([{ id: 'f1', name: 'Songscription', paths: [src] }])
+
+    const made = await Lib.duplicate(card, { root, taken: ['Tempo row'] })
+    is('the copy makes room for itself rather than overwriting', made.stem, 'Tempo row 2')
+    is('it lands as its own take folder, where the library looks',
+      made.path, path.join(root, 'Tempo row 2', 'Original', 'Tempo row 2.png'))
+    is('the capture is really there', fs.readFileSync(made.path, 'utf8'), 'a picture')
+    const side = path.join(root, 'Tempo row 2', 'Original', '.fetch', 'Tempo row 2.fetchshot.json')
+    is('its look document comes along, renamed', fs.existsSync(side), true)
+    is('and points at the copy, not at what it was copied from',
+      JSON.parse(fs.readFileSync(side, 'utf8')).src, made.path)
+    is('the export is not copied: the duplicate starts its own history',
+      fs.existsSync(path.join(root, 'Tempo row 2', 'Tempo row 2.png')), false)
+    is('it keeps where it came from', Lib._sources()[made.path], { path: src, how: 'copy' })
+    is('and it is in the same folders, since it is the same product',
+      Lib._folders()[0].paths.includes(made.path), true)
+
+    const copyCard = { take: path.join(root, 'Tempo row 2'), derived: [], copy: null,
+      original: { name: 'Tempo row 2.png', path: made.path, ext: 'png', mb: 1.2, mtime: NOW.getTime() } }
+    const rows = Lib.infoRows(copyCard, [card, copyCard], NOW)
+    is('the panel says it is a copy, not a styling', (rows.find(r => r.label === 'Copy of') || {}).value, 'Tempo row')
+
+    const second = await Lib.duplicate(card, { root, taken: ['Tempo row'] })
+    is('a second duplicate counts past the first', second.stem, 'Tempo row 3')
+
+    let refused = ''
+    try { await Lib.duplicate({ original: { path: path.join(dir, 'nothing.png') } }, { root }) }
+    catch (e) { refused = e.message }
+    is('a capture that is no longer there is refused, in one line', refused, 'that file is no longer there')
+
+    // the copy inherits provenance rather than claiming the copy as its parent
+    Lib._setSources({ [src]: { path: '/x/Demo.mov', at: 12 } })
+    const third = await Lib.duplicate(card, { root, taken: ['Tempo row'] })
+    is('a duplicate of a styled shot was styled from the same take',
+      Lib._sources()[third.path], { path: '/x/Demo.mov', at: 12 })
+
+    // a loose take has no take folder above it, so nothing but its own path is swapped
+    const desk = path.join(box, 'Desktop')
+    fs.mkdirSync(path.join(desk, '.fetch'), { recursive: true })
+    const own = path.join(desk, 'Standup.mov')
+    fs.writeFileSync(own, 'a take')
+    fs.writeFileSync(path.join(desk, '.fetch', 'Standup.cam.json'),
+      JSON.stringify({ src: own, cam: path.join(desk, 'Standup.cam.mov') }))
+    const loose = await Lib.duplicate({ take: null, derived: [], original: { name: 'Standup.mov', path: own, ext: 'mov' } },
+      { root, taken: [] })
+    const camSide = JSON.parse(fs.readFileSync(path.join(root, 'Standup', 'Original', '.fetch', 'Standup.cam.json'), 'utf8'))
+    is('a loose take copies into the library like any other', fs.existsSync(loose.path), true)
+    is('its own path is repointed', camSide.src, loose.path)
+    is('and the folder it used to sit in is left alone', camSide.cam, path.join(desk, 'Standup.cam.mov'))
+
+  } finally {
+    fs.rmSync(box, { recursive: true, force: true })
+    Lib._setSources({})
+    reset()
+  }
+
+  console.log(`\n  ${pass} passed, ${fail} failed`)
+  process.exit(fail ? 1 : 0)
+})()
+

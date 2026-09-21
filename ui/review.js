@@ -3,13 +3,21 @@
 // of declaring success, and the export runs it too, so nobody can say "done" without
 // having been handed the list.
 //
+// Two documents, one door. A recording is judged by what is below; a capture says what
+// it is (ui/shot.js) and is judged by the picture rubric at the bottom of this file,
+// which measures the frame instead of the clock. review() routes on that, so a caller
+// holding either one calls one function and reads one shape back, and the two can never
+// drift into two ideas of what a score is.
+//
 // Pure. It runs inside an export, inside the bridge and under plain node, and it takes
 // a document and a few measured numbers, never a path: a module that reads the disk or
 // spawns ffmpeg is a module no test can state a case for. The one thing it does import
 // is ui/timeline.js, which reads nothing either and owns the map from source seconds to
 // output seconds. Every length in here is an output length, and a clip can carry a
 // rate, so copying that map rather than calling it is how review and the export end up
-// reporting two different numbers for one edit.
+// reporting two different numbers for one edit. A picture is measured off the plan the
+// compositor draws it from, for the same reason and by the same rule: the judge reads
+// the numbers the renderer works to rather than a second set of its own.
 //
 // One clock: every time in a finding, and every time in a fix, is a second of the
 // original recording, the clock the document and apply_edit already use, so a fix can be
@@ -297,6 +305,11 @@ function deadAir(k, speech) {
 }
 
 const FOCUS = ['lift', 'spotlight']
+// The two marks that say what not to look at. Everything else on a picture points.
+const HIDES = ['redact', 'blur']
+// One box wholly within another, in whatever fractions both are held in.
+const inside = (a, b) => !!(a && b && a.x >= b.x - 1e-6 && a.y >= b.y - 1e-6 &&
+  a.x + a.w <= b.x + b.w + 1e-6 && a.y + a.h <= b.y + b.h + 1e-6)
 const rect = m => {
   const b = m && m.box && typeof m.box === 'object' ? m.box : m
   const x = +b.x, y = +b.y, w = +b.w, h = +b.h
@@ -573,10 +586,50 @@ const workSeconds = (keeps, k) => r2(mergeSpans(keeps.map(w => [w.start, w.end])
 // ── the rubric ──────────────────────────────────────────────────────────────
 // Rank inside a severity. The order is what a person would fix first: the promise they
 // made (what must be hidden, the shape, the words), then the length, then the clutter.
-const RANK = ['redactions', 'aspect', 'captions', 'burn-in', 'must-keep', 'clipped', 'length',
-  'dead-air', 'never-drawn', 'spans-a-cut', 'focus-clash', 'zoom-density', 'hand-aimed',
-  'ground', 'no-zooms', 'no-brief']
+// The picture's own rules are in the same list, in the same order of promise first: a
+// rule missing from it sorts above everything, which is not a ranking, it is a bug.
+const RANK = ['redactions', 'soft-redaction', 'aspect', 'group-unframed', 'captions', 'burn-in',
+  'must-keep', 'clipped', 'length', 'dead-air', 'never-drawn', 'spans-a-cut', 'double-chrome',
+  'device-fit', 'focus-share', 'focus-clash', 'subject', 'breathe', 'zoom-density', 'hand-aimed',
+  'blank-bar', 'ground', 'resolution', 'no-zooms', 'no-brief']
 const WEIGHT = { blocking: 0, should: 1, note: 2 }
+
+// A judgement the agent made and wrote down closes a `should`. Without this a finding
+// it correctly refuses holds the verdict at "nearly" for ever, so "review is clean" is
+// a state that job can never reach and the word stops carrying information.
+//
+// It does not close a blocking one, and the agent saying so is exactly why: an agent
+// that can turn "not ready" into "ready" on its own say-so is marking its own paper,
+// and "ready" has to keep meaning an edit with nothing blocking left in it. A blocking
+// item declined drops to `should` and carries `lowered`, so the judgement counts for
+// something and the finding is still on the list. A redaction the brief asked for does
+// not move at all: it is the one failure that ships something private.
+const NEVER_DECLINED = ['redactions']
+
+/**
+ * The order, the verdict and the number, from the list alone. One function for a
+ * recording and for a capture, because a picture judged by a second set of weights is
+ * how "ready, 10" ends up said about a frame with two title bars in it. Sorts `items`
+ * in place and returns what the summary is written from.
+ */
+function settle(items, asked) {
+  const declined = arr(asked).map(x => String(x).trim().toLowerCase())
+  for (const i of items) {
+    if (!declined.includes(i.rule) || NEVER_DECLINED.includes(i.rule)) continue
+    if (i.severity === 'blocking') { i.severity = 'should'; i.lowered = true }
+    else i.declined = true
+  }
+  items.sort((a, b) => (WEIGHT[a.severity] - WEIGHT[b.severity]) ||
+    (RANK.indexOf(a.rule) - RANK.indexOf(b.rule)) || ((a.at || 0) - (b.at || 0)))
+  const live = items.filter(i => !i.declined)
+  const bad = live.filter(i => i.severity === 'blocking').length
+  const should = live.filter(i => i.severity === 'should').length
+  // Review's own measure, so a fix can be shown to have helped rather than said to
+  // have: ten is nothing the rubric can name, and applying a fix has to move it up.
+  return { live, bad, should, off: items.length - live.length,
+    verdict: bad ? 'not ready' : should ? 'nearly' : 'ready',
+    score: r2(Math.max(0, 10 - live.reduce((n, i) => n + (PENALTY[i.severity] || 0), 0))) }
+}
 
 /**
  * review({ doc, brief, levels, beats, looks, path })
@@ -603,6 +656,9 @@ const WEIGHT = { blocking: 0, should: 1, note: 2 }
  */
 function review(input = {}) {
   const doc = input.doc || {}
+  // A capture says what it is (ui/shot.js) and is judged as a picture rather than as a
+  // take of one frame. One entry point: a caller holding either document calls this.
+  if (doc.kind === 'shot') return still(input)
   const path = input.path || (doc.src || null)
   const brief = input.brief || null
   const spec = whereSpec(brief && brief.where)
@@ -810,36 +866,7 @@ function review(input = {}) {
     }
   }
 
-  // A judgement the agent made and wrote down closes a `should`. Without this a finding
-  // it correctly refuses holds the verdict at "nearly" for ever, so "review is clean" is
-  // a state that job can never reach and the word stops carrying information.
-  //
-  // It does not close a blocking one, and the agent saying so is exactly why: an agent
-  // that can turn "not ready" into "ready" on its own say-so is marking its own paper,
-  // and "ready" has to keep meaning an edit with nothing blocking left in it. A blocking
-  // item declined drops to `should` and carries `lowered`, so the judgement counts for
-  // something and the finding is still on the list. A redaction the brief asked for does
-  // not move at all: it is the one failure that ships something private.
-  const NEVER_DECLINED = ['redactions']
-  const declined = arr(input.declined).map(x => String(x).trim().toLowerCase())
-  for (const i of items) {
-    if (!declined.includes(i.rule) || NEVER_DECLINED.includes(i.rule)) continue
-    if (i.severity === 'blocking') { i.severity = 'should'; i.lowered = true }
-    else i.declined = true
-  }
-
-  items.sort((a, b) => (WEIGHT[a.severity] - WEIGHT[b.severity]) ||
-    (RANK.indexOf(a.rule) - RANK.indexOf(b.rule)) || ((a.at || 0) - (b.at || 0)))
-
-  const live = items.filter(i => !i.declined)
-  const off = items.length - live.length
-
-  const bad = live.filter(i => i.severity === 'blocking').length
-  const should = live.filter(i => i.severity === 'should').length
-  const verdict = bad ? 'not ready' : should ? 'nearly' : 'ready'
-  // Review's own measure, so a fix can be shown to have helped rather than said to
-  // have: ten is nothing the rubric can name, and applying a fix has to move it up.
-  const score = r2(Math.max(0, 10 - live.reduce((n, i) => n + (PENALTY[i.severity] || 0), 0)))
+  const { bad, should, off, verdict, score } = settle(items, input.declined)
   const summary = (bad || should
     ? `${verdict === 'not ready' ? 'Not ready' : 'Nearly'}: ` +
       [bad ? `${plural(bad, 'thing')} to fix` : '', should ? `${plural(should, 'thing')} worth fixing` : '']
@@ -1099,6 +1126,575 @@ function decide(c) {
   }
 }
 
+// ── the rubric for a picture ────────────────────────────────────────────────
+//
+// A still goes through this file and not through the rules above. Every one of those is
+// about a clock: how long the edit runs, how much of it nobody speaks over, how often
+// the camera moves, whether a mark outlives the material under it. On one frame they
+// all pass, which is how review came to answer "ready, 10" for an untouched capture on
+// a gradient and, word for word and to the same ten, for that capture wearing two title
+// bars, a blank address field and a lift over the whole page. A checker that says ten
+// to everything is worse than no checker, and this file learned that once already.
+//
+// What is judged instead is the picture, off the plan the compositor draws it from.
+// prepare() is run here, once, and every geometric finding is read off it: the box each
+// capture was given, the shell drawn round it, where each mark landed, and which marks
+// the plan dropped for want of room. So the judge and the renderer cannot disagree
+// about where anything is, for the same reason review and the export cannot disagree
+// about a length. Where a plan cannot be made the rules that need only the document
+// still run, and `measured.planned` says which half of the rubric was asked.
+//
+// No pixel is read. What a capture is a picture of is not in the document, so every
+// rule here is something the document can prove: nothing on the frame says what to look
+// at, something private under a blur rather than a redaction, a shell that does not fit
+// what it frames, a ground sitting where the capture's own ends are, a subject too
+// small to be worth the treatment laid over everything else.
+
+const { GRADIENTS, MESHES } = require('./look-schema')
+
+// The compositor's own ceiling for a still (ui/compositor/index.js, SHOT_SCALES): the
+// plan is drawn at one, two or three times its size. Past that the file grows and the
+// picture does not, so a box that cannot carry a capture's pixels at three cannot carry
+// them at all.
+const TOP_SCALE = 3
+// A raised thing under this share of the capture it sits on, and small in both
+// directions, is a fragment. A lift dims and blurs everything outside itself, and at
+// this size what is left reads as a tooltip floating over a softened page rather than
+// as the thing the picture is about. A row across a window is about a thirtieth of it
+// by area and is not a fragment at all, which is why the long side has a say: a mark
+// reaching LONG of either side of the capture is a shape rather than a scrap.
+const SUBJECT_MIN = 0.03
+const LONG = 0.5
+// And over this share it is not raising a thing on the page, it is raising the page.
+const SUBJECT_MAX = 0.5
+// The room the drawn picture keeps off the edge of the frame, as a share of the shorter
+// side. Under this the shadow has nowhere to fall and the composition reads as a crop.
+const GUTTER = 0.015
+// What a blur has to destroy is a stroke of type, and a stroke is the same few pixels
+// whether the box round it is one account row or half the page. So the ruler is a line
+// of type in the capture's own pixels and never the box: measured against the box, a
+// 576 px decorative blur at sigma 60 was called weak, and blocking, while a 38 px blur
+// over an account row at sigma 5 passed, which is the wrong answer on both. Sigma in
+// capture pixels, under which the words keep their shape, and a shape is most of a word.
+const SOFT_BLUR = 12
+// Which of the plan's mark lists a document mark is drawn into (ui/compositor/marks.js).
+const DRAWN_AS = { redact: 'redact', blur: 'blur', lift: 'focus', spotlight: 'focus', step: 'steps', loupe: 'loupe', arrow: 'arrow' }
+// The lists themselves, once each: a lift and a spotlight are both drawn into focus,
+// and counting that list twice made two marks out of one.
+const DRAWN_LISTS = [...new Set(Object.values(DRAWN_AS))]
+// The rules that are about a clock, named in the result rather than quietly skipped. An
+// agent reads this as a contract, and a promise kept in spirit and broken in the letter
+// is broken.
+const NOT_ABOUT_A_PICTURE = [
+  ['length', 'one frame has no length, so the seconds a brief asks for are not about this picture'],
+  ['dead-air', 'nobody is speaking over a still, so there is no silence in it to cut'],
+  ['captions', 'a capture carries no sound and nothing to transcribe'],
+  ['burn-in', 'there are no captions on one frame to burn in'],
+  ['zoom-density', 'the camera does not move on one frame'],
+  ['no-zooms', 'the camera does not move on one frame'],
+  ['hand-aimed', 'a still has no zooms to aim'],
+  ['spans-a-cut', 'there are no cuts for a mark to run across'],
+  ['must-keep', 'nothing is cut out of one frame, so nothing the brief named can be missing from it'],
+]
+
+// A crop held as fractions, in the capture's own pixels. The plan answers this where
+// there is one; this is the same answer for a document nothing could be planned from.
+const cropPx = (crop, w, h) => (crop && +crop.w > 0 && +crop.h > 0
+  ? { x: Math.round(+crop.x * w), y: Math.round(+crop.y * h), w: Math.round(+crop.w * w), h: Math.round(+crop.h * h) }
+  : { x: 0, y: 0, w: +w || 0, h: +h || 0 })
+
+// The share of its own capture a box covers. A mark's box is already fractions of the
+// capture it is drawn on, so this is its area and nothing has to be divided by anything.
+const shareOf = b => (b && b.w > 0 && b.h > 0 ? r2(b.w * b.h) : 0)
+const stemOf = p => String(p || '').split('/').pop().replace(/\.[^.]+$/, '') || null
+
+/**
+ * The plan the picture is drawn from, or null where one cannot be made.
+ *
+ * Required here rather than at the top of the file: an export of a recording loads this
+ * module to be judged by it and has no business loading the planner to do so. prepare()
+ * is pure and reads no pixels, so this stays a module a test can state a case against.
+ */
+function planOf(shot) {
+  try {
+    const Shot = require('./shot')
+    const Plan = require('./compositor/plan')
+    if (!(+shot.w > 0 && +shot.h > 0)) return null
+    return Plan.prepare(Shot.toExportOpts(shot), Shot.toMeta(shot), {})
+  } catch { return null }
+}
+
+// Whether the picture draws this one mark at all, asked by planning it on its own. The
+// plan carries no ids, so counting says one was dropped and this says which: an arrow
+// with no clear room beside the box it points at is left out by the mark pass, and a
+// finding that cannot name the mark is not a finding an agent can act on.
+function draws(shot, m) {
+  const p = planOf({ ...shot, group: null, marks: [m] })
+  return !!(p && arr(p.marks[DRAWN_AS[m.kind]]).length)
+}
+
+/**
+ * What the capture is standing on, as a range of luma.
+ *
+ * A solid is one number. A sweep and a mesh are a range, and a range with one end clear
+ * of the capture's own ends gives the take somewhere to stand, so both are carried and
+ * the rule asks for both before it speaks. An image ground, and a ground made of the
+ * take's own blur, are pictures nobody has measured: a number invented for them would
+ * be worse than the null they get.
+ */
+function groundRange(look) {
+  const kind = field(look, 'background.kind', 'none')
+  if (kind === 'solid') {
+    const g = luma(field(look, 'background.color', null))
+    return g === null ? null : { lo: g, hi: g, what: 'the ground' }
+  }
+  if (kind === 'gradient') {
+    const ends = (GRADIENTS[field(look, 'background.gradient', 'dusk')] || []).map(luma).filter(v => v !== null)
+    return ends.length ? { lo: Math.min(...ends), hi: Math.max(...ends), what: 'the sweep' } : null
+  }
+  if (kind === 'mesh') {
+    const pts = (MESHES[field(look, 'background.mesh', 'dusk')] || []).map(p => luma(p[3])).filter(v => v !== null)
+    return pts.length ? { lo: Math.min(...pts), hi: Math.max(...pts), what: 'the mesh' } : null
+  }
+  return null
+}
+
+/**
+ * review on a capture: one frame, judged as a picture.
+ *
+ * It takes the shot document itself (ui/shot.js) rather than a projection of it, because
+ * what a still has and an edit does not, a group, the capture's own size, marks with no
+ * times, is exactly what there is to judge. review() routes here on `doc.kind`, so a
+ * caller holding either document calls one function and reads one shape back.
+ *
+ *   doc     the shot, marks placed and never timed
+ *   brief   the job's brief; its shape and what it says to hide are what mean anything
+ *           on a picture, and its length is named under not_judged rather than measured
+ *   levels  { lo, hi }, the capture's own black and white points
+ *   looks   list_looks' entries, so a ground is named by what it is for
+ *   path    the capture, so every fix is a call that can be made as it stands
+ *
+ * Returns what review returns, plus `not_judged`.
+ */
+function still(input = {}) {
+  const shot = input.doc || {}
+  const path = input.path || shot.src || null
+  const brief = input.brief || null
+  const where = whereSpec(brief && brief.where)
+  const look = shot.look || {}
+  const own = arr(shot.marks)
+  const members = shot.group ? arr(shot.group.members).filter(Boolean) : []
+  const plan = planOf(shot)
+  const lv = input.levels
+
+  const items = []
+  const add = (rule, severity, what, fix, extra = {}) => items.push({ rule, severity, what, at: null, fix, ...extra })
+  const call = (tool, args, why) => ({ tool, args: { ...(path ? { path } : {}), ...args }, why })
+  // One frame, so there is one moment, and find_on_screen asks for one either way.
+  const AT = 0
+
+  // What is in the picture, each with the box the plan gave it and the marks drawn on
+  // it. A group of one is a take, so a lone capture is this list with one entry and
+  // every rule below is written once. A group draws the shot's own marks on its first
+  // capture (ui/compositor/plan.js), so that is where they are judged.
+  const captures = plan && plan.group
+    ? plan.group.map((m, i) => ({
+      id: (members[i] && members[i].id) || `C${i + 1}`,
+      what: `the capture in ${(members[i] && members[i].id) || `C${i + 1}`}`,
+      src: m.src, shown: m.crop, box: m.rect, device: m.device || null, drawn: m.marks,
+      marks: [...arr(members[i] && members[i].marks), ...(i === 0 ? own : [])],
+    }))
+    : [{
+      id: shot.id || null, what: 'the capture',
+      src: { w: +shot.w || 0, h: +shot.h || 0 },
+      shown: plan ? plan.crop : cropPx(shot.crop, +shot.w || 0, +shot.h || 0),
+      box: plan ? plan.rect : null,
+      device: plan ? plan.device : null, drawn: plan ? plan.marks : null, marks: own,
+    }]
+  const marks = captures.flatMap(c => c.marks.map(m => ({ ...m, on: c })))
+  const focus = marks.filter(m => m && FOCUS.includes(m.kind))
+  const hides = marks.filter(m => m && HIDES.includes(m.kind))
+
+  // Nothing was asked for, so nothing about this picture can be wrong, which is the
+  // finding. A still has no length, so the one field that says what it is for is `what`.
+  if (!brief) {
+    add('no-brief', 'note', 'No brief for this capture, so what the picture is for, its shape and what must be hidden are nobody\'s call yet.',
+      call('direct', { brief: { what: null, aspect: null, where: null } },
+        'write what the picture is for first, then review measures against it'))
+  }
+
+  // ── what must not be seen ──
+  const hide = arr(brief && brief.must_hide).filter(Boolean)
+  const covered = hides.filter(m => rect(m))
+  if (hide.length && covered.length < hide.length) {
+    const missed = hide.slice(covered.length)
+    add('redactions', 'blocking',
+      covered.length
+        ? `The brief names ${plural(hide.length, 'thing')} to hide and the picture draws ${plural(covered.length, 'redaction')}. ` +
+          `Nothing covers ${missed.slice(0, 3).join(', ')}.`
+        : `The brief says to hide ${hide.slice(0, 3).join(', ')}, and nothing on this picture is redacted or blurred.`,
+      call('find_on_screen', { at: AT, query: String(missed[0] || hide[0]) },
+        'find it on the capture, then apply_edit a redact mark on its box; a still is read close, so redact anything private rather than blurring it'))
+  }
+  // A blur is a filter over the words and a redaction is a hole where they were. On a
+  // recording the difference is small, because the frame is gone in a thirtieth of a
+  // second; on a still somebody can sit in front of it. So every blur is measured, in
+  // sigma against a stroke of type, and only the ones that leave a word its shape are
+  // named. A strong blur over something the brief called private is not a finding: it
+  // did the job, and offering to convert it replaced a soft 576 px field with an opaque
+  // slab on a picture that was already right. The old arm fired on every blur in the
+  // document whenever the brief named anything at all, near it or not.
+  //
+  // One finding and one call for the lot of them. Marks merge by id, so turning three
+  // blurs into three redactions is one apply_edit, and three items that each say the
+  // same sentence about a different id is a list an agent stops reading.
+  const soft = []
+  for (const m of hides) {
+    if (m.kind !== 'blur' || !m.id) continue
+    const b = rect(m)
+    // The plan's own sigma where it drew this one, so the strength judged is the
+    // strength rendered rather than the one the document happens to hold.
+    const drawn = b && m.on.drawn ? arr(m.on.drawn.blur)
+      .find(x => Math.abs(x.w / m.on.shown.w - b.w) < 0.02 && Math.abs(x.h / m.on.shown.h - b.h) < 0.02) : null
+    const sigma = drawn ? +drawn.sigma : +m.strength
+    const side = b ? Math.min(b.w * m.on.shown.w, b.h * m.on.shown.h) : 0
+    if (side > 0 && Number.isFinite(sigma) && sigma < SOFT_BLUR) {
+      soft.push({ id: m.id, side: Math.round(side), sigma: r2(sigma) })
+    }
+  }
+  if (soft.length) {
+    add('soft-redaction', hide.length ? 'blocking' : 'should',
+      `${soft.map(s => s.id).join(', ')} ${soft.length === 1 ? 'blurs a box' : 'blur boxes'} about ${soft[0].side} px across at strength ` +
+      `${soft[0].sigma}, which is under the ${SOFT_BLUR} px of blur it takes to lose a stroke of type in a capture, so the words keep ` +
+      `their shape. A blur softens and can be undone, and a still is looked at for as long as somebody likes.`,
+      call('apply_edit', { doc: { marks: soft.map(s => ({ id: s.id, kind: 'redact' })) } },
+        'marks merge by id, so this turns those into redactions on the same boxes and leaves everything else alone'),
+      { choices: [
+        { what: 'make them holes rather than filters',
+          fix: call('apply_edit', { doc: { marks: soft.map(s => ({ id: s.id, kind: 'redact' })) } },
+            'marks merge by id, so this turns those into redactions on the same boxes and leaves everything else alone') },
+        { what: 'keep the blur and turn it up past a stroke of type',
+          fix: call('apply_edit', { doc: { marks: soft.map(s => ({ id: s.id, strength: SOFT_BLUR * 2 })) } },
+            'twice the floor, which is a word gone rather than softened; preview_frame to read what is left') },
+      ] })
+  }
+
+  // ── the shape of the deliverable ──
+  const aspect = field(look, 'frame.aspect', 'auto')
+  const boxShape = captures.length > 1 && plan ? plan.rect : captures[0].shown
+  const ownAspect = boxShape && boxShape.h > 0 ? Math.round((boxShape.w / boxShape.h) * 10000) / 10000 : null
+  // Under 'auto' the shape that ships is the plan's own frame and not the capture's
+  // crop: backdropGeometry adds one square margin on every side, so a 1920x1080 capture
+  // goes out 1920x1170. Measured off the crop, a blocking rule cleared a file that was
+  // never 16:9, in the same result whose `measured.picture` said so.
+  const outShape = aspect === 'auto' && plan && plan.H > 0
+    ? Math.round((plan.W / plan.H) * 10000) / 10000 : ownAspect
+  const shown = aspect === 'auto' ? outShape : aspectNumber(aspect)
+  const want = (brief && brief.aspect) || (where && where.aspect) || null
+  if (want && shown !== aspectNumber(want)) {
+    const is = aspect === 'auto'
+      ? (outShape === null ? 'whatever shape the capture and its margins come to' : `${r2(outShape)} to 1, the capture and its margins`)
+      : aspect
+    add('aspect', 'blocking',
+      `The picture is ${is} and ${brief && brief.aspect ? 'the brief asks for' : `${where.where} wants`} ${want}.`,
+      call('apply_look', { look: { frame: { aspect: want } } },
+        'the space round the capture is filled by the background, never black bars'))
+  }
+
+  // ── more than one capture, and only one of them drawn ──
+  // A group is laid out in the room the composition gives it, and a look with no
+  // background gives it none: the take goes edge to edge and the other captures are not
+  // in the picture at all (ui/compositor/plan.js, groupSpec is made only where framed).
+  if (members.length > 1 && plan && !plan.group) {
+    add('group-unframed', 'blocking',
+      `This shot holds ${plural(members.length, 'capture')} and the look has no background, so the picture is the first of them edge to edge ` +
+      'and the rest are not drawn. A group is laid out in the room the ground leaves round it.',
+      call('apply_look', { look: { background: { kind: 'gradient' } } },
+        'any ground but none gives the group somewhere to stand; list_looks names the seven that ship'))
+  }
+
+  // ── what the picture is of ──
+  // Nothing here reads a pixel, so this is not "the subject is wrong", it is "nothing in
+  // the document says there is one". A capture on a ground is a screenshot with a
+  // margin; what makes it a picture of something is a mark on it, a crop to it, a second
+  // capture to read it against, or a line of type saying what it is. `texts` is counted
+  // whether or not a shot can carry one yet: a rule that has to be edited the day a
+  // field arrives is a rule that will be wrong for a while first.
+  const cropped = captures.some(c => c.shown.w * c.shown.h < c.src.w * c.src.h * 0.98)
+  // Only the marks that point. A redaction and a blur say what not to look at, and a
+  // picture whose one mark is a hole over an account name is exactly the screenshot with
+  // a margin round it this rule exists to name: silenced by it, the rule was answering
+  // ten for the case it was written for.
+  const points = marks.filter(m => m && !HIDES.includes(m.kind))
+  if (!points.length && !cropped && captures.length < 2 && members.length < 2 && !arr(shot.texts).length) {
+    add('subject', 'should',
+      'Nothing on this picture says what to look at: no mark, no crop to the thing, one capture, no words. It is a screenshot with a margin round it.',
+      call('find_on_screen', { at: AT, ...(brief && brief.what ? { query: String(brief.what) } : {}) },
+        'name the thing the picture is about and send the id back as a lift, a spotlight or a crop; a group of two is also an answer'))
+  }
+
+  // ── the subject against everything done to the rest of the frame ──
+  for (const m of focus) {
+    if (!m.id) continue
+    const b = rect(m)
+    if (!b) continue
+    const share = shareOf(b)
+    const small = share < SUBJECT_MIN && Math.max(b.w, b.h) < LONG
+    if (!small && share <= SUBJECT_MAX) continue
+    const under = hides.filter(h => h.on === m.on && rect(h) && !inside(rect(h), b)).length
+    add('focus-share', 'should',
+      small
+        ? `${m.id} (${m.kind}) is ${Math.round(share * 100)} percent of ${m.on.what}, and the other ${Math.round((1 - share) * 100)} is dimmed and ` +
+          'softened behind it. On one frame that treatment is the picture rather than a moment in it: what is left reads as a blurred page ' +
+          `with a fragment over it${under ? `, and the ${plural(under, 'redaction')} out there cannot be seen to have done anything` : ''}.`
+        : `${m.id} (${m.kind}) covers ${Math.round(share * 100)} percent of ${m.on.what}, so it raises the page rather than a thing on it, ` +
+          'and there is nothing left for it to be raised against.',
+      call('find_on_screen', { at: AT, ...(brief && brief.what ? { query: String(brief.what) } : {}) },
+        small
+          ? 'aim it at the whole of the thing, a card rather than a line of one, and send the id back as element; or crop the picture to it, which needs no dimming at all'
+          : 'aim it at the thing itself and send the id back as element, so the lift has a page to stand off'),
+      { at: null })
+  }
+
+  // ── two of them on one place ──
+  for (const c of focusClashes(marks.map(m => ({ ...m, start: 0, end: 1 })))) {
+    add('focus-clash', 'should',
+      `${c.a} and ${c.b} (${c.kinds.join(' and ')}) cover the same place, so one dims the other.`,
+      call('apply_edit', { doc: { remove: [c.b] } }, 'keep the one the person asked for and say which went'))
+  }
+
+  // ── a mark the picture does not draw ──
+  // The still's own never-drawn: not a moment the edit cut away, but a place with no
+  // room in it. An arrow stands outside the box it points at and is dropped where there
+  // is nowhere to stand (ui/look-schema.js, focus.arrow).
+  for (const c of captures) {
+    if (!c.drawn) continue
+    for (const list of DRAWN_LISTS) {
+      const asked = c.marks.filter(m => m && DRAWN_AS[m.kind] === list)
+      if (asked.length <= arr(c.drawn[list]).length) continue
+      for (const m of asked) {
+        if (!m.id || draws(shot, m)) continue
+        const drop = call('apply_edit', { doc: { remove: [m.id] } },
+          'nothing goes out of the picture that was ever in it; the document simply stops claiming a mark the frame does not carry')
+        add('never-drawn', 'should',
+          `${m.id} (${m.kind}) is in the document and not in the picture: there is no clear room beside the box it is aimed at, so the mark pass leaves it out.`,
+          drop,
+          { choices: [
+            { what: `drop ${m.id}`, fix: drop },
+            { what: 'aim it at something with room beside it',
+              fix: call('find_on_screen', { at: AT, ...(brief && brief.what ? { query: String(brief.what) } : {}) },
+                'send the id back as element and Fetch fits the mark to it, clear of the edges') },
+          ] })
+      }
+    }
+  }
+
+  // ── the frame the capture is hung in ──
+  const dev = captures.map(c => c.device).filter(Boolean)
+  const shellKinds = new Set(dev.map(d => d.kind))
+  // A drawn shell over a capture that already carries its own is two title bars, and
+  // frame.chrome cannot help: it crops where Fetch knows the page's place, and on a
+  // still it never does (viewport is what a recording's agent reported and a capture has
+  // no such thing). So the question the document can answer is whether anything has been
+  // taken off the top of the capture at all. `captured.kind` would answer it exactly,
+  // since only a window capture brings a title bar with it; a shot does not carry what
+  // it was a capture of, so the rule reads it where it is there and speaks where it is
+  // not, which is the way round that cannot ship the fault silently.
+  // The chrome question is asked of each capture, because on a group each member is its
+  // own capture and carries its own answer: a display capture of one Mac standing beside
+  // a window capture of another is two different questions. Read off the shot alone, the
+  // whole group was judged by whatever the shot itself happened to be.
+  const capturedOf = c => {
+    const m = members.find(x => x && x.id === c.id)
+    return (m && m.captured) || (captures.length < 2 ? shot.captured : null) || null
+  }
+  const doubled = captures.filter(c => {
+    const d = c.device
+    if (!d || !['browser', 'window', 'laptop'].includes(d.kind) || d.own) return false
+    // a shell that stood down drew no bar at all (ui/compositor/plan.js, ownChrome), so
+    // what is left to warn about is the capture Fetch was told nothing about
+    const cap = capturedOf(c)
+    if (cap && cap.kind && cap.kind !== 'window') return false
+    return c.shown.y <= c.src.h * 0.01
+  })
+  if (doubled.length && !shot.viewport) {
+    const kinds = [...new Set(doubled.map(c => c.device.kind))]
+    // On a group the look's own device is not what drew these shells: each member carries
+    // its own `device` string and groupSpec builds the shell from that, so apply_look
+    // changes nothing and the finding comes back byte for byte. The group goes back whole
+    // with the offending members bare, which is the shape device-fit already uses.
+    const bare = new Set(doubled.map(c => c.id))
+    const off = captures.length > 1
+      ? call('apply_edit', { doc: { group: { gap: shot.group.gap, align: shot.group.align,
+        members: members.map(m => (bare.has(m.id) ? { ...m, device: 'none' } : m)) } } },
+        'the group goes back whole with those members bare, so the captures keep their own chrome and nothing else in the picture moves')
+      : call('apply_look', { look: { device: { kind: 'none' } } },
+        'one title bar: the capture\'s own, which is the one with the real window in it')
+    add('double-chrome', 'should',
+      `A ${kinds.join(' and ')} frame is drawn round ${doubled.length > 1 ? `${doubled.map(c => c.id).join(' and ')}, captures` : doubled[0].what} nothing has been cropped off the top of. ` +
+      'Where the capture is of a window it already carries its own title bar, and the picture then has two. Nothing about a still tells Fetch where the ' +
+      'page begins, so frame.chrome cannot take the first one off.',
+      off,
+      { choices: [
+        { what: 'drop the drawn frame and keep the capture\'s own chrome', fix: off },
+        { what: 'keep the drawn frame and crop the capture\'s own bar away',
+          fix: captures.length > 1
+            ? call('apply_edit', { doc: { group: { gap: shot.group.gap, align: shot.group.align,
+              members: members.map(m => (bare.has(m.id) ? { ...m, crop: { x: 0, y: 0.04, w: 1, h: 0.96 } } : m)) } } },
+              'a group is laid out from its members, so the crop goes on the member; preview_frame to see how much of a bar there was')
+            : call('apply_edit', { doc: { crop: { x: 0, y: 0.04, w: 1, h: 0.96 } } },
+              'take the top off the capture so the drawn shell is the only chrome; preview_frame to see how much of it there was') },
+      ] })
+  }
+  for (const c of captures) {
+    const d = c.device
+    if (!d || !d.kind || d.kind === 'none') continue
+    const tall = c.shown.h > c.shown.w
+    if ((d.kind === 'phone') === tall) continue
+    add('device-fit', 'should',
+      `${c.what} is ${tall ? 'taller than it is wide' : 'wider than it is tall'} and it is hung in a ${d.kind} frame, which is cut the other way. ` +
+      'The shell and the thing inside it disagree about which way up the picture is.',
+      captures.length > 1
+        ? call('apply_edit', { doc: { group: { gap: shot.group.gap, align: shot.group.align,
+          members: members.map(m => (m.id === c.id ? { ...m, device: tall ? 'phone' : 'window' } : m)) } } },
+          'the group goes back whole with that one member reframed, so nothing else in it moves')
+        : call('apply_look', { look: { device: { kind: tall ? 'phone' : 'window' } } },
+          'a frame cut for the shape the capture actually is'))
+  }
+  for (const c of captures) {
+    const d = c.device
+    if (!d || !d.kind || !['browser', 'window'].includes(d.kind) || String(d.title || '').trim()) continue
+    const stem = stemOf(path)
+    add('blank-bar', 'note',
+      `The ${d.kind} frame round ${c.what} has an empty address, so the picture ships with a blank bar in it, which reads as an unfinished mockup.`,
+      call('apply_look', { look: { device: { title: stem || 'the address or the window title' } } },
+        stem ? 'the capture is already named after the window it came from, and that name is the honest thing to put in the bar'
+          : 'whatever the window is called, or the address a reader would type'))
+    break
+  }
+
+  // ── room round the picture ──
+  if (plan) {
+    const b = captures.length > 1 || !captures[0].device ? plan.rect : captures[0].device.extent
+    const room = Math.min(b.x, b.y, plan.W - b.x - b.w, plan.H - b.y - b.h) / Math.min(plan.W, plan.H)
+    if (field(look, 'background.kind', 'none') !== 'none' && room < GUTTER) {
+      add('breathe', 'should',
+        `The drawn picture stands ${Math.max(0, Math.round(room * Math.min(plan.W, plan.H)))} px off the edge of a ${plan.W}x${plan.H} frame. ` +
+        'There is nowhere for the shadow to fall and the ground reads as a hairline rather than as a margin.',
+        call('apply_look', { look: { frame: { padding: 0.06 } } },
+          'the default margin, which is where the shadow and the corners were drawn to sit'))
+    }
+  }
+
+  // ── the ground against the capture's own ends ──
+  const g = groundRange(look)
+  if (g && lv && Number.isFinite(+lv.lo) && Number.isFinite(+lv.hi) && +lv.hi > +lv.lo) {
+    // Both ends, because a range with one end clear gives the capture somewhere to
+    // stand. A solid has one end and answers this on its own.
+    const near = Math.abs(g.lo - +lv.lo) < EDGE && Math.abs(g.hi - +lv.lo) < EDGE ? 'black point'
+      : Math.abs(g.lo - +lv.hi) < EDGE && Math.abs(g.hi - +lv.hi) < EDGE ? 'white point' : null
+    if (near) {
+      const dark = near === 'black point'
+      const suited = pickLook(input.looks, dark ? 'light' : 'dark')
+      add('ground', 'note',
+        `${g.what.charAt(0).toUpperCase()}${g.what.slice(1)} sits within 24 levels of the capture's own ${near} ` +
+        `(${r2(g.lo)} to ${r2(g.hi)} against ${r2(near === 'black point' ? +lv.lo : +lv.hi)}), so the capture's edge is carried by the hairline alone.`,
+        suited
+          ? call('apply_look', { preset: suited.name }, `${suited.label} is for ${suited.for || 'the other end of the scale'}`)
+          : call('apply_look', { look: { background: { kind: 'solid', color: dark ? '#EDE6DA' : '#1A1714' } } },
+            'a ground the capture stands off, rather than one it sinks into'))
+    }
+  }
+
+  // ── the pixels the box can carry ──
+  // A screenshot is read close and often on a retina display, so the number that decides
+  // whether it is a deliverable is how many of the capture's own pixels survive into it.
+  // The picture is drawn at one, two or three times its plan, so the box only has to
+  // carry the capture at one of those, and which one is the renderer's call and not this
+  // rubric's. What is reported is the number and the size it asks for; what is a finding
+  // is a box that throws away a third of the capture even at the largest size a still is
+  // drawn, which is a shape and a margin spending the picture on ground.
+  const dense = captures.map(c => ({ id: c.id, what: c.what,
+    per_px: c.box && c.box.w > 0 ? r2(c.shown.w / c.box.w) : null }))
+  const worst = dense.filter(d => d.per_px !== null).sort((a, b) => b.per_px - a.per_px)[0]
+  // A few percent of softening is invisible, which is the same slack the renderer gives
+  // itself when it picks a size (ui/compositor/index.js, shotScale).
+  const needs = worst ? Math.max(1, Math.ceil(worst.per_px / 1.05)) : 1
+  if (worst && worst.per_px > TOP_SCALE * 1.4) {
+    const padding = +field(look, 'frame.padding', 0.06)
+    // Never a finding without a call, and never a call that makes another rule fire: the
+    // margin comes down to where `breathe` is still satisfied and no further.
+    const fix = padding > 0.03
+      ? call('apply_look', { look: { frame: { padding: 0.03 } } },
+        'a tighter margin gives the capture a bigger box, and the box is what carries its pixels')
+      : aspect !== 'auto'
+        ? call('apply_look', { look: { frame: { aspect: 'auto' } } },
+          'the capture\'s own shape wastes none of the frame on ground the picture does not need')
+        : null
+    if (fix) {
+      add('resolution', 'note',
+        `${worst.what} has ${worst.per_px} of its own pixels for every pixel of the box the picture gives it. At ${TOP_SCALE}x, ` +
+        `which is the largest a still is drawn, that is still ${r2(worst.per_px / TOP_SCALE)} to one: a third of what was captured ` +
+        'does not reach the file, and small text goes first.',
+        fix)
+    }
+  }
+
+  const { live, bad, should, off, verdict, score } = settle(items, input.declined)
+  // What it is, in the numbers that decide it, and then what is left. A note is counted
+  // out loud rather than swept under "nothing the rubric can name": a summary that says
+  // nothing while the list under it says three things is how a ten gets believed.
+  const notes = live.length - bad - should
+  const what = `${captures.length > 1 ? plural(captures.length, 'capture') : `a ${captures[0].src.w}x${captures[0].src.h} capture`}` +
+    `${plan ? ` in a ${plan.W}x${plan.H} picture` : ''}, ${plural(marks.length, 'mark')}`
+  const summary = (bad || should
+    ? `${verdict === 'not ready' ? 'Not ready' : 'Nearly'}: ${what}. ` +
+      [bad ? `${plural(bad, 'thing')} to fix` : '', should ? `${plural(should, 'thing')} worth fixing` : '']
+        .filter(Boolean).join(', ') + '.'
+    : notes
+      ? `Ready: ${what}, nothing to fix. ${plural(notes, 'note')} worth reading.`
+      : `Ready: ${what}, nothing the rubric can name.`) +
+    (off ? ` ${plural(off, 'item')} declined.` : '')
+
+  return {
+    verdict,
+    score,
+    summary,
+    items,
+    // A still has one moment and every finding is already named against the mark or the
+    // capture it is about, so there is no list of times to hand over. preview_frame
+    // draws the picture, and it is the whole of what there is to look at.
+    look_at: [],
+    not_judged: NOT_ABOUT_A_PICTURE.map(([rule, why]) => ({ rule, why })),
+    measured: {
+      kind: 'shot',
+      planned: !!plan,
+      capture: `${captures[0].src.w}x${captures[0].src.h}`,
+      shown: `${captures[0].shown.w}x${captures[0].shown.h}`,
+      picture: plan ? `${plan.W}x${plan.H}` : null,
+      // How many of the capture's own pixels land in one pixel of the box it was given,
+      // and the smallest size the picture can ship at and still carry them all.
+      capture_per_px: worst ? worst.per_px : null,
+      needs_scale: worst ? needs : null,
+      aspect: aspect === 'auto' ? 'auto' : aspect,
+      wanted_aspect: want,
+      where: where ? where.where : null,
+      captures: captures.map((c, i) => ({ id: c.id, capture: `${c.src.w}x${c.src.h}`,
+        box: c.box ? `${c.box.w}x${c.box.h}` : null, per_px: dense[i].per_px,
+        device: c.device ? c.device.kind : null, marks: c.marks.length })),
+      marks: marks.length,
+      drawn: captures.reduce((n, c) => n + (c.drawn ? DRAWN_LISTS
+        .reduce((k, list) => k + arr(c.drawn[list]).length, 0) : 0), 0),
+      redactions: hides.length,
+      must_hide: hide,
+      subject: focus.filter(m => m.id && rect(m)).map(m => ({ id: m.id, kind: m.kind, share: shareOf(rect(m)) })),
+      ground: g ? { lo: r2(g.lo), hi: r2(g.hi) } : null,
+      take_levels: lv && Number.isFinite(+lv.lo) ? { lo: r2(+lv.lo), hi: r2(+lv.hi) } : null,
+    },
+  }
+}
+
+
 // The look whose ground sits at the end this take needs, named by what it is for rather
 // than by what it is called. Falls back to nothing, and the caller names a colour.
 function pickLook(looks, end) {
@@ -1138,5 +1734,6 @@ function lookAt(items, k, beats, seconds) {
 /** The items an export result carries: what has to be fixed before this is the thing asked for. */
 const blocking = r => (r && arr(r.items).filter(i => i.severity === 'blocking' && !i.declined)) || []
 
-module.exports = { review, blocking, whereSpec, WHERE, kept, outAt, outLength, deadAir, focusClashes, handAimed,
-  luma, work, damage, covered, silenceCuts, without, including, DEAD_GAP, ZOOM_EVERY, WHOLE, PENALTY }
+module.exports = { review, still, blocking, whereSpec, WHERE, kept, outAt, outLength, deadAir, focusClashes, handAimed,
+  luma, groundRange, work, damage, covered, silenceCuts, without, including, DEAD_GAP, ZOOM_EVERY, WHOLE, PENALTY,
+  SUBJECT_MIN, SUBJECT_MAX, SOFT_BLUR, TOP_SCALE, NOT_ABOUT_A_PICTURE }

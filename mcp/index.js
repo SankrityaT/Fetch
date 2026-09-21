@@ -33,8 +33,9 @@ const INSTRUCTIONS = [
   'Fetch records this Mac\'s screen, captures stills of it, and edits what it took. The work happens in ' +
     'the Fetch app on the person\'s own machine; these tools are its hands.',
   '',
-  'A screenshot is a take of one frame: take_shot captures one, and the tools that style, aim at, draw ' +
-    'and export a recording take a shot too.',
+  'A screenshot is a take of one frame: take_shot captures one, and the tools that style, aim at, draw, ' +
+    'set type on and export a recording take a shot too. A hero is a picture with a line of type on it, ' +
+    'so a still carries type.',
   '',
   'How a job goes, every time:',
   '- See the whole take with contact_sheet before you change it.',
@@ -50,11 +51,9 @@ const INSTRUCTIONS = [
     'and send the id it hands back. A zoom or a mark placed from numbers read off a picture lands on ' +
     'the wrong thing, and the result will say so after the fact.',
   '',
-  'Decide rather than ask: a default they can see and undo beats a question, and an agent that asks ' +
-    'about everything is worse than one that gets on with it. The exception is narrow and it is what ask ' +
-    'is for, a request with two readings that would touch different parts of the take where the wrong one ' +
-    'costs an edit and an undo. A change that is wide or awkward to take back, show with propose before ' +
-    'it lands rather than after.',
+  'Decide rather than ask: a default they can see and undo beats a question. The exception is narrow and ' +
+    'is what ask is for, a request with two readings that would touch different parts of the take. A change ' +
+    'that is wide or awkward to take back, show with propose before it lands rather than after.',
   '',
   'Every result carries the state it changed: the plan that is left, how far the edit still is from ' +
     'what was asked for, a frame of it, and what is wrong with it. Read that rather than calling again ' +
@@ -242,9 +241,11 @@ export function build() {
       description:
         'Capture one frame of this Mac as a screenshot and open it, ready to be styled. A screenshot is ' +
         'a take of one frame, so everything after this is the tools you already have: apply_look for the ' +
-        'background, the device frame, the tilt and the grade, apply_edit for lifts, loupes, arrows, ' +
-        'numbered steps, redactions and blurs, find_on_screen to name what is on it, preview_frame to ' +
+        'background, the device frame, the tilt and the grade, apply_edit for the headline and the ' +
+        'words on the picture as well as for lifts, loupes, arrows, numbered steps, redactions and ' +
+        'blurs, find_on_screen to name what is on it, preview_frame to ' +
         'look at it, review to check it, and export to write the finished PNG. ' +
+        'The result carries a picture of what was captured, so there is nothing to call to see it. ' +
         'With neither window nor display, Fetch captures the window of the app in front (never Fetch ' +
         'itself, never the terminal you run in), and the result names it. The person\'s own pointer is ' +
         'left out unless you ask for it, the window\'s own drop shadow is never in the file (Fetch draws ' +
@@ -269,7 +270,15 @@ export function build() {
     },
     // Can wait on the person approving the capture, which is a native dialog on Fetch's
     // own window, so it gets a person's patience rather than a machine's.
-    async args => text(await drive('shot.take', args, { timeoutMs: 5 * 60 * 1000 })))
+    async args => {
+      const r = await drive('shot.take', args, { timeoutMs: 5 * 60 * 1000 })
+      const out = text(r)
+      // The only tool that makes the artefact and used to hand back no picture of it,
+      // so an agent that cannot see the screen spent a second call looking at its own work.
+      const shot = r && r.preview && r.preview.image
+      if (shot) try { out.content.push({ type: 'image', mimeType: 'image/jpeg', data: readFileSync(shot).toString('base64') }) } catch {}
+      return out
+    })
 
   // ── editing ──────────────────────────────────────────────────────────
   // Everything the editor window can do, drivable without opening it. The edit is
@@ -376,6 +385,15 @@ export function build() {
         'last second, up to 8s long, is a title and anything else a label. subtitle is the ' +
         'smaller line; without it, "Title · subtitle" or a line break splits the text. ' +
         'Titles and lower thirds use the house face; font applies to labels.\n' +
+        '  The type a finished picture carries, which a still takes and a clip can too, and which is laid ' +
+        'out against the picture rather than against the clock: style headline (the big line, standing ' +
+        'beside the picture where its shape leaves a column and above it where it does not, with subtitle ' +
+        'as the quieter line under it), caption (a line under the image, held to a readable measure), ' +
+        'label (a short line on a plate pinned to a point: at {x,y}, the picture\'s own fractions, the same ' +
+        'coordinates a mark takes) and callout (the same plate with a leader and a ring drawn onto the point ' +
+        'it names). The type never lies over the product: the picture is refitted into the room left for it, ' +
+        'and a headline too long for its column wraps and then steps down a size rather than running past it. ' +
+        'look.typography.headline puts it above, below, left or right in place of letting Fetch choose.\n' +
         '- cues [{id,start,end,text}]: the captions. Read them with get_edit include_cues, ' +
         'correct the text, and send the whole list back.\n' +
         '- beats [{id,start,end,label}]: the named spans of the take, from what was said in it ' +
@@ -425,9 +443,13 @@ export function build() {
         'page.mouse, anything over CDP). pointer.autoZoomSpots in the result says how many it found; ' +
         'at 0, place zooms yourself.\n' +
         'ON A SHOT (take_shot\'s path): the same call, on the half of the above that is about a picture. ' +
-        'marks (every kind, merged by id, aimed by element exactly as here), crop, cropAR, viewport and ' +
-        'look. A mark on a shot takes no start and no end, and one sent with them is dropped rather than ' +
-        'kept and ignored. clips, zooms, texts, cues, beats, pointer, camera, audio, audioTrack and ' +
+        'marks (every kind, merged by id, aimed by element exactly as here), texts, crop, cropAR, viewport ' +
+        'and look. A mark or a text on a shot takes no start and no end, and one sent with them is dropped ' +
+        'rather than kept and ignored: a headline has nothing to do with a clock. ' +
+        'A hero, a docs picture and a store listing are a capture with a line of type on it, so that is one ' +
+        'call: texts: [{text: \'Find any take in one search\', style: \'headline\', subtitle: \'Every window ' +
+        'you recorded, searchable\'}], and the words stand beside or above the picture and never over it. ' +
+        'clips, zooms, cues, beats, pointer, camera, audio, audioTrack and ' +
         'autoZoom are refused by name: one frame has no clock. group {gap, align, members: [{src, device}]} ' +
         'puts up to three captures in one picture, laid out at their real relative sizes, on one ground, ' +
         'in one light: two is a window beside a handset, not two pictures side by side.\n' +
@@ -467,10 +489,15 @@ export function build() {
         'and distance, and apply_edit step: "P3" closes a step. Call it again to refine the brief; what ' +
         'you send is merged, and a step whose words you leave alone keeps its id and its state. ' +
         'A shot is a job like any other and takes the same call; its distance is measured on its shape ' +
-        'alone, since one frame has no length.',
+        'alone, since one frame has no length, and brief.what is then the field that says what the ' +
+        'picture is for. review reads it, so a picture with no brief is a picture nothing can judge.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording, or to a shot.'),
         brief: z.object({
+          what: z.string().nullable().optional()
+            .describe('What the thing is, in the person\'s own words: "a help centre hero of the library", ' +
+              '"the three steps of importing". On a still this is most of what a brief is, since one frame ' +
+              'has no length for the rest of it to measure.'),
           seconds: z.number().min(1).max(3600).nullable().optional().describe('How long the finished video should be. Hit within 5 percent counts as hitting it.'),
           aspect: z.string().nullable().optional().describe('The shape it goes out in, e.g. "16:9", "9:16", "1:1".'),
           where: z.string().nullable().optional()
@@ -503,10 +530,13 @@ export function build() {
         'the edit never draws, two highlights on one place, and the ground against the take\'s own ' +
         'exposure. export runs it too, so its blocking items come back with the file. Fix what it names, ' +
         'or tell the person why you did not. ' +
-        'On a shot it is the same rubric on the half of it that is about a picture: what the brief said to ' +
-        'hide and whether anything covers it, the shape, two highlights on one place, and the ground ' +
-        'against the capture\'s own exposure. The rules about a clock are named under not_judged rather ' +
-        'than reported as failures, since a screenshot cannot be the wrong length.',
+        'On a shot it is a rubric about a picture, measured off the same plan the compositor draws it from: ' +
+        'whether anything says what to look at, whether what the brief called private is under a redaction or ' +
+        'only softened, a drawn device frame over a capture that already carries its own chrome, a shell cut ' +
+        'the wrong way for what is in it or shipping a blank address, a lift raising a fragment or the whole ' +
+        'page, a mark the picture does not draw, room round the frame, the ground against the capture\'s own ' +
+        'exposure, and how many of the capture\'s pixels the box it was given can carry. The rules about a ' +
+        'clock come back under not_judged, named, since a screenshot cannot be the wrong length.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording, or to a shot.'),
         declined: z.array(z.string()).optional()
@@ -713,8 +743,11 @@ export function build() {
         'PNG, or JPEG where the person asks for one. PNG is the default as a measurement rather than a ' +
         'preference: a screenshot draws flat fields, one pixel hairlines and small text, and JPEG rings ' +
         'along exactly those edges. Nothing is asked about length, quality or resolution, because a still ' +
-        'has none: it is drawn at the largest of 1x, 2x and 3x that does not enlarge the capture, and the ' +
-        'result says which. A video format on a shot is refused by name.',
+        'has none: it is drawn at the size it was captured, the multiple of the plan that puts one output ' +
+        'pixel under each captured one, held between the plan\'s own size and 3x. The result says the ' +
+        'multiple and says density, capture pixels per output pixel: 1 is the capture at its own size and ' +
+        'over 1 is that much of it thrown away, which is what tells a deliverable from a preview. ' +
+        'A video format on a shot is refused by name.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording, or to a shot.'),
         format: z.enum(['mp4', 'webm', 'gif', 'mov', 'm4a', 'mp3', 'wav', 'png', 'jpg']).optional()
@@ -761,7 +794,8 @@ export function build() {
         'capture is already one frame; preview_frame is what draws it styled.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording, or to a shot.'),
-        at: z.number().min(0).describe('Seconds into the recording. Ignored on a shot, which has one moment.'),
+        at: z.number().min(0).optional()
+          .describe('Seconds into the recording. Default 0. Leave it out on a shot, which has one moment.'),
         cropped: z.boolean().optional().describe('Show the frame after the edit\'s crop, which is the frame ' +
           'zoom, mark and text positions are measured against. Default false: the whole recording.'),
       }),
@@ -769,7 +803,8 @@ export function build() {
     async args => {
       // The image itself, not only its path: an agent inside Fetch's chat has no file
       // tool to open a path with, and seeing the frame is the whole point of the call.
-      const r = await drive('frame', args, { timeoutMs: 60000 })
+      // A moment a still does not have is not a moment a client should have to invent.
+      const r = await drive('frame', { ...args, at: args.at ?? 0 }, { timeoutMs: 60000 })
       const out = text(r)
       try { out.content.push({ type: 'image', mimeType: 'image/jpeg', data: readFileSync(r.image).toString('base64') }) } catch {}
       return out
@@ -800,8 +835,9 @@ export function build() {
         'call and the E id it hands back, exactly as on a recording.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording, or to a shot.'),
-        at: z.number().min(0).describe('Seconds into the recording, a moment the thing is fully on screen. ' +
-          'Ignored on a shot, which has one moment.'),
+        at: z.number().min(0).optional()
+          .describe('Seconds into the recording, a moment the thing is fully on screen. Default 0. ' +
+            'Leave it out on a shot, which has one moment.'),
         query: z.string().optional().describe('What the person called it, in their words. Omit to list everything.'),
         cropped: z.boolean().optional().describe('Default true: measured after the edit\'s crop, as apply_edit takes ' +
           'positions. False: the whole recording.'),
@@ -809,7 +845,7 @@ export function build() {
       }),
     },
     async args => {
-      const r = await drive('find', args, { timeoutMs: 60000 })
+      const r = await drive('find', { ...args, at: args.at ?? 0 }, { timeoutMs: 60000 })
       const out = text(r)
       try { out.content.push({ type: 'image', mimeType: 'image/jpeg', data: readFileSync(r.image).toString('base64') }) } catch {}
       return out
@@ -829,16 +865,16 @@ export function build() {
         'so what you look at here is the PNG made narrow rather than a second opinion of it.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording, or to a shot.'),
-        at: z.union([z.number().min(0), z.array(z.number().min(0)).min(1).max(6)])
+        at: z.union([z.number().min(0), z.array(z.number().min(0)).min(1).max(6)]).optional()
           .describe('Seconds into the original recording: one time, or a list (up to 6), e.g. [35.9, 36.7]. ' +
-            'Ignored on a shot, which has one moment.'),
+            'Default 0. Leave it out on a shot, which has one moment.'),
         look: z.record(z.string(), z.any()).optional()
           .describe('A look to try on these frames without saving it, in apply_look\'s shape, e.g. {preset: \'film\'}.'),
       }),
     },
     async args => {
       const n = Array.isArray(args.at) ? args.at.length : 1
-      const r = await drive('edit.preview', args, { timeoutMs: 60000 * n })
+      const r = await drive('edit.preview', { ...args, at: args.at ?? 0 }, { timeoutMs: 60000 * n })
       const out = text(r)
       // in the order of frames[] in the text, which says when each is; a second text
       // block would stop the chat reading the result as JSON
@@ -920,6 +956,9 @@ export function build() {
         preset: z.string().optional().describe('A look from list_looks to start from, e.g. studio.'),
         look: z.record(z.string(), z.any()).optional().describe('Fields to change, by section.'),
         reset: z.array(z.string()).optional().describe('Field paths to put back to the preset, e.g. [\'frame.shadow\'].'),
+        step: z.string().optional()
+          .describe('The step of the plan this call finishes, e.g. "P1". Closes it; the result says what is left. ' +
+            'Same as apply_edit\'s, since applying a look is a step of a job like any other.'),
       }),
     },
     async args => text(await drive('look.apply', args, { timeoutMs: 60000 })))

@@ -158,3 +158,29 @@
   box-shadow: var(--shadow-1), var(--sheen); font-size: var(--t-13);
 }
 .lib-named > .icon-sm { color: var(--good); flex: none; }
+
+/* ── the source row is a way in, not a label ──────────────────────────────
+   The original is one click away, so the row that names it is a button. A source
+   that has been trashed keeps its row and loses the click. */
+.lib-info-open {
+  display: flex; width: 100%; gap: var(--s-3); align-items: baseline;
+  padding: 3px 5px; margin: 0 -5px; border-radius: var(--r-sm);
+  background: transparent; text-align: left;
+  transition: background var(--dur-1) var(--ease-in);
+}
+.lib-info-open:hover { background: var(--ink-3); }
+.lib-info-open:hover .lib-info-v { color: var(--text-0); }
+.lib-info-open .icon-sm { flex: none; align-self: center; color: var(--text-2); opacity: 0; }
+.lib-info-open:hover .icon-sm, .lib-info-open:focus-visible .icon-sm { opacity: 1; }
+.lib-gone {
+  display: inline-flex; align-items: center; gap: 3px; margin-left: 6px;
+  color: var(--warn); font-size: 10px; font-weight: 600;
+}
+.lib-gone .icon-sm { width: 11px; height: 11px; color: inherit; }
+
+/* Duplicate, Show in Finder, Move to Trash. Destructive sits apart from the rest by
+   the divider above the group and by being last, never beside a primary action. */
+.lib-info-acts {
+  display: grid; gap: 1px;
+  margin: 5px -7px -4px; padding-top: 5px; border-top: var(--edge);
+}

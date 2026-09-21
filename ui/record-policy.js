@@ -46,6 +46,13 @@ function nameMatches(appName, entry) {
 const isProtected = (appName, neverRecord) =>
   (neverRecord || []).some(n => nameMatches(appName, n))
 
+// What to say when the question in 'ask' mode has nobody to answer it. It lives beside
+// the rule rather than at either caller, because both of them mean the same thing and an
+// agent that reads two different sentences will think it hit two different faults.
+const UNANSWERED = 'Recording access is set to ask, so a person at the Mac has to say ' +
+  'yes to this one and nobody did. Ask them to allow it, or to set Recording access to ' +
+  'open in Fetch\'s Settings.'
+
 /**
  * Should this take be allowed to start?
  *
@@ -54,7 +61,7 @@ const isProtected = (appName, neverRecord) =>
  *   @param {'window'|'display'} req.kind
  *   @param {string} [req.app]            owning app, required when kind is 'window'
  * @param {object} policy  { mode, neverRecord[], allowedApps[] }
- * @returns {{allow: boolean, reason?: string, needsApproval?: boolean}}
+ * @returns {{allow: boolean, reason?: string, needsApproval?: boolean, unanswered?: string}}
  */
 function decide(req = {}, policy = {}) {
   const mode = MODES.includes(policy.mode) ? policy.mode : 'ask'
@@ -80,7 +87,45 @@ function decide(req = {}, policy = {}) {
     return { allow: false, reason: 'recording a whole display is off while access is set to allowed apps only' }
   }
 
-  if (mode === 'ask') return { allow: true, needsApproval: true }
+  if (mode === 'ask') return { allow: true, needsApproval: true, unanswered: UNANSWERED }
+  return { allow: true }
+}
+
+// ── the system's own grant, which outranks every rule above ──────────────
+// Screen Recording belongs to macOS and is given by a person in System Settings. Reading
+// the state is free and raises nothing; capturing without it is what raises a dialog,
+// and a dialog is the worst thing that can happen to an unattended agent: it waits on a
+// question it cannot see and cannot answer, forever. So the state is read first and a
+// capture that cannot work is refused with the sentence that says what to do.
+//
+// Never a request. CGRequestScreenCaptureAccess would put that dialog on the person's
+// screen on an agent's behalf, which is their call and not the agent's.
+//
+// @param {string} status  systemPreferences.getMediaAccessStatus('screen')
+// @param {'agent'|'human'} by
+const PRIVACY_PANE = 'System Settings, Privacy and Security, Screen Recording'
+function screenAccess(status, by = 'agent') {
+  // A person is never refused here, whatever the reading says, and that is the whole of
+  // this rule. Electron's screen status is backed by a boolean preflight, so a Mac that
+  // was never asked reads as 'denied' and is indistinguishable from one that said no. A
+  // person can settle either: the system's own prompt is raised by the read the helper
+  // makes, and Fetch may not be listed in that pane until it has been. Refusing them on
+  // the reading deleted the first-run prompt and named a switch that did not exist yet.
+  // They go through to the helper, which does not preflight for a person, and a refusal
+  // that is real comes back from macOS itself, naming the pane and the restart.
+  if (by !== 'agent') return { allow: true }
+  if (status === 'denied' || status === 'restricted') {
+    return { allow: false, reason: `screen recording permission is turned off for Fetch, ` +
+      `ask the person to turn it on in ${PRIVACY_PANE} and then restart Fetch` }
+  }
+  // Not determined is the state a fresh Mac ships in, and the state this fault was found
+  // in. An agent cannot answer the system prompt, so for an agent it is a refusal.
+  if (status === 'not-determined') {
+    return { allow: false, reason: `screen recording permission has not been granted, ` +
+      `ask the person to grant it to Fetch in ${PRIVACY_PANE} and then restart Fetch` }
+  }
+  // 'granted', and anything we could not read. A state nobody could measure is not
+  // grounds to refuse a capture that would have worked; the helper says what went wrong.
   return { allow: true }
 }
 
@@ -146,5 +191,5 @@ function checkSettingsPatch(patch, dirExists = () => true) {
   return out
 }
 
-module.exports = { decide, windowsToExclude, appsToExclude, isProtected, DEFAULT_NEVER, MODES,
+module.exports = { decide, screenAccess, UNANSWERED, windowsToExclude, appsToExclude, isProtected, DEFAULT_NEVER, MODES,
   AGENT_PREFS, HUMAN_ONLY_PREFS, checkSettingsPatch }

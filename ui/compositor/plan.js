@@ -171,6 +171,73 @@ const SHELL = {
   light: { shell: '#E8E2DA', line: EDGE_INK, face: '#F6F3EE', deep: '#D6CFC5', text: '#6E655C', sheen: 0.5 },
 }
 
+// ── the chrome the capture already has ──────────────────────────────────
+//
+// A shell drawn round a capture that already carries one is two title bars, and on a
+// browser shell a blank address field sitting over a real one. Two facts settle it and
+// nothing else has to.
+//
+// What the capture was of. Only a shot knows that and only a shot says it (`captured`,
+// what take_shot captured): a window capture brings its own title bar with it, a display
+// capture its menu bar, a region capture neither. A recording carries no `captured` at
+// all, so no take this compositor has ever drawn can reach the other branch, and told
+// nothing Fetch draws what it always drew.
+//
+// And whether anything has been taken off the top. frame.chrome remove and clean both
+// crop to the page where the page's place is known, and a crop somebody drew by hand
+// does the same work, so a capture with its top gone has no chrome left to collide with.
+//
+// Same question ui/review.js asks before it names double-chrome, and the same answer, so
+// the picture and the judge of the picture cannot disagree about what is in it.
+const CHROME_OF = { window: true, display: true, region: false }
+function ownChrome(captured, crop) {
+  if (crop && crop.w > 0 && crop.h > 0 && crop.y > 0.01) return false
+  return !!(captured && CHROME_OF[captured.kind])
+}
+
+// What the bar says, and in which of its two voices.
+//
+// A browser's field holds an address and a window's bar holds a title, and the two are
+// not interchangeable: a window title dropped into an address pill claims to be a URL,
+// which is exactly the kind of small invention an export must never make. So the text is
+// read rather than declared. Anything shaped like a host goes in the field; anything else
+// is centred on the bar the way a window's title is; nothing at all leaves the field off
+// altogether, because an empty one reads as a mockup somebody abandoned.
+//
+// Where it comes from for a window capture: from the window. take_shot already knows the
+// title it captured, so an unset device.title takes it rather than leaving the bar blank.
+// That is the frame somebody keeps after cropping the capture's own bar away, and the
+// title then moves from the capture into the frame Fetch draws.
+// A bare host and a filename are the same shape, and filenames are the commonest window
+// titles there are: README.md, notes.txt, index.html all match a run of dotted labels
+// ending in two or more letters. Drawn in the pill, the frame would have invented an
+// address out of a document, which is the one thing this whole rule exists to stop. A
+// scheme or a path says address outright; everything else has to be a host that does not
+// end in the name of a file format. Single letter endings never matched to begin with.
+const ADDRESS = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[:/?#]\S*)?$/i
+const HAS_PATH = /^[a-z][a-z0-9+.-]*:\/\/|[/?#]/i
+const A_FILE = /\.(?:md|txt|html?|jsx?|tsx?|json|ya?ml|css|scss|less|png|jpe?g|gif|svg|webp|pdf|zip|csv|xml|py|rb|go|rs|swift|java|kt|php|cpp|hpp|toml|lock|log|sh|bash|zsh|sql|env|ini|conf|cfg|plist|xcodeproj|docx?|xlsx?|pptx?|mp4|mov|wav|mp3|webm)$/i
+const isAddress = t => !!t && ADDRESS.test(t) && (HAS_PATH.test(t) || !A_FILE.test(t))
+function barText(said, captured) {
+  const t = String(said == null || said === '' ? (captured && captured.title) || '' : said).trim().slice(0, 80)
+  return { title: t, address: isAddress(t) }
+}
+
+// How tall a shell's top bezel is, as a share of the screen's own width. The whole of
+// what this round changed about the shape of a drawn frame.
+//
+// An even bezel where the capture has chrome of its own: the shell is then a frame round
+// a window that already has a title bar, rather than a second window round the first.
+// A window's bar where a browser has no address to show, because a browser's bar is
+// taller than a window's for exactly one reason, which is that an address field stands
+// in it. With no field there is no toolbar, only a title bar.
+function barShare(kind, address, own) {
+  const d = DEVICES[kind]
+  if (kind !== 'browser' && kind !== 'window') return d.bar
+  if (own) return d.side
+  return kind === 'browser' && !address ? DEVICES.window.bar : d.bar
+}
+
 /**
  * Where a drawn device sits, in output pixels, or null when the look asks for none.
  *   D       the look's device section
@@ -182,17 +249,21 @@ const SHELL = {
  *           Look.warnings says so in the same case.
  *   g       the layout's geometry, gut the take's corner floor, end the ground's own end
  *   bg      the ground, for the shell's own tone
+ *   cap     { viewport, captured, crop }: what the capture was of and what is left of it
  */
-function devicePlan(D = {}, chrome, g, corner, end, bg = {}, viewport = null) {
-  const kind = DEVICES[D.kind] ? D.kind : (chrome === 'clean' && viewport ? 'browser' : null)
+function devicePlan(D = {}, chrome, g, corner, end, bg = {}, cap = {}) {
+  const kind = DEVICES[D.kind] ? D.kind : (chrome === 'clean' && cap.viewport ? 'browser' : null)
   if (!kind) return null
   const d = DEVICES[kind]
   const a = g.vidW / g.vidH
   const base = d.base || 0
+  const own = ownChrome(cap.captured, cap.crop)
+  const text = barText(D.title, cap.captured)
+  const bar = barShare(kind, text.address, own)
   // the largest screen of the take's own shape that leaves room for the shell round it
-  const sw = Math.min(g.vidW / (1 + 2 * d.side), g.vidH / (1 / a + d.bar + d.foot + base))
-  return { ...shellAt(kind, sw, a, g.ox + g.vidW / 2, g.oy + g.vidH / 2, corner),
-    ...shellTone(D, end, bg), title: String(D.title || '').slice(0, 80) }
+  const sw = Math.min(g.vidW / (1 + 2 * d.side), g.vidH / (1 / a + bar + d.foot + base))
+  return { ...shellAt(kind, sw, a, g.ox + g.vidW / 2, g.oy + g.vidH / 2, corner, bar),
+    ...shellTone(D, end, bg), ...text, own }
 }
 
 /**
@@ -201,14 +272,14 @@ function devicePlan(D = {}, chrome, g, corner, end, bg = {}, viewport = null) {
  * the layout and one capture standing beside another in a group are the same shape
  * solved from a different width rather than two shapes that have to be kept in step.
  */
-function shellAt(kind, sw, a, cx, cy, corner) {
+function shellAt(kind, sw, a, cx, cy, corner, bar = DEVICES[kind].bar) {
   const d = DEVICES[kind]
   const base = d.base || 0
   const sh = sw / a
-  const boxW = sw * (1 + 2 * d.side), boxH = sh + sw * (d.bar + d.foot)
+  const boxW = sw * (1 + 2 * d.side), boxH = sh + sw * (bar + d.foot)
   const box = { x: Math.round(cx - boxW / 2), y: Math.round(cy - (boxH + sw * base) / 2), w: Math.round(boxW), h: Math.round(boxH), r: sw * d.r }
   const screen = {
-    x: Math.round(box.x + sw * d.side), y: Math.round(box.y + sw * d.bar),
+    x: Math.round(box.x + sw * d.side), y: Math.round(box.y + sw * bar),
     w: 2 * Math.round(sw / 2), h: 2 * Math.round(sh / 2),
     // never tighter than the window's own rounded corner, or its black corner shows
     r: Math.max(corner, sw * d.sr),
@@ -218,11 +289,11 @@ function shellAt(kind, sw, a, cx, cy, corner) {
     r: sw * base * 0.35, taper: sw * base * 0.5,
   } : null
   // a phone's speaker, the one detail on it: a slit in the top bezel, centred
-  const slit = kind === 'phone' ? { w: sw * 0.10, h: Math.max(2, sw * 0.006), y: box.y + sw * d.bar * 0.42 } : null
+  const slit = kind === 'phone' ? { w: sw * 0.10, h: Math.max(2, sw * 0.006), y: box.y + sw * bar * 0.42 } : null
   const pad = Math.ceil(sw * 0.02)
   const x0 = Math.min(box.x, foot ? foot.x : box.x) - pad, y0 = box.y - pad
   const x1 = Math.max(box.x + box.w, foot ? foot.x + foot.w : 0) + pad, y1 = (foot ? foot.y + foot.h : box.y + box.h) + pad
-  return { kind, box, screen, foot, slit, bar: sw * d.bar, unit: sw,
+  return { kind, box, screen, foot, slit, bar: sw * bar, unit: sw,
     extent: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } }
 }
 
@@ -241,11 +312,12 @@ function shellTone(D = {}, end, bg = {}) {
 
 // The room that shell needs, and where its centre sits inside it, with no placement at
 // all: what a group has to know about a member before it knows where the member goes.
-function shellExtent(kind, sw, a) {
+function shellExtent(kind, sw, a, bar) {
   const d = DEVICES[kind]
   if (!d) return { w: sw, h: sw / a, cdx: sw / 2, cdy: sw / (2 * a) }
   const base = d.base || 0, over = d.over || 0, pad = sw * 0.02
-  const boxW = sw * (1 + 2 * d.side), boxH = sw / a + sw * (d.bar + d.foot)
+  const b = bar == null ? d.bar : bar
+  const boxW = sw * (1 + 2 * d.side), boxH = sw / a + sw * (b + d.foot)
   const w = (base ? boxW + 2 * sw * over : boxW) + 2 * pad
   return { w, h: boxH + sw * base + 2 * pad, cdx: w / 2, cdy: pad + (boxH + sw * base) / 2 }
 }
@@ -294,7 +366,7 @@ function realMM(m) {
  */
 const GROUP_MAX = 3
 function groupLayout(list, gap, align) {
-  const cells = list.map(m => ({ ...shellExtent(m.kind, m.mm, m.a), sw: m.mm }))
+  const cells = list.map(m => ({ ...shellExtent(m.kind, m.mm, m.a, m.bar), sw: m.mm }))
   const unit = Math.max(...cells.map(c => c.w))
   // clamped so a gap can never fold the group onto one point
   const sp = clamp(num(gap, 0.06), -0.45, 0.6) * unit
@@ -311,10 +383,13 @@ function groupLayout(list, gap, align) {
  * The group as the caller states it, in this module's own words, or null where there is
  * nothing to arrange. A group of one is a take, and goes down the path a take goes down.
  *   opts.group  { gap, align, members } or just the members
- * A member is { src, w, h, scale, ppi, mm, device, title, crop }: its file, its captured
- * pixels, what is known about how big the thing really is, and the frame it wears. The
- * frame is the member's own, because a handset and a browser window in one picture is
- * the case this exists for; where a member does not name one it wears the look's.
+ * A member is { src, w, h, scale, ppi, mm, device, title, captured, crop }: its file, its
+ * captured pixels, what is known about how big the thing really is, what it was a capture
+ * of, and the frame it wears. The frame is the member's own, because a handset and a
+ * browser window in one picture is the case this exists for; where a member does not name
+ * one it wears the look's. So is the chrome question: each member answers it about its own
+ * capture, which is the only way a handset with no title bar can stand beside a window
+ * that has one and both be drawn right.
  */
 function groupSpec(raw, D = {}, radius = 0) {
   const members = (Array.isArray(raw) ? raw : (raw && raw.members) || []).filter(Boolean).slice(0, GROUP_MAX)
@@ -326,8 +401,10 @@ function groupSpec(raw, D = {}, radius = 0) {
     const cw = c ? 2 * Math.floor(w * c.w / 2) : w & ~1, chh = c ? 2 * Math.floor(h * c.h / 2) : h & ~1
     const asked = m.device === undefined || m.device === null ? D.kind : m.device
     const kind = DEVICES[asked] ? asked : null
+    const own = ownChrome(m.captured, c)
+    const text = barText(m.title == null ? D.title : m.title, m.captured)
     const q = { src: m.src || null, w, h, scale: m.scale, ppi: m.ppi, mm: m.mm, kind,
-      title: String(m.title == null ? D.title || '' : m.title).slice(0, 80),
+      ...text, own, bar: kind ? barShare(kind, text.address, own) : null,
       marks: Array.isArray(m.marks) ? m.marks : [],
       crop: { x: c ? Math.min(w - cw, Math.floor(w * c.x) & ~1) : 0, y: c ? Math.min(h - chh, Math.floor(h * c.y) & ~1) : 0, w: cw, h: chh },
       radius }
@@ -356,7 +433,9 @@ function placeGroup(G, gl, g, corner, end, bg) {
     const c = gl.cells[i]
     const cx = Math.round(ox + (c.x + c.cdx) * S), cy = Math.round(oy + (c.y + c.cdy) * S)
     const sw = m.mm * S
-    const shell = m.kind ? { ...shellAt(m.kind, sw, m.a, cx, cy, corner), ...tone, title: m.title } : null
+    const shell = m.kind
+      ? { ...shellAt(m.kind, sw, m.a, cx, cy, corner, m.bar), ...tone, title: m.title, address: m.address, own: m.own }
+      : null
     const w = 2 * Math.round(sw / 2), h = 2 * Math.round(sw / m.a / 2)
     const rect = shell ? shell.screen : { x: Math.round(cx - w / 2), y: Math.round(cy - h / 2), w, h }
     return { src: m.src, device: shell, rect, radius: shell ? shell.screen.r : Math.max(0, m.radius),
@@ -562,11 +641,42 @@ function markList(marks, fitted) {
   return (marks || []).filter(Boolean).map(m => byKey.get(markKey(m)) || m)
 }
 
+// ── room for the type ───────────────────────────────────────────────────
+//
+// The same clamp backdropGeometry applies to the padding, because the type's room is
+// taken out of the very box that fitted the take, and a second opinion about the margin
+// would put the block and the picture in two different frames.
+const INSET = opts => Math.min(0.22, Math.max(0.02, opts.inset ?? 0.08))
+/**
+ * The take refitted into what the type left it. room is { top, bottom, left, right } in
+ * output pixels, off text.stillRoom.
+ *
+ * The room comes out of the slack first: a wide window in a 1:1 frame already leaves
+ * half the height empty, and a headline that made such a picture smaller to stand in
+ * room nobody was using would be a worse composition for no reason. Only where the slack
+ * runs out does the picture give ground, and it gives it by scale, so its shape, its
+ * corner and its shadow stay the picture's own.
+ */
+function typeRoom(g, room, inset, band) {
+  if (!room || !(room.top || room.bottom || room.left || room.right)) return g
+  const bottom = band ? Math.max(band, inset) : inset
+  const bx = g.outW * inset + room.left, by = g.outH * inset + room.top
+  const bw = Math.max(2, g.outW * (1 - 2 * inset) - room.left - room.right)
+  const bh = Math.max(2, g.outH * (1 - inset - bottom) - room.top - room.bottom)
+  const k = Math.min(bw / g.vidW, bh / g.vidH, 1)
+  const vidW = Layout.even(g.vidW * k), vidH = Layout.even(g.vidH * k)
+  return { ...g, vidW, vidH,
+    ox: Math.round(bx + (bw - vidW) / 2), oy: Math.round(by + (bh - vidH) / 2),
+    radius: Math.max(6, Math.round(g.radius * k)), blur: Math.max(4, Math.round(g.blur * k)) }
+}
+
 // ── the plan ────────────────────────────────────────────────────────────
 /**
  * The fixed part of a render.
  *   opts  toExportOpts' bag (start, end, cuts, crop, zooms, backdrop, backdropAspect,
- *         inset, radius, shadow, scale, camera, fadeIn, fadeOut, look)
+ *         inset, radius, shadow, scale, camera, fadeIn, fadeOut, look), and on a shot
+ *         `captured`, what take_shot captured: a window, a display or a region, and the
+ *         window's own title. A drawn frame is the only thing that reads it.
  *   meta  { width, height, duration, fps } of the take
  *   ctx   { gutter } the window's own margin (processor.frameGutter), { imageFile }
  *         the image backdrop's file, { fps } to override the output rate, { prepared }
@@ -616,10 +726,45 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const gpx = gl ? Math.max(...G.list.map(m => m.crop.w / m.mm)) : 1
   const boxW = gl ? Math.max(2, Math.round(gl.w * gpx)) : cw
   const boxH = gl ? Math.max(2, Math.round(gl.h * gpx)) : ch
-  const g = framed
+  let g = framed
     ? Layout.backdropGeometry(boxW, boxH, { inset: opts.inset, radius: opts.radius, scale: opts.scale, band,
       outWidth: opts.scale === 720 ? 1280 : 1920, outAspect: aspect })
     : Layout.plainGeometry(cw, ch, { outAspect: aspect, scale: opts.scale })
+
+  // Room for the picture's own type: a headline, its subhead and a caption under the
+  // image (text.js, stillRoom). A screenshot without a line of type on it is a window on
+  // a gradient, and a hero is the thing with the headline; what makes this a layout
+  // question rather than another pass is that the type does not go over the picture. It
+  // stands beside it or over the ground, and the take is refitted into what is left.
+  //
+  // Only where the look puts something behind the take. A take that fills the output has
+  // no ground for type to stand on, so a headline there would have to lie on the product,
+  // which is the one thing this is for not doing. Same call the reveal makes.
+  //
+  // On the clock, once, and the same list planText reads. Asked of the take's own
+  // seconds here and of the output's there, the two sides disagreed about what a
+  // full-span title was and a card over a trimmed edit vanished out of both.
+  const typo = L('typography')
+  const ctexts = Text.clockTexts(opts.texts, clock)
+  let still = null
+  if (framed) {
+    const g0 = g
+    const roomOf = width => Text.stillRoom(ctexts, { W: g0.outW, H: g0.outH, span,
+      slack: { x: g0.outW * (1 - 2 * INSET(opts)) - g0.vidW }, width,
+      place: typo.headline, size: typo.headlineSize })
+    // The column over the picture is the picture's own width, and the picture's width is
+    // what the type left it: each is the other's answer. Measured once against the box
+    // the take started in, the take refitted, then measured again against the width it
+    // actually came out at, which is as far as this is worth taking. The refit is always
+    // from the original geometry, so the picture never gives ground twice for one block.
+    still = roomOf(g0.vidW)
+    if (still) {
+      const once = typeRoom(g0, still.room, INSET(opts), band)
+      const again = once.vidW < g0.vidW ? roomOf(once.vidW) : null
+      still = again || still
+      g = again ? typeRoom(g0, again.room, INSET(opts), band) : once
+    }
+  }
 
   // never tighter than the window's own rounded corner, or its black corner shows
   const gut = framed && ctx.gutter ? ctx.gutter : null
@@ -712,7 +857,10 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const end0 = edgeEnd(bg)
   // the screen's corner is the device's own, floored at the window's (`corner`) so the
   // take's black corner never shows; frame.radius belongs to a take with no device
-  const device = framed && !gl ? devicePlan(L('device'), L('frame').chrome, g, corner, end0, bg, opts.viewport) : null
+  const device = framed && !gl
+    ? devicePlan(L('device'), L('frame').chrome, g, corner, end0, bg,
+      { viewport: opts.viewport, captured: opts.captured, crop: opts.crop })
+    : null
   // A group has no one device and no one screen: each member carries its own, and what
   // stands in for the take everywhere else (the grade's reach, the caption band, a title
   // card, the keys) is the box the whole set stands in.
@@ -885,7 +1033,7 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   // product) still goes by the screen.
   const capBox = framed ? (device || group ? { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH } : { ...rect }) : null
   const text = Text.planText(opts, { clock, span, W: g.outW, H: g.outH, box: framed ? { ...rect } : null,
-    capBox, prepared: P, zooms: pm.zooms })
+    capBox, prepared: P, zooms: pm.zooms, still, light: !!end0.light })
 
   return {
     W: g.outW, H: g.outH, fps, frames, span, keep, start, end,
@@ -926,7 +1074,7 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     // take is the whole output, so there is nowhere to rise from and dimming the picture
     // instead would be a fade from black, which is motion.fadeIn and the person's call.
     reveal: L('motion').reveal === 'none' || bg.kind === 'none' ? null : { in: REVEAL_IN, out: REVEAL_OUT },
-    text: text.phrases.length || text.cards.length || text.labels.length ? text : null,
+    text: text.phrases.length || text.cards.length || text.labels.length || text.still ? text : null,
     // The keys as they were pressed, over the finished frame rather than on the take, so
     // a zoom neither carries nor scales them (marks.js planKeys). Laid out against the
     // same box the captions are, so the two never land on each other.

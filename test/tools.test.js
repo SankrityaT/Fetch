@@ -224,32 +224,149 @@ async function main() {
   })
 
   t('the rubric run on a still raises nothing the tool surface has not accounted for', () => {
-    // review works on a shot by running the same rubric on the take of one frame it
-    // is. One rule there is about a clock and is named under not_judged instead of
-    // reported; the risk is a rule nobody has classified yet, which would reach an
-    // agent as a finding about a screenshot that cannot mean anything. This is what
-    // notices that.
+    // review routes on the document: a shot says what it is and ui/review.js judges it
+    // as a picture. Two risks, and this is both directions of the one invariant. A rule
+    // about a clock reported as a failure would tell an agent a screenshot is twenty six
+    // seconds short. A rule about the picture that named a tool this server does not
+    // register would be advice nobody can take.
     const Shot = require('../ui/shot')
     const Review = require('../ui/review')
     const shot = Shot.normalize({ marks: [{ kind: 'lift', x: 0.2, y: 0.2, w: 0.3, h: 0.1 }],
-      look: { background: { kind: 'solid', color: '#101010' } } }, '/tmp/shot.png', { w: 2720, h: 1560 })
-    const spec = Shot.toRenderSpec(shot)
-    const doc = { ...spec, dur: Shot.SPAN, clips: [{ id: 'C1', start: 0, end: Shot.SPAN }], beats: [] }
-    const r = Review.review({ doc, path: '/tmp/shot.png', silent: true, beats: [], looks: [],
-      width: shot.w, height: shot.h,
-      brief: { seconds: 30, aspect: '16:9', must_hide: ['the email address'] } })
-    // about the picture, so they are reported; about the clock, so it is not
-    const PICTURE = ['no-brief', 'redactions', 'aspect', 'focus-clash', 'ground', 'never-drawn', 'spans-a-cut']
-    const CLOCK = ['length']
+      look: { background: { kind: 'solid', color: '#101010' }, device: { kind: 'browser' } } },
+    '/tmp/shot.png', { w: 2720, h: 1560 })
+    const r = Review.review({ doc: shot, path: '/tmp/shot.png', looks: [],
+      brief: { what: 'a help centre hero', seconds: 30, aspect: '16:9', must_hide: ['the email address'] } })
+    assert.strictEqual(r.measured.kind, 'shot', 'a shot went down the edit rubric, which passes every rule on one frame')
+    const CLOCK = new Set(Review.NOT_ABOUT_A_PICTURE.map(([rule]) => rule))
     for (const i of r.items) {
-      assert.ok(PICTURE.includes(i.rule) || CLOCK.includes(i.rule),
-        `the rubric raised ${i.rule} on a still and ui/agent-bridge.js has not decided whether it means anything`)
+      assert.ok(!CLOCK.has(i.rule), `the rubric reported ${i.rule} on a still, and it is about a clock`)
     }
-    assert.ok(r.items.some(i => i.rule === 'redactions'), 'a brief naming something to hide and nothing hiding it is not reported')
-    assert.ok(r.items.some(i => CLOCK.includes(i.rule)), 'nothing about the clock fired, so dropping it proves nothing')
+    // and the other way: every one of them is named, so the promise the tool description
+    // makes about not_judged is kept in the letter and not only in the spirit
+    const named = new Set((r.not_judged || []).map(x => x.rule))
+    for (const rule of CLOCK) assert.ok(named.has(rule), `${rule} is not named under not_judged`)
+    for (const x of r.not_judged || []) assert.ok(x.why && x.why.length > 10, `${x.rule} is dropped without a reason`)
+
+    // Every fix is a call an agent here can make. This is the check that catches a
+    // rubric growing advice the tool surface cannot carry out.
+    const fixes = r.items.flatMap(i => [i.fix, ...(i.choices || []).map(c => c.fix)]).filter(Boolean)
+    assert.ok(fixes.length >= 3, `${fixes.length} fixes on a picture with a brief, a lift and a drawn frame`)
+    for (const f of fixes) {
+      assert.ok(registered.includes(f.tool), `a still finding says to call ${f.tool}, which this server does not register`)
+      assert.ok(f.args && f.args.path, `a ${f.tool} fix on a still carries no path, so it cannot be made as it stands`)
+      assert.ok(f.why && f.why.length > 10, `a ${f.tool} fix on a still says what to do and not why`)
+    }
+
+    // A bare capture on a gradient used to come back "ready, 10", and so did a picture
+    // with two title bars in it. A judge that cannot tell those apart is worse than none.
+    const bare = Shot.normalize({ look: { background: { kind: 'gradient', gradient: 'ink' } } },
+      '/tmp/bare.png', { w: 2720, h: 1560 })
+    const b = Review.review({ doc: bare, path: '/tmp/bare.png', looks: [], brief: { what: 'a hero' } })
+    assert.ok(b.score < 10, `an untouched capture on a ground scores ${b.score}, so the number means nothing`)
+    assert.ok(b.score !== r.score, 'a styled picture and a bare capture score the same')
+  })
+
+  t('a capture dropped in the pane is a subject, not a picture to look at', () => {
+    // The pane sends every image to the model as an image, because it allows Fetch's
+    // tools and nothing that opens a file. A shot is a PNG, so the person's own capture
+    // went that way too: the agent could see it and could not style it, since every tool
+    // that takes a shot takes its path. It now goes both ways.
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-att-'))
+    fs.mkdirSync(path.join(d, 'Original'))
+    fs.mkdirSync(path.join(d, '.fetch'))
+    const capture = path.join(d, 'Original', 'Library.png')
+    const styled = path.join(d, 'Library.png')
+    const theirs = path.join(d, 'a-photo.jpg')
+    const clip = path.join(d, 'take.mov')
+    for (const f of [capture, styled, theirs, clip]) fs.writeFileSync(f, 'x')
+    fs.writeFileSync(path.join(d, '.fetch', 'Library.fetchshot.json'), '{}')
+
+    const a = agentChat.splitAttachments([capture, styled, theirs, clip])
+    assert.deepStrictEqual(a.shots, [capture, styled], 'a capture Fetch made is not offered as a path to work on')
+    assert.ok(a.images.includes(capture) && a.images.includes(theirs), 'a shot stopped going as a picture too')
+    assert.ok(!a.shots.includes(theirs), 'an image Fetch did not make is claimed as a shot')
+    assert.deepStrictEqual(a.others, [clip], 'a recording no longer travels as a path')
+    fs.rmSync(d, { recursive: true, force: true })
+  })
+
+  t('no tool asks a still for a moment it does not have', () => {
+    // Three tools required `at` and their own descriptions said it was ignored on a
+    // shot, so a client that believed the description got an InputValidationError and
+    // a client that did not invented a number. One wasted call each, every time, on
+    // three of the six tools an agent uses most on a capture.
+    for (const name of ['get_frame', 'find_on_screen', 'preview_frame']) {
+      const chunk = SRC.split(`'${name}',`)[1] || ''
+      const head = chunk.slice(0, chunk.indexOf('async args') + 1 || 4000)
+      assert.ok(/at: z\.[\s\S]{0,200}?\.optional\(\)\s*\.describe\(/.test(head),
+        `${name} requires at, and its own description says a shot ignores it`)
+      assert.ok(!/Ignored on a shot/.test(head), `${name} still calls an argument it demands "ignored"`)
+    }
+    const step = (SRC.split("'apply_look',")[1] || '').split('async args')[0]
+    assert.ok(/step: z\.string\(\)\.optional\(\)/.test(step),
+      'apply_look takes no step, so the one change tool that cannot close a plan step is the one a look job starts with')
+    const ex = SRC.split("'export',")[1] || ''
+    assert.ok(/density/.test(ex.slice(0, ex.indexOf('inputSchema'))),
+      'export never says density, so nothing tells a deliverable from a preview')
+    const take = SRC.split("'take_shot',")[1] || ''
+    assert.ok(/r\.preview && r\.preview\.image/.test(take.slice(0, take.indexOf('server.registerTool') + 1 || undefined)),
+      'take_shot hands back no picture of the only artefact it makes')
+  })
+
+  t('a still carries a headline, which is what makes a capture a hero', () => {
+    // The round's largest single fault: "make it a help centre hero" came back as a
+    // window on a gradient, because a hero is the thing with the headline and a shot
+    // refused texts by name. Nine of the ten things that refusal listed are about a
+    // clock and a title is not one of them. This holds the whole path open, from the
+    // sentence a person says to the pixels the compositor sets.
+    const Shot = require('../ui/shot')
+    const Plan = require('../ui/compositor/plan')
     const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
-    const drop = src.slice(src.indexOf('const NOT_ABOUT_A_STILL'), src.indexOf('async function reviewShot'))
-    for (const rule of CLOCK) assert.ok(new RegExp(`\\b${rule}:`).test(drop), `${rule} is not named as a rule a still is not judged by`)
+
+    // the refusal, which is where it was stopped
+    const list = src.slice(src.indexOf('const SHOT_HAS_NO ='), src.indexOf('async function applyToShot'))
+    assert.ok(!/\btexts:/.test(list), 'texts is refused on a shot again, so a still cannot carry a headline')
+    for (const k of ['clips', 'zooms', 'cues', 'pointer']) {
+      assert.ok(new RegExp(`\\b${k}:`).test(list), `${k} is no longer refused on a shot, and one frame has no clock`)
+    }
+
+    // the surface, which is where a model has to find it without being told the names
+    const edit = SRC.split("'apply_edit',")[1] || ''
+    for (const word of ['headline', 'caption', 'callout', 'subtitle', 'hero']) {
+      assert.ok(new RegExp(`\\b${word}\\b`).test(edit), `apply_edit never says ${word}, so nothing leads a model from "a hero" to the argument`)
+    }
+    assert.ok(/texts/.test(edit.split('ON A SHOT')[1] || ''), 'apply_edit\'s shot paragraph does not name texts')
+    assert.ok(/brief.what|what: z\.string/.test(SRC.split("'direct',")[1] || ''),
+      'direct takes no what, so the one field that says what a picture is for cannot be written down')
+
+    // the pixels, which is where it ends: the compositor lays the type out against the
+    // picture rather than against the clock, so a still's text has no times at all
+    const shot = Shot.normalize({ look: { preset: 'studio', frame: { aspect: '16:9' } } },
+      '/tmp/hero.png', { w: 2880, h: 1720 })
+    const line = { id: 'T1', text: 'Find any take in one search', style: 'headline',
+      subtitle: 'Every window you recorded, searchable' }
+    const plan = Plan.prepare({ ...Shot.toExportOpts(shot), texts: [{ ...line, start: 0, end: Shot.SPAN }] },
+      Shot.toMeta(shot), {})
+    const drawn = (plan.text && plan.text.still && plan.text.still.runs) || []
+    assert.ok(drawn.some(r => r.text === line.text), 'the compositor draws no headline on a still')
+    assert.ok(drawn.some(r => r.text === line.subtitle), 'the quieter line under the headline is not drawn')
+    assert.ok(plan.text.still.room.top > 0 || plan.text.still.place !== 'above',
+      'the headline was given no room, so it would lie over the product')
+
+    // and the document in the middle. Either it carries the text through to what the
+    // renderer is handed, or applyToShot says outright that this build dropped it. Both
+    // are honest; only the first makes a hero, and a picture with no words and no word
+    // said about it is the one outcome this check exists to forbid.
+    const carried = Shot.toExportOpts(Shot.mergeShot(shot, { texts: [line] })).texts || []
+    assert.ok(carried.length || /keeps no text on a shot/.test(src),
+      'a shot drops its texts and nothing says so, so a hero comes back as a capture with no words on it')
+
+    // and the one composition that has nowhere to put type says so rather than drawing
+    // none: a look with no ground is the capture edge to edge, and type on that is type
+    // on the product.
+    assert.ok(!Shot.toExportOpts(Shot.normalize({}, '/tmp/flat.png', { w: 100, h: 100 })).backdrop,
+      'the default look now has a ground, so the warning below is aimed at the wrong thing')
+    assert.ok(/no ground for the words to stand on/.test(src),
+      'a headline on a look with no ground is dropped without a word said')
   })
 
   // The answer path, run rather than read. A window the person could have seen, a

@@ -105,10 +105,12 @@ const FIELDS = [
   // ── device ──
   f('device.kind', 'enum', 'none', { options: ['none', 'browser', 'window', 'laptop', 'phone'], label: 'Device',
     doc: 'A drawn frame round the take: generic shapes, never a real product. frame.chrome clean draws the browser one on its own. ' +
-      'A shot of several captures draws one frame each, the capture\'s own or this.',
+      'A shot of several captures draws one frame each, the capture\'s own or this. Round a capture that already has chrome in it ' +
+      'the frame wears a plain bezel, so the picture has one title bar and not two.',
     classic: false }),
-  f('device.title', 'string', '', { label: 'Address',
-    doc: 'The address a browser frame shows, or a window frame\'s title. Fetch records no page address, so an empty one leaves the bar blank.',
+  f('device.title', 'string', '', { label: 'Address or title',
+    doc: 'What the bar says. Anything shaped like a host is drawn as a browser\'s address, anything else as a centred title. ' +
+      'Empty takes the captured window\'s own title; with nothing to say no address field is drawn, since an empty one reads as unfinished.',
     classic: false, when: { 'device.kind': '!none' } }),
   f('device.theme', 'enum', 'auto', { options: ['auto', 'light', 'dark'], label: 'Device tone',
     doc: 'The shell\'s own tone. auto steps in from the ground: graphite on a dark one, bone on a light one. ' +
@@ -224,6 +226,18 @@ const FIELDS = [
 
   // ── typography ──
   f('typography.titleFont', 'string', 'house', { label: 'Title face', doc: 'Face for title cards and lower thirds; house is Fetch\'s own.', undrawn: true }),
+  // The two fields a picture's own type needs. A headline is not a title card: a card is
+  // a handover, it covers the picture and clears, and a still has no handover to spend.
+  // A headline stands beside the picture or over the ground and the picture is refitted
+  // into what is left, which is why where it stands is a look and not a layer's own
+  // placement. The words themselves are a text layer, style headline.
+  f('typography.headline', 'enum', 'auto', { options: ['auto', 'above', 'below', 'left', 'right'], label: 'Headline place',
+    doc: 'Where a text layer of style headline stands. auto puts it beside the picture where the picture\'s own shape leaves ' +
+      'a column and above it where it does not. Never over the picture. Needs a background to stand on.',
+    classic: false }),
+  f('typography.headlineSize', 'number', 0.062, { min: 0.026, max: 0.12, step: 0.002, unit: '%', label: 'Headline size',
+    doc: 'A share of the frame\'s height: 0.062 is 67 px at 1080. Too long for its column, a headline wraps, then steps down.',
+    classic: false }),
 
   // ── focus ──
   f('focus.dim', 'number', 0.5, { min: 0, max: 0.9, step: 0.05, label: 'Spotlight dim', doc: 'How dark the frame goes round a spotlight.', classic: false }),

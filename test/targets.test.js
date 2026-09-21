@@ -245,6 +245,70 @@ console.log('what a lift can raise')
   is('and one moved onto something liftable is not', Bridge.liftable(seen, { id: 'M9', kind: 'lift', start: 1, end: 2, box: by('E66').box }), undefined)
 }
 
+console.log('what a lift can raise on a still of one window')
+{
+  // The library window as take_shot captured it: a grid of song cards, each with its
+  // duration set hard against its own right padding, and the grid scrolled so the last
+  // row runs out of its foot. Asked for "the row that matters", find_on_screen marked
+  // the card the person meant no_lift, saying its content was cut off at its right. It
+  // is not: 0:19 is a label sitting one padding in. The rule was reading the gap as a
+  // share of the frame, so a card, which is a fifth of a still of one window, had to
+  // hold its own label 17 px clear of itself to count as whole.
+  const r4 = n => Math.round(n * 10000) / 10000
+  // the window's own layout, in the window's own pixels
+  const lay = [
+    ['E60', 'grid', 'Jump back in', [680, 300, 2140, 1360], null],
+    ['E69', 'card', 'Someone Like You (in G) 0:19', [680, 700, 1040, 172], 'E60'],
+    ['E70', 'text', 'Someone Like You (in G)', [736, 740, 560, 34], 'E69'],
+    ['E71', 'text', '0:19', [1620, 748, 84, 24], 'E69'],          // right-aligned, 16 px in
+    ['E72', 'card', 'Nocturne in E flat major, Op', [1780, 700, 1040, 172], 'E60'],
+    ['E73', 'text', 'Nocturne in E flat', [1836, 740, 500, 34], 'E72'],
+    ['E74', 'text', 'major, Op', [2360, 740, 470, 34], 'E72'],     // and the rest of it cut off
+    ['E76', 'card', 'Clair de lune', [680, 1600, 1040, 172], 'E60'],
+    ['E77', 'text', 'Clair de lune', [736, 1650, 560, 34], 'E76'],  // runs out of the grid's foot
+  ]
+  // the same window in two frames: the still, where the frame is the window itself, and
+  // a recording of a whole screen with the window sitting inside it
+  const frame = (fw, fh, ox, oy) => lay.map(([id, kind, text, [x, y, w, h], within]) => ({
+    id, kind, text, in: within,
+    box: { x: r4((ox + x) / fw), y: r4((oy + y) / fh), w: r4(w / fw), h: r4(h / fh) },
+  }))
+  const shot = frame(2880, 1720, 0, 0)
+  const screen = frame(3840, 2160, 480, 220)
+  const by = (list, id) => list.find(e => e.id === id)
+
+  is('a duration held one padding in is a label, not a cut', T.cutEdges(by(shot, 'E69'), shot), [])
+  is('so the card the person meant is lifted', T.liftBlock(by(shot, 'E69'), shot), null)
+  is('a title the card really does cut off still says so', T.cutEdges(by(shot, 'E72'), shot), ['right'])
+  is('and that card is still refused', !!T.liftBlock(by(shot, 'E72'), shot), true)
+  // the answer is about the card and its type, so where the window sits is not part of it
+  is('the same card in a frame of the whole screen answers the same', [
+    T.cutEdges(by(screen, 'E69'), screen), T.cutEdges(by(screen, 'E72'), screen)], [[], ['right']])
+
+  const grid = T.liftBlock(by(shot, 'E60'), shot)
+  is('the scrolled grid is still refused, for its edge and for its foot',
+    /right edge of the frame/.test(grid.why) && /cut off at its right and bottom/.test(grid.why), true)
+  is('and the whole card is what it offers to lift', grid.instead.id, 'E69')
+  is('one card does not stand for a grid of them, so it is offered as an example', grid.share < 0.2, true)
+
+  const Bridge = require('../ui/agent-bridge')
+  const seen = { at: 0, all: shot, boxes: new Map(shot.map(e => [e.id, e.box])) }
+  const lift = { kind: 'lift', start: 0, end: 0 }
+  is('apply_edit lifts it', Bridge.liftable(seen, { ...lift, element: 'E69' }), undefined)
+  let err = null
+  try { Bridge.liftable(seen, { ...lift, element: 'E60' }) } catch (e) { err = e.message }
+  is('and refuses the grid by name, naming the card', /Not lifting E60/.test(err || '') && /E69/.test(err || ''), true)
+
+  // the handset crop whose own text runs off its right edge: the refusal that is right
+  const phone = [
+    { id: 'E1', kind: 'panel', text: 'Recently played 131', box: { x: 0, y: 0, w: 1, h: 1 } },
+    { id: 'E5', kind: 'text', text: 'Recently played 131', in: 'E1', box: { x: 0.7, y: 0.1744, w: 0.3, h: 0.0151 } },
+    { id: 'E6', kind: 'text', text: 'All 300', in: 'E1', box: { x: 0.75, y: 0.3488, w: 0.23, h: 0.014 } },
+  ]
+  is('a portrait capture cut off at its right is still refused', T.cutEdges(phone[0], phone), ['right'])
+  is('and a label 16 px inside that same edge is not the reason', T.cutEdges({ ...phone[0] }, [phone[0], phone[2]]), [])
+}
+
 console.log('when to look at what an edit placed')
 {
   const Bridge = require('../ui/agent-bridge')

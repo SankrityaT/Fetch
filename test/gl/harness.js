@@ -38,6 +38,14 @@
 //              golden, the same plan at 1x, 2x and 3x, the gold keyline and the
 //              capture's own text at each of them, a redaction that still destroys at
 //              3x, and the file that comes out
+//   type       the type a finished picture carries: a headline, a subhead, a caption
+//              under the image, a label pinned in the picture and a callout that points
+//              at one, each against its golden, and the rule under all of them, that the
+//              type stands clear of the product and the picture gives up exactly the
+//              room the type took
+//   chrome     the frame round a capture that already has one: a capture with its own
+//              chrome framed, the same one with that chrome cropped off, and a drawn
+//              bar with an address in it and one with nothing to put there
 //   group      more than one capture in one picture: two devices, three, and a group
 //              where one capture has forty times the pixels of the other, each at its
 //              real size in millimetres, on one line, under one light, under one grade,
@@ -238,6 +246,29 @@ function shotFixture() {
     '-f', 'lavfi', '-i', `color=c=0xFBFAF8:s=${W}x${H}`, '-vf', f.join(','), '-frames:v', '1', SHOT_SRC])
   if (!fs.existsSync(SHOT_SRC)) throw new Error('could not draw the shot fixture: ' + String(r.stderr || r.error).slice(0, 300))
   return SHOT_SRC
+}
+
+// The same capture with the chrome a window capture actually brings with it: a title bar
+// above the page, three buttons in a flat grey and the window's own name centred on it.
+// Generic by construction, the way every device Fetch draws is. The buttons are square
+// and uncoloured: nothing here is traced from anybody's desktop, and a fixture that was
+// would put trade dress into a golden.
+const CHROME_SRC = path.join(FIX, 'shot-chrome.png')
+const CHROME_BAR = 96
+function chromeFixture() {
+  if (fs.existsSync(CHROME_SRC)) return CHROME_SRC
+  const page = shotFixture()
+  const B = CHROME_BAR
+  const f = [`pad=iw:ih+${B}:0:${B}:color=0xEDE8E1`,
+    `drawbox=x=0:y=${B - 2}:w=iw:h=2:color=0xD8D1C7:t=fill`]
+  for (let i = 0; i < 3; i++) {
+    f.push(`drawbox=x=${40 + i * 44}:y=${Math.round(B / 2) - 9}:w=18:h=18:color=0xB6AEA4:t=fill`)
+  }
+  f.push(`drawtext=text='Songscription Library':x=(w-text_w)/2:y=${Math.round(B / 2) - 17}:fontsize=32:fontcolor=0x6E655C`)
+  const r = spawnSync('/opt/homebrew/bin/ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+    '-i', page, '-vf', f.join(','), '-frames:v', '1', CHROME_SRC])
+  if (!fs.existsSync(CHROME_SRC)) throw new Error('could not draw the chrome fixture: ' + String(r.stderr || r.error).slice(0, 300))
+  return CHROME_SRC
 }
 
 // ---- a group ---------------------------------------------------------------
@@ -587,6 +618,12 @@ app.whenReady().then(async () => {
       // being looked at is the shell, its two hairlines, the take inside the hole and
       // the shadow coming off the shell rather than off the screen.
       'device-browser': { opts: { backdrop: 'ink', inset: 0.07, look: { ...look, device: { kind: 'browser', title: 'songscription.app' } } }, n: 150 },
+      // A browser frame with nothing to put in its address field. It is the same rule as
+      // the still's and it is not a flag for stills: a browser's bar is taller than a
+      // window's for exactly one reason, which is the field standing in it, so with no
+      // field there is no toolbar and what is left is a title bar. Every other browser
+      // golden here carries a host-shaped title, which is how this escaped them.
+      'device-browser-bare': { opts: { backdrop: 'ink', inset: 0.07, look: { ...look, device: { kind: 'browser' } } }, n: 150 },
       'device-window': { opts: { backdrop: 'slate', inset: 0.07, look: { ...look, device: { kind: 'window', title: 'Library' } } }, n: 150 },
       'device-laptop': { opts: { backdrop: 'dusk', inset: 0.07, look: { ...look, device: { kind: 'laptop' } } }, n: 150 },
       'device-phone': { opts: { backdrop: 'mint', inset: 0.07, look: { ...look, device: { kind: 'phone' } } }, n: 150 },
@@ -1191,6 +1228,23 @@ app.whenReady().then(async () => {
       const br = await call('moved', dev({ kind: 'browser' }), [dev({ kind: 'browser', title: 'songscription.app' }), dev({ kind: 'browser', theme: 'light' })])
       is('device.title writes the address into the bar', br[0].max > 8, `max ${br[0].max} LSB`)
       is('device.theme light is another shell', br[1].max > 8, `max ${br[1].max} LSB`)
+      // A recording reaches the no-field rule too, and should: the bar is taller than a
+      // window's because an address field stands in it, and with nothing to put in the
+      // field there is no field and no toolbar. Said in pixels here because every other
+      // browser golden carries a host-shaped title and so could not see it. A window
+      // title is not an address, which is the other half: a filename is the commonest
+      // window title there is and none of them may be drawn in the pill.
+      const devOf = d => Plan.prepare({ start: 0, end: 4, cuts: [], backdrop: 'ink', inset: 0.07,
+        look: { ...look, device: d } }, meta, {}).device
+      const barOf = t => devOf({ kind: 'browser', ...(t == null ? {} : { title: t }) })
+      const bare = barOf(null), host9 = barOf('songscription.app'), win = devOf({ kind: 'window', title: 'Library' })
+      is('a recording\'s browser bar with no address is a title bar, not a toolbar',
+        !bare.address && Math.abs(bare.bar / bare.unit - win.bar / win.unit) < 0.001 && host9.bar > bare.bar,
+        `bare ${Math.round(bare.bar)} px, window ${Math.round(win.bar)} px, with an address ${Math.round(host9.bar)} px`)
+      for (const name of ['README.md', 'notes.txt', 'index.html', 'build.sh']) {
+        is(`a window called ${name} is not drawn as an address`, barOf(name).address === false, 'it was')
+      }
+      is('and a host still is', barOf('songscription.example.com').address === true, 'it was not')
       // frame.chrome clean draws the browser frame only where the real chrome could be
       // cropped off. With no viewport nothing was cropped, so a drawn browser would sit
       // round the real one: it draws nothing, and the frame is the one it always was.
@@ -1374,9 +1428,14 @@ app.whenReady().then(async () => {
           at[k].w === shotSpec.W * k && at[k].h === shotSpec.H * k && at[k].scale === k,
           `${at[k].w}x${at[k].h}, ${(at[k].bytes / 1e6).toFixed(1)} MB, ${at[k].ms} ms`)
       }
+      // native is the capture at one to one: the take's box is rect.w plan pixels wide
+      // and the capture has crop.w to fill it, so that ratio is the multiple, and it is
+      // not rounded down to a named size. A 3420 px capture through this plan wants about
+      // 2.38, and shipping it at 2 throws away a sixth of what was captured for nothing.
+      const want11 = shotSpec.crop.w / shotSpec.rect.w
       const nat = await shot('shot-native.png', {})
-      is('native is the largest of those that does not enlarge the capture',
-        nat.scale === 2 && nat.w === shotSpec.W * 2, `${nat.scale}x, ${nat.w}x${nat.h} from a ${cap.width}x${cap.height} capture`)
+      is('native is the capture at one to one', Math.abs(nat.w / shotSpec.W - want11) < 0.01,
+        `${(nat.w / shotSpec.W).toFixed(3)}x against ${want11.toFixed(3)}, ${nat.w}x${nat.h} from a ${cap.width}x${cap.height} capture`)
 
       // One picture, more pixels. Scaled back down, a bigger still has to be the small
       // one: a second layout, a second look pipeline or anything laid out in output
@@ -1483,15 +1542,291 @@ app.whenReady().then(async () => {
       is('and a member with no file is named by name', /fetch-no-such-capture\.png/.test(missing || ''),
         missing || 'it drew something instead')
 
-      // native is the density of the least dense capture in the set, not the group box's
-      // aggregate, which is the sharpest member's: drawn to that, the small capture is
-      // enlarged while the big one is minified.
+      // native on a group is the sharpest member at one to one, which is the member
+      // somebody will look at closely; the small one beside it was never going to carry
+      // a hairline. Snapped to a named size inside the few percent of minifying nobody
+      // can see (compositor/index.js SHOT_SOFT), and held at 3.
       const odd2 = { ...plainOpts, marks: [],
         group: { gap: 0.06, align: 'stand', members: [member('wall'), member('tiny')] } }
+      const { spec: gSpec } = host.shotPlan(GROUP_PICS.wall.file, odd2)
+      const gWant = Math.min(3, Math.max(...gSpec.group.map(m => m.crop.w / m.rect.w)))
       const gNat = await host.renderShot(GROUP_PICS.wall.file, odd2,
         { scale: 'native', dest: path.join(OUT, 'shot-group-native.png') }, 'gl-test-shot-native')
-      is('native enlarges no capture in a group', gNat.scale <= 2,
-        `${gNat.scale}x, ${gNat.w}x${gNat.h}`)
+      is('native on a group is its sharpest capture at one to one', Math.abs(gNat.scale / gWant - 1) <= 0.05,
+        `${gNat.scale.toFixed(3)}x against ${gWant.toFixed(3)}, ${gNat.w}x${gNat.h}`)
+    }
+
+    if (want('type')) {
+      console.log('a still carries a line of type')
+      // The fault this answers: a still could not carry text, so "make it a help centre
+      // hero" came back as a window on a gradient. A hero is the thing with the headline.
+      //
+      // What a finished picture needs is here, one case each: a headline, a subhead under
+      // it, a caption under the image, a label pinned to a point in the picture and a
+      // callout that points at one. The goldens hold how it is set. The measurements
+      // below hold the one thing that makes this a layout and not another pass over the
+      // frame: the type never lies on the product, and the picture gets out of its way by
+      // exactly the room the type took.
+      const src = shotFixture()
+      const phone = member('hand')
+      // studio, because that ground is a light rather than a palette, so the type has to
+      // read over a warm key in one corner and a deep neutral in the other
+      const tBase = { backdrop: 'studio', inset: 0.07, shadow: 0.6, backdropAspect: 16 / 9,
+        look: { grain: { dither: false }, treatment: { motionBlur: 0.5 } } }
+      const HEAD = 'Find the moment by what was said'
+      const SUB = 'Fetch transcribes on device and keeps every word’s timing, so the timeline is named from the take.'
+      const LONG = 'Record the flow once, find the moment by what was actually said, and ship the clip or the picture from the very same document'
+      const tCase = {
+        // a wide window with the words over it, which is where auto puts them
+        'shot-headline': { src, opts: { ...tBase, texts: [{ text: HEAD, style: 'headline' }] } },
+        // and the same headline with the quieter line under it, and a caption under the
+        // image: the three sizes of a hero's type in one picture
+        'shot-headline-sub': { src, opts: { ...tBase, texts: [
+          { text: HEAD, subtitle: SUB, style: 'headline' },
+          { text: 'The library, a moment after a take lands', style: 'caption' }] } },
+        // a handset leaves a column beside it, so auto puts the words there instead
+        'shot-headline-beside': { src: phone.src, opts: { ...tBase, inset: 0.06,
+          look: { ...tBase.look, device: { kind: 'phone' } },
+          texts: [{ text: 'Every take, named from what was said', style: 'headline' }] } },
+        // long enough that it cannot be set at the size the look asked for: it wraps to
+        // its column, then steps down rather than running past it
+        'shot-headline-wrap': { src, opts: { ...tBase, texts: [{ text: LONG, style: 'headline' }] } },
+        // a label pinned to a point in the picture, in the take's own fractions, which is
+        // where the thing it names is rather than where the canvas happens to be
+        'shot-label': { src, opts: { ...tBase, texts: [
+          { text: 'Tempo', style: 'label', at: { x: 0.72, y: 0.115 } }] } },
+        // and a callout, which says the same and points at it
+        'shot-callout': { src, opts: { ...tBase, texts: [
+          { text: 'Every row carries its key', style: 'callout', at: { x: 0.86, y: 0.42 } }] } },
+      }
+      const drawn = {}
+      for (const [name, c] of Object.entries(tCase)) {
+        drawn[name] = await host.renderShot(c.src, c.opts, { width: 640, dest: path.join(OUT, name + '.png') }, 'gl-test-' + name)
+        const gold = path.join(GOLD, name + '.png')
+        if (update || !fs.existsSync(gold)) { fs.copyFileSync(drawn[name].file, gold); is(`${name} written`, true, `${drawn[name].w}x${drawn[name].h}`) }
+        else {
+          const d = step(rgbOf(drawn[name].file), rgbOf(gold))
+          is(name, d.max <= 2 && d.mean < 0.05, `max ${d.max} LSB, mean ${d.mean}`)
+        }
+      }
+
+      // The type is beside the picture, never on it. Measured on the plan rather than on
+      // the pixels, because this is the claim the layout makes and the pixels are the
+      // consequence: the block's own rectangle and the take's do not meet.
+      const planOf = c => host.shotPlan(c.src, c.opts).spec
+      const blockOf = S => ({ x: S.x, y: S.top, w: S.col,
+        h: S.runs.reduce((h, r) => h + r.lead + r.lineH, 0) })
+      const clear = []
+      for (const [name, c] of Object.entries(tCase)) {
+        const s = planOf(c)
+        if (!s.text || !s.text.still || !s.text.still.runs.length) continue
+        const b = blockOf(s.text.still), r = s.rect
+        const gaps = [r.y - (b.y + b.h), r.x - (b.x + b.w), b.x - (r.x + r.w), b.y - (r.y + r.h)]
+        // apart on any one axis is apart, and the gap worth printing is that one
+        const gap = Math.max(...gaps)
+        const apart = gap >= 0
+        clear.push(`${name.slice(5)} ${apart ? gap + ' px' : 'over'}`)
+        if (!apart) is(`${name}: the headline is clear of the picture`, false, 'the block lies on the take')
+      }
+      is('a headline stands clear of the picture in every shape', clear.length === 4, clear.join(', '))
+
+      // And the room came out of the slack first. A wide window in a 16:9 frame already
+      // leaves air above and below it, and a headline that made the picture smaller to
+      // stand in room nobody was using would be a worse composition for nothing. So what
+      // the picture gives up is the block and its gutter less whatever air was there.
+      const bareSpec = host.shotPlan(src, tBase).spec
+      const headSpec = planOf(tCase['shot-headline'])
+      const S1 = headSpec.text.still
+      const took = blockOf(S1).h + S1.gutter
+      const slackH = headSpec.H * (1 - 2 * 0.07) - bareSpec.rect.h
+      const give = Math.max(0, took - slackH)
+      is('the type takes its room out of the slack first and the picture gives up the rest',
+        Math.abs((bareSpec.rect.h - headSpec.rect.h) - give) <= 4,
+        `${bareSpec.rect.h - headSpec.rect.h} px of picture for ${took} px of type, over ${Math.round(slackH)} px of air`)
+      is('and the ground behind it did not move', bareSpec.W === headSpec.W && bareSpec.H === headSpec.H,
+        `${headSpec.W}x${headSpec.H}`)
+
+      // A headline too long for its column wraps, and then steps down a size rather than
+      // running past it. Both have to happen: wrapping alone gives a wall of display type
+      // and stepping down alone gives one long thin line.
+      const wrapS = planOf(tCase['shot-headline-wrap']).text.still
+      is('a headline too long for its column wraps and steps down',
+        wrapS.runs.length > 1 && wrapS.runs[0].px < S1.runs[0].px &&
+        wrapS.runs.every(r => r.text.length <= Math.ceil(wrapS.col / (r.px * 0.56))),
+        `${wrapS.runs.length} lines at ${wrapS.runs[0].px} px against ${S1.runs[0].px} px on one`)
+      // and it keeps stepping down rather than taking a fourth line or being cut off at
+      // the room's edge, however long it is
+      const silly = planOf({ src, opts: { ...tBase, texts: [{ style: 'headline',
+        text: LONG + ' without ever opening another editor or leaving the window you were already working in' }] } }).text.still
+      is('and it keeps stepping down however long it is',
+        silly.runs.length <= 3 && silly.runs[0].px < wrapS.runs[0].px,
+        `${silly.runs.length} lines at ${silly.runs[0].px} px`)
+
+      // Beside rather than above, on a shape that leaves a column, with nobody having
+      // said which. The picture keeps its height there: a handset in a 16:9 frame was
+      // never going to use the width, and the words take what it left.
+      const sideS = planOf(tCase['shot-headline-beside']).text.still
+      is('a picture that leaves a column gets its headline beside it', sideS.place === 'left',
+        `${sideS.place}, a ${sideS.col} px column`)
+
+      // What is pinned lands on the point it names. The picture under the label is not
+      // the picture without it, in a box round that point and nowhere else on that row.
+      const onPoint = async (name, at, expect) => {
+        const c = tCase[name], s = planOf(c)
+        const bare = await host.renderShot(c.src, { ...c.opts, texts: [] },
+          { width: 640, dest: path.join(OUT, name + '-bare.png') }, 'gl-test-' + name + '-bare')
+        const k = drawn[name].w / s.W, W = drawn[name].w
+        const px = Math.round((s.rect.x + s.rect.w * at.x) * k), py = Math.round((s.rect.y + s.rect.h * at.y) * k)
+        const a = rgbOf(drawn[name].file), b = rgbOf(bare.file)
+        const moved = (cx, cy, r) => {
+          let d = 0, n = 0
+          for (let y = cy - r; y <= cy + r; y++) for (let x = cx - r; x <= cx + r; x++) {
+            d += Math.abs(lumaAt(a, W, x, y) - lumaAt(b, W, x, y)); n++
+          }
+          return d / Math.max(1, n)
+        }
+        const here = moved(px, py, 4), away = moved(Math.round(s.rect.x * k + 12), py, 4)
+        is(expect, here > 4 && away < 1, `${here.toFixed(1)} levels on the point, ${away.toFixed(1)} across the row`)
+      }
+      await onPoint('shot-label', { x: 0.72, y: 0.115 }, 'a pinned label sits on the point it names')
+      await onPoint('shot-callout', { x: 0.86, y: 0.42 }, 'and a callout points at one')
+
+      // Type is drawn at the size, not enlarged into it: the same plan at 1x and at 3x,
+      // read across the headline's own glyphs. The edge stays about a pixel at both, and
+      // the bigger one carries at least the contrast the smaller one does.
+      const hs = { }
+      for (const k of [1, 3]) {
+        hs[k] = await host.renderShot(src, tCase['shot-headline'].opts,
+          { scale: k, dest: path.join(OUT, `shot-headline-${k}x.png`) }, 'gl-test-headline-' + k)
+      }
+      const band = k => ({ x: Math.round(S1.x * k), y: Math.round(S1.top * k),
+        w: Math.round(S1.col * k), h: Math.round(S1.runs[0].lineH * k) })
+      const hr = { 1: stepRuns(rgbOf(hs[1].file), hs[1].w, band(1)), 3: stepRuns(rgbOf(hs[3].file), hs[3].w, band(3)) }
+      is('the headline is drawn at the size rather than enlarged into it',
+        hr[1].rise <= 2 && hr[3].rise <= 2 && hr[3].contrast >= hr[1].contrast - 2 && hr[1].n > 20,
+        `1x rises in ${hr[1].rise} px over ${hr[1].n} edges, 3x in ${hr[3].rise} over ${hr[3].n}`)
+    }
+
+    if (want('chrome')) {
+      console.log('one title bar, and a real address')
+      // The fault this answers: a browser frame drawn round a capture that already had
+      // chrome in it gave the picture two title bars and a blank address under the real
+      // one. Two halves, and the cases below are one each.
+      //
+      // Knowing. What the capture was of settles it, and only a shot knows: a window
+      // capture brings its own title bar, a region capture brings none. Where the page's
+      // place is known the chrome comes off exactly, which is the document's crop; where
+      // it is not, the second bar is simply not drawn and the shell wears a plain bezel.
+      //
+      // Saying. An address field with nothing in it reads as a mockup somebody left
+      // unfinished, so the field is drawn only where there is an address for it, and the
+      // bar that held it falls back to a title bar's height.
+      const withChrome = chromeFixture(), noChrome = shotFixture()
+      const WIN = { kind: 'window', app: 'Songscription', title: 'Songscription Library' }
+      const cBase = { backdrop: 'ink', inset: 0.07, shadow: 0.6, backdropAspect: 16 / 9,
+        look: { grain: { dither: false }, treatment: { motionBlur: 0.5 }, frame: { border: 0 } } }
+      const browser = (title, kind = 'browser') => ({ ...cBase,
+        look: { ...cBase.look, device: { kind, ...(title == null ? {} : { title }) } } })
+      // the capture's own bar as a fraction of it, which is what a crop takes off
+      const BAR_F = CHROME_BAR / (1780 + CHROME_BAR)
+      const CUT = { x: 0, y: BAR_F, w: 1, h: 1 - BAR_F }
+      const cCase = {
+        // a capture that already has chrome in it, framed
+        'shot-chrome-own': { src: withChrome, opts: { ...browser(), captured: WIN } },
+        // the same capture with its own bar cropped away: there is one chrome to draw
+        // now, and the window's own title is what goes in it
+        'shot-chrome-cropped': { src: withChrome, opts: { ...browser(), captured: WIN, crop: CUT } },
+        // a capture with no chrome of its own, framed, with an address to show
+        'shot-bar-address': { src: noChrome, opts: { ...browser('songscription.example'), captured: { kind: 'region' } } },
+        // and the same frame with nothing at all to put in the field
+        'shot-bar-blank': { src: noChrome, opts: { ...browser(), captured: { kind: 'region' } } },
+      }
+      const cDrawn = {}
+      for (const [name, c] of Object.entries(cCase)) {
+        cDrawn[name] = await host.renderShot(c.src, c.opts, { width: 640, dest: path.join(OUT, name + '.png') }, 'gl-test-' + name)
+        const gold = path.join(GOLD, name + '.png')
+        if (update || !fs.existsSync(gold)) { fs.copyFileSync(cDrawn[name].file, gold); is(`${name} written`, true, `${cDrawn[name].w}x${cDrawn[name].h}`) }
+        else {
+          const d = step(rgbOf(cDrawn[name].file), rgbOf(gold))
+          is(name, d.max <= 2 && d.mean < 0.05, `max ${d.max} LSB, mean ${d.mean}`)
+        }
+      }
+
+      const cPlan = c => host.shotPlan(c.src, c.opts).spec
+      const topOf = d => d.screen.y - d.box.y, sideOf = d => d.screen.x - d.box.x
+      const own = cPlan(cCase['shot-chrome-own']).device
+      const cut = cPlan(cCase['shot-chrome-cropped']).device
+      // One title bar. Round a capture that has its own the shell's top is the same
+      // bezel as its sides, which is the whole of "do not draw a second one": there is
+      // no bar, so there is nothing on it to be a second of.
+      is('a capture that already has chrome is framed in a plain bezel and not a second bar',
+        Math.abs(topOf(own) - sideOf(own)) <= 1 && topOf(cut) > sideOf(cut) * 3,
+        `own ${topOf(own)} px over ${sideOf(own)} px of side, cropped ${topOf(cut)} px over ${sideOf(cut)}`)
+      // and the picture is bigger for the bar it did not draw, rather than the same
+      // picture with an empty strip over it
+      const asBefore = host.shotPlan(withChrome, browser()).spec.device
+      is('and the capture is drawn larger for the bar that is not there',
+        own.screen.h > asBefore.screen.h, `${own.screen.h} px against ${asBefore.screen.h}`)
+
+      // The pixels say the same. A bar is a face a shade off the shell with buttons and
+      // a title on it, so the middle of the top bezel reads differently from the middle
+      // of the side bezel wherever there is one. Where the capture keeps its own chrome
+      // the two are one tone, which is what a bezel is. Read away from the shell's own
+      // hairline and its top sheen, which are the frame's edge and belong to every side.
+      const bezelTone = async (name, c) => {
+        const spec = cPlan(c)
+        const r = await host.renderShot(c.src, c.opts, { width: 1440, dest: path.join(OUT, name + '-wide.png') }, 'gl-test-' + name + '-wide')
+        const px = rgbOf(r.file), k = r.w / spec.W, B = spec.device.box, S = spec.device.screen
+        const top = S.y - B.y, side = S.x - B.x
+        const mean = (x0, y0, x1, y1) => {
+          let s = 0, n = 0
+          for (let y = Math.round(y0 * k); y < Math.max(Math.round(y0 * k) + 1, Math.round(y1 * k)); y++) {
+            for (let x = Math.round(x0 * k); x < Math.max(Math.round(x0 * k) + 1, Math.round(x1 * k)); x++) { s += lumaAt(px, r.w, x, y); n++ }
+          }
+          return n ? s / n : 0
+        }
+        return {
+          face: Math.round(mean(B.x + B.w * 0.06, B.y + top * 0.35, B.x + B.w * 0.94, B.y + top * 0.75)),
+          shell: Math.round(mean(B.x + side * 0.35, S.y + S.h * 0.3, B.x + side * 0.75, S.y + S.h * 0.7)),
+        }
+      }
+      const bOwn = await bezelTone('shot-chrome-own', cCase['shot-chrome-own'])
+      const bCut = await bezelTone('shot-chrome-cropped', cCase['shot-chrome-cropped'])
+      is('so the drawn frame puts nothing above the capture\'s own bar',
+        Math.abs(bOwn.face - bOwn.shell) <= 2 && Math.abs(bCut.face - bCut.shell) >= 5,
+        `own ${bOwn.face} against ${bOwn.shell} at the side, cropped ${bCut.face} against ${bCut.shell}`)
+
+      // The address. A browser frame with nothing to say draws no field at all, and what
+      // is left is exactly a window's title bar: the same picture, byte for byte, which
+      // is the strongest way to say no empty field is drawn.
+      const asWindow = await host.renderShot(noChrome, { ...browser(null, 'window'), captured: { kind: 'region' } },
+        { width: 640, dest: path.join(OUT, 'shot-bar-window.png') }, 'gl-test-bar-window')
+      const dWin = step(rgbOf(cDrawn['shot-bar-blank'].file), rgbOf(asWindow.file))
+      is('a browser frame with no address draws no field: what is left is a title bar',
+        dWin.max === 0, `max ${dWin.max} LSB`)
+      // and an address gets a field, and the room for one
+      const addr = cPlan(cCase['shot-bar-address']).device, blank = cPlan(cCase['shot-bar-blank']).device
+      const dAddr = step(rgbOf(cDrawn['shot-bar-address'].file), rgbOf(cDrawn['shot-bar-blank'].file))
+      is('an address gets a field, and the bar the height a field needs',
+        addr.address && !blank.address && topOf(addr) > topOf(blank) * 1.3 && dAddr.max > 8,
+        `${topOf(addr)} px of bar against ${topOf(blank)}, max ${dAddr.max} LSB apart`)
+      // A window title is not an address and is never set as one: it is centred the way
+      // a window's own is. This is the case a person reaches by cropping the capture's
+      // bar off and keeping the drawn frame, and the title moves from one into the other.
+      const noTitle = await host.renderShot(withChrome, { ...browser(), crop: CUT },
+        { width: 640, dest: path.join(OUT, 'shot-chrome-untitled.png') }, 'gl-test-chrome-untitled')
+      const dTitle = step(rgbOf(cDrawn['shot-chrome-cropped'].file), rgbOf(noTitle.file))
+      is('the captured window\'s own title fills the drawn bar, as a title and not as an address',
+        cut.title === WIN.title && cut.address === false && dTitle.max > 8,
+        `"${cut.title}", max ${dTitle.max} LSB against the same frame told nothing`)
+
+      // And the branch a recording can never take. A take says nothing about what it
+      // captured, so it is framed exactly as it always was: the full browser bar, which
+      // is the share DEVICES names and no other number.
+      const asAlways = host.shotPlan(noChrome, browser('fetch.app')).spec.device
+      is('a take that says nothing about what it captured is framed as it always was',
+        asAlways.own === false && asAlways.address === true && Math.abs(topOf(asAlways) / asAlways.unit - 0.070) < 0.003,
+        `bar ${(topOf(asAlways) / asAlways.unit).toFixed(3)} of the screen's own width`)
     }
 
     if (want('group')) {

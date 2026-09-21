@@ -25,6 +25,18 @@ const BROWSER_SUFFIX = /\s*[-\u2013\u2014|·\u22C5]\s*(google chrome( for testin
 // separator this app uses everywhere a name has two parts.
 const ILLEGAL = /[\/\\:*?"<>|\x00-\x1f]/g
 
+// A window title is somebody else's text and can hold anything. These are the runs
+// that are invisible on screen but not in a filename: the bidi overrides, which make a
+// name read in an order it is not written in, and the zero-width joiners a title can
+// pick up from an emoji. They are dropped rather than replaced, since there is nothing
+// there to stand in for.
+const INVISIBLE = /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g
+
+// A leading dot makes a hidden file, and a take folder the Library's own scan walks
+// straight past, so a title that opens with one ("..", ".env") does not get to name
+// the thing it captured.
+const unhidden = s => s.replace(/^[.\s]+/, '')
+
 // A browser puts the tab's state into the window title ("Video - YouTube 🔊", "Meet 🔴",
 // "Tab - Audio playing"). It says what the tab is doing, not what it is, and left in, it
 // became part of the product ("YouTube 🔊").
@@ -39,6 +51,7 @@ function bareTitle(s) {
 
 function clean(s) {
   return bareTitle(s)
+    .replace(INVISIBLE, '')
     .replace(ILLEGAL, ' ')
     // an editor's "file \u2014 project" reads in this app's own separator
     .replace(/\s+[\u2013\u2014]\s+/g, ' · ')
@@ -73,6 +86,10 @@ function ownPage(app, title) {
 
 const sameIgnoringCase = (a, b) => a.toLowerCase() === b.toLowerCase()
 
+// What a window title puts between the app's name and the rest of it. Written as code
+// points so no long dash is typed into this tree.
+const LEAD_SEP = /^[\s:|,\-\u00b7\u2013\u2014\u2022\u22c5]+/
+
 /**
  * A filename stem, without extension, or null when there is nothing better than the
  * timestamp. Never returns an empty string.
@@ -103,12 +120,15 @@ function smartName({ app, title, said, product, domain } = {}) {
 
   // a title that just repeats the app ("Xcode" window titled "Xcode") adds nothing
   if (detail && subject && (sameIgnoringCase(detail, subject) || detail.toLowerCase().startsWith(subject.toLowerCase() + ' '))) {
-    detail = detail.slice(subject.length).trim() || ''
+    // and the separator it was joined with goes with it, or the name this makes is
+    // "Songscription · · Your library", which is also the folder on disk
+    detail = detail.slice(subject.length).replace(LEAD_SEP, '').trim() || ''
   }
 
   const parts = [subject, detail].filter(Boolean)
   if (!parts.length) return null
-  return fit(parts.join(' · '))
+  const name = unhidden(parts.join(' · '))
+  return name ? fit(name) : null
 }
 
 // ── the product behind a browser tab ─────────────────────────────────────
@@ -303,7 +323,7 @@ function shotName({ app, title, domain, product, area } = {}) {
 function uniqueName(stem, taken) {
   const used = typeof taken === 'function' ? taken
     : n => (taken || []).some(t => sameIgnoringCase(String(t || ''), n))
-  const base = fit(clean(stem)) || 'Screen'
+  const base = fit(unhidden(clean(stem))) || 'Screen'
   if (!used(base)) return base
   for (let n = 2; n < 1000; n++) {
     const suffix = ' ' + n

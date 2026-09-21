@@ -18,8 +18,9 @@ import UniformTypeIdentifiers
 // Options: --exclude a,b,c (window ids kept out of the frame), --exclude-app <name>
 // (every window of that app, matched the way ui/record-policy.js matches, repeatable),
 // --cursor (the pointer is out by default, a still of a page should not carry the
-// person's mouse), and --window-shadow (keep the window's own drop shadow, which the
-// compositor otherwise draws itself).
+// person's mouse), --window-shadow (keep the window's own drop shadow, which the
+// compositor otherwise draws itself), and --by agent|human, which decides whether the
+// Screen Recording grant is preflighted or met.
 //
 // The app form is the one that holds. A window id can only name a window somebody
 // listed, and the list Fetch draws for a person is filtered for readability: a small
@@ -47,6 +48,11 @@ struct Options {
     var excludeApps: [String] = []
     var cursor = false
     var keepShadow = false
+    // Who asked. An agent cannot answer macOS's own permission prompt, so for an agent
+    // the grant is read before any content is and a missing one is a refusal. A person
+    // can answer it, and meeting it is the shortest route to a granted Mac, so for a
+    // person the read goes ahead and the system asks. Nothing here ever asks for them.
+    var byAgent = false
 }
 
 func parseArgs() -> Options {
@@ -66,6 +72,7 @@ func parseArgs() -> Options {
         case "--exclude-app": if let v = it.next(), !v.isEmpty { o.excludeApps.append(v) }
         case "--cursor":  o.cursor = true
         case "--window-shadow": o.keepShadow = true
+        case "--by": o.byAgent = (it.next() ?? "") == "agent"
         default: break
         }
     }
@@ -158,11 +165,28 @@ func capture(_ o: Options) async throws -> [String: Any] {
     if o.out.isEmpty { throw Fail(why: "no --out path given") }
     if o.badRegion { throw Fail(why: "--region wants x,y,w,h in screen points") }
 
+    // Asked before any content is read, because reading content is what raises macOS's
+    // permission dialog, and for an agent that dialog is a stall rather than a failure:
+    // whoever is driving is not at this Mac to answer it and waits on a question it
+    // cannot see. For a person it is the opposite. Preflight is boolean, so it cannot
+    // tell a Mac that was never asked from one that said no, and refusing on it deleted
+    // the first-run prompt: Fetch may not even be listed in that pane yet, so the
+    // refusal named a switch that did not exist. A person meets the prompt. Preflight
+    // only reads; requesting the grant is their own act and this process never does it.
+    if o.byAgent && !CGPreflightScreenCaptureAccess() {
+        throw Fail(why: "Screen Recording permission has not been granted to Fetch, so there is nothing to capture. " +
+                        "Ask the person to grant it in System Settings, Privacy and Security, Screen Recording, and then restart Fetch.")
+    }
+
     let content: SCShareableContent
     do {
         content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
     } catch {
-        throw Fail(why: "could not read shareable content: \(error.localizedDescription). Screen Recording permission is probably not granted.")
+        // Where a person met the prompt and said no, this is the answer, and it has to
+        // carry the same two sentences the preflight refusal does.
+        throw Fail(why: "could not read shareable content: \(error.localizedDescription). " +
+                        "Screen Recording permission is most likely not granted to Fetch. " +
+                        "Grant it in System Settings, Privacy and Security, Screen Recording, and then restart Fetch.")
     }
 
     var out: [String: Any] = ["ok": true, "path": o.out, "cursor": o.cursor]

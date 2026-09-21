@@ -930,12 +930,383 @@ t('a must_keep phrase said across two cues is still held, and one nobody said is
   assert.strictEqual(one.measured.must_keep[0].seconds, 20)
 })
 
+// ── a picture ───────────────────────────────────────────────────────────────
+// The second sentence of the taste pass, cold: a 2880x1720 window capture on a warm
+// ground in a browser frame, the lower half of one card lifted, two blurs on the account
+// row. review answered "ready, 10" about it, and answered the same ten, word for word,
+// about the bare capture on a gradient. Everything below is that picture and its
+// neighbours, measured.
+const Shot = require('../ui/shot')
+const SHOT = '/m/Field Notes/Original/Field Notes.png'
+const shot = (o = {}) => Shot.normalize({ kind: 'shot', src: SHOT, w: 2880, h: 1720, ...o }, SHOT, { w: 2880, h: 1720 })
+const bare = () => shot({ look: { background: { kind: 'gradient', gradient: 'studio' }, frame: { aspect: '16:9' } } })
+const styled = () => shot({
+  look: { background: { kind: 'image', image: 'img:warm-dune' }, frame: { aspect: '16:9' }, device: { kind: 'browser', title: '' } },
+  marks: [{ id: 'M1', kind: 'lift', x: 0.33, y: 0.41, w: 0.19, h: 0.05 },
+    { id: 'M2', kind: 'blur', x: 0.05, y: 0.9, w: 0.11, h: 0.022, strength: 26 },
+    { id: 'M3', kind: 'blur', x: 0.05, y: 0.93, w: 0.14, h: 0.02, strength: 26 }],
+})
+// The whole card the lifted fragment is the bottom half of, which is what
+// find_on_screen hands back for "the row that matters" on this capture.
+const CARD = { x: 0.31, y: 0.3, w: 0.23, h: 0.21 }
+const shotBrief = (o = {}) => ({ what: 'the row that matters', aspect: '16:9', where: null, must_keep: [], must_hide: ['the account name'], ...o })
+const see = (d, b = shotBrief(), more = {}) => R.review({ doc: d, brief: b, path: SHOT, ...more })
+
+// The shot editor's own merge, the same four ops the edit harness above stands in for:
+// apply_edit merges marks by id and removes by id, apply_look merges the look, direct
+// writes the brief. find_on_screen changes nothing by itself, so the agent's half of it
+// is stood in too: the id comes back and the mark is sent to the box it named.
+const applyShot = (state, fix) => {
+  const d = JSON.parse(JSON.stringify(state.doc))
+  let b = state.brief ? JSON.parse(JSON.stringify(state.brief)) : null
+  const a = fix.args || {}
+  if (fix.tool === 'apply_edit') {
+    const patch = a.doc || {}
+    for (const m of patch.marks || []) {
+      const was = (d.marks || []).find(x => x.id === m.id)
+      if (was) Object.assign(was, m); else d.marks.push({ ...m })
+    }
+    if (patch.group) d.group = patch.group
+    if (patch.crop) d.crop = patch.crop
+    for (const id of patch.remove || []) d.marks = (d.marks || []).filter(x => x.id !== id)
+  } else if (fix.tool === 'apply_look') {
+    d.look = merge(d.look || {}, a.look || {})
+  } else if (fix.tool === 'direct') {
+    if (a.brief) b = { ...(b || {}), ...a.brief }
+  } else if (fix.tool === 'find_on_screen') {
+    for (const m of d.marks || []) if (m.kind === 'lift' || m.kind === 'spotlight') Object.assign(m, CARD)
+  }
+  return { doc: Shot.normalize(d, d.src, d), brief: b }
+}
+
+t('a capture nobody has pointed at is not a ten', () => {
+  // The whole of the old finding: an untouched capture on a gradient came back
+  // "ready, 10", and so did a picture with two title bars in it.
+  const r = see(bare(), null)
+  assert.ok(rules(r).includes('subject'), JSON.stringify(rules(r)))
+  assert.strictEqual(r.verdict, 'nearly')
+  assert.ok(r.score < 10, `scored ${r.score}`)
+  assert.strictEqual(of(r, 'subject').fix.tool, 'find_on_screen')
+  assert.strictEqual(r.measured.kind, 'shot')
+  assert.strictEqual(r.measured.capture, '2880x1720')
+  assert.strictEqual(r.measured.picture, '1920x1080')
+  // and the summary carries the numbers it judged, rather than one sentence about none
+  assert.ok(r.summary.includes('2880x1720 capture in a 1920x1080 picture'), r.summary)
+  // a mark, a crop or a second capture all answer it, and any one of them is enough
+  for (const answer of [
+    shot({ look: bare().look, marks: [{ id: 'M1', kind: 'lift', ...CARD }] }),
+    shot({ look: bare().look, crop: { x: 0.2, y: 0.2, w: 0.5, h: 0.5 } }),
+  ]) assert.ok(!of(see(answer, null), 'subject'), JSON.stringify(rules(see(answer, null))))
+})
+
+t('every rule about a clock is named rather than quietly skipped', () => {
+  const r = see(bare(), shotBrief({ seconds: 60 }))
+  const named = r.not_judged.map(x => x.rule)
+  for (const rule of ['length', 'dead-air', 'captions', 'burn-in', 'zoom-density', 'spans-a-cut']) {
+    assert.ok(named.includes(rule), `${rule} is neither judged nor named`)
+  }
+  // named, and not run: nothing about a length is in the list or in the numbers
+  for (const i of r.items) assert.ok(!named.includes(i.rule), i.rule)
+  for (const x of r.not_judged) assert.ok(x.why && x.why.length > 20, x.rule)
+  assert.strictEqual(r.measured.seconds, undefined)
+  assert.deepStrictEqual(r.look_at, [])
+})
+
+t('the styled still, cold: every fault the taste pass saw, measured', () => {
+  const r = see(styled())
+  assert.deepStrictEqual(rules(r), ['double-chrome', 'focus-share', 'blank-bar'])
+  assert.strictEqual(r.verdict, 'nearly')
+  assert.ok(r.score <= 8, `scored ${r.score}`)
+  // two title bars: a drawn shell over a capture nothing has been taken off the top of
+  assert.ok(of(r, 'double-chrome').what.includes('two'), of(r, 'double-chrome').what)
+  assert.deepStrictEqual(of(r, 'double-chrome').fix.args.look, { device: { kind: 'none' } })
+  assert.strictEqual(of(r, 'double-chrome').choices.length, 2)
+  // a capture of a whole screen brings no title bar with it, so a shot that knows what
+  // it captured is not told off for drawing a shell round one
+  const screen = see({ ...styled(), captured: { kind: 'display' } })
+  assert.ok(!of(screen, 'double-chrome'), JSON.stringify(rules(screen)))
+  // and taking the capture's own bar off answers it as surely as dropping the shell
+  assert.ok(!of(see(shot({ look: styled().look, crop: { x: 0, y: 0.04, w: 1, h: 0.96 }, marks: styled().marks })), 'double-chrome'))
+  // the blank address bar, and the name of the capture offered for it
+  assert.strictEqual(of(r, 'blank-bar').fix.args.look.device.title, 'Field Notes')
+  // half a card raised, and the page behind it doing all the work
+  const frag = of(r, 'focus-share')
+  assert.ok(frag.what.startsWith('M1 (lift) is 1 percent'), frag.what)
+  assert.ok(frag.what.includes('2 redactions out there cannot be seen'), frag.what)
+  assert.strictEqual(r.measured.subject[0].share, 0.01)
+  // and every finding carries a call with the capture's own path on it
+  for (const i of r.items) {
+    assert.ok(i.fix && i.fix.tool && i.fix.why, i.rule)
+    assert.strictEqual(i.fix.args.path, SHOT)
+  }
+})
+
+t('applying every call in order leaves the picture better by review\'s own measure', () => {
+  let state = { doc: styled(), brief: shotBrief() }
+  const before = see(state.doc, state.brief)
+  assert.ok(before.items.length >= 3, JSON.stringify(rules(before)))
+  const seen = []
+  let last = before
+  for (let round = 0; round < 5; round++) {
+    const r = see(state.doc, state.brief)
+    seen.push({ verdict: r.verdict, score: r.score, rules: rules(r) })
+    assert.ok(r.score >= last.score - 1e-9, `score fell from ${last.score} to ${r.score}`)
+    // nothing anybody asked to be hidden is ever uncovered by following the advice
+    assert.strictEqual(r.measured.redactions, 2, `round ${round}: ${r.measured.redactions} redactions`)
+    last = r
+    if (!r.items.length) break
+    for (const i of r.items) state = applyShot(state, i.fix)
+  }
+  const end = see(state.doc, state.brief)
+  assert.strictEqual(end.verdict, 'ready')
+  assert.strictEqual(end.score, 10)
+  assert.ok(end.score > before.score, `${before.score} then ${end.score}`)
+  assert.ok(seen.length <= 3, `it took ${seen.length} rounds to settle`)
+  // and the picture that came out of it is the one the findings asked for
+  const done = state.doc
+  assert.strictEqual(done.look.device.kind, 'none')
+  assert.deepStrictEqual(done.marks.map(m => m.kind), ['lift', 'blur', 'blur'])
+  assert.strictEqual(done.marks[0].w, CARD.w)
+})
+
+t('a blur is judged in sigma against a stroke of type, never against the box it covers', () => {
+  // The ruler was the box, and it was wrong in both directions at once.
+  //
+  // Up: a blur strong enough to be a hole was called weak because the box was large,
+  // and its only fix replaced a 576 px soft field with an opaque slab on a picture that
+  // was already hiding the private thing properly.
+  const wide = see(shot({ look: styled().look,
+    marks: [{ id: 'M2', kind: 'blur', x: 0.3, y: 0.2, w: 0.2, h: 0.6, strength: 60 }] }))
+  assert.ok(!of(wide, 'soft-redaction'), JSON.stringify(rules(wide)))
+  // Down: a blur over one account row cleared a threshold of four and a half and the
+  // words under it kept more than their shape.
+  const row = { id: 'M2', kind: 'blur', x: 0.05, y: 0.9, w: 0.11, h: 0.022, strength: 5 }
+  const thin = see(shot({ look: styled().look, marks: [row] }))
+  const w = of(thin, 'soft-redaction')
+  assert.ok(w, JSON.stringify(rules(thin)))
+  assert.strictEqual(w.severity, 'blocking')          // the brief names something to hide
+  assert.strictEqual(thin.verdict, 'not ready')
+  assert.ok(w.what.includes('stroke of type'), w.what)
+  // two ways out, and turning the blur up is one of them: a redaction is not the only
+  // answer to a blur that is merely too soft
+  assert.strictEqual(w.choices.length, 2)
+  assert.strictEqual(w.choices[0].fix.args.doc.marks[0].kind, 'redact')
+  assert.ok(w.choices[1].fix.args.doc.marks[0].strength >= 24, JSON.stringify(w.choices[1].fix.args))
+  // and no brief naming anything private makes it a should rather than a block
+  assert.strictEqual(of(see(shot({ look: styled().look, marks: [row] }), shotBrief({ must_hide: [] })),
+    'soft-redaction').severity, 'should')
+  // The arm that listed every blur in the document whenever the brief named anything is
+  // gone: two strong blurs nowhere near the named thing are not a finding.
+  assert.ok(!of(see(styled()), 'soft-redaction'), JSON.stringify(rules(see(styled()))))
+  // and a redaction is never named: it is already a hole where the words were
+  const done = see(shot({ look: styled().look,
+    marks: [{ id: 'M2', kind: 'redact', x: 0.05, y: 0.9, w: 0.11, h: 0.022 }] }))
+  assert.ok(!of(done, 'soft-redaction'), JSON.stringify(rules(done)))
+})
+
+t('what says not to look at something does not say what to look at', () => {
+  // A capture whose only mark is a redaction is still the screenshot with a margin round
+  // it: nothing points, nothing is cropped, there are no words. Counting every mark, the
+  // rule was silenced by exactly the mark whose job is to hide rather than to point.
+  const hidden = see(shot({ look: bare().look,
+    marks: [{ id: 'M1', kind: 'redact', x: 0.05, y: 0.9, w: 0.11, h: 0.022 }] }),
+  shotBrief({ must_hide: ['the account name'] }))
+  assert.ok(of(hidden, 'subject'), JSON.stringify(rules(hidden)))
+  assert.ok(hidden.score < 10, `scored ${hidden.score}`)
+  // a blur is the same: it says what not to look at
+  const blurred = see(shot({ look: bare().look,
+    marks: [{ id: 'M1', kind: 'blur', x: 0.05, y: 0.9, w: 0.11, h: 0.022, strength: 26 }] }),
+  shotBrief({ must_hide: ['the account name'] }))
+  assert.ok(of(blurred, 'subject'), JSON.stringify(rules(blurred)))
+  // and one mark that does point answers it, with the redaction still on the picture
+  const pointed = see(shot({ look: bare().look,
+    marks: [{ id: 'M1', kind: 'redact', x: 0.05, y: 0.9, w: 0.11, h: 0.022 },
+      { id: 'M2', kind: 'lift', ...CARD }] }), shotBrief({ must_hide: ['the account name'] }))
+  assert.ok(!of(pointed, 'subject'), JSON.stringify(rules(pointed)))
+})
+
+t('the brief\'s own promise is still the one never quietly dropped', () => {
+  const r = see(shot({ look: bare().look, marks: [{ id: 'M1', kind: 'lift', ...CARD }] }),
+    shotBrief({ must_hide: ['the account name', 'the licence key'] }))
+  const it = of(r, 'redactions')
+  assert.strictEqual(it.severity, 'blocking')
+  assert.strictEqual(r.verdict, 'not ready')
+  assert.strictEqual(it.fix.tool, 'find_on_screen')
+  assert.strictEqual(it.fix.args.query, 'the account name')
+  // a still has one moment, and the call still carries the one the tool asks for
+  assert.strictEqual(it.fix.args.at, 0)
+  // and an agent cannot write it off, on a picture any more than on a recording
+  const off = see(shot({ look: bare().look }), shotBrief({ must_hide: ['the account name'] }), { declined: ['redactions'] })
+  assert.strictEqual(off.verdict, 'not ready')
+  assert.strictEqual(R.blocking(off).length, 1)
+})
+
+t('the shape judged is the shape that ships, not the capture\'s own crop', () => {
+  // frame.aspect 'auto' does not mean the capture's shape: backdropGeometry adds one
+  // square margin on every side, so a 1920x1080 capture goes out 1920x1170. Measured off
+  // the crop, a blocking rule cleared a file that was never 16:9, in the same result
+  // whose measured.picture said 1920x1170.
+  const wide = Shot.normalize({ kind: 'shot', src: SHOT, w: 1920, h: 1080,
+    look: { background: { kind: 'gradient', gradient: 'studio' }, frame: { aspect: 'auto' } },
+    marks: [{ id: 'M1', kind: 'lift', ...CARD }] }, SHOT, { w: 1920, h: 1080 })
+  const r = see(wide, shotBrief({ must_hide: [] }))
+  const it = of(r, 'aspect')
+  assert.ok(it, JSON.stringify(rules(r)))
+  assert.strictEqual(it.severity, 'blocking')
+  assert.strictEqual(r.verdict, 'not ready')
+  assert.strictEqual(r.measured.picture, '1920x1170')
+  assert.ok(it.what.includes('1.64 to 1'), it.what)
+  // and asking for the shape it claimed to have settles it
+  const set = Shot.mergeShot(wide, { look: { frame: { aspect: '16:9' } } })
+  assert.ok(!of(see(set, shotBrief({ must_hide: [] })), 'aspect'), JSON.stringify(rules(see(set, shotBrief({ must_hide: [] })))))
+})
+
+t('on a group the chrome question is asked of each member, and answered where it is asked', () => {
+  const two = { gap: 0.06, align: 'stand', members: [
+    { id: 'C1', src: SHOT, w: 2880, h: 1720, device: 'window', mm: 332 },
+    { id: 'C2', src: '/m/Field Notes phone/Original/Field Notes phone.png', w: 800, h: 1720, device: 'phone', mm: 63 }] }
+  let d = shot({ group: two, look: bare().look })
+  const r = see(d, null)
+  const it = of(r, 'double-chrome')
+  assert.ok(it, JSON.stringify(rules(r)))
+  // the handset is not told off for a title bar it never had
+  assert.ok(it.what.includes('C1') && !it.what.includes('C2'), it.what)
+  // and the fix changes something: a member carries its own device, and groupSpec builds
+  // the shell from that, so apply_look on the group's look was a no-op that looped
+  assert.strictEqual(it.fix.tool, 'apply_edit')
+  assert.deepStrictEqual(it.fix.args.doc.group.members.map(m => m.device), ['none', 'phone'])
+  d = Shot.mergeShot(d, it.fix.args.doc)
+  assert.ok(!of(see(d, null), 'double-chrome'), JSON.stringify(rules(see(d, null))))
+  // each member answers for its own capture rather than for the shot's
+  const known = shot({ look: bare().look, captured: { kind: 'window' },
+    group: { ...two, members: [{ ...two.members[0], captured: { kind: 'display' } }, two.members[1]] } })
+  assert.ok(!of(see(known, null), 'double-chrome'), JSON.stringify(rules(see(known, null))))
+})
+
+t('a group with no ground draws one capture, and the rubric says which', () => {
+  const two = { gap: 0.06, align: 'stand', members: [
+    { id: 'C1', src: SHOT, w: 2880, h: 1720, device: 'window', mm: 332 },
+    { id: 'C2', src: '/m/Field Notes phone/Original/Field Notes phone.png', w: 800, h: 1720, device: 'phone', mm: 63 }] }
+  const r = see(shot({ group: two }), null)
+  const it = of(r, 'group-unframed')
+  assert.strictEqual(it.severity, 'blocking')
+  assert.ok(it.what.includes('2 captures'), it.what)
+  assert.deepStrictEqual(it.fix.args.look, { background: { kind: 'gradient' } })
+  // with a ground under it the group is drawn, and both captures are measured
+  const ok = see(shot({ group: two, look: bare().look }), null)
+  assert.ok(!of(ok, 'group-unframed'))
+  assert.strictEqual(ok.measured.captures.length, 2)
+  assert.deepStrictEqual(ok.measured.captures.map(c => c.device), ['window', 'phone'])
+  // a handset hung in a window frame is the shell and the capture disagreeing
+  const wrong = see(shot({ look: bare().look, group: { ...two,
+    members: [two.members[0], { ...two.members[1], device: 'window' }] } }), null)
+  const fit = of(wrong, 'device-fit')
+  assert.ok(fit.what.includes('taller than it is wide'), fit.what)
+  assert.strictEqual(fit.fix.tool, 'apply_edit')
+  // the group goes back whole, so nothing else in it moves
+  assert.deepStrictEqual(fit.fix.args.doc.group.members.map(m => m.device), ['window', 'phone'])
+})
+
+t('a mark the picture does not draw is named, and dropping it changes no pixel', () => {
+  // An arrow stands outside the box it points at, and is left out where there is
+  // nowhere to stand. The document kept it and the picture never had it.
+  const d = shot({ look: bare().look,
+    marks: [{ id: 'M1', kind: 'lift', ...CARD }, { id: 'M2', kind: 'arrow', x: 0, y: 0, w: 0.02, h: 0.02 }] })
+  const r = see(d, null)
+  const it = of(r, 'never-drawn')
+  assert.ok(it.what.startsWith('M2 (arrow)'), it.what)
+  assert.deepStrictEqual(it.fix.args.doc, { remove: ['M2'] })
+  assert.strictEqual(it.choices.length, 2)
+  assert.strictEqual(r.measured.marks - r.measured.drawn, 1)
+  // dropping it clears the finding and leaves the drawn picture exactly as it was
+  const after = see(applyShot({ doc: d, brief: null }, it.fix).doc, null)
+  assert.ok(!of(after, 'never-drawn'))
+  assert.strictEqual(after.measured.drawn, r.measured.drawn)
+  assert.ok(after.score > r.score, `${r.score} then ${after.score}`)
+})
+
+t('the ground is measured for a sweep and for a mesh, not only for a solid', () => {
+  // Both fields came back null on every call the taste pass made, because the rule
+  // read a flat colour and neither picture had one.
+  const dark = { lo: 0.012, hi: 0.4 }
+  const sunk = see(shot({ look: { background: { kind: 'gradient', gradient: 'ink' }, frame: { aspect: '16:9' } },
+    marks: [{ id: 'M1', kind: 'lift', ...CARD }] }), null, { levels: dark })
+  assert.ok(of(sunk, 'ground'), JSON.stringify(rules(sunk)))
+  assert.deepStrictEqual(sunk.measured.take_levels, { lo: 0.01, hi: 0.4 })
+  assert.ok(sunk.measured.ground && sunk.measured.ground.hi < 0.05, JSON.stringify(sunk.measured.ground))
+  // a sweep with one end clear of the capture gives it somewhere to stand, and says
+  // nothing: studio is a warm light on a deep neutral and the light is the point
+  const stood = see(shot({ look: bare().look, marks: [{ id: 'M1', kind: 'lift', ...CARD }] }), null, { levels: dark })
+  assert.ok(!of(stood, 'ground'), JSON.stringify(rules(stood)))
+  assert.ok(stood.measured.ground.hi > 0.1, JSON.stringify(stood.measured.ground))
+  // and a mesh is read at its control points, an image ground at nothing at all
+  assert.ok(R.groundRange({ background: { kind: 'mesh', mesh: 'ink' } }).hi < 0.05)
+  assert.strictEqual(R.groundRange({ background: { kind: 'image' } }), null)
+})
+
+t('no call the picture rubric makes ever uncovers something', () => {
+  // The rule the edit rubric holds itself to, on a picture: a fix may not shorten the
+  // work, and here the work is what is hidden. Every finding on every still in this
+  // file, applied, and the redactions counted after.
+  const cases = [
+    [styled(), shotBrief()],
+    [styled(), null],
+    [bare(), shotBrief()],
+    [shot({ look: styled().look, marks: [{ id: 'M2', kind: 'blur', x: 0.05, y: 0.9, w: 0.11, h: 0.022, strength: 2 }] }), shotBrief()],
+    [shot({ look: bare().look, crop: { x: 0, y: 0.05, w: 1, h: 0.95 },
+      marks: [{ id: 'M1', kind: 'lift', ...CARD }, { id: 'M2', kind: 'redact', x: 0.05, y: 0.9, w: 0.11, h: 0.02 }] }), shotBrief()],
+  ]
+  let fixes = 0
+  for (const [d, b] of cases) {
+    const r = see(d, b)
+    const hidden = (d.marks || []).filter(m => m.kind === 'redact' || m.kind === 'blur').length
+    for (const i of [...r.items, ...r.items.flatMap(x => x.choices || [])]) {
+      fixes++
+      const after = applyShot({ doc: d, brief: b }, i.fix).doc
+      const now = (after.marks || []).filter(m => m.kind === 'redact' || m.kind === 'blur').length
+      assert.strictEqual(now, hidden, `${i.rule} took a redaction off`)
+      // and none of them makes the picture worse by the rubric's own number
+      assert.ok(see(after, b).score >= r.score - 1e-9, `${i.rule}: ${r.score} then ${see(after, b).score}`)
+    }
+  }
+  assert.ok(fixes >= 8, `${fixes} calls were applied`)
+})
+
+t('a finished picture is ready, and says what it measured', () => {
+  const done = shot({ look: { background: { kind: 'gradient', gradient: 'studio' }, frame: { aspect: '16:9' } },
+    marks: [{ id: 'M1', kind: 'lift', ...CARD }, { id: 'M2', kind: 'redact', x: 0.05, y: 0.9, w: 0.11, h: 0.022 }] })
+  const r = see(done)
+  assert.deepStrictEqual(rules(r), [], JSON.stringify(rules(r)))
+  assert.strictEqual(r.verdict, 'ready')
+  assert.strictEqual(r.score, 10)
+  assert.ok(r.summary.includes('nothing the rubric can name'), r.summary)
+  assert.strictEqual(r.measured.capture_per_px, 1.81)
+  assert.strictEqual(r.measured.needs_scale, 2)
+  assert.deepStrictEqual(r.measured.must_hide, ['the account name'])
+})
+
+t('review is pure on a capture too, and never throws on a document with nothing in it', () => {
+  const d = styled()
+  const before = JSON.stringify(d)
+  const a = JSON.stringify(see(d, shotBrief(), { levels: { lo: 0.01, hi: 0.5 } }))
+  const b = JSON.stringify(see(JSON.parse(before), shotBrief(), { levels: { lo: 0.01, hi: 0.5 } }))
+  assert.strictEqual(a, b)
+  assert.strictEqual(JSON.stringify(d), before)
+  // a capture whose size nobody knows cannot be planned, and the rules that need only
+  // the document still run
+  const blind = R.review({ doc: { kind: 'shot', src: SHOT, w: 0, h: 0, look: {}, marks: [] }, path: SHOT })
+  assert.strictEqual(blind.measured.planned, false)
+  assert.ok(blind.verdict && blind.score >= 0)
+  assert.ok(R.review({ doc: { kind: 'shot' } }).items.length >= 0)
+})
+
 t('no em dashes anywhere a person or a model reads', () => {
   const all = JSON.stringify([
     run(doc(), brief({ must_hide: ['x'], must_keep: ['thing'] }), { levels: { lo: 0.01, hi: 0.5 } }),
     run(doc({ look: { frame: { aspect: 'auto' } }, cues: [], clips: [{ id: 'C1', start: 0, end: 5 }] }), brief()),
     look(tour(), tourBrief()),
     R.WHERE,
+    see(styled()), see(bare(), null), see(styled(), shotBrief({ must_hide: [] }), { levels: { lo: 0.01, hi: 0.5 } }),
   ])
   assert.ok(!/—/.test(all))
   assert.ok(!/—/.test(require('fs').readFileSync(require.resolve('../ui/review'), 'utf8')))

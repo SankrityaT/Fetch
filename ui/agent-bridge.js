@@ -358,17 +358,31 @@ const ops = {
     }
     // Opened where the person can see it, the same way an agent editing a take is seen
     // opening it, and it is the window every tool below reads the document from.
-    const shot = await inEditor(file, `${docOf(file)}.get()`).catch(() => null)
+    //
+    // What it was a capture of goes onto the document in the same call. A window capture
+    // brings its own title bar into the picture and a display capture its menu bar, and
+    // a drawn frame round one of those is two title bars: the compositor's ownChrome
+    // (ui/compositor/plan.js) and review's double-chrome are the only things that read
+    // it, and neither can work it out from pixels.
+    const cap = { kind: got.kind, ...(got.app ? { app: got.app } : {}), ...(got.title ? { title: got.title } : {}) }
+    const shot = await inEditor(file, `${docOf(file)}.apply(${JSON.stringify({ captured: cap })})`)
+      .catch(() => inEditor(file, `${docOf(file)}.get()`).catch(() => null))
+    // The picture, with the capture. This is the one tool that makes the only artefact
+    // in the job, and it was the one tool that handed back no image of it, so an agent
+    // that cannot see the screen spent a second call looking at its own work.
+    const p = shot ? await drawShot(shot, file, { width: 1280 }).catch(() => null) : null
     return {
       path: file, name, kind: 'shot',
-      captured: { kind: got.kind, ...(got.app ? { app: got.app } : {}), ...(got.title ? { title: got.title } : {}),
+      captured: { ...cap,
         width: got.width, height: got.height, scale: got.scale,
         ...(got.display != null ? { display: String(got.display) } : {}),
         ...(got.clipped ? { clipped: true } : {}),
         ...(front ? { chosen: 'the app in front' } : {}) },
       ...(shot ? { shot: summariseShot(shot, file) } : {}),
-      do_next: 'apply_look styles it, find_on_screen at 0 names what is on it, apply_edit places marks on it, ' +
-        'preview_frame draws it, and export writes the PNG. The capture in Original/ is never touched.',
+      ...(p ? { preview: { image: p.file, at: SHOT_AT, why: 'the capture as it stands, unstyled. Look at it before deciding what to do with it.' } } : {}),
+      do_next: 'direct writes what the picture is for, apply_look styles it, find_on_screen names what is on it, ' +
+        'apply_edit places marks and the headline on it, review checks it and export writes the PNG. ' +
+        'The capture in Original/ is never touched.',
     }
   },
 
@@ -538,6 +552,10 @@ const ops = {
     const out = { look: Look.compact(doc.look, looksDir()) }
     const w = lookWarnings(patch, doc, args.path)
     if (w.length) out.look_warnings = w
+    // The plan, and the step this call closes. Applying a look is a step of a job like
+    // any other, and this was the one change tool that could not close one, so closing
+    // it cost a direct call that did nothing else.
+    Object.assign(out, jobState(args.path, doc, args.step, await takeShape(args.path)))
     return out
   },
 
@@ -650,9 +668,12 @@ const ops = {
     const all = r.all || r.elements
     // a card, grid or panel a lift would come out wrong on says so here, with the one
     // inside it to lift instead, so the agent does not have to be refused to learn it
+    // the frame the elements were measured in, which is what turns the type ruler in
+    // cutEdges onto the x axis: an ultrawide and a portrait crop are not 16:9
+    const aspect = r.width > 0 && r.height > 0 ? r.width / r.height : 0
     const noLift = crop || args.cropped !== false
-      ? noteFound(args.path, r.at, r.elements, all)
-      : liftNotes(r.elements, all)
+      ? noteFound(args.path, r.at, r.elements, all, { aspect })
+      : liftNotes(r.elements, all, aspect)
     return {
       image: r.image, at: r.at, cropped: !!crop, query: args.query || null,
       found: r.found, shown: r.elements.length,
@@ -1308,6 +1329,7 @@ async function enforceAccess(args, ctx) {
         ? `Allow ${still ? 'screenshots of ' : ''}${app || 'this app'} until Fetch quits`
         : null,
       still)
+    if (answer === 'unanswered') throw new Error(`Fetch refused to ${act}: ${verdict.unanswered}`)
     if (answer === 'no') throw new Error(`Fetch refused to ${act}: the person at the Mac said no`)
     if (answer === 'session') sessionAllowed.add(key)
   }
@@ -1318,16 +1340,32 @@ const sessionAllowed = new Set()
 
 // A free-standing alert rather than a sheet on Fetch's window: the question needs an
 // answer, but it should not drag the whole app in front of what the person is doing.
+// Parent-less on purpose, and that is load bearing. Given a window to sit on, macOS
+// makes it a sheet, and a sheet on a window that was created hidden is queued by AppKit
+// until that window is shown: the person is never asked, the deadline below always wins,
+// and every agent capture is refused a minute after it was made. A question nobody can
+// see is a worse failure than the hang it was meant to fix.
+//
+// Bounded all the same, because an unattended agent must never wait forever. On the
+// shipping Recording access default every agent capture raises this, and with nobody at
+// the Mac the call simply never returned. A person who is here answers in seconds; a
+// minute of silence means nobody is, and the call refuses with the sentence takeShot
+// gives. The alert stays up, since only a person can dismiss a free-standing one, and an
+// answer that arrives after the deadline lands on a promise nobody holds: this call
+// already refused and will not capture anything on the strength of a late yes.
+const ASK_WAIT_MS = 60000
 async function askPerson(message, detail, sessionLabel, still = false) {
   const { dialog } = require('electron')
   const buttons = [still ? 'Allow this shot' : 'Allow this take', ...(sessionLabel ? [sessionLabel] : []), 'Don\'t allow']
   const no = buttons.length - 1
-  const r = await dialog.showMessageBox({
+  let timer = null
+  const asked = dialog.showMessageBox({
     type: 'question', message, detail, buttons, defaultId: no, cancelId: no, noLink: true,
-  })
-  if (r.response === 0) return 'once'
-  if (sessionLabel && r.response === 1) return 'session'
-  return 'no'
+  }).then(r => (r.response === 0 ? 'once' : (sessionLabel && r.response === 1) ? 'session' : 'no'), () => 'no')
+  try {
+    const waited = new Promise(res => { timer = setTimeout(() => res('unanswered'), ASK_WAIT_MS) })
+    return await Promise.race([asked, waited])
+  } finally { if (timer) clearTimeout(timer) }
 }
 
 // A lift or spotlight an agent times to the narration can start before the card it
@@ -1364,7 +1402,18 @@ function withElements(src, doc, prev) {
     }
     return aimed
   })
-  return { ...doc, ...(doc.zooms ? { zooms: swap(doc.zooms) } : {}), ...(doc.marks ? { marks: swap(doc.marks) } : {}) }
+  // A pinned label or a callout names a thing on the page, not a place on the canvas,
+  // so it aims the way a mark aims: element: 'E12' from find_on_screen becomes the point
+  // at that element's middle, which is what the text pass pins to. One rule for aiming
+  // and not two, and the same refusal when the id is not one the agent was handed.
+  const r4 = n => Math.round(n * 10000) / 10000
+  const pin = list => !Array.isArray(list) ? list : list.map(it => {
+    if (!it || !it.element) return it
+    const { box, ...rest } = resolveElement(src, seen, mine, crop, it)
+    return box ? { ...rest, at: { x: r4(box.x + box.w / 2), y: r4(box.y + box.h / 2) } } : rest
+  })
+  return { ...doc, ...(doc.zooms ? { zooms: swap(doc.zooms) } : {}), ...(doc.marks ? { marks: swap(doc.marks) } : {}),
+    ...(doc.texts ? { texts: pin(doc.texts) } : {}) }
 }
 
 // One id, one box. R ids come from the lasso, E ids from an Elements pass, and neither
@@ -1419,12 +1468,15 @@ function regionBox(region, crop) {
 // A card, grid or panel a lift would come out wrong on: why, what to lift instead,
 // and the sentence that says both. find_on_screen returns these as no_lift, the
 // lasso's own Elements pass hands them to the editor, and liftable refuses on them.
-function liftNotes(elements, all) {
+function liftNotes(elements, all, aspect) {
   const T = require('./targets')
   const out = new Map()
   for (const e of elements || []) {
-    if (!['card', 'grid', 'panel'].includes(e.kind)) continue
-    const b = T.liftBlock(e, all || elements)
+    // text is in the list because a lift aimed at a bare line of words is the commonest
+    // miss of all: once the card round it is refused the lift lands on its lower half and
+    // the picture reads as a floating tooltip. Unjudged, nobody ever said so.
+    if (!['card', 'grid', 'panel', 'text'].includes(e.kind)) continue
+    const b = T.liftBlock(e, all || elements, aspect)
     if (b) out.set(e.id, { ...b, advice: liftAdvice(b) })
   }
   return out
@@ -1439,13 +1491,18 @@ function liftNotes(elements, all) {
  * `agent` false is a pass Fetch ran for itself, which is kept in its own map: its ids
  * resolve, but they never replace the ones the agent asked for and is still holding.
  */
-function noteFound(path, at, elements, all, { agent = true } = {}) {
+function noteFound(path, at, elements, all, { agent = true, aspect = 0 } = {}) {
   const list = all || elements || []
-  const notes = liftNotes(elements, list)
+  const notes = liftNotes(elements, list, aspect)
   const boxes = new Map((elements || []).map(e => [e.id, e.box]))
   // an element named only inside a refusal is still one the agent may aim at
-  for (const b of notes.values()) if (b.instead) boxes.set(b.instead.id, b.instead.box)
-  ;(agent ? foundBy : foundFor).set(path, { at, boxes, all: list })
+  for (const b of notes.values()) {
+    if (b.instead) boxes.set(b.instead.id, b.instead.box)
+    if (b.around) boxes.set(b.around.id, b.around.box)
+  }
+  // the frame's own shape, kept so apply_edit judges a lift by the same ruler the search
+  // did: a type-sized padding is square on the screen and not in fractions of the frame
+  ;(agent ? foundBy : foundFor).set(path, { at, boxes, all: list, aspect })
   return notes
 }
 
@@ -1513,6 +1570,9 @@ function checkTimes(FD, prev, doc) {
 // spotlight" too, an agent asked to lift the song details spotlit the whole pane.
 function liftAdvice(b) {
   const name = e => `${e.id} (${e.kind}, "${String(e.text || '').slice(0, 40)}")`
+  // The two below both say the thing to lift is inside the refused element. For a line of
+  // words it is the other way round: the thing to lift is the card around them.
+  if (b.around) return `${b.why}; to lift it, lift ${name(b.around)}, the card the words sit in`
   if (b.instead && b.share >= 0.2) return `${b.why}; to lift it, lift ${name(b.instead)}, the part of it that can be raised`
   if (b.instead) return `${b.why}; only small pieces inside it can be lifted (such as ${name(b.instead)}): lift the one the person means, or point at the whole with a spotlight and say why`
   return `${b.why}; nothing inside it can be lifted either, so a spotlight is the way to point at it (say so if the person asked for a lift)`
@@ -1526,7 +1586,7 @@ function liftable(seen, m) {
   const box = m.box && typeof m.box === 'object' ? T.cleanBox(m.box) : null
   const same = (a, b) => ['x', 'y', 'w', 'h'].every(k => Math.abs(a[k] - b[k]) < 0.004)
   const el = seen.all.find(e => id ? e.id === id : box && same(e.box, box))
-  const b = el && ['card', 'grid', 'panel'].includes(el.kind) ? T.liftBlock(el, seen.all) : null
+  const b = el && ['card', 'grid', 'panel', 'text'].includes(el.kind) ? T.liftBlock(el, seen.all, seen.aspect) : null
   if (!b) return
   throw new Error(`Not lifting ${el.id}: ${liftAdvice(b)}. A lifted piece needs room on every side and its whole content on screen.`)
 }
@@ -1545,7 +1605,8 @@ async function elementsNear(src, at, crop) {
   try {
     const r = await deps.proc.findOnScreen(src, at, { crop: crop && crop.w > 0 ? crop : null, limit: 40 })
     // Fetch's own pass, so it does not renumber the E ids the agent is holding
-    noteFound(src, r.at, r.elements, r.all, { agent: false })
+    noteFound(src, r.at, r.elements, r.all, { agent: false,
+      aspect: r.width > 0 && r.height > 0 ? r.width / r.height : 0 })
     return r.all || r.elements
   } catch (e) {
     console.warn('[aim] could not read the frame at', at, e && e.message)
@@ -1784,8 +1845,8 @@ async function inEditor(path, expr) {
 
 // A question about time, asked of one frame. The refusal names the call that does the
 // job on a capture instead, because a refusal that only says no costs a turn.
-const SHOT_INSTEAD = 'A shot is one frame. apply_look styles it, apply_edit places marks on it, ' +
-  'preview_frame draws it and export writes the PNG.'
+const SHOT_INSTEAD = 'A shot is one frame. apply_look styles it, apply_edit places marks and the ' +
+  'headline on it, preview_frame draws it and export writes the PNG.'
 const notOnAShot = what => new Error(`${what} is a question about time, and this is a shot. ${SHOT_INSTEAD}`)
 
 // The shot document, from the window that holds it. The editor is asked rather than
@@ -1826,6 +1887,10 @@ function summariseShot(shot, src) {
     capture: { width: shot.w, height: shot.h },
     marks: (shot.marks || []).map(m => ({ id: m.id, kind: m.kind, x: m.x, y: m.y, w: m.w, h: m.h, n: m.n,
       ...(m.kind === 'blur' ? { strength: m.strength || 18 } : {}) })),
+    // The words on the picture, with no times on them: a headline is a fact about the
+    // composition and not about a clock.
+    texts: (shot.texts || []).map(t => ({ id: t.id, text: t.text, style: t.style || null,
+      ...(t.subtitle ? { subtitle: t.subtitle } : {}), ...(t.at ? { at: t.at } : {}) })),
     crop: shot.crop, cropAR: shot.cropAR,
     ...(shot.viewport ? { viewport: shot.viewport } : {}),
     ...(shot.group ? { group: { gap: shot.group.gap, align: shot.group.align,
@@ -1833,13 +1898,16 @@ function summariseShot(shot, src) {
     look: Look.compact(shot.look, looksDir()),
     // Said outright rather than left to be found out: a still has no clock, so the
     // fields an edit carries for one are not missing here, they do not exist.
-    no_timeline: 'one frame: no clips, zooms, captions, sound or pointer, and marks are placed and never timed. ' +
+    no_timeline: 'one frame: no clips, zooms, captions, sound or pointer, and marks and texts are placed ' +
+      'and never timed. A headline is not a question about time, so a still carries type: apply_edit texts ' +
+      'with style headline, caption, label or callout is how a capture becomes a hero. ' +
       'The look is the same look a recording holds, and the fades, the arrival, the loop and the motion blur ' +
       'are kept as sent and simply not drawn on one frame.',
     options: {
       looks: Look.list(looksDir()).map(p => p.name),
       backgroundImages: deps.proc.backdropList().filter(b => b.image).map(b => b.id),
       markKinds: [...Shot.KINDS],
+      textStyles: ['headline', 'caption', 'label', 'callout'],
       cropAR: Look.CROP_ARS,
     },
   }
@@ -1850,7 +1918,11 @@ function summariseShot(shot, src) {
 // refusal on a lift that has nothing to raise), and then through ui/shot.js, which
 // merges marks by the edit document's own rule. What a shot has no room for is refused
 // by name rather than accepted and dropped.
-const SHOT_HAS_NO = { clips: 'clips', zooms: 'zooms', texts: 'texts', cues: 'captions',
+// texts is not in this list, and that is the round's largest single change: a headline
+// has nothing to do with a clock. A hero, a docs picture and a store listing are all a
+// capture with a line of type on it, and until now a still could carry every mark and
+// no words, so the one thing a screenshot exists to be was the one thing it could not be.
+const SHOT_HAS_NO = { clips: 'clips', zooms: 'zooms', cues: 'captions',
   beats: 'beats', camera: 'a camera bubble', audio: 'sound', audioTrack: 'a sound track',
   pointer: 'a pointer track', autoZoom: 'auto-zoom' }
 async function applyToShot(args) {
@@ -1860,8 +1932,10 @@ async function applyToShot(args) {
     throw new Error(`a shot has no ${refused.map(k => SHOT_HAS_NO[k]).join(', ')}. ${SHOT_INSTEAD} ` +
       'To put this on a recording instead, send it to that recording\'s path.')
   }
-  if (patch.marks != null && !Array.isArray(patch.marks)) {
-    throw new Error('marks is a list; to delete one send remove: [\'M2\'] beside it in doc, not inside it')
+  for (const k of ['marks', 'texts']) {
+    if (patch[k] != null && !Array.isArray(patch[k])) {
+      throw new Error(`${k} is a list; to delete one send remove: ['${k === 'texts' ? 'T1' : 'M2'}'] beside it in doc, not inside it`)
+    }
   }
   if (patch.remove != null && !Array.isArray(patch.remove)) throw new Error('remove is a list of ids, e.g. remove: [\'M2\']')
 
@@ -1891,6 +1965,20 @@ async function applyToShot(args) {
   if (patch.group && !shot.group) {
     warn.push('this build of Fetch keeps no group on a shot, so the second capture was not placed and the ' +
       'picture is of the first alone. Say so rather than sending it again.')
+  }
+  // Same shape as the group line above, for the same reason: a field a build's document
+  // does not keep has to say so once rather than come back as a picture with no words on it.
+  if (Array.isArray(patch.texts) && patch.texts.length && !(shot.texts || []).length) {
+    warn.push('this build of Fetch keeps no text on a shot, so the headline was not placed and the picture ' +
+      'is the capture alone. Say so rather than sending it again.')
+  }
+  // Type never lies on the product, so type needs somewhere that is not the product to
+  // stand. A look with no ground draws the capture edge to edge and leaves nowhere, and
+  // the type is simply not drawn. Said here rather than found in the picture.
+  if ((shot.texts || []).length && !Shot.toExportOpts(shot).backdrop) {
+    warn.push('this look draws the capture edge to edge, so there is no ground for the words to stand on and ' +
+      'none of them are drawn. Type never lies over the product. apply_look with a preset that gives the ' +
+      'capture a ground, such as studio or clean, and the headline appears beside it or above it.')
   }
   if (warn.length) out.warnings = warn
   const lw = lookWarnings(require('./fetchdoc').lookPatchOf(patch).look, shot, args.path, { engine: 'gl' })
@@ -1947,7 +2035,10 @@ async function exportShot(args) {
   const checked = await reviewShot({ path: args.path, shot }).catch(() => null)
   return {
     path: r.file, mb, pixels: `${r.w}x${r.h}`, scale: r.scale, format: fmt, engine: r.engine,
-    capture: r.capture,
+    capture: r.capture, density: r.density,
+    // Capture pixels per output pixel, which is the one number that tells a deliverable
+    // from a preview and the one an agent cannot derive from two sizes it was handed.
+    density_means: '1 is the capture at the size it was captured; over 1 is that much of it thrown away',
     original: 'the capture in Original/ is untouched, so this can be styled again from it',
     ...(checked ? { review: { verdict: checked.verdict, score: checked.score, summary: checked.summary,
       blocking: require('./review').blocking(checked) } } : {}),
@@ -1955,60 +2046,37 @@ async function exportShot(args) {
   }
 }
 
-// review, on a capture. The same rubric, not a second one: the shot is projected as
-// the take of one frame it is, and every rule that is about a picture runs untouched
-// (what the brief said to hide and whether anything covers it, the shape, two lifts on
-// one place, a ground the capture sinks into).
+// review, on a capture. The same file and not the same rules: a shot says what it is
+// (ui/shot.js writes kind) and ui/review.js judges it as a picture, off the plan the
+// compositor draws it from, so the judge and the renderer cannot disagree about where
+// anything is. The rules about a clock come back under not_judged, named, rather than
+// reported as failures, since a screenshot cannot be the wrong length.
 //
-// One rule is about a clock and cannot mean anything here, so it is dropped by name and
-// the result says which and why, rather than reporting that a screenshot is 26 seconds
-// short of the brief. The verdict and the score are then worked out again from the
-// rubric's own weights, because dropping an item and leaving the number that counted it
-// would be a summary that disagrees with its own list.
-const NOT_ABOUT_A_STILL = {
-  length: 'a shot has no length, so the seconds a brief asks for are not about this picture',
-}
+// It used to be the edit rubric run on a take of one frame, and on one frame every rule
+// that rubric had passed: it answered "ready, 10" for a bare capture on a gradient and,
+// word for word, for a picture with two title bars in it. A checker that always says ten
+// is worse than none, which this project has learned once already.
 async function reviewShot(args) {
-  const Review = require('./review')
   const shot = args.shot || await shotOf(args.path)
-  const spec = Shot.toRenderSpec(shot)
-  const doc = { ...spec, dur: Shot.SPAN, clips: [{ id: 'C1', start: 0, end: Shot.SPAN }], beats: [] }
   let brief = null
   try { brief = (require('./director').read(args.path) || {}).brief || null } catch {}
-  const r = Review.review({
-    doc, brief, path: args.path, declined: args.declined,
+  return require('./review').review({
+    doc: shot, brief, path: args.path, declined: args.declined,
     looks: require('./look').list(looksDir()),
-    // A capture carries no sound, which is a fact about the file rather than a take
-    // nobody has transcribed, so the captions rule is answered instead of skipped.
-    silent: true, beats: [], width: shot.w, height: shot.h,
     levels: await shotLevels(shot),
   })
-  const items = r.items.filter(i => !NOT_ABOUT_A_STILL[i.rule])
-  const dropped = r.items.filter(i => NOT_ABOUT_A_STILL[i.rule]).map(i => ({ rule: i.rule, why: NOT_ABOUT_A_STILL[i.rule] }))
-  const live = items.filter(i => !i.declined)
-  const bad = live.filter(i => i.severity === 'blocking').length
-  const should = live.filter(i => i.severity === 'should').length
-  const verdict = bad ? 'not ready' : should ? 'nearly' : 'ready'
-  const score = Math.round(Math.max(0, 10 - live.reduce((n, i) => n + (Review.PENALTY[i.severity] || 0), 0)) * 100) / 100
-  const summary = bad || should
-    ? `${bad ? 'Not ready' : 'Nearly'}: ` + [bad ? `${bad} thing${bad === 1 ? '' : 's'} to fix` : '',
-      should ? `${should} thing${should === 1 ? '' : 's'} worth fixing` : ''].filter(Boolean).join(', ') + '.'
-    : 'Ready: nothing the rubric can name on this shot.'
-  return { verdict, score, summary, items, look_at: [],
-    ...(dropped.length ? { not_judged: dropped } : {}),
-    measured: { kind: 'shot', capture: `${shot.w}x${shot.h}`, marks: (shot.marks || []).length,
-      redactions: (shot.marks || []).filter(m => m.kind === 'redact' || m.kind === 'blur').length,
-      aspect: r.measured.aspect, wanted_aspect: r.measured.wanted_aspect, ground: r.measured.ground,
-      take_levels: r.measured.take_levels } }
 }
 
 // The capture's own black and white points, so the rule about a ground it sinks into
-// can run on a shot too. Only where the look asks for a solid ground, which is the one
-// rule that reads them, and kept per capture, since a capture never changes.
+// can run on a shot too. Only where the look states a ground whose colour is known,
+// which is the one rule that reads them, and kept per capture, since a capture never
+// changes. An image ground and one made of the take's own blur are not measured: the
+// rubric reports null for them rather than comparing against a colour nobody has.
 const shotLevelCache = new Map()
+const GROUND_READ = ['solid', 'gradient', 'mesh']
 async function shotLevels(shot) {
   const L = (shot && shot.look) || {}
-  if (!L.background || L.background.kind !== 'solid' || !shot.src) return null
+  if (!L.background || !GROUND_READ.includes(L.background.kind) || !shot.src) return null
   const key = `${shot.src}|${JSON.stringify(shot.crop || null)}`
   if (shotLevelCache.has(key)) return shotLevelCache.get(key)
   let lv = null
@@ -2289,6 +2357,9 @@ function lookWarnings(patch, doc, file, ctx) {
   // so the engine that will draw this output is passed where it is known (the export
   // knows both). Nothing given, the compositor answers, which is what draws the stage.
   return out.concat(Look.warnings(L, { viewport: !!(doc && doc.viewport), browser, images,
+    // A shot says so, so the fields a capture cannot mean can be named rather than
+    // silently doing nothing: frame.chrome clean has no viewport to draw against.
+    still: !!(doc && doc.kind === 'shot'),
     engine: ctx && ctx.engine, format: ctx && ctx.format, marks: doc && doc.marks }))
 }
 

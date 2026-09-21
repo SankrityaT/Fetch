@@ -398,7 +398,16 @@ function warnings(look, ctx = {}) {
   else if (L.background.kind === 'image' && Array.isArray(ctx.images) && !ctx.images.includes(L.background.image)) {
     out.push(`background.image ${L.background.image} is not one of the images list_looks names, so dusk is used.`)
   }
-  if (CROPS_CHROME.has(L.frame.chrome) && ctx.browser && ctx.viewport === false) {
+  // A capture records no viewport, so frame.chrome clean has nothing to stand a drawn bar
+  // above and draws nothing at all. Silence is the worst of the three answers here: the
+  // field reads as set and the picture never changes. It is said here rather than in the
+  // picture rubric because the call that fixes it turns double-chrome on, and advice that
+  // trips the next rule is not safe to follow.
+  const stillNoChrome = !!ctx.still && L.frame.chrome === 'clean' && !ctx.viewport
+  if (stillNoChrome) {
+    out.push('frame.chrome clean: a capture does not record where the page sits in the browser window, so no browser frame is drawn on a still. device.kind browser draws a shell round the whole capture instead.')
+  }
+  if (!stillNoChrome && CROPS_CHROME.has(L.frame.chrome) && ctx.browser && ctx.viewport === false) {
     out.push(`frame.chrome ${L.frame.chrome}: this take does not record where the page sits in the browser window, so its tabs and toolbar stay. Crop them off with crop instead.` +
       (L.frame.chrome === 'clean' ? ' Fetch draws no browser frame here either: round a real one it would be two browsers.' : ''))
   }

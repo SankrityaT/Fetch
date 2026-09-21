@@ -1189,8 +1189,11 @@ function deviceCanvas(D, k, measure) {
   }
   const shell = () => path(B.x, B.y, B.w, B.h, B.r)
   shell(); g.fillStyle = rgbaOf(D.shell, 1); g.fill()
-  // the bar a browser and a window wear, a shade off the shell so it reads as a surface
-  if (D.bar > 0 && (D.kind === 'browser' || D.kind === 'window')) {
+  // The bar a browser and a window wear, a shade off the shell so it reads as a surface.
+  // Not where the capture inside already carries chrome of its own (Plan.ownChrome): the
+  // top bezel is then the same as the sides and the shell is a frame round a window
+  // rather than a second window round the first. One title bar, and it is the real one.
+  if (D.bar > 0 && !D.own && (D.kind === 'browser' || D.kind === 'window')) {
     g.save(); shell(); g.clip()
     g.fillStyle = rgbaOf(D.face, 1); g.fillRect(B.x, B.y, B.w, D.bar)
     g.fillStyle = rgbaOf(D.line, D.light ? 0.14 : 0.10)
@@ -1206,21 +1209,23 @@ function deviceCanvas(D, k, measure) {
       dx += gap
     }
     const ph = D.bar * 0.44, py = B.y + (D.bar - ph) / 2
-    if (D.kind === 'browser') {
-      // the address, which is half the reason to draw a browser at all. Fetch does not
-      // record the page's address, so an empty one is an empty bar rather than a made
-      // up host: the frame says browser either way, and nothing in an export is invented.
+    // The address, which is half the reason to draw a browser at all, and the field is
+    // drawn only where there is an address to put in it. A blank one reads as a mockup
+    // nobody finished, which is worse than a frame with no address bar at all, and Fetch
+    // will not invent a host: the plan hands over what the capture or the person said and
+    // whether it is shaped like one (Plan.barText). With a name rather than a host the
+    // bar is a title bar, drawn the way a window's is, and the plan already gave it a
+    // title bar's height.
+    if (D.kind === 'browser' && D.address) {
       const px0 = dx + D.bar * 0.3, pw = Math.min(S.w * 0.56, B.x + B.w - px0 - D.bar * 0.5)
       path(px0, py, pw, ph, ph / 2)
       g.fillStyle = rgbaOf(D.light ? '#FFFFFF' : '#0A0908', D.light ? 0.7 : 0.3); g.fill()
       g.strokeStyle = rgbaOf(D.line, D.light ? 0.12 : 0.08); g.lineWidth = hair; g.stroke()
-      if (D.title) {
-        const fs = ph * 0.52
-        g.save(); path(px0, py, pw, ph, ph / 2); g.clip()
-        g.font = Text.fontFor('sub', fs); g.fillStyle = rgbaOf(D.text, 1); g.textAlign = 'left'
-        g.fillText(fit(D.title, pw - ph * 1.1, fs, measure), px0 + ph * 0.55, py + ph / 2 + fs * 0.36)
-        g.restore()
-      }
+      const fs = ph * 0.52
+      g.save(); path(px0, py, pw, ph, ph / 2); g.clip()
+      g.font = Text.fontFor('sub', fs); g.fillStyle = rgbaOf(D.text, 1); g.textAlign = 'left'
+      g.fillText(fit(D.title, pw - ph * 1.1, fs, measure), px0 + ph * 0.55, py + ph / 2 + fs * 0.36)
+      g.restore()
     } else if (D.title) {
       const fs = ph * 0.52
       g.font = Text.fontFor('sub', fs); g.fillStyle = rgbaOf(D.text, 1); g.textAlign = 'center'
@@ -1773,7 +1778,11 @@ class Compositor {
   devicePass(dst, dev, ext, k, tilt, alpha) {
     const D = dev
     const w = Math.max(2, Math.ceil(D.extent.w * k)), h = Math.max(2, Math.ceil(D.extent.h * k))
-    const p = this.pic(`device|${D.kind}|${w}x${h}|${D.light ? 'l' : 'd'}|${D.title}`, () => deviceCanvas(D, k, this.measure))
+    // own and address are in the key beside the title because both change what is drawn
+    // on the bar rather than how big the shell is, and two shells of one size that draw
+    // different bars must not share one picture
+    const p = this.pic(`device|${D.kind}|${w}x${h}|${D.light ? 'l' : 'd'}|${D.own ? 'o' : ''}${D.address ? 'a' : ''}|${D.title}`,
+      () => deviceCanvas(D, k, this.measure))
     if (!p) return
     this.quad('plate', dst, [0, 0, this.W, this.H],
       { uBox: [ext.x * k, ext.y * k, ext.w * k, ext.h * k], uOp: alpha, ...tilt }, { uTex: p.tex }, true, true)
@@ -2128,7 +2137,12 @@ class Compositor {
   }
 
   // Over the finished frame: a title card's ground, the glass under captions, then every
-  // caption, title, lower third and label (text.js). The words and the card's scrim are
+  // caption, title, lower third and label, and the type a finished picture carries, which
+  // is a headline, a subhead, a caption under the image, a label pinned to a point in the
+  // picture and a callout that points at one (text.js). That last set is furniture rather
+  // than an event: it holds still, it stands beside the picture rather than on it, and the
+  // room it takes was settled before the take was placed (plan.js typeRoom), so there is
+  // nothing to do here that a caption does not already ask for. The words and the card's scrim are
   // Fetch's own, so they carve themselves out of the grade's mask and keep the colour
   // they were drawn at: Fetch does not speak in grey. The caption glass does not carve.
   // It is the frame's own light through a feathered patch, so it belongs to whatever it

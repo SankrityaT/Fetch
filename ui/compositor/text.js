@@ -50,9 +50,12 @@ const estimate = (text, px) => String(text).length * px * 0.56
  *             the frame: with a device drawn, box is the screen inside it (plan.js)
  *   prepared  { captions: { cues, words, busy } } from prepare.js
  *   zooms     explicit zooms on the output clock (captions stay down inside one)
- * Returns { phrases, cards, labels, st, box, capBox, frosted, reveal, close }.
+ *   still     what stillRoom settled before the take was placed, or null
+ *   light     whether the ground is a light one, which is what still type reads off
+ * Returns { phrases, cards, labels, still, st, box, capBox, frosted, reveal, close }.
  */
-function planText(opts = {}, { clock, span, W, H, box = null, capBox = null, prepared = null, zooms = [] } = {}) {
+function planText(opts = {}, { clock, span, W, H, box = null, capBox = null, prepared = null, zooms = [],
+  still = null, light = false } = {}) {
   const st = opts.captionStyle || {}
   const band = !!(box && (!st.position || st.position === 'bottom') && st.fx == null)
   let phrases = null
@@ -70,10 +73,15 @@ function planText(opts = {}, { clock, span, W, H, box = null, capBox = null, pre
       phrases = O.placeCaptions(phrases, cap.busy, (zooms || []).map(z => ({ a: z.start, b: z.end })))
     }
   }
-  const texts = (opts.texts || []).filter(t => t && String(t.text || '').trim()).map(t => {
-    const timed = t.start != null && t.end != null && t.end > t.start
-    return { ...t, start: timed ? clock(t.start) : null, end: timed ? clock(t.end) : null }
-  }).filter(t => t.start == null || t.end > t.start)
+  const texts = clockTexts(opts.texts, clock)
+    // The picture's own furniture is laid out against the take's rect, not against the
+    // clock, so it is taken out here rather than sorted again in every pass below. Only
+    // what the still block actually took: with no ground there is no still block, and
+    // taking a full-span title out here as well deleted a title card from a recording
+    // with not a word said about it. The styles a still invented have nowhere to stand
+    // without a ground and go either way; 'title' was a title card before any of this
+    // and is one again wherever nothing holds it.
+    .filter(t => (still ? !stillStyle(t, span) : !stillOnly(t)))
   const cards = O.titleCards(texts, span).map(k => ({ ...k, span }))
   if (phrases) phrases = O.clearOfTitles(phrases, cards)
   const labels = texts.filter(t => O.textStyle(t, span) !== 'title').map(t => ({ ...t, style: O.textStyle(t, span) }))
@@ -84,6 +92,16 @@ function planText(opts = {}, { clock, span, W, H, box = null, capBox = null, pre
   return {
     phrases: phrases && phrases.length ? O.phraseTimes(phrases) : [],
     cards, labels, st, box, capBox: capBox || box, W, H, span,
+    // The picture's own type, now that the picture has a place. The room it takes was
+    // settled before that (stillRoom), which is what the take was fitted into, and that
+    // room was measured against the box the layout gave the picture. A drawn device
+    // takes that box and hands back the screen inside it, so the headline is placed
+    // against the box too and not against the screen: placed against the screen its
+    // descenders sat on the shell's bezel and at a small size the whole line was inside
+    // the title bar, and a caption ran across a laptop's foot. Same argument and same
+    // answer as capBox, one line above. A pin still reads the screen, because `at` names
+    // a thing on the page.
+    still: placeStill(still, { W, H, box, outer: capBox || box, light, span }),
     // Every caption over the product gets the plate, framed or not. Unframed is the
     // case that needs it most: with no band to sit in, the caption fell back to the
     // shade's own blurred cloud of glyphs, a smudge with no boundary, on the default
@@ -446,6 +464,428 @@ function labelItems(tp, t, measure, out) {
   }
 }
 
+// ── a still's type ──────────────────────────────────────────────────────────
+//
+// Everything above is keyed to a clock. A title card opens and hands over, a lower third
+// runs for a beat, a caption follows the voice. None of it reaches a still, which has one
+// frame, and a hero without a headline is a picture of a window. What a finished picture
+// wants instead is furniture that holds still: a headline, a quieter line under it, a
+// caption under the image, a label pinned to a point in the picture, and a callout that
+// points at one.
+//
+// These are styles, not a flag about stills, so nothing a recording draws changes and a
+// clip can carry a headline too. Such a headline holds the room it was given for the
+// whole plan, because the take's place is the plan's and not the frame's: text that
+// arrives and leaves fades in the room it always had rather than shoving the picture
+// about mid-clip.
+//
+// The room is settled before the take is placed (stillRoom, which plan.js calls ahead of
+// the layout) and the picture is refitted into what is left. Type laid over a screenshot
+// covers the thing the screenshot is of, so the type stands beside the picture or over
+// the ground and the picture gets out of its way. There is deliberately no place that
+// puts a headline on the product.
+
+const STILL = {
+  head: 0.062,            // the headline, a share of the output's height: 67 px at 1080
+  headMin: 0.026, headMax: 0.12,
+  sub: 0.42,              // the quieter line, a share of the headline: 28 px under 67
+  subFloor: 0.024,        // and never under this share of the height
+  cap: 0.023,             // a caption under the image
+  pin: 0.026,             // a label pinned in the picture, and a callout
+  lineH: 1.12,            // display type sets tight
+  subLineH: 1.36,         // and a line meant to be read sets open
+  lines: 3, subLines: 4,  // the lines a block may take before it steps down a size
+  colBeside: 0.26,        // the least a text column gets standing beside the picture
+  colOver: 0.80,          // and standing above or below it
+  measure: 66,            // characters on a line meant to be read, DESIGN.md's 65 to 75
+  roomMax: 0.44,          // no block takes more of the frame than this
+}
+const PLACES = new Set(['above', 'below', 'left', 'right'])
+
+// The edit's texts on the output clock, once. Both sides of the still question have to
+// ask it of the same numbers: stillRoom read the take's own seconds while planText read
+// the clock's, so a title card over a trimmed edit (source 20 to 30 of a 60 second take,
+// exported as 0 to 10) was full-span to one and mid-clip to the other, reserved no room
+// and then stripped as a headline, and the card disappeared from the picture.
+function clockTexts(texts, clock) {
+  return (texts || []).filter(t => t && String(t.text || '').trim()).map(t => {
+    const timed = t.start != null && t.end != null && t.end > t.start
+    return { ...t, start: timed ? clock(t.start) : null, end: timed ? clock(t.end) : null }
+  }).filter(t => t.start == null || t.end > t.start)
+}
+
+// The styles a still invented, which need a ground to stand on and are drawn nowhere
+// else. 'title' is deliberately not one of them: it is a title card and always was.
+function stillOnly(t) {
+  const s = String((t && t.style) || '')
+  return s === 'headline' || s === 'caption' || ((s === 'label' || s === 'callout') && !!(t && t.at))
+}
+
+// What a text layer is on a picture that holds still, or null for the timed set above.
+//
+// 'label' is the one name shared with that set, and the point decides: a label given a
+// place in the picture is pinned to it, a label without one is the label over the video
+// it always was. A callout with nothing to aim at is the same, a label.
+//
+// A title card is a handover: its scrim covers the picture and clears as the take lands.
+// One that runs the whole plan never clears, so it is not a card, it is a headline that
+// was called a title. A still makes that obvious, since a still's text has no times at
+// all, but it was always true.
+function stillStyle(t, span = 0) {
+  if (!t) return null
+  const s = String(t.style || '')
+  if (s === 'headline' || s === 'caption') return s
+  if (s === 'label' || s === 'callout') return t.at ? s : null
+  if (s !== 'title') return null
+  const timed = t.start != null && t.end != null && t.end > t.start
+  return !timed || (+t.start <= 0.05 && +t.end >= span - 0.05) ? 'headline' : null
+}
+
+// A wrap by characters rather than by measured width, the way a caption's own wrap goes
+// (overlays.captionPhrases). The room a headline takes is settled once for the plan,
+// before anything is drawn and with no canvas at hand, and a wrap that depended on the
+// shaper would settle the room in one place and the lines in another.
+const budget = (colW, px) => Math.max(6, Math.floor(colW / (px * 0.56)))
+function wrapTo(text, chars) {
+  const out = []
+  for (const para of String(text).split(/\r?\n/)) {
+    const words = para.trim().split(/\s+/).filter(Boolean)
+    if (!words.length) continue
+    let line = ''
+    for (const w of words) {
+      const next = line ? `${line} ${w}` : w
+      if (line && next.length > chars) { out.push(line); line = w } else line = next
+    }
+    if (line) out.push(line)
+  }
+  return out.length ? out : ['']
+}
+
+// A headline too long for its column wraps, and where the wrap runs past the lines the
+// shape allows it steps down a size until it fits. Nothing is hidden and nothing is
+// clipped until the floor, where the last line it can carry ends in an ellipsis: a
+// headline nobody can read is a worse answer than one that admits it is long.
+// A greedy wrap spends the column and leaves whatever is left on the last line, and a
+// single word alone under a headline reads as a mistake rather than as a rag. So once
+// the line count is settled the column is tightened to the narrowest that still takes
+// that many lines, which evens them out and moves nothing else.
+function balance(text, chars) {
+  const lines = wrapTo(text, chars)
+  if (lines.length < 2) return lines
+  for (let c = Math.ceil(String(text).length / lines.length); c < chars; c++) {
+    const t = wrapTo(text, c)
+    if (t.length === lines.length) return t
+  }
+  return lines
+}
+
+function fitLines(text, px, colW, maxLines, minPx) {
+  let p = Math.max(minPx, px), lines = wrapTo(text, budget(colW, p))
+  while (lines.length > maxLines && p > minPx) {
+    p = Math.max(minPx, p * 0.94)
+    lines = wrapTo(text, budget(colW, p))
+  }
+  if (lines.length > maxLines) {
+    lines = lines.slice(0, maxLines)
+    lines[maxLines - 1] = lines[maxLines - 1].replace(/[\s.,;:]+$/, '') + '…'
+    return { px: Math.round(p), lines }
+  }
+  return { px: Math.round(p), lines: balance(text, budget(colW, p)) }
+}
+
+// The runs of a headline block: the big line, then the quieter ones. The first headline
+// is the headline and its own subhead follows it (a `subtitle`, a second line, or the
+// half of a sentence after a separator, all of which titleParts already splits); any
+// further headline-shaped text is another quiet paragraph in the same block. One rule,
+// rather than a count of how many headlines a picture is allowed.
+function headRuns(heads, colW, H, px) {
+  const t0 = heads[0]
+  const big = fitLines(O.titleParts(t0).title, px, colW, STILL.lines, H * STILL.headMin)
+  const subPx = Math.round(Math.max(H * STILL.subFloor, big.px * STILL.sub))
+  // A headline is a shape and may run the picture's whole width; a line meant to be read
+  // is held to a measure, because a 98 character line under it is a paragraph nobody
+  // tracks back along (DESIGN.md, Type).
+  const subCol = Math.min(colW, subPx * 0.56 * STILL.measure)
+  const runs = big.lines.map(text => ({ text, px: big.px, role: 'title',
+    lineH: Math.round(big.px * STILL.lineH), alpha: 1, lead: 0 }))
+  const quiet = []
+  const sub0 = O.titleParts(t0).subtitle
+  if (sub0) quiet.push(sub0)
+  for (const t of heads.slice(1)) quiet.push(String(t.text).trim())
+  for (const q of quiet) {
+    const f = fitLines(q, subPx, subCol, STILL.subLines, H * STILL.subFloor)
+    f.lines.forEach((text, i) => runs.push({ text, px: f.px, role: 'sub',
+      lineH: Math.round(f.px * STILL.subLineH), alpha: 0.74, lead: i ? 0 : Math.round(big.px * 0.34) }))
+  }
+  return runs
+}
+const runsHeight = runs => runs.reduce((h, r) => h + r.lead + r.lineH, 0)
+
+/**
+ * The type a still carries, settled from the output frame alone, and the room it needs.
+ * plan.js asks for this before it places the take, so the picture can be refitted into
+ * what is left.
+ *   texts   the edit's text layers
+ *   W, H    the output frame
+ *   slack   the room the take's own shape already leaves inside its box, in pixels:
+ *           what decides beside from above when nobody said
+ *   place   typography.headline, and size typography.headlineSize
+ * Returns null where nothing here is still furniture, else
+ * { place, runs, col, gutter, caps, pins, room: { top, bottom, left, right } }.
+ */
+function stillRoom(texts, { W, H, span = 0, slack = { x: 0, y: 0 }, width = 0, place = 'auto', size = 0 } = {}) {
+  const list = (texts || []).filter(t => t && String(t.text || '').trim() && stillStyle(t, span))
+  if (!list.length) return null
+  const heads = list.filter(t => stillStyle(t, span) === 'headline')
+  const capped = list.filter(t => stillStyle(t, span) === 'caption')
+  const pins = list.filter(t => { const s = stillStyle(t, span); return s === 'label' || s === 'callout' })
+  // Where the type goes when nobody said: beside the picture where the picture's own
+  // shape already leaves a column, above it where it does not. That is the split a help
+  // centre makes without thinking about it, a handset with the words beside it and a
+  // wide window with the words over it, and it falls out of one measurement.
+  const want = String((heads[0] && heads[0].place) || place || 'auto')
+  const p = PLACES.has(want) ? want : slack.x >= W * 0.30 ? 'left' : 'above'
+  const beside = p === 'left' || p === 'right'
+  const s0 = clamp(+size || STILL.head, STILL.headMin, STILL.headMax)
+  const t0 = heads[0] || {}
+  // The gutter between the type and the picture is the look's own measure, off the size
+  // a headline is set at, and not off how long this particular headline turned out.
+  const px0 = Math.round(H * clamp(+t0.sizeFrac || +t0.size || s0, STILL.headMin, STILL.headMax))
+  const gutter = heads.length ? Math.round(px0 * (beside ? 1.1 : 0.78)) : 0
+  // The column. Beside, it takes the width the picture's own shape was never going to
+  // use, so a handset with a headline beside it is one composition rather than a column,
+  // a picture and a hole on the far side. Above, it is the picture's own width: type
+  // four times wider than the thing it names is not a caption for it.
+  // Above or below, that width is the picture's own and not the frame less the slack,
+  // which is the picture plus both of its margins: a 2560x1600 capture at inset 0.08 got
+  // a 1536 px column over a 1248 px picture, a quarter wider than the thing it names.
+  const pic = width > 0 ? width : W - slack.x
+  const col = Math.round(beside
+    ? clamp(slack.x - gutter, W * STILL.colBeside, W * STILL.roomMax - gutter)
+    : clamp(pic, W * 0.5, W * STILL.colOver))
+  // A block that would take more of the frame than it is allowed steps down a size, the
+  // same answer a line too long for its column gets. A headline the frame cannot hold is
+  // still a headline; a headline cut off at the edge of its room is a mistake on show.
+  const cap = H * (beside ? 0.86 : STILL.roomMax)
+  let runs = [], px1 = px0
+  if (heads.length) {
+    runs = headRuns(heads, col, H, px1)
+    while (runsHeight(runs) + gutter > cap && px1 > H * STILL.headMin) {
+      px1 = Math.max(H * STILL.headMin, px1 * 0.94)
+      runs = headRuns(heads, col, H, Math.round(px1))
+    }
+  }
+  // A caption belongs under the image whatever the headline is doing, so it is its own
+  // room at the foot of the frame.
+  const caps = capped.map(t => {
+    const px = Math.round(H * clamp(+t.sizeFrac || +t.size || STILL.cap, 0.012, 0.05))
+    return { t, ...fitLines(String(t.text).trim(), px, Math.min(W * STILL.colOver, px * 0.56 * STILL.measure), 2, H * 0.012) }
+  })
+  const capH = caps.reduce((h, c) => h + c.lines.length * Math.round(c.px * STILL.subLineH), 0)
+  const capGap = caps.length ? Math.round(caps[0].px * 1.5) : 0
+  const room = { top: 0, bottom: 0, left: 0, right: 0 }
+  const blockH = runs.length ? runsHeight(runs) + gutter : 0
+  if (p === 'above') room.top = blockH
+  else if (p === 'below') room.bottom = blockH
+  else if (runs.length) room[p] = col + gutter
+  room.bottom += Math.min(capH + capGap, H * 0.2)
+  return { place: p, runs, head: heads[0] || null, col, gutter, caps, capGap, pins, room }
+}
+
+/**
+ * The still's type placed on the frame, once the take has a rect: absolute positions for
+ * the headline block, the caption under the image and each pinned label or callout.
+ * `light` is whether the ground is a light one, which is what the type reads off.
+ */
+function placeStill(sr, { W, H, box, outer = null, light = false, span = 0 }) {
+  if (!sr) return null
+  const B = box || { x: 0, y: 0, w: W, h: H }
+  // What the type stands clear of. The room was taken out of the box the layout gave the
+  // picture, and a drawn device takes that whole box and hands back the screen inside
+  // it, so measuring off the screen puts the type on the shell it was reserved room
+  // beside. A pin keeps B: `at` is the take's own fractions and names a thing on the
+  // page, not a place on the canvas.
+  const O_ = outer || B
+  const beside = sr.place === 'left' || sr.place === 'right'
+  const blockH = sr.runs.length ? runsHeight(sr.runs) : 0
+  const align = beside ? 'left' : 'centre'
+  // The measurement that set the column ran before the take was refitted into what the
+  // type left, so a column a few pixels wider than the picture it names is possible. A
+  // line wider than its column is already stepped down where it is drawn, so holding the
+  // column to the picture costs a hair of size and never a wrap nobody planned.
+  const col = beside ? sr.col : Math.round(Math.min(sr.col, O_.w))
+  const x = Math.round(beside
+    ? (sr.place === 'left' ? O_.x - sr.gutter - sr.col : O_.x + O_.w + sr.gutter)
+    : O_.x + O_.w / 2 - col / 2)
+  // The block hugs the picture: above, its last line sits a gutter off the top edge, and
+  // the air it did not need goes to the margin. That gap is the one the eye measures.
+  const top = Math.round(beside ? O_.y + O_.h / 2 - blockH / 2
+    : sr.place === 'above' ? O_.y - sr.gutter - blockH
+    : O_.y + O_.h + sr.gutter)
+  const capTop = Math.round(O_.y + O_.h + (sr.place === 'below' ? sr.gutter + blockH : 0) + sr.capGap)
+  return { ...sr, W, H, col, box: B, outer: O_, light, span, align, x, top, capTop }
+}
+
+// Type on the ground takes the end the ground leaves open, ink over a light one and bone
+// over a dark one, which is the same choice the edge hairline makes (plan.edgeEnd). The
+// drop under it is for the light end only: dark type on a light ground already has every
+// bit of separation it needs, and a halo under it would be decoration.
+const stillInk = light => (light ? INK : WHITE)
+
+function stillItems(tp, t, measure, out) {
+  const S = tp.still
+  if (!S) return
+  const fill = stillInk(S.light)
+  const drop = S.light ? 0 : 0.3
+  // A still's furniture has no times, so it is simply up. Given times it arrives and
+  // leaves the way a label does, in the room it was always holding.
+  const fade = tt => {
+    const a = tt.start != null ? Math.max(0, +tt.start) : null
+    if (a == null || tt.end == null || !(+tt.end > a)) return 1
+    const b = Math.min(+tt.end, S.span || Infinity)
+    if (t < a || t >= b) return 0
+    const IN = Math.min(0.32, (b - a) / 3), OUT = O.leaveOf(IN, (b - a) / 4)
+    return t >= b - OUT ? O.MOVE((b - t) / OUT) : O.EASE_IN(Math.min(1, (t - a) / IN))
+  }
+  // ── the headline block
+  const headOp = S.runs.length ? fade(S.head || {}) : 0
+  if (headOp > 0.002) {
+    const op = headOp
+    let y = S.top
+    for (let i = 0; i < S.runs.length; i++) {
+      const r = S.runs[i]
+      y += r.lead
+      const top = y
+      const font = fontFor(r.role, r.px)
+      const track = r.role === 'title' ? r.px * -0.022 : r.px * 0.004
+      // measured for real only now, and only to keep a line inside its column: the wrap
+      // and the size are the plan's, so what the shaper can add here is a shrink
+      const wide = measure(r.text, r.px, r.role)
+      const k = wide > S.col ? S.col / wide : 1
+      const px = k < 1 ? Math.max(8, r.px * k) : r.px
+      const x = S.align === 'left' ? S.x : S.x + S.col / 2
+      const m = r.px * 1.2
+      out.items.push({
+        key: `still|${font}|${fill}|${r.alpha}|${S.align}|${px.toFixed(1)}|${r.text}`,
+        bounds: { x: S.x - m, y: top - m, w: S.col + 2 * m, h: r.lineH + 2 * m },
+        op: op * r.alpha, z: 12,
+        paint(ctx) {
+          ctx.font = k < 1 ? fontFor(r.role, px) : font
+          ctx.textAlign = S.align === 'left' ? 'left' : 'center'
+          ctx.letterSpacing = `${track}px`
+          const cy = top + r.lineH / 2
+          if (drop) {
+            ctx.save(); ctx.filter = `blur(${(px * 0.18).toFixed(2)}px)`; ctx.fillStyle = rgba(SHADE, drop)
+            ctx.fillText(r.text, x, baseline(ctx, cy + px * 0.03)); ctx.restore()
+          }
+          ctx.fillStyle = fill
+          ctx.fillText(r.text, x, baseline(ctx, cy))
+        },
+      })
+      y += r.lineH
+    }
+  }
+  // ── the caption under the image
+  let cy = S.capTop
+  for (const c of S.caps) {
+    const op = fade(c.t)
+    const lineH = Math.round(c.px * STILL.subLineH)
+    const O_ = S.outer || S.box
+    const font = fontFor('sub', c.px), cxm = O_.x + O_.w / 2
+    const top = cy
+    if (op > 0.002) {
+      out.items.push({
+        key: `stillcap|${font}|${fill}|${c.lines.join('\n')}`,
+        bounds: { x: O_.x - c.px, y: top - c.px, w: O_.w + 2 * c.px, h: c.lines.length * lineH + 2 * c.px },
+        op: op * 0.66, z: 12,
+        paint(ctx) {
+          ctx.font = font; ctx.textAlign = 'center'; ctx.letterSpacing = `${c.px * 0.006}px`; ctx.fillStyle = fill
+          c.lines.forEach((l, i) => ctx.fillText(l, cxm, baseline(ctx, top + i * lineH + lineH / 2)))
+        },
+      })
+    }
+    cy += c.lines.length * lineH
+  }
+  // ── what is pinned in the picture
+  for (const tt of S.pins) pinItem(tp, tt, t, measure, out, fade(tt))
+}
+
+// A label pinned to a point in the picture, and a callout that points at one.
+//
+// The point is the take's own fractions, the coordinates a mark is placed in, because it
+// names a thing on the page and not a place on the canvas: a label pinned at the output's
+// own 0.7 slides off its button the moment the shape changes.
+//
+// The words sit on a plate rather than in a cloud of shade. A still is read close, and
+// the airbrush a caption over a video can afford takes a hairline off an app page at
+// 100 percent (see the shade above). The plate carries its own edge and reaches nowhere
+// past it.
+// The leader is long enough to read as one: at a gap of about half the words' own size
+// the plate sits against the dot and the line between them is a dash.
+const PIN_PAD = [0.62, 0.34], PIN_LEAD = 1.9, PIN_DOT = 0.3
+function pinItem(tp, tt, t, measure, out, op) {
+  if (!(op > 0.002) || !tt.at) return
+  const S = tp.still, B = S.box, { W, H } = S
+  const callout = String(tt.style || '') === 'callout'
+  let px = Math.round(H * clamp(+tt.sizeFrac || +tt.size || STILL.pin, 0.012, 0.06))
+  // Fitted rather than cut: a plate given more words than two lines hold steps down a
+  // size and then ends in an ellipsis, the same answer a headline gets. Sliced at two, a
+  // label lost its last words silently and the picture read as a finished sentence that
+  // was not one.
+  const fit = fitLines(String(tt.text).trim(), px, W * 0.26, 2, H * 0.012)
+  const lines = fit.lines
+  px = fit.px
+  const wide = Math.max(...lines.map(l => measure(l, px, 'sub')))
+  const lineH = Math.round(px * 1.3)
+  const padX = px * PIN_PAD[0], padY = px * PIN_PAD[1]
+  const boxW = wide + padX * 2, boxH = lines.length * lineH + padY * 2
+  const ax = B.x + clamp(+tt.at.x, 0, 1) * B.w, ay = B.y + clamp(+tt.at.y, 0, 1) * B.h
+  const lead = px * PIN_LEAD, dot = px * PIN_DOT
+  let bx = ax - boxW / 2, by = ay - boxH / 2
+  if (callout) {
+    // The words stand off the picture where the ground has room for them, and inside it
+    // where it has not. Either way they are clear of the thing they name: a callout that
+    // covers what it points at is a sticker.
+    const left = +tt.at.x <= 0.5
+    const margin = left ? B.x : W - B.x - B.w
+    const outside = margin >= boxW + lead * 2
+    bx = outside ? (left ? B.x - lead - boxW : B.x + B.w + lead)
+      : (left ? ax + lead + dot : ax - lead - dot - boxW)
+    by = ay - boxH / 2
+  }
+  bx = clamp(bx, px * 0.5, W - boxW - px * 0.5)
+  by = clamp(by, px * 0.5, H - boxH - px * 0.5)
+  // where the leader meets the plate: the nearer of its two vertical edges
+  const jx = ax < bx ? bx : ax > bx + boxW ? bx + boxW : ax
+  const jy = clamp(ay, by + boxH * 0.2, by + boxH * 0.8)
+  const m = px * 1.4
+  const x0 = Math.min(bx, ax) - m, y0 = Math.min(by, ay) - m
+  out.items.push({
+    key: `pin|${callout}|${px}|${bx.toFixed(1)},${by.toFixed(1)}|${ax.toFixed(1)},${ay.toFixed(1)}|${lines.join('\n')}`,
+    bounds: { x: x0, y: y0, w: Math.max(bx + boxW, ax) + m - x0, h: Math.max(by + boxH, ay) + m - y0 },
+    op, z: 13,
+    paint(ctx) {
+      if (callout) {
+        // the leader and the ring: the arrow's own furniture, a white keyline with gold
+        // over the inner half of it, so it reads on a light page and on a dark one
+        ctx.lineCap = 'round'
+        for (const [col, w] of [['#FBFAF8', px * 0.2], [GOLD, px * 0.09]]) {
+          ctx.strokeStyle = col; ctx.lineWidth = w
+          ctx.beginPath(); ctx.moveTo(jx, jy); ctx.lineTo(ax, ay); ctx.stroke()
+        }
+        ctx.fillStyle = '#FBFAF8'; ctx.beginPath(); ctx.arc(ax, ay, dot + px * 0.07, 0, Math.PI * 2); ctx.fill()
+        ctx.fillStyle = GOLD; ctx.beginPath(); ctx.arc(ax, ay, dot, 0, Math.PI * 2); ctx.fill()
+      }
+      ctx.save(); ctx.filter = `blur(${(px * 0.34).toFixed(2)}px)`; ctx.fillStyle = rgba('#000000', 0.34)
+      roundRect(ctx, bx, by + px * 0.1, boxW, boxH, px * 0.5); ctx.fill(); ctx.restore()
+      ctx.fillStyle = rgba(INK, 0.94); roundRect(ctx, bx, by, boxW, boxH, px * 0.5); ctx.fill()
+      ctx.font = fontFor('sub', px); ctx.textAlign = 'left'; ctx.letterSpacing = `${px * 0.004}px`
+      ctx.fillStyle = tt.color && tt.color !== 'white' ? tt.color : WHITE
+      lines.forEach((l, i) => ctx.fillText(l, bx + padX, baseline(ctx, by + padY + i * lineH + lineH / 2)))
+    },
+  })
+}
+
 /**
  * What text shows at output time t: { items, frost, ground }. items are drawn in z
  * order, each { key, bounds, op, dx, dy, blur, blurMax, tint, paint }; frost is glass
@@ -457,6 +897,7 @@ function textAt(tp, t, measure = estimate) {
   cardItems(tp, t, measure, out)
   if (tp.phrases.length) captionItems(tp, t, measure, out)
   labelItems(tp, t, measure, out)
+  stillItems(tp, t, measure, out)
   out.items.sort((a, b) => a.z - b.z)
   return out
 }
@@ -527,4 +968,5 @@ function canvasMeasure() {
   }
 }
 
-module.exports = { planText, textAt, frameMove, rasterItem, canvasMeasure, fontFor, estimate, GOLD, INK }
+module.exports = { planText, textAt, frameMove, rasterItem, canvasMeasure, fontFor, estimate,
+  stillRoom, placeStill, stillStyle, stillOnly, clockTexts, wrapTo, STILL, GOLD, INK }

@@ -60,6 +60,11 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
 - Chat pane (Cmd J): spawns the person's own Claude Code or Codex with the Fetch MCP
   server attached. Streams every tool call as a row with its duration. Remembers the
   conversation (`--resume` on the session id). `@` tags a recording by exact path.
+  An attached image goes to the model as an image, since the pane allows Fetch's tools
+  and nothing that opens a file, and a capture Fetch made goes both ways: the picture to
+  look at and the path to work on. It is a PNG, so it used to go as a picture alone, and
+  the agent could see the person's own screenshot and not style it. A capture is known by
+  where it lives (`<Take>/Original/`) or by its shot document; anything else is a picture.
   A microphone dictates, transcribed locally.
   A model picker lists every model the installed CLIs can run (Codex's own catalogue,
   Claude Code's model ids), grouped by CLI, searchable, with the effort levels each
@@ -103,10 +108,12 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   by folder and by a search over the name. An information button on any card says its
   kind and platform, what is on disk, when it was captured, when it was last exported
   and which folders hold it. The kind is read off what was captured and never off what
-  was exported, so styling a shot never makes it a take. Provenance (what an item was
-  styled or cut from, and what was made out of it) is a row the panel draws from an
-  item's `from`, and nothing in Fetch writes that field yet, so those rows are silent
-  on every item today. Under Not built, below.
+  was exported, so styling a shot never makes it a take. Provenance: what an item was
+  styled, cut or copied from, what was made out of it, and the original one click away
+  from the row that names it. Duplicate writes it, a rename repoints it from both ends,
+  and a source that was trashed keeps its row and loses its click. It is kept in
+  `collections.json` beside the folders, and an item that carries its own `from` wins
+  over it.
 - Shot editor: the same editor, the same stage, the same compositor, with the clock
   taken off it. Crop, Zooms and marks, and Look; a Styled and Original switch where the
   play button was, Space to peek at the capture, and one Export PNG button, since a
@@ -164,6 +171,33 @@ A capture an agent asks for is its own question. The dialog says screenshot rath
 record, says the frame is written now and that nothing keeps running, and the "until
 Fetch quits" answer is remembered against the kind as well as the target: allowing
 screenshots of a browser does not also allow recordings of it, and the other way round.
+**A capture that cannot work fails usefully rather than stalling.** There are two dialogs
+behind one symptom. macOS owns Screen Recording, and reading shareable content without the
+grant raises a system prompt only a person at this Mac can answer. **Who asked decides what
+happens to that prompt**, and it is carried all the way to the helper (`Shot --by`), which
+is the only process that can raise it. An agent cannot answer a prompt, so for an agent the
+grant is preflighted (`CGPreflightScreenCaptureAccess`, which reads and never asks) in
+`takeShot` before anything is spawned and again in the helper before a pixel is read:
+`not-determined`, `denied` or `restricted` is a refusal with the pane to open and the restart
+to make, and an unreadable state is allowed, since refusing a capture that would have worked
+on a measurement nobody could take is worse. A person is never refused on that reading at
+all. Preflight is a boolean and Electron's screen status is backed by it, so a Mac that has
+never been asked reads as `denied` and is indistinguishable from one that said no; refusing
+the person on it deleted the first-run prompt and named a switch in a pane Fetch was not yet
+listed in. They go through, the helper does not preflight for them, and the read raises the
+system's own prompt or comes back with a refusal that names the pane and the restart. The
+grant is never requested on the person's behalf anywhere.
+Fetch's own question is the other one, and on
+the shipping `ask` default every agent capture raises it. It had no deadline at all, so an
+unattended agent waited on it forever. It is bounded at a minute now: a person who is here
+answers in seconds, and a minute of silence means nobody is, so the call refuses with the
+same sentence `takeShot` gives. The alert stays parent-less, which is load bearing: given a
+window to sit on, macOS makes it a sheet, and a sheet on a window created hidden is queued
+by AppKit until that window is shown, so the person is never asked, the deadline always
+wins, and every agent capture is refused a minute after it was made. A question nobody can
+see is a worse failure than the hang it was meant to fix. An answer arriving after the
+deadline lands on a promise nobody holds: that call already refused and captures nothing on
+a late yes.
 A person's own capture is named from what it captured, the way a take is named from the
 app in front (`naming.shotName`), so a shot lands as "Songscription · Library" rather
 than as `shot-1758...`; that name is Fetch's, recorded in `.fetch/<stem>.name.json`, and
@@ -178,6 +212,39 @@ lands on a capture. A shot stores even the fields one frame cannot mean, and pin
 at the moment it projects (`Shot.STILL_PINS`: the two fades, the arrival, the loop, the cut
 transition, the travel-driven shutter), so a look with a two second fade crosses onto a
 screenshot and back with the fade still on it.
+**A still carries type**, which is the difference between a screenshot on a background and
+a finished asset. A hero, a docs picture and a store listing are all a capture with a line
+of type on it, and for one round a shot refused `texts` by name alongside clips, zooms and
+captions. Nine of those ten are about a clock and a headline is not one of them, so `texts`
+is off the refusal list and the shot document carries it with no `start` and no `end`, the
+way it already carried marks. A text says what it is rather than when it is: `headline` (the
+big line, with `subtitle` as the quieter line under it), `caption` (a line under the image,
+held to a 66 character measure), `label` (a short line on a plate pinned to a point) and
+`callout` (the same plate with a leader and a ring drawn onto the point it names). A label
+and a callout take `at: {x, y}` in the take's own fractions, the coordinates a mark is
+placed in, so `element: 'E12'` from `find_on_screen` aims type exactly as it aims a lift:
+the bridge turns the element's box into the point at its middle, and aiming stays one rule
+rather than two. The type never lies over the product. The room is settled from the output
+frame before anything is placed, out of the slack the picture's own shape already leaves, and
+the take is refitted into what is left: measured, 127 px of type over 69 px of air costs the
+picture 58 px and no more. **Clear of the whole of the product**, which where a look draws a
+frame means the frame: a drawn device takes the box the layout gave the picture and hands
+back the screen inside it, so type measured off the screen sat its descenders on the bezel
+and at `typography.headlineSize` 0.026 sat the whole line inside the title bar, and a caption
+ran across a laptop's foot. It is placed against the box it was given room out of, which is
+the same argument the caption band already made. The column over a picture is the picture's
+own width and not the picture plus both of its margins, and since the picture's width is what
+the type left it, the two are settled by measuring, refitting, and measuring once more
+against the width that came out. A headline too long for its column wraps and then steps down
+a size rather than running past it, and so does a pinned label: given more words than two
+lines hold it steps down and only at the floor ends in an ellipsis, rather than dropping its
+last words silently. A look with no ground is the capture edge to edge and has
+nowhere for type to stand that is not the product, so the type is not drawn and `apply_edit`
+says so and names a preset that gives the capture a ground. A title card is not one of these:
+it was a title card before any of this and stays one wherever there is no ground to hold a
+headline, and both sides of that question now ask it of the same clock, so a card running the
+whole of a trimmed edit is drawn rather than reserved nothing and then stripped. Nothing about this is a flag for
+stills: a clip can carry a headline too, and it holds the room it was given for the whole plan.
 **There is no second renderer.** A shot is lent a clock four seconds long whose every frame
 is the same picture, and the frame drawn is the middle one, where every arrival in the
 shared planner has landed and nothing has begun to leave. So the mark planner, the focus
@@ -191,8 +258,16 @@ Measured: a shot drawn at 2x is the 1x picture to a mean of 0.83 levels and at 3
 the 2 px gold keyline is 2, 4 and 6 px at the three sizes with no part-gold pixel at the
 start of a run, and inside a redaction nothing is finer than the mark's own cell at any
 size, so a screenshot at 3x carries no more of what was hidden than one at 1x.
-`scale: native` picks the largest of 1x, 2x and 3x that does not enlarge the capture, held
-against the GPU's own texture ceiling read off the live context. PNG is the default as a
+`scale: native`, the default, is the capture at its own size: the multiple of the plan that
+puts one output pixel under each captured one, snapped to 1x, 2x or 3x when it is within 5
+percent of one and held between the plan's own size and 3x, against the GPU's own texture
+ceiling read off the live context. Measured on a 2880 px capture in a 16:9 studio frame,
+3558x2002 at one capture pixel per output pixel, where the old never-enlarge rule shipped
+1920x1080 and threw 46 percent of the capture away: at that density the capture's own text
+keeps 172 of its 213 levels of contrast and two edges in five are gone. A screenshot is read
+close, at 100 percent, on a display with two or three pixels to the point, so the honest
+number is not a size but a density, capture pixels per output pixel, and `export` reports it
+beside the multiple. PNG is the default as a
 measurement and not a preference: a still draws flat fields, one pixel hairlines and small
 text, and JPEG rings along exactly those edges (0.18 MB against 1.40, differing by a mean
 of 1.08 levels), so it stays for the case it wins and is not the default. The alpha channel
@@ -348,9 +423,29 @@ Since M5 it also draws the frame round the take and the take's own plane. A devi
 (`device.kind`, and `frame.chrome: clean`, which is the browser one on its own) is a
 browser, a plain window, a laptop or a phone, drawn from rectangles, radii and two
 tones: generic by construction, nothing traced, no wordmark, a window's three dots in
-the shell's own tone rather than one desktop's three colours, and a browser bar that
-shows the page's address when the agent driving the page says what it is and an empty
-bar when nobody does, because Fetch records no address and never invents one. That
+the shell's own tone rather than one desktop's three colours.
+**A drawn frame claims only what it can back up**, which is one idea said twice. It does
+not claim to be the window's chrome when the window brought its own: a shot knows what it
+was a capture of (`captured.kind`, written onto the document by `take_shot`, which computed
+it all along and threw it away), and round a window or display capture with nothing cropped
+off its top the shell's top bezel is the same as its sides and no bar is drawn at all, so
+the picture has one title bar and it is the real one. Measured: 13 px of top over 13 px of
+side, against 69 over 12 once the capture's own bar is cropped away, and the capture is
+drawn larger for the bar that is not there, 880 px against 824. No recording can reach that
+one branch, since a take carries no `captured` at all. And it does not draw an address field
+with nothing to put in it: the bar takes `device.title`, puts it in the field where it is
+shaped like a host, centres it the way a window's title is centred where it is not, and
+where there is neither draws no field and falls back to a title bar's height, which is byte
+for byte a window frame. That half is not a still's, and should not be: a browser's bar is
+taller than a window's for exactly one reason, which is the field standing in it, so a
+recording with a browser frame and no address gets the shorter bar too. Every browser golden
+in the suite carried a host-shaped title, which is how that escaped them, and there is one
+now (`device-browser-bare`) that does not. **And a window title is not an address.** A bare
+host and a filename are the same shape, and filenames are the commonest window titles there
+are: `README.md`, `notes.txt`, `index.html` and `build.sh` all matched a run of dotted
+labels ending in letters, so the frame invented an address out of a document. A scheme or a
+path says address outright; anything else has to be a host that does not end in the name of
+a file format. Fetch records no address and never invents one. That
 browser is the one frame drawn in place of a real one, so it is drawn only where the
 real one could be cropped away: on a take that never recorded where the page sits,
 `frame.chrome: clean` draws nothing and says why, rather than standing Fetch's bar above
@@ -429,15 +524,60 @@ from recording and everything after it is not: `get_edit`, `apply_edit`, `apply_
 `shot.take`. A shot goes through the same element resolution a recording does, so
 `element: 'E7'` from `find_on_screen` and `element: 'R1'` from the person's own lasso aim
 at part of a screenshot exactly as they aim at part of a take, and a lift with nothing to
-raise is refused with the same sentence. The tools that are questions about time
+raise is refused with the same sentence. An element id aims a `label` or a `callout` too:
+the bridge turns the box into the point at its middle, so type is aimed by the one rule
+everything else is aimed by. **No tool asks a still for a moment it does not have.** `at`
+was required on `get_frame`, `find_on_screen` and `preview_frame` while all three
+descriptions said a shot ignores it, so a client that believed the description got a
+validation error and one that did not invented a number: it is optional on all three and
+defaults to the start. `apply_look` takes `step` like every other change tool, so applying
+a look closes a plan step instead of costing a `direct` call that does nothing else, and on
+a recording it now returns the plan and the distance beside the look. `take_shot` hands back
+a picture of what it captured, since it is the one tool that makes the only artefact in the
+job and it was the one tool that made an agent call something else to see its own work. The
+tools that are questions about time
 (`fit_to_length`, `remove_dead_air`, `enhance_audio`, `transcribe`, `list_beats`,
 `can_loop`, `voiceover`) refuse a capture by name and say what to call instead, because a
 refusal that only says no costs the agent a turn and the person a wait. `preview_frame` on
 a shot is that shot's export drawn narrow, from the same plan through the same renderer, so
-what an agent checks and what ships differ in pixel count and nothing else. `review` on a
-shot is the same rubric on the half of it that is about a picture, and the one rule that is
-about a clock comes back under `not_judged` with its reason rather than telling an agent a
-screenshot is twenty-six seconds short. The server also says **how to work** before anything calls
+what an agent checks and what ships differ in pixel count and nothing else. **`review` on a
+shot is a rubric about a picture**, and it used to be the edit rubric run on a take of one
+frame, which on one frame passes every rule it has: it answered "ready, 10" for a bare
+capture on a gradient and, word for word and to the same ten, for a picture with two title
+bars, a blank address field and a lift covering the whole page. A checker that always says
+ten is worse than none, and this project has learned that once already. `review()` routes on
+the document, since a shot says what it is, and judges it off the same plan the compositor
+draws it from, so the judge and the renderer cannot disagree about where anything is
+(0.23 ms a call, no pixel read, every rule something the document can prove). Fifteen rules:
+what the brief called private left uncovered or only softened, the shape, a group on a look
+with no ground, a mark the picture does not draw, a device frame over a capture that already
+carries its own chrome, a shell cut the wrong way for what is in it, a lift raising a
+fragment or the whole page, two of them on one place, a capture with nothing said about it,
+room round the frame, a blank address bar, the ground against the capture's own exposure,
+and how many of the capture's own pixels the box it was given can carry.
+Four of them are measured in the one unit that makes them true. **A blur is judged in sigma
+against a stroke of type**, in the capture's own pixels, and never against the box it
+covers: a box is why a 576 px decorative blur at sigma 60 was called weak, and blocking,
+while a 38 px blur over an account row at sigma 5 passed, which is the wrong answer on both.
+A strong blur is no longer a finding at all just because the brief named something private
+somewhere in the picture; what is named is a blur a word survives, with two ways out, a
+redaction or more blur. **What says not to look at something does not say what to look at**:
+`subject` counts the marks that point, so a capture whose only mark is a redaction is still
+the screenshot with a margin round it the rule exists to name, and was answering ten for
+exactly the case it was written for. **The shape judged is the shape that ships**, the
+plan's own frame rather than the capture's crop: under `frame.aspect: auto` a 1920x1080
+capture goes out 1920x1170, so a blocking rule was clearing a file that was never 16:9 in
+the same result whose `measured.picture` said so. And **on a group the chrome question is
+asked of each member**, because each carries its own capture and its own `device`, and
+answered where it is asked: the fix rebuilds the group with the offending member bare, the
+shape `device-fit` already uses. Offered as `apply_look` it changed nothing, since a member's
+shell is built from the member and not from the look, and the finding came back byte for
+byte forever. `settle()` is one
+function for both documents, so a picture and a recording cannot drift into two ideas of
+what ten means, and every finding carries a call that can be made as it stands, proved by
+applying all of them in order and asserting the score went up and no redaction came off.
+The nine rules about a clock come back under `not_judged`, always present and each with its
+reason, rather than telling an agent a screenshot is twenty-six seconds short. The server also says **how to work** before anything calls
 it: `mcp/index.js` sets MCP's `instructions` to what Fetch is, the six line loop the in-app
 agent is handed word for word (see the job below), aim at a box and never at a coordinate,
 read the state that comes back rather than calling again to find it, write down what is still
@@ -508,10 +648,15 @@ spaced, drawn by the compositor exactly as the export draws them, each with its 
 burned into its corner and its source second returned beside it. It exists because the best
 work in this product is motion, an ease that lands and settles, a dissolve, the travel blur
 under a zoom, and every bit of that is invisible in a single frame and obvious in a row of
-them. `direct` is the target and the plan: a brief (`seconds`, `aspect`, `where`, `audience`,
-`must_keep`, `must_hide`) and up to twelve steps `P1..Pn`, kept in `.fetch/<stem>.job.json`
+them. `direct` is the target and the plan: a brief (`what`, `seconds`, `aspect`, `where`,
+`audience`, `must_keep`, `must_hide`) and up to twelve steps `P1..Pn`, kept in `.fetch/<stem>.job.json`
 beside the take and deliberately not in the edit, because the job is about the work and has to
-survive the undo of the edit it produced. `fit_to_length` hits a number from the transcript:
+survive the undo of the edit it produced. `what` is what the thing is in the person's own words, and on a still it is nearly the whole
+brief, since one frame has no length for the rest of it to measure. It was accepted by the
+schema and thrown away on write for a round, which left the picture rubric building its own
+`find_on_screen` fixes with no query in them, so the loop it opened could not be closed by
+any call the agent made.
+`fit_to_length` hits a number from the transcript:
 the fillers first, since nobody can hear a cut "um", then the longest pauses, then whole beats
 ranked by speech density, and never half a beat. All three passes cut around the work rather
 than through it: a title card over the head silence and a closing URL card over the tail
@@ -595,14 +740,10 @@ supplied or corrected afterwards.
 
 **Not built**, and not to be claimed: driving apps (Fetch records, other tools drive),
 capturing the keyboard, reading the project's source code, a fourth capture in one
-picture, a mark that spans two of them, per-member tilt (each device angled its own
-way is two cameras, and a group that wants two angles wants two pictures), and
-provenance across items. The information panel can draw "Styled from", "Cut from" and
-"Used to make" off an item's `from` field, and nothing writes that field, so nothing
-in Fetch today knows that one library item came out of another. Every derived file
-made so far lives in its own take's folder, where the relationship is the folder and
-needs no field; what is missing is the first path that makes a new item out of an old
-one, and the panel is waiting for it rather than claiming it.
+picture, a mark that spans two of them, and per-member tilt (each device angled its own
+way is two cameras, and a group that wants two angles wants two pictures). Version
+history is not built either: restoring an earlier version of an item needs the edit
+document to keep its own past, and that is the editor's side of the house.
 
 ## Strategic principles
 

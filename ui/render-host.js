@@ -316,7 +316,9 @@ async function previewFrames(src, doc, times, { width = 1280 } = {}) {
 // different answers about one picture.
 const SHOT_SPAN = 4, SHOT_FPS = 30
 // mirrored for the surfaces that offer a size; compositor/index.js shotScale is what
-// actually holds a shot to them, against the GPU's own ceiling
+// actually holds a shot to them, against the GPU's own ceiling. Nobody has to ask: the
+// default is the size the capture was taken at, and these are for a caller who wants a
+// smaller file than that.
 const SHOT_SCALES = [1, 2, 3]
 
 /**
@@ -383,9 +385,10 @@ function shotPlan(image, opts = {}, size = null) {
  *   image  the captured picture (PNG or JPEG)
  *   opts   the export options bag, as a clip's edit hands it over
  *   out    { dest, scale, format, quality, width, at }
- * scale is 1, 2, 3 or 'native' (the default: the largest that does not enlarge the
- * capture). at defaults to the middle of the shot's own span. Returns what was written,
- * with the size it was drawn at.
+ * scale is 1, 2, 3 or 'native' (the default: the capture at its own size, so a shot ships
+ * at the size it was captured unless a smaller one is asked for). at defaults to the
+ * middle of the shot's own span. Returns what was written, with the size it was drawn at
+ * and what that did with the capture (density: 1 is one output pixel per captured one).
  */
 async function renderShot(image, opts = {}, out = {}, jobId) {
   // Every capture in the picture, not just the first: a group draws one file per member

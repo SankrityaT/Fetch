@@ -479,7 +479,19 @@ function presentSpan(samples, start, end, o = {}) {
 // edge ending on half a card. A designer lifts the stats grid inside it instead.
 const LIFT_CLEAR = 0.012     // air left between the raised piece and the frame edge
 const LIFT_GROW = 0.02       // half of what a lift adds to its own size, at most
-const CUT_SLACK = 0.006      // text this close to a container's edge runs past it
+// How close to a container's border words have to end before the container is cutting
+// them off. Words a container clips end at its border; words it holds stop one padding
+// short of it, and an app sets that padding in the same type it sets the words in. So
+// the ruler is the words' own height, never a share of the frame: at 0.006 of the frame
+// this was 17 px on a still of one window, wider than the padding a card keeps its own
+// right-aligned label in, and every card carrying a duration, a price or a count came
+// back no_lift. The container's own side caps it, so a heading cannot speak for a small
+// card. A padding is square on the screen, and a box in fractions is not: a height is a
+// share of the frame's height and an x a share of its width, so the type ruler is turned
+// onto the x axis by the frame's own shape. Left mixed, the same card was whole on a
+// 16:9 still and cut off on a 5120x1440 ultrawide, which is a fact about the display.
+const CUT_TYPE = 0.25        // of the words' own height: nearer the border than this is cut
+const CUT_SLACK = 0.02       // and never more than this of the container's own side
 
 /** The frame edges a lift of `box` would crowd, raised and with its shadow. */
 function liftEdges(box) {
@@ -489,10 +501,18 @@ function liftEdges(box) {
   return [b.x < gx && 'left', b.y < gy && 'top', b.x + b.w > 1 - gx && 'right', b.y + b.h > 1 - gy && 'bottom'].filter(Boolean)
 }
 
-/** The edges of a container its own content runs past: a scrolled list, a cut-off card. */
-function cutEdges(el, all) {
+/**
+ * The edges of a container its own content runs past: a scrolled list, a cut-off card.
+ *
+ * `aspect` is the frame's own width over its height, which is what turns the type ruler
+ * from the y axis onto the x. Unknown, 16:9 is assumed, which is the shape of nearly
+ * every recording and the shape this rule was measured on.
+ */
+const CUT_ASPECT = 16 / 9
+function cutEdges(el, all, aspect) {
   const b = el && el.box
   if (!b) return []
+  const perX = 1 / (+aspect > 0 ? +aspect : CUT_ASPECT)   // frame heights per frame width
   const out = new Set()
   for (const o of all || []) {
     if (!o || o === el || o.id === el.id || !['text', 'chip'].includes(o.kind)) continue
@@ -500,24 +520,38 @@ function cutEdges(el, all) {
     const t = o.text_box || o.box
     // words that start inside the container
     if (!(t.x >= b.x - 0.004 && t.y >= b.y - 0.004 && t.x < b.x + b.w && t.y < b.y + b.h)) continue
-    if (t.y + t.h > b.y + b.h - CUT_SLACK && t.y > b.y + b.h * 0.5) out.add('bottom')
-    if (t.x + t.w > b.x + b.w - CUT_SLACK && t.x > b.x + b.w * 0.5) out.add('right')
+    const slackY = Math.min(CUT_TYPE * t.h, CUT_SLACK * b.h)
+    const slackX = Math.min(CUT_TYPE * t.h * perX, CUT_SLACK * b.w)
+    if (t.y + t.h > b.y + b.h - slackY && t.y > b.y + b.h * 0.5) out.add('bottom')
+    if (t.x + t.w > b.x + b.w - slackX && t.x > b.x + b.w * 0.5) out.add('right')
   }
   return [...out]
 }
 
 /**
  * Why an element should not be lifted, in words, or null: { why, instead } where
- * instead is the largest card, grid or panel inside it that can be.
+ * instead is the largest card, grid or panel inside it that can be, or { why, around }
+ * where the thing to lift is the card the words sit in rather than anything inside them.
  */
-function liftBlock(el, all) {
+function liftBlock(el, all, aspect) {
   if (!el || !el.box) return null
-  const edges = liftEdges(el.box), cut = cutEdges(el, all)
+  // A bare line of words is never the thing a lift raises: a lift raises a whole piece of
+  // the page over a shadow, and words alone come out as a floating tooltip. The smallest
+  // liftable container holding them is what was meant, which is the same line snapBox
+  // already holds for the lasso. Nothing around them, and the words are all there is.
+  if (el.kind === 'text') {
+    const box = (all || []).filter(e => ['card', 'grid', 'panel'].includes(e.kind) &&
+      inside(el.box, e.box) && !liftEdges(e.box).length && !cutEdges(e, all, aspect).length)
+      .sort((a, b) => area(a.box) - area(b.box))[0]
+    if (box) return { why: 'a lift raises a whole piece of the page, and these are the words inside one', around: box, instead: null, share: 0 }
+    return null
+  }
+  const edges = liftEdges(el.box), cut = cutEdges(el, all, aspect)
   if (!edges.length && !cut.length) return null
   const why = [edges.length ? `it runs to the ${edges.join(' and ')} edge of the frame` : null,
     cut.length ? `its content is cut off at its ${cut.join(' and ')}` : null].filter(Boolean).join(', and ')
   const ok = e => e !== el && ['card', 'grid', 'panel'].includes(e.kind) && inside(e.box, el.box) &&
-    area(e.box) < area(el.box) * 0.9 && area(e.box) >= 0.004 && !liftEdges(e.box).length && !cutEdges(e, all).length
+    area(e.box) < area(el.box) * 0.9 && area(e.box) >= 0.004 && !liftEdges(e.box).length && !cutEdges(e, all, aspect).length
   // what sits directly in it first (the details pane's stats grid, not a card of it)
   const direct = e => e.in === el.id ? 1 : 0
   const instead = (all || []).filter(ok).sort((a, b) => direct(b) - direct(a) || area(b.box) - area(a.box))[0] || null

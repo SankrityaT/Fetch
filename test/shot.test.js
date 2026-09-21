@@ -131,6 +131,60 @@ is('and matches them against its own unfiltered enumeration',
   /o\.excludeApps\.contains \{ nameMatches\(owner, \$0\) \}/.test(swift), true)
 is('a window is measured on the display it is mostly on', /max\(by: \{ overlap\(\$0\) < overlap\(\$1\) \}\)/.test(swift), true)
 
+// ---------- a capture that cannot work fails, it does not stall ----------
+// The worst failure there is has no error in it: an agent with nobody at the Mac waits
+// on a permission dialog it cannot see and cannot answer, and reports nothing, forever.
+// Both ends of the capture path read the grant before they read a pixel, and refuse with
+// a sentence that says what to do.
+console.log('\nwhat happens when Screen Recording is not granted')
+const policy = require('../ui/record-policy')
+const says = (r, re) => r.allow === false && re.test(r.reason)
+
+is('granted is the only state that just works', policy.screenAccess('granted', 'agent').allow, true)
+is('an agent is refused when the grant was never asked for',
+  says(policy.screenAccess('not-determined', 'agent'), /has not been granted/), true)
+is('and told where the person turns it on',
+  /System Settings, Privacy and Security, Screen Recording/.test(policy.screenAccess('not-determined', 'agent').reason), true)
+is('and that it takes a restart',
+  /restart Fetch/.test(policy.screenAccess('not-determined', 'agent').reason), true)
+// A person can answer the system's own prompt, and answering it is the shortest way to a
+// granted Mac, so their first capture is allowed to raise it. An agent's never is.
+is('a person still meets the system prompt', policy.screenAccess('not-determined', 'human').allow, true)
+// Electron's screen status is a boolean preflight, so a never-asked Mac reads 'denied'
+// and a person refused on it never sees the prompt that would grant it. They go through
+// to the helper, which does not preflight for a person, and macOS answers for itself.
+is('and a person is not refused on a reading that cannot tell never-asked from no',
+  policy.screenAccess('denied', 'human').allow, true)
+is('an agent is refused on the same reading', policy.screenAccess('denied', 'agent').allow, false)
+is('and so is a managed Mac', policy.screenAccess('restricted', 'agent').allow, false)
+// The two callers want opposite things from a Mac that was never asked, so who asked has
+// to reach the one process that can raise the prompt.
+is('who asked reaches the helper', /'--by', by/.test(main), true)
+is('and the helper preflights for an agent alone', /o\.byAgent && !CGPreflightScreenCaptureAccess\(\)/.test(swift), true)
+// A state nobody could measure is not grounds to refuse a capture that would have worked.
+is('an unreadable state is not a refusal', policy.screenAccess('unknown', 'agent').allow, true)
+
+is('the grant is read before the never-record list, before anything is spawned',
+  handler.indexOf('screenAccess') < handler.indexOf('policy.decide')
+  && handler.indexOf('screenAccess') < handler.indexOf('runShot'), true)
+is('and the result is flagged as a permission, not a crash', /needsPermission/.test(handler), true)
+is('Fetch reads the grant and never asks for it on the person\'s behalf',
+  /askForMediaAccess|requestMediaAccess/.test(main), false)
+
+// 'ask' is the shipping default, and an agent that is refused there needs the same thing:
+// a sentence it can hand to the person rather than "nobody approved this".
+is('the ask refusal says what to do', /Recording access to open/.test(policy.UNANSWERED), true)
+is('and takeShot speaks the policy\'s own sentence', /verdict\.unanswered/.test(handler), true)
+
+// The helper is killed at twenty seconds. That is a bounded failure, so it has to arrive
+// as a reason rather than as silence.
+is('a helper that never answered says what is holding it',
+  /err\.killed/.test(main) && /waiting for someone to grant Fetch Screen Recording/.test(main), true)
+
+is('the helper preflights before it reads any content',
+  swift.indexOf('CGPreflightScreenCaptureAccess') < swift.indexOf('SCShareableContent.excludingDesktopWindows'), true)
+is('and the preflight only reads', /CGRequestScreenCaptureAccess/.test(swift), false)
+
 console.log('\nthe helper ships')
 const build = fs.readFileSync(path.join(root, 'build.sh'), 'utf8')
 is('build.sh compiles it', /swiftc -O Shot\.swift/.test(build), true)

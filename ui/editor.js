@@ -762,7 +762,7 @@ window.addEventListener('blur', endShotPeek)
 
 // What the export will write, which on a shot stands where the running time does.
 // The plan's own size times the scale the renderer picks for it (compositor shotScale:
-// the largest that does not enlarge the capture), so the chip is the file's pixels and
+// the capture at its own size), so the chip is the file's pixels and
 // not the stage's.
 function paintShotSize() {
   const n = $('edSize')

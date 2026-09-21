@@ -242,53 +242,84 @@ async function renderVideo(job, hooks = {}) {
 // uploadImage with the crop carried in cropUV. Both land in the same slot and every
 // pass after that is the pass an export runs.
 
-// What a shot can be drawn at. A plan is one plan at one size (1920 wide, or 1280 at
-// 720), and a bigger still is that same plan drawn at a multiple of it: gl.js scales
-// every placement by W / spec.W, so 2x is the same picture with twice the pixels and
-// not a second layout. Sizes matter here in a way they do not for video, because a
-// screenshot is read close and often at 2x or 3x:
+// What a shot is drawn at. A plan is one plan at one size (1920 wide, or 1280 at 720),
+// and a bigger still is that same plan drawn at a multiple of it: gl.js scales every
+// placement by W / spec.W, so twice the pixels is the same picture drawn larger and not
+// a second layout. Nothing here is enlarged into its pixels, so the multiple does not
+// have to be a whole number any more than a preview's width does.
 //
-//   1x  1920 wide. The web size: a help centre, a changelog, a README. A Retina capture
-//       is area-averaged into it, which softens the take's own hairlines and is the
-//       honest thing to do with them at this size.
-//   2x  3840 wide. Where a Retina capture of an ordinary window lands about 1:1 (a 1710
+// Scale means something else here than it does for a clip. For video an output size is a
+// choice about a player and a file, and 1920 is the answer for nearly everyone. For a
+// still it is the whole of what the picture is worth: a screenshot is read close, at 100
+// percent, on a display with two or three pixels to the point. A plan is 1920 wide
+// whatever the capture was, so a 2x or 3x capture drawn into it is not a smaller picture,
+// it is the small text and the hairlines gone, permanently, in the deliverable.
+//
+// So the default is the capture at its own size, exactly: the multiple that makes one
+// output pixel out of one captured pixel, whatever number that is. The named sizes stay
+// for a caller who wants a round one, and they are what a person means by 1x, 2x and 3x:
+//
+//   1x  1920 wide. A thumbnail, a changelog, or a capture that was never dense.
+//   2x  3840 wide. Where a 2x capture of an ordinary window lands about 1:1 (a 1710
 //       point window is 3420 pixels and the take's box inside a framed 2x plan is about
-//       2900 of them), so the screenshot carries the pixels that were captured.
+//       2900 of them).
 //   3x  5760 wide. A 5K or 6K capture at 1:1, and the size an app store asks for.
 //
-// Above 3x is a bigger file and no more picture: nothing in the plan carries more detail
-// than the capture does, and the GPU's own texture ceiling arrives soon after.
+// 3x is also the ceiling for the default, before the GPU's own. Past it the file grows
+// faster than anybody's use for it, and the only thing that asks for more is one very
+// dense capture drawn small inside a group, where 1:1 on that member was never the point
+// of the picture.
 const SHOT_SCALES = [1, 2, 3]
 
+// When an exact multiple is snapped to a named one. Measured on a 3420 px capture through
+// the plain plan: 5 percent of minifying costs the capture's own text 3 of its 213 levels
+// of contrast and none of its edges, which nobody can see, where 1x on that capture (2.07
+// of them to each output pixel) costs 48 levels and half its edges. So inside 5 percent a
+// round number is worth having, and outside it the exact one is.
+const SHOT_SOFT = 0.05
+
 /**
- * Which of those a shot is drawn at. 'native' (the default) is the largest that does not
- * enlarge the capture: the take's box is rect.w * k pixels wide and the capture has
- * crop.w to fill it with, so anything past that ratio is a bigger file carrying no more
- * picture. A few percent over is allowed, because that much softening is invisible and
- * the step below it is less than half the pixels. max is the GPU's texture ceiling, read
- * off the live context by the caller, so a machine with a small one gets a smaller still
- * rather than a failed draw.
+ * What a shot is drawn at, as a multiple of the plan's own size. 'native' (the default)
+ * is the capture at 1:1: the take's box is rect.w plan pixels wide and the capture has
+ * crop.w to fill it with, so that ratio is the multiple, snapped to a named size when it
+ * is within a few percent of one and held between 1 (the plan's own size, which is what
+ * Fetch's own furniture is drawn for) and 3. A caller who asks gets a named size.
+ *
+ * max is the GPU's texture ceiling, read off the live context by the caller, so a machine
+ * with a small one gets a smaller still rather than a failed draw.
  */
 function shotScale(spec, want = 'native', max = 16384) {
   const top = SHOT_SCALES[SHOT_SCALES.length - 1]
-  // A group is only as dense as its least dense capture. The group box's own ratio is
-  // the sharpest member's, so drawing to that enlarges every other one: the small
-  // capture comes out stretched while the big one is minified.
-  const dens = b => (b.rect && b.rect.w > 0 ? b.crop.w / b.rect.w : 1)
-  const ratio = spec.group && spec.group.length ? Math.min(...spec.group.map(dens)) : dens(spec)
-  const native = [...SHOT_SCALES].reverse().find(k => k <= ratio + 0.05) || SHOT_SCALES[0]
+  const ratio = shotDensity(spec)
+  const native = SHOT_SCALES.find(k => Math.abs(ratio / k - 1) <= SHOT_SOFT) || ratio
   const asked = want === 'native' || want == null ? native : Math.round(+want) || native
-  const cap = Math.max(1, Math.floor(max / Math.max(spec.W, spec.H)))
+  const cap = max / Math.max(spec.W, spec.H)
   return Math.max(1, Math.min(top, asked, cap))
+}
+
+/**
+ * How many capture pixels the plan asks each of its own pixels to carry, across the
+ * take's own box. 1 is the capture at its own size; over 1 is capture being thrown away.
+ * Divided by the scale, it is what the finished file actually did with the capture.
+ *
+ * A group is as dense as its densest member, not its least dense. k multiplies the whole
+ * plan, so it cannot change how far one member is stretched against another: the layout
+ * is in millimetres and a low density capture is enlarged at every k alike. All the
+ * choice decides is how many pixels the set is given, and the member with the most to
+ * give is the one that decides it.
+ */
+function shotDensity(spec) {
+  const dens = b => (b.rect && b.rect.w > 0 ? b.crop.w / b.rect.w : 1)
+  return spec.group && spec.group.length ? Math.max(...spec.group.map(dens)) : dens(spec)
 }
 
 /**
  * One finished screenshot: the plan drawn once, at full size, and written as a picture.
  *   job  { spec, image, out, format, quality, scale, width, at }
  * image is the captured picture, and the plan must have been made from its own size.
- * scale is 1, 2, 3 or 'native'; width instead draws the plan at an exact pixel width,
- * which is how a thumbnail and the harness's goldens ask for one. at is the output
- * second to draw, and defaults to the middle of the shot's own span, where every
+ * scale is 1, 2, 3 or 'native' (the default); width instead draws the plan at an exact
+ * pixel width, which is how a thumbnail and the harness's goldens ask for one. at is the
+ * output second to draw, and defaults to the middle of the shot's own span, where every
  * arrival has landed and nothing has begun to leave.
  */
 async function renderShot(job, hooks = {}) {
@@ -338,8 +369,12 @@ async function renderShot(job, hooks = {}) {
     const out = await writeStill(job.out, comp.readRGBA(), comp.W, comp.H,
       { format: job.format || 'png', ...(job.quality != null ? { quality: +job.quality } : {}) })
     if (hooks.progress) hooks.progress(1, 1)
-    return { ...out, scale: +k.toFixed(4), at: +(n / spec.fps).toFixed(3), source: { w: s.w, h: s.h },
-      plan: `${spec.W}x${spec.H}`, ms: Math.round(performance.now() - t0) }
+    // density says what the file did with the capture, which is the one number that
+    // decides whether a screenshot is a deliverable or a preview: 1 is the capture at
+    // its own size, and over 1 is that much of it thrown away.
+    return { ...out, scale: +k.toFixed(2), at: +(n / spec.fps).toFixed(3), source: { w: s.w, h: s.h },
+      plan: `${spec.W}x${spec.H}`, density: +(shotDensity(spec) / k).toFixed(2),
+      ms: Math.round(performance.now() - t0) }
   } finally {
     comp.destroy()
   }
@@ -426,4 +461,4 @@ async function renderStills(job, hooks = {}) {
   return out
 }
 
-module.exports = { renderVideo, renderStills, renderShot, shotScale, SHOT_SCALES, decodeSize, camSquare, yieldNow, loadImage, loadAssets }
+module.exports = { renderVideo, renderStills, renderShot, shotScale, shotDensity, SHOT_SCALES, decodeSize, camSquare, yieldNow, loadImage, loadAssets }

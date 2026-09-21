@@ -160,7 +160,7 @@ console.log('the inspector and the agent docs')
   // them. It grew a section at M5 (the drawn device), and again at R3: motion.loop, the
   // three keys fields, and [gif] becoming [classic] on every field the classic renderer
   // leaves out, which is a longer word on a lot of lines and a truer one.
-  is('the agent docs fit a token budget', doc.length < 10600, true)
+  is('the agent docs fit a token budget', doc.length < 11500, true)
   is('no em dashes in the agent docs', /\u2014/.test(doc), false)
   is('when hides a field that does not apply', L.visible(S.BY_PATH.get('background.color'), L.defaults()), false)
   is('the advanced fields are a handful, so one disclosure holds them',

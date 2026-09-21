@@ -75,6 +75,10 @@ function normalizeBrief(raw, before) {
   const b = { ...(before || {}), ...(raw && typeof raw === 'object' ? raw : {}) }
   const seconds = num(b.seconds)
   return {
+    // On a recording the length and the shape carry most of the intent. A still has no
+    // length, so this is most of what a brief is there, and it was the field being
+    // dropped: review builds its find_on_screen queries out of it (ui/review.js).
+    what: text(b.what, 200),
     seconds: seconds > 0 ? Math.min(round1(seconds), MAX_SECONDS) : null,
     aspect: text(b.aspect, 16),
     where: text(b.where, 60),

@@ -100,7 +100,7 @@ is('nothing is not a name', parseAgentName(''), null)
 is('brand capitals survive title case', parseAgentName('GitHub · pull request review'), 'GitHub · Pull Request Review')
 is('a chatty opener is not a name', parseAgentName('Sure! Here is a name'), null)
 is('an unread count is not part of the name', smartName({ app: 'Google Chrome', title: '(3) Inbox - Gmail' }), 'Gmail · Inbox')
-is('an editor title separator becomes the middle dot', smartName({ app: 'Code', title: 'app.js — majuro' }), 'Code · app.js · majuro')
+is('an editor title separator becomes the middle dot', smartName({ app: 'Code', title: 'app.js ' + String.fromCharCode(0x2014) + ' majuro' }), 'Code · app.js · majuro')
 
 // ── automatic names, told apart from typed ones ──
 is('a name Fetch gave from the app is auto', isAutoName('Songscription · Library', { auto: 'Songscription · Library', by: 'app' }), true)
@@ -145,6 +145,34 @@ is('nothing to name is still named', uniqueName('', []), 'Screen')
 is('a shot Fetch named itself is fair game later', isAutoName('Screen area 3'), true)
 is('as is a bare Screen', isAutoName('Screen'), true)
 is('a name someone typed over it is not', isAutoName('Tempo row'), false)
+
+// ── a title that opens with the app's own name ──
+// The separator it was joined with has to go with it, or the name, the folder on disk
+// and every sidecar's stem read "Songscription · · Your library".
+const DASH = String.fromCharCode(0x2014)
+is('the app sliced off the front takes its separator with it',
+  smartName({ app: 'Songscription', title: 'Songscription · Your library' }), 'Songscription · Your library')
+is('a hyphen separator too', smartName({ app: 'Linear', title: 'Linear - Inbox' }), 'Linear · Inbox')
+is('a long dash as well', smartName({ app: 'Notion', title: 'Notion ' + DASH + ' Roadmap' }), 'Notion · Roadmap')
+is('a pipe was already right', smartName({ app: 'Slack', title: 'Slack | general' }), 'Slack · general')
+is('and a title that simply continues the name is left alone',
+  smartName({ app: 'Xcode', title: 'Xcode Fetch.xcodeproj' }), 'Xcode · Fetch.xcodeproj')
+is('it holds for a shot, which is named the same way',
+  shotName({ app: 'Songscription', title: 'Songscription · Your library' }), 'Songscription · Your library')
+
+// ── a window title is somebody else's text and can hold anything ──
+const RLO = String.fromCharCode(0x202e), ZWSP = String.fromCharCode(0x200b)
+is('a title that would hide the take is not allowed to', shotName({ title: '.env' }), 'env')
+is('nor one that is nothing but dots', uniqueName('..', []), 'Screen')
+is('a right-to-left override cannot flip the name',
+  shotName({ app: 'Mail', title: 'Inbox ' + RLO + 'gnitset' }), 'Mail · Inbox gnitset')
+is('a zero-width space leaves no gap behind', shotName({ app: 'Mail', title: 'In' + ZWSP + 'box' }), 'Mail · Inbox')
+is('a path in a title is still not a path', shotName({ app: 'Terminal', title: '../../Users/me/.ssh' }), 'Terminal · .. .. Users me .ssh')
+{
+  const secret = 'Vault: ' + 'z'.repeat(80)
+  const name = shotName({ app: 'Notes', title: secret })
+  is('a long private title is cut to a filename, not carried whole', name.length <= 56, true)
+}
 
 console.log(`\n  ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

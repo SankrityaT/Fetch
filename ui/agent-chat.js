@@ -130,6 +130,20 @@ function mcpConfigPath() {
 // else (a recording, a document) travels as a path, which the Fetch tools can use.
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|heic|tiff?)$/i
 
+// Except one, and it is the whole of this round. A capture Fetch made is a subject, not
+// a reference picture: it is a PNG, so it travelled as a flat image with no path, and an
+// agent could look at the person's own screenshot and not style it, because every tool
+// that takes a shot takes its path. So a shot goes both ways, the picture to look at and
+// the path to work on, and an image Fetch did not make still goes as a picture alone.
+// A capture lands in <Take>/Original/, always, and a styled one has a shot document
+// beside it; either is proof Fetch made it.
+const shotDoc = f => {
+  const dir = path.dirname(f), stem = path.basename(f).replace(/\.[^.]+$/, '')
+  return [path.join(dir, '.fetch', `${stem}.fetchshot.json`), path.join(dir, `${stem}.fetchshot.json`)]
+}
+const isFetchShot = f => /\.(png|jpe?g)$/i.test(f) &&
+  (path.basename(path.dirname(f)) === 'Original' || shotDoc(f).some(p => fs.existsSync(p)))
+
 // A Retina screenshot can be 6K wide and several MB, past what the API takes and
 // pointlessly expensive. Scale to 1568 on the long edge (the size models actually
 // see at), as PNG or JPEG so HEIC and TIFF work too. sips ships with macOS.
@@ -142,12 +156,13 @@ function prepareImage(file) {
 }
 
 function splitAttachments(list = []) {
-  const images = [], others = []
+  const images = [], others = [], shots = []
   for (const f of list) {
     if (!f || !fs.existsSync(f)) continue
-    ;(IMAGE_EXT.test(f) ? images : others).push(f)
+    if (IMAGE_EXT.test(f)) { images.push(f); if (isFetchShot(f)) shots.push(f) }
+    else others.push(f)
   }
-  return { images: images.slice(0, 8), others }
+  return { images: images.slice(0, 8), others, shots }
 }
 
 // One MCP server for Codex too, Fetch's own, in place of whatever the person's own
@@ -227,6 +242,10 @@ function send({ engine = 'claude', model = null, effort = null, prompt, attachme
   const att = splitAttachments(attachments)
   if (att.others.length) {
     prompt += '\n\nFiles the user attached:\n' + att.others.map(f => `- ${f}`).join('\n')
+  }
+  if (att.shots.length) {
+    prompt += '\n\nScreenshots Fetch took, which are shots you can work on rather than pictures ' +
+      'to look at. Send these paths to the tools:\n' + att.shots.map(f => `- ${f}`).join('\n')
   }
   const images = att.images.map(prepareImage)
   const viaStdin = engine !== 'codex' && images.length > 0
@@ -403,6 +422,6 @@ function summarise(content) {
 const cancel = () => { if (current) { current.cancelled = true; try { current.kill('SIGTERM') } catch {} } }
 const busy = () => !!current
 
-module.exports = { send, cancel, busy, newConversation, translate, argsFor, ALLOWED,
+module.exports = { send, cancel, busy, newConversation, translate, argsFor, ALLOWED, splitAttachments,
   // a card a tool raised, into this thread, and the end of the turn it belongs to
   say, onTurnEnd }

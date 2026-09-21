@@ -413,6 +413,95 @@ console.log('the drawn device, and the tilt')
   is('and the turn is a perspective, not a skew', r3(t14.fit) < 1 && t14.sin > 0 && Number.isFinite(left), true)
 }
 
+console.log('the picture\'s own type, and the room it takes')
+{
+  const meta = { width: 2560, height: 1600, duration: 60, fps: 30 }
+  const framed = (texts, look = {}, more = {}) => Plan.prepare({ start: 0, end: 4, cuts: [],
+    backdrop: 'ink', inset: 0.08, backdropAspect: 16 / 9, shadow: 0.6,
+    look: { typography: {}, ...look }, texts, ...more }, meta, {})
+
+  // A drawn device takes the box the layout gave the picture and hands back the screen
+  // inside it. The type's room came out of the box, so the type is placed against the
+  // box: placed against the screen, a headline's descenders sat on the shell's bezel and
+  // at typography.headlineSize 0.026 the whole line was inside the title bar.
+  const shell = framed([{ text: 'Find any take in one search', style: 'headline' }],
+    { device: { kind: 'browser', title: 'songscription.app' } })
+  const S = shell.text.still
+  const blockH = S.runs.reduce((h, r) => h + r.lead + r.lineH, 0)
+  is('a headline above a drawn frame clears the frame, not the screen inside it',
+    S.top + blockH <= shell.device.box.y, true)
+  is('and the small sizes clear it too', (() => {
+    const sm = framed([{ text: 'Find any take in one search', style: 'headline' }],
+      { device: { kind: 'browser', title: 'songscription.app' }, typography: { headlineSize: 0.026 } })
+    const h = sm.text.still.runs.reduce((a, r) => a + r.lead + r.lineH, 0)
+    return sm.text.still.top + h <= sm.device.box.y
+  })(), true)
+  is('a caption under a laptop sits under the whole laptop, foot and all', (() => {
+    const lap = framed([{ text: 'The library, on a laptop', style: 'caption' }], { device: { kind: 'laptop' } })
+    const foot = lap.device.foot || lap.device.box
+    return lap.text.still.capTop >= foot.y + foot.h
+  })(), true)
+
+  // The column over the picture is the picture's own width, never the picture plus both
+  // of its margins: 2560x1600 at inset 0.08 was given a 1536 px column over a 1248 px
+  // picture, a quarter wider than the thing it names.
+  const over = framed([{ text: 'Find any take in one search', style: 'headline' }], { typography: { headline: 'above' } })
+  is('the column over a picture is never wider than the picture', over.text.still.col <= over.rect.w + 1, true)
+  const five = framed(Array.from({ length: 5 }, (_, i) => ({ text: `Line number ${i + 1} of a long headline block`, style: 'headline' })),
+    { typography: { headline: 'above' } })
+  is('and it is still not wider once the type has refitted the picture', five.text.still.col <= five.rect.w + 1, true)
+
+  // Both sides of the still question ask it of the same clock. stillRoom read the take's
+  // own seconds and planText read the output's, so a title card on a trimmed edit was
+  // full-span to one and mid-clip to the other: nothing was reserved, the card was
+  // stripped as a headline, and the picture lost it without a word.
+  const trimmed = Plan.prepare({ start: 20, end: 30, cuts: [], backdrop: 'ink', inset: 0.08,
+    backdropAspect: 16 / 9, shadow: 0.6, look: { typography: {} },
+    texts: [{ text: 'Songscription', style: 'title', start: 20, end: 30 }] }, meta, {})
+  is('a title running the whole of a trimmed edit is drawn, as the headline it is',
+    !!trimmed.text.still && trimmed.text.still.runs.length > 0, true)
+
+  // And the still filter takes out only what the still block took. With no ground there
+  // is no still block, and a full-span title taken out here as well was a title card
+  // deleted from a recording with nothing said about it.
+  const plain = t => Plan.prepare({ start: 0, end: 60, cuts: [], inset: 0.08,
+    look: { typography: {} }, texts: [t] }, meta, {})
+  is('an unframed edit keeps its full-span title card', plain({ text: 'Songscription', style: 'title', start: 0, end: 60 }).text.cards.length, 1)
+  is('and a headline with no ground to stand on is drawn nowhere', plain({ text: 'A hero line', style: 'headline' }).text, null)
+
+  // A plate given more words than two lines hold steps down a size and then ends in an
+  // ellipsis. Sliced at two lines, a label dropped its last words with nothing to show
+  // for it and the picture read as a finished sentence that was not one.
+  const Text = require('../ui/compositor/text')
+  const pinKey = text => {
+    const sp = framed([{ text, style: 'label', at: { x: 0.5, y: 0.5 } }])
+    return (Text.textAt(sp.text, 0).items.find(i => String(i.key).startsWith('pin|')) || {}).key || ''
+  }
+  const WORDY = 'This is the button that starts the recording and also stops it when you are done'
+  const long = pinKey(WORDY)
+  is('an over-long pinned label steps down rather than dropping its last words',
+    long.endsWith(WORDY.replace(/ /g, ' ').slice(-16)) && !long.includes('…') && +long.split('|')[2] < 41, true)
+  const silly = pinKey(WORDY + ' and then shows you exactly what it wrote and where it wrote it and how long it took')
+  is('and at the floor it ends in an ellipsis rather than stopping mid-sentence', silly.includes('…'), true)
+  is('one that fits keeps every word of itself at the size it asked for',
+    pinKey('Tempo').includes('Tempo') && !pinKey('Tempo').includes('…'), true)
+
+  // A window title is not an address. A filename is the commonest window title there is,
+  // and every one of them matched a run of dotted labels ending in letters.
+  const bar = title => framed([], { device: { kind: 'browser', title } }).device
+  for (const name of ['README.md', 'notes.txt', 'index.html', 'build.sh', 'Fetch.xcodeproj']) {
+    is(`a window called ${name} is not drawn as an address`, bar(name).address, false)
+  }
+  for (const a of ['songscription.app', 'app.example.com/library', 'https://x.example/a']) {
+    is(`and ${a} still is`, bar(a).address, true)
+  }
+  // a browser's bar is taller than a window's because a field stands in it, so with no
+  // field there is no toolbar. The same rule on a recording as on a capture.
+  const bare = bar(''), win = framed([], { device: { kind: 'window', title: 'Library' } }).device
+  is('a browser bar with nothing to put in it is a title bar', r3(bare.bar / bare.unit), r3(win.bar / win.unit))
+  is('and one with an address is taller', bar('songscription.app').bar > bare.bar, true)
+}
+
 console.log('which engine')
 {
   is('a framed look with zooms goes to the compositor', Plan.engineFor({ backdrop: 'dusk', zooms: [{ start: 1, end: 2 }] }).engine, 'gl')
