@@ -30,8 +30,80 @@ const Sinks = require('./compositor/sinks')
 
 const IDLE_MS = 3 * 60 * 1000
 let win = null, ready = null, idleTimer = null
-const jobs = new Map()          // id -> { resolve, reject, onProgress, pids }
+const jobs = new Map()          // id -> { resolve, reject, onProgress, pids, stopped }
 let seq = 0
+
+// ---- cancel ----------------------------------------------------------------
+// A cancel is processor.cancel(jobId): it kills what is registered under the id at that
+// instant and forgets the id. On an idle machine an export has a child registered almost
+// the whole way through, so that was enough. On a loaded one it is not. The first
+// seconds of an export (probing the take, preparing the plan, starting the render window)
+// can have nothing registered at all, and a cancel that lands there found nothing, said
+// false, and was lost: the export ran on to the end, which at a load of 200 is a quarter
+// of an hour. A child started after the cancel was never killed either, since the id had
+// been forgotten, and the window's own ffmpegs report their pids a message later.
+//
+// So an export holds a stand-in under its id from its first line to its last. A cancel
+// always finds it, and from then on:
+//   the caller hears "cancelled" at once, without waiting on anything the load can slow
+//   every child registered under the id dies at once (SIGKILL, which a starved process
+//     cannot put off)
+//   a child registered under the id afterwards dies within SWEEP_MS of starting
+//   a pid the render window reports afterwards dies the moment it arrives
+//   the window stops at its next frame, and one that has not answered in GRACE_MS is
+//     closed if it has nothing else to draw
+// The work behind the answer is stopped at its next await rather than left to finish,
+// and the sweep that keeps it stopped ends when that work settles, or after SWEEP_CAP_MS.
+const SWEEP_MS = 250
+const SWEEP_CAP_MS = 60 * 1000
+const GRACE_MS = 5000
+
+const cancelledError = () => Object.assign(new Error('cancelled'), { cancelled: true })
+
+function cancelGuard(jobId) {
+  let hit = null, sweep = null, capTimer = null, quiet = false, off = false
+  const stopped = new Promise((_resolve, reject) => { hit = reject })
+  stopped.catch(() => {})
+  const g = { cancelled: false, stopped }
+  const stand = {
+    kill() {
+      if (quiet || g.cancelled) return
+      g.cancelled = true
+      hit(cancelledError())
+      if (off) return
+      sweep = setInterval(() => proc.cancel(jobId), SWEEP_MS)
+      capTimer = setTimeout(g.release, SWEEP_CAP_MS)
+    },
+  }
+  // stop at the next await if a cancel has come in
+  g.check = () => { if (g.cancelled) throw cancelledError() }
+  // the work is over, one way or the other: nothing left to sweep for
+  g.release = () => {
+    off = true
+    clearInterval(sweep); clearTimeout(capTimer)
+    proc.unregister(jobId, stand)
+  }
+  // kill the children under the id without taking it for a cancel: a picture that fails
+  // stops its sound, and the classic renderer it falls back to runs under the same id
+  g.killChildren = () => {
+    quiet = true
+    try { proc.cancel(jobId, { keep: true }) } finally { quiet = false }
+    if (!off && !g.cancelled) proc.register(jobId, stand)
+  }
+  if (jobId == null) return Object.assign(g, { check() {}, release() {}, killChildren() {} })
+  proc.register(jobId, stand)
+  return g
+}
+
+// The answer the caller waits for: the work's own, or "cancelled" the moment one comes
+// in. The work itself is kept stopped by the guard until it has actually settled.
+function guarded(jobId, work) {
+  const g = cancelGuard(jobId)
+  let p
+  try { p = Promise.resolve(work(g)) } catch (e) { p = Promise.reject(e) }
+  p.then(g.release, g.release)
+  return Promise.race([p, g.stopped])
+}
 
 function closeWindow() {
   if (win && !win.isDestroyed()) win.destroy()
@@ -79,41 +151,66 @@ ipcMain.on('render:progress', (_e, m) => {
   const j = jobs.get(m.id)
   if (j && j.onProgress) j.onProgress(m.n, m.total)
 })
-ipcMain.on('render:pid', (_e, m) => { const j = jobs.get(m.id); if (j) j.pids.add(m.pid) })
+ipcMain.on('render:pid', (_e, m) => {
+  const j = jobs.get(m.id)
+  if (!j) return
+  j.pids.add(m.pid)
+  // an ffmpeg the window started just before the cancel reached it
+  if (j.stopped) { try { process.kill(m.pid, 'SIGKILL') } catch {} }
+})
 ipcMain.on('render:done', (_e, m) => {
   const j = jobs.get(m.id)
   if (!j) return
   jobs.delete(m.id)
+  clearTimeout(j.grace)
   if (m.error) j.reject(Object.assign(new Error(m.error), { cancelled: !!m.cancelled }))
   else j.resolve(m.stats)
 })
 
-// Draw the picture of one export in the render window
-async function renderPicture(job, onProgress, jobId) {
+// One job drawn in the render window: an export's picture, or stills. guard is the
+// export's own (cancelGuard); without one the work cannot be cancelled and runs to its end.
+async function drawInWindow(msg, onProgress, jobId, guard) {
   clearTimeout(idleTimer)
   const w = await renderWindow()
+  // a cancel that came in while the window was starting: nothing is sent to it
+  if (guard) guard.check()
   const id = ++seq
-  const entry = { onProgress, pids: new Set() }
+  const entry = { onProgress, pids: new Set(), stopped: false, grace: null }
   // processor.cancel(jobId) kills every child registered under the job: this one stands
-  // for the window's work, and kills its ffmpegs too in case the window is busy
+  // for the window's work, and kills its ffmpegs too in case the window is busy. It
+  // answers "cancelled" at once and gives the window GRACE_MS to say it has stopped; a
+  // window too starved to answer by then is closed, unless another job is drawing in it,
+  // and the next export starts a fresh one.
   const stand = {
     kill() {
+      if (entry.stopped) return
+      entry.stopped = true
       if (!w.isDestroyed()) w.webContents.send('render:cancel', id)
       for (const pid of entry.pids) { try { process.kill(pid, 'SIGKILL') } catch {} }
+      if (entry.reject) entry.reject(cancelledError())
+      entry.grace = setTimeout(() => {
+        if (jobs.get(id) !== entry) return
+        jobs.delete(id)
+        for (const pid of entry.pids) { try { process.kill(pid, 'SIGKILL') } catch {} }
+        if (win === w && !jobs.size) { console.warn('[render] the window did not stop, closing it'); closeWindow() }
+      }, GRACE_MS)
     },
   }
-  proc.register(jobId, stand)
+  if (jobId != null) proc.register(jobId, stand)
   try {
     return await new Promise((resolve, reject) => {
       Object.assign(entry, { resolve, reject })
       jobs.set(id, entry)
-      w.webContents.send('render:job', { ...job, id })
+      w.webContents.send('render:job', { ...msg, id })
     })
   } finally {
-    proc.unregister(jobId, stand)
+    if (jobId != null) proc.unregister(jobId, stand)
     closeWhenIdle()
   }
 }
+
+// Draw the picture of one export in the render window
+const renderPicture = (job, onProgress, jobId, guard) => drawInWindow(job, onProgress, jobId, guard)
 
 // A warm window costs memory while nothing draws: it goes after a few idle minutes
 function closeWhenIdle() {
@@ -159,7 +256,11 @@ async function classic(src, opts, onProgress, jobId, why) {
  * Export an edit. Same arguments and result as processor.applyEdit, plus
  * { engine: 'gl' | 'classic', why: [...] } and, for the compositor, its timings.
  */
-async function exportEdit(src, opts = {}, onProgress, jobId) {
+function exportEdit(src, opts = {}, onProgress, jobId) {
+  return guarded(jobId, guard => exportWith(src, opts, onProgress, jobId, guard))
+}
+
+async function exportWith(src, opts, onProgress, jobId, guard) {
   let pick
   try { pick = pickEngine(src, opts) } catch (e) { pick = { engine: 'classic', why: ['could not read the take: ' + e.message] } }
   // An exact size is the compositor's alone: the classic renderer scales to 720 or 1080
@@ -174,18 +275,20 @@ async function exportEdit(src, opts = {}, onProgress, jobId) {
   }
   if (pick.engine !== 'gl') return classic(src, opts, onProgress, jobId, pick.why)
   try {
-    return await glExport(src, opts, onProgress, jobId, pick.why)
+    return await glExport(src, opts, onProgress, jobId, pick.why, guard)
   } catch (e) {
     if (e && e.cancelled) throw e
     if (store) throw e
+    guard.check()
     console.warn('[render] compositor failed, using the classic renderer:', e && e.message)
     return classic(src, opts, onProgress, jobId, [...pick.why, 'the compositor failed: ' + (e && e.message)])
   }
 }
 
-async function glExport(src, opts, onProgress, jobId, why) {
+async function glExport(src, opts, onProgress, jobId, why, guard) {
   if (!src || !fs.existsSync(src)) throw new Error(`No recording at ${src}. It may have been renamed or deleted.`)
-  const meta = await proc.probeMeta(src)
+  const meta = await proc.probeMeta(src, jobId)
+  guard.check()
   // a MediaRecorder webm with no duration needs the classic path's remux first
   if (!meta.width || !(meta.duration > 0)) throw new Error('the recording has no readable length or size')
   const fmtId = opts.format || 'mp4'
@@ -210,20 +313,23 @@ async function glExport(src, opts, onProgress, jobId, why) {
     ? { w: Math.round(+opts.size.w), h: Math.round(+opts.size.h) } : null
   const rate = gif ? { fps: gifFps } : (+opts.fps > 0 ? { fps: +opts.fps } : null)
   const spec = await planFor(src, opts, meta, jobId, rate)
+  guard.check()
   if (spec.span < 0.2) throw new Error('trim range is too short')
 
-  // As applyEdit: a take folder's deliverable is encoded beside itself and swapped in
-  // when finished, so a cancelled or failed export never destroys the last good one
-  const deliverable = opts.dest ? null : proc.deliverablePath(src, fmt.ext)
+  // Every export is encoded beside where it goes and moved in when finished, so a
+  // cancelled or failed one never destroys the last good file there, nor leaves a cut
+  // off one in its place. That used to be a take folder's deliverable only: an export to
+  // a path of its own (opts.dest, or a take that is not in a take folder) had its mux and
+  // music bed written straight into it, ffmpeg's -y deleted what was there first, and a
+  // cancel during either left a truncated file with nothing to clear it.
   const dest = opts.dest || proc.exportDest(src, fmt.ext)
-  const out = deliverable ? path.join(path.dirname(dest), `.${path.parse(dest).name}.partial.${fmt.ext}`) : dest
+  const out = path.join(path.dirname(dest), `.${path.parse(dest).name}.partial${path.extname(dest) || '.' + fmt.ext}`)
   const tag = `fetch-gl-${process.pid}-${Date.now()}`
   // the picture is written in its own container, so the mux is a stream copy on every
   // format rather than a second encode of what the compositor already drew
   const vext = gif ? 'gif' : fmtId === 'webm' ? 'webm' : 'mp4'
   const video = path.join(os.tmpdir(), `${tag}.${vext}`), audio = path.join(os.tmpdir(), `${tag}.m4a`)
-  const tmp = [video, audio]
-  if (out !== dest) tmp.push(out)
+  const tmp = [video, audio, out]
   const t0 = Date.now()
   let written = null
   try {
@@ -235,9 +341,10 @@ async function glExport(src, opts, onProgress, jobId, why) {
       // a store file's rate is Apple's number and not a quality name (sinks.js STORE)
       renderPicture({ spec, src, out: video, ffmpeg: proc.FFMPEG, quality: store ? 'store' : opts.quality || 'balanced',
         sink: store ? undefined : opts.sink,
-        format: fmtId, width: store ? store.w : gifWidth }, onP, jobId),
+        format: fmtId, width: store ? store.w : gifWidth }, onP, jobId, guard),
       gif ? null : proc.renderAudio(src, opts, spec.keep, spec.span, meta, audio, jobId),
-    ]).catch(e => { proc.cancel(jobId); throw e })
+    ]).catch(e => { guard.killChildren(); throw e })
+    guard.check()
     if (gif) moveInto(video, out)
     else if (store) {
       // The store's own audio line: one stereo AAC track at 256 kbps and 48 kHz. A take
@@ -253,7 +360,9 @@ async function glExport(src, opts, onProgress, jobId, why) {
         '-t', span, '-movflags', '+faststart', out], null, jobId)
       // Measured, not assumed: a store file that lost picture is refused here rather than
       // handed back as the preview of an edit it is not all of
+      guard.check()
       written = await measurePicture(out)
+      guard.check()
       if (written.frames < spec.frames - 1) {
         try { fs.unlinkSync(out) } catch {}
         throw new Error(`the preview came out ${(written.frames / spec.fps).toFixed(2)}s of a ${spec.span.toFixed(2)}s edit ` +
@@ -265,11 +374,15 @@ async function glExport(src, opts, onProgress, jobId, why) {
         '-c:v', 'copy', ...audioCopy(fmtId, sound), ...(vext === 'mp4' ? ['-movflags', '+faststart'] : []), out], null, jobId)
     }
     // a GIF has no track to put a bed under, as the classic renderer has it
+    guard.check()
     if (opts.music && !gif) {
       const bed = await proc.musicBed(out, opts.music, fmt, spec.span, meta.hasAudio, jobId)
+      guard.check()
       if (bed) fs.renameSync(bed, out)
     }
-    if (out !== dest) fs.renameSync(out, dest)
+    // the last word: a cancelled export never replaces the deliverable it was redoing
+    guard.check()
+    fs.renameSync(out, dest)
     const ms = Date.now() - t0
     if (onProgress) onProgress(spec.span, spec.span, 100)
     return {
@@ -317,28 +430,8 @@ async function specForDoc(src, doc) {
 // Draw stills in the render window. times are output seconds and line up with files.
 // A jobId registers the work with the processor, so proc.cancel(jobId) stops a sheet
 // halfway the way it stops an export.
-async function drawStills(job, jobId) {
-  clearTimeout(idleTimer)
-  const w = await renderWindow()
-  const id = ++seq
-  const entry = { pids: new Set() }
-  const stand = {
-    kill() {
-      if (!w.isDestroyed()) w.webContents.send('render:cancel', id)
-      for (const pid of entry.pids) { try { process.kill(pid, 'SIGKILL') } catch {} }
-    },
-  }
-  if (jobId) proc.register(jobId, stand)
-  try {
-    return await new Promise((resolve, reject) => {
-      Object.assign(entry, { resolve, reject })
-      jobs.set(id, entry)
-      w.webContents.send('render:job', { ...job, stills: true, id, ffmpeg: proc.FFMPEG })
-    })
-  } finally {
-    if (jobId) proc.unregister(jobId, stand)
-    closeWhenIdle()
-  }
+function drawStills(job, jobId, guard = null) {
+  return drawInWindow({ ...job, stills: true, ffmpeg: proc.FFMPEG }, null, jobId || null, guard)
 }
 
 /**
@@ -452,7 +545,11 @@ function shotPlan(image, opts = {}, size = null) {
  * middle of the shot's own span. Returns what was written, with the size it was drawn at
  * and what that did with the capture (density: 1 is one output pixel per captured one).
  */
-async function renderShot(image, opts = {}, out = {}, jobId) {
+function renderShot(image, opts = {}, out = {}, jobId) {
+  return guarded(jobId || null, guard => shotWith(image, opts, out, jobId, guard))
+}
+
+async function shotWith(image, opts, out, jobId, guard) {
   // Every capture in the picture, not just the first: a group draws one file per member
   // and a missing one would come back as a size mismatch rather than as a missing file.
   const files = [image, ...((opts.group && (opts.group.members || opts.group)) || []).map(m => m.src)]
@@ -470,7 +567,8 @@ async function renderShot(image, opts = {}, out = {}, jobId) {
       // Carried through rather than turned into a width: a width plus an aspect rounds,
       // and the whole point of a preset is that it does not.
       size: out.size || null,
-      scale: out.scale == null ? 'native' : out.scale, width: out.width, at: out.at }, jobId)
+      scale: out.scale == null ? 'native' : out.scale, width: out.width, at: out.at }, jobId, guard)
+    guard.check()
     moveInto(partial, dest)
     return { ...r, file: dest, engine: 'gl', ms: Date.now() - t0, capture: `${size.width}x${size.height}` }
   } finally {
@@ -541,10 +639,15 @@ function sheetArgs(files, labels, { cols, cellW, cellH, out }) {
  * where at is the output second burned into the cell and source is the second of the
  * recording it came from, which is what apply_edit and preview_frame take.
  */
-async function contactSheet(src, doc, { from, to, count = 12, width = 1440 } = {}, jobId) {
+function contactSheet(src, doc, range = {}, jobId) {
+  return guarded(jobId || null, guard => sheetWith(src, doc, range || {}, jobId, guard))
+}
+
+async function sheetWith(src, doc, { from, to, count = 12, width = 1440 }, jobId, guard) {
   if (!src || !fs.existsSync(src)) throw new Error(`No recording at ${src}. It may have been renamed or deleted.`)
   const Timeline = require('./timeline')
   const { spec } = await specForDoc(src, doc)
+  guard.check()
   const span = spec.span
   if (!(span > 0)) throw new Error('the edit has no length to draw')
 
@@ -572,7 +675,8 @@ async function contactSheet(src, doc, { from, to, count = 12, width = 1440 } = {
   const out = path.join(os.tmpdir(), `${tag}.jpg`)
   const t0 = Date.now()
   try {
-    await drawStills({ spec, src, times, files, width: drawW, type: 'image/png' }, jobId)
+    await drawStills({ spec, src, times, files, width: drawW, type: 'image/png' }, jobId, guard)
+    guard.check()
     await proc.run(proc.FFMPEG, ['-v', 'error', ...sheetArgs(files, times.map(t => `${t.toFixed(1)}s`), { cols, cellW, cellH, out })], null, jobId)
     if (!fs.existsSync(out)) throw new Error('could not build the contact sheet')
     return {

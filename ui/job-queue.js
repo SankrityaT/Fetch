@@ -11,7 +11,9 @@
 // export, so they get their own shallow lane.
 //
 // Queued work is cancellable before it ever starts, which matters: cancelling a job
-// that is tenth in line should not wait for the nine ahead of it.
+// that is tenth in line should not wait for the nine ahead of it. It used to: a drop
+// only marked the id, and the job said it was cancelled when the lane got round to it,
+// which on a loaded machine is after nine exports. It leaves the lane and answers now.
 
 const LANES = {
   heavy: { limit: 1, active: 0, waiting: [] },
@@ -22,16 +24,9 @@ const LANES = {
 const LIGHT_OPS = new Set(['thumb', 'waveform', 'filmstrip'])
 const laneFor = op => (LIGHT_OPS.has(op) ? LANES.light : LANES.heavy)
 
-const cancelled = new Set()      // ids cancelled while still queued
-
 function pump(lane) {
   while (lane.active < lane.limit && lane.waiting.length) {
     const item = lane.waiting.shift()
-    if (cancelled.has(item.id)) {
-      cancelled.delete(item.id)
-      item.reject(Object.assign(new Error('cancelled'), { cancelled: true }))
-      continue
-    }
     lane.active++
     item.onStart()
     Promise.resolve()
@@ -58,7 +53,8 @@ function dropIfQueued(id) {
   for (const lane of Object.values(LANES)) {
     const i = lane.waiting.findIndex(w => w.id === id)
     if (i >= 0) {
-      cancelled.add(id)
+      const [item] = lane.waiting.splice(i, 1)
+      item.reject(Object.assign(new Error('cancelled'), { cancelled: true }))
       return true
     }
   }

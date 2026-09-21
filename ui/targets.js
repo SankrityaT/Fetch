@@ -85,8 +85,12 @@ function kindOf(textBox, cont, text) {
  * Raw detections (Elements.swift) to elements an agent can pick from: E1, E2... in
  * reading order. Lines on one chip or card become one element, so the dark rounded
  * toast around "Tonight: ..." comes back as a single thing, box and all.
+ *
+ * `prior` is the whole list an earlier pass on the same screen handed back. Given it,
+ * the same control keeps the same id (carryIds) and anything new is numbered past every
+ * id that list could have handed out, so an id never comes to mean something else.
  */
-function elementsFrom(raw) {
+function elementsFrom(raw, prior) {
   const texts = (raw && raw.texts) || []
   const groups = []
   for (const t of texts) {
@@ -143,14 +147,173 @@ function elementsFrom(raw) {
   }
   out.push(...gridsOf(out))
   out.sort((a, b) => (Math.abs(a.box.y - b.box.y) > 0.01 ? a.box.y - b.box.y : a.box.x - b.box.x))
-  const withIds = out.map((e, i) => ({ id: 'E' + (i + 1), ...e }))
+  const frame = raw && raw.width > 0 && raw.height > 0 ? { width: raw.width, height: raw.height } : null
+  const carried = carryIds(prior, out, frame)
+  const withIds = out.map((e, i) => ({ id: carried.ids[i], ...e }))
   // what each one sits in, so an agent can step out from a card to its grid or panel
   for (const e of withIds) {
     const home = withIds.filter(o => o !== e && CONTAINERS.has(o.kind) && area(o.box) > area(e.box) * 1.2 && inside(e.box, o.box))
       .sort((a, b) => area(a.box) - area(b.box))[0]
     if (home) e.in = home.id
   }
+  // Kept on the list and out of every element, so the next pass on this screen knows the
+  // highest number ever handed out and the frame the boxes were measured in. Neither
+  // survives JSON, and neither has to: carryIds reads the ids themselves when they are gone.
+  Object.defineProperty(withIds, 'seq', { value: carried.seq })
+  Object.defineProperty(withIds, 'frame', { value: frame })
+  Object.defineProperty(withIds, 'carried', { value: carried.carried })
   return withIds
+}
+
+// ── the same control, the same id ───────────────────────────────────────────
+// Ids used to be positions: E1, E2... in reading order on each picture. Anything that
+// shifted the layout renumbered everything below it. In the judged simulator job ready
+// listed "Sign in with Apple" as E18, record_start took its own picture of the same,
+// unchanged screen and listed it as E17, and the tap sent with E18 was refused.
+//
+// Two pictures of one screen are matched element to element, and a match keeps its
+// id. Two different buttons wrongly sharing an id is far worse than one button getting
+// a new one (the tap lands on the wrong thing, and nothing says so), so a match has to
+// be sure and anything unsure gets a new number:
+//
+// - the words on it are the same, word for word. A label that changed ("Follow" to
+//   "Following", a count going up) is a new element. So is anything read differently.
+// - it is the same sort of thing: words, a chip and an icon are one sort, because
+//   Vision finds the fill round a button on one frame and not the next; a card or a
+//   shape is another; a panel and a grid are each their own.
+// - it is the same size, give or take a reading. A large title and the small back
+//   button carrying the same word after a push are two controls.
+// - where it is agrees with how the rest of the screen moved. Words that appear once on
+//   both pictures anchor the match. Words that appear more than once (a "Delete" on
+//   every row) and things with no words are matched only where the nearest anchor says
+//   they should now be, and only when exactly one candidate is there.
+//
+// New elements are numbered past the highest id the earlier list could have handed out,
+// in reading order, so an id held from any earlier picture of the screen means the same
+// thing here or nothing at all. It never quietly resolves to something else.
+const SORT = { text: 'words', chip: 'words', icon: 'words', card: 'card', shape: 'card', panel: 'panel', grid: 'grid' }
+const CARRY_NEAR = 0.2        // a lone anchor may move this far on its own, past nothing that stayed
+const CARRY_TOGETHER = 0.03   // two anchors moved the same way within this, or stayed put
+const CARRY_ASPECT = 0.02     // two frames whose shapes differ by more are not one layout
+
+const keyOf = e => tokens(e.text).join(' ')
+const faceOf = e => e.text_box || e.box
+const within = (a, b, r) => Math.max(a, b) <= Math.min(a, b) * r + 1e-4
+// The same size, give or take a reading. Words are held tighter on their height, which
+// is the type size, than on their width, which a fill found or lost can change.
+function alike(p, n) {
+  const a = faceOf(p), b = faceOf(n)
+  return SORT[p.kind] === 'words'
+    ? within(a.h, b.h, 1.35) && within(a.w, b.w, 1.5)
+    : within(a.w, b.w, 1.25) && within(a.h, b.h, 1.25)
+}
+const moveOf = (p, n) => { const a = centre(faceOf(p)), b = centre(faceOf(n)); return { x: b.x - a.x, y: b.y - a.y } }
+const far = d => Math.hypot(d.x, d.y)
+
+// Whether a word that appears once on both pictures is the same control, going by how it
+// moved against the other such words. Staying put is its own evidence. A move has to
+// agree with the screen around it: the words that moved the same way are its block, and
+// no word that moved otherwise may sit in the stretch the block travelled through. For a
+// move mostly up or down that stretch runs the width of the frame, because rows run
+// across the screen: a "Delete" that went from Alice's row to Carol's passed Bob's row
+// and Carol's, which stayed where they were, so it is Carol's Delete and not Alice's.
+// A real scroll or a banner pushing down moves everything in that stretch together.
+// A block of one moved on its own and has nothing to agree with, so it is also held to
+// CARRY_NEAR.
+function anchored(c, cand, list, next) {
+  if (far(c.d) <= CARRY_TOGETHER) return true
+  const block = cand.filter(o => far({ x: o.d.x - c.d.x, y: o.d.y - c.d.y }) <= CARRY_TOGETHER)
+  if (block.length < 2 && far(c.d) > CARRY_NEAR) return false
+  const boxes = block.flatMap(o => [faceOf(list[o.pi]), faceOf(next[o.ni])])
+  const x0 = Math.min(...boxes.map(b => b.x)), x1 = Math.max(...boxes.map(b => b.x + b.w))
+  const y0 = Math.min(...boxes.map(b => b.y)), y1 = Math.max(...boxes.map(b => b.y + b.h))
+  const across = Math.abs(c.d.y) >= Math.abs(c.d.x)
+  const inStretch = pt => pt.y > y0 && pt.y < y1 && (across || (pt.x > x0 && pt.x < x1))
+  return !cand.some(o => !block.includes(o) &&
+    (inStretch(centre(faceOf(list[o.pi]))) || inStretch(centre(faceOf(next[o.ni])))))
+}
+
+/**
+ * Ids for `next` (elements in reading order, without ids), carried from `prior` (an
+ * earlier pass's whole list, with ids) where the element is surely the same one.
+ * `frame` is the next picture's { width, height }. Returns { ids, seq, carried }, where
+ * seq is the highest number handed out so far, prior's included.
+ */
+function carryIds(prior, next, frame) {
+  const list = Array.isArray(prior) ? prior.filter(e => e && e.box && /^E\d+$/.test(String(e.id))) : []
+  const seq0 = Math.max(0, +(prior && prior.seq) || 0, ...list.map(eNum))
+  const ids = new Array(next.length).fill(null)
+  // A picture of another shape (the device turned, a different window) is not the same
+  // layout, and its boxes cannot be compared. Nothing is carried; numbering still runs on.
+  const pf = prior && prior.frame
+  const shape = f => f && f.width > 0 && f.height > 0 ? f.width / f.height : null
+  const sameShape = !(shape(pf) && shape(frame)) || Math.abs(shape(pf) / shape(frame) - 1) <= CARRY_ASPECT
+  const taken = new Set()
+  const match = (pi, ni) => { ids[ni] = list[pi].id; taken.add(pi) }
+  if (list.length && sameShape) {
+    const sortOf = e => SORT[e.kind] || e.kind
+    const group = arr => {
+      const m = new Map()
+      arr.forEach((e, i) => { const k = keyOf(e); if (!k) return; const g = sortOf(e) + '|' + k; m.set(g, (m.get(g) || []).concat(i)) })
+      return m
+    }
+    const P = group(list), N = group(next)
+    // 1. anchors: words that appear exactly once on both pictures
+    const cand = []
+    for (const [g, ns] of N) {
+      const ps = P.get(g)
+      if (!ps || ps.length !== 1 || ns.length !== 1) continue
+      const p = list[ps[0]], n = next[ns[0]]
+      if (alike(p, n)) cand.push({ pi: ps[0], ni: ns[0], d: moveOf(p, n) })
+    }
+    const anchors = cand.filter(c => anchored(c, cand, list, next))
+    for (const a of anchors) match(a.pi, a.ni)
+    // where an element of the earlier picture should be now: moved as its nearest anchor
+    // moved, or not at all when nothing anchors the screen
+    const expect = p => {
+      const c = centre(faceOf(p))
+      const a = anchors.slice().sort((u, v) => far({ x: centre(faceOf(list[u.pi])).x - c.x, y: centre(faceOf(list[u.pi])).y - c.y }) -
+        far({ x: centre(faceOf(list[v.pi])).x - c.x, y: centre(faceOf(list[v.pi])).y - c.y }))[0]
+      return a ? { x: c.x + a.d.x, y: c.y + a.d.y } : c
+    }
+    // how close is close: under half the thing's own height, so the "Delete" one row down
+    // is never in reach, and never more than 0.03 of the frame
+    const reach = (p, n) => Math.min(0.03, Math.max(0.008, 0.4 * Math.min(faceOf(p).h, faceOf(n).h)))
+    // 2. the rest, by where they should be: repeated words, and things with no words at
+    // all (a thumbnail), which also have to be the very same kind
+    const same = (p, n) => SORT[p.kind] === SORT[n.kind] && keyOf(p) === keyOf(n) &&
+      (keyOf(p) || p.kind === n.kind) && alike(p, n) && (SORT[p.kind] !== 'panel' && SORT[p.kind] !== 'grid' || keyOf(p))
+    const gap = (pi, ni) => { const e = expect(list[pi]), c = centre(faceOf(next[ni])); return far({ x: c.x - e.x, y: c.y - e.y }) }
+    const open = () => ({ ps: list.map((_, i) => i).filter(i => !taken.has(i)), ns: next.map((_, i) => i).filter(i => ids[i] == null) })
+    const sure = (test, dist, tol) => {
+      const { ps, ns } = open()
+      const pairs = []
+      for (const ni of ns) {
+        const near = ps.filter(pi => test(list[pi], next[ni])).map(pi => ({ pi, v: dist(pi, ni), t: tol(list[pi], next[ni]) }))
+          .filter(o => o.v <= o.t * 2).sort((a, b) => a.v - b.v)
+        // one candidate in reach, and no second anywhere near it
+        if (!near.length || near[0].v > near[0].t || (near[1] && near[1].v <= near[0].t * 2)) continue
+        pairs.push({ pi: near[0].pi, ni })
+      }
+      // and the other way round: no other new element is as good a fit for that one
+      const count = new Map()
+      for (const p of pairs) count.set(p.pi, (count.get(p.pi) || 0) + 1)
+      for (const p of pairs) if (count.get(p.pi) === 1) match(p.pi, p.ni)
+    }
+    sure(same, gap, reach)
+    // 3. a panel or a grid whose words changed (a stat inside it ticked over) is still
+    // the pane it was, when it sits where the screen says it should, nearly box for box
+    const pane = (p, n) => p.kind === n.kind && (p.kind === 'panel' || p.kind === 'grid') && alike(p, n)
+    const shifted = (pi, ni) => {
+      const p = list[pi], e = expect(p), c = centre(p.box)
+      const b = { ...p.box, x: p.box.x + e.x - c.x, y: p.box.y + e.y - c.y }
+      return 1 - iou(b, next[ni].box)
+    }
+    sure(pane, shifted, () => 0.12)
+  }
+  let seq = seq0
+  for (let i = 0; i < ids.length; i++) if (ids[i] == null) ids[i] = 'E' + (++seq)
+  return { ids, seq, carried: ids.length - (seq - seq0) }
 }
 
 const CONTAINERS = new Set(['card', 'panel', 'grid', 'chip'])

@@ -30,37 +30,41 @@
 // grant and its own asking, and it stays off unless the agent asks for it: the room is
 // never in a take nobody asked to be in.
 //
-// **Other apps' windows are not in the file, and that is all the exclusion is.**
-// Recorder.swift takes a window take's audio from the display with every other
-// application excluded by process id, and the list is built once, at start, from apps
-// that own windows. Measured on this Mac: while the person's own browser played a video
-// out of the speakers, a window take of a different window came back at -91.0 dB mean
-// and peak, which is digital silence. What the list cannot hold is an app opened after
-// the take began (a call answered mid take) or a process with no window at all, and
-// both are in the file. The sentences below say that scope and no wider one.
+// **What reaches the file is everything this Mac plays while the take runs.** It used
+// to be narrower: Recorder.swift took a window take's sound from the display with every
+// other app that owned a window left out by process id. A filter that names apps is what
+// took macOS's screen capture service down (replayd crashed 25 times, a use after free in
+// its audio input callback, because naming processes makes it rebuild its audio queue
+// whenever one of them changes state), so no capture names an app any more and the
+// sound is the display's. The person's music, a call, a second booted simulator: all of
+// it is in the file. The sentences below say that scope, and the question the person
+// answers before an agent's take names their music and a call. A CoreAudio process tap
+// in the recorder can bring the narrow scope back without replayd; it is not built.
 //
-// **What does reach it is a process with no window.** The same measurement caught a
-// windowless host audio process at -22.7 dB and transcribed it word perfect. That is not
-// a leak, it is the mechanism: a simulator's guest app renders through CoreSimulator's
-// own host audio process, which has no window and so cannot be excluded by one. The cost
-// to state plainly is that a second booted simulator, or any background process making a
-// sound with no window of its own, is in the file too.
+// **The device's sound is in it because the Mac plays it.** A simulator's guest app
+// renders through CoreSimulator's own host audio process, and a process of exactly that
+// shape was captured and transcribed word perfect.
+//
+// **Why the default stays on.** The sound is the whole reason to record the window, and
+// an agent's take is never started without the person's yes, which says "with sound" and
+// names their music and a call. A person who records their own demo sets their own switch.
+// So the default is still on, and every surface says what it hears.
 //
 // **Only on Fetch's own recorder.** Where it cannot run (it is missing, or the mic is
-// asked for below macOS 15), a take goes through the browser capture, whose system
-// audio is the whole Mac's output: the person's call, music and meeting. A default
-// nobody asked for never goes there. On that path a simulator take whose sound was only
-// the default is recorded silent (ui/app.js buildStream reads __sysNativeOnly), and the
-// result says why. An agent that passed system_audio true asked in so many words.
+// asked for below macOS 15), a take goes through the browser capture. The default is
+// Fetch's own recorder's, and the browser capture is only given sound somebody asked for,
+// so a simulator take whose sound was only the default is recorded silent there
+// (ui/app.js buildStream reads __sysNativeOnly), and the result says why. An agent that
+// passed system_audio true asked in so many words.
 //
 // **Weight.** One AAC stereo track at 48 kHz, about a megabyte a minute.
 //
 // **When it is refused.** It cannot be refused on its own. If Screen Recording is off the
 // take never starts and screenAccess says which pane to turn it on in. What can still
 // happen is the sound capture failing by itself: Recorder.swift opens a second, tiny
-// stream for a window take's audio and, if that one will not start, it writes a line to
-// stderr and lets the take go on rather than losing the picture too. That take lands with
-// video and no track, and takeAudio() is what says so in the result instead of leaving
+// stream for a window take's audio and, if that one will not start or stops part way, it
+// writes a line to stderr and lets the take go on rather than losing the picture too.
+// That take lands with video and no track (or a track that goes silent part way), and takeAudio() is what says so in the result instead of leaving
 // transcribe to break the news.
 
 // The person's own default for their own takes. Read here only to turn the default off,
@@ -109,7 +113,7 @@ function audioFor(args = {}, o = {}) {
 function startedAudio(plan = {}) {
   const from = []
   if (plan.systemAudio) {
-    from.push(plan.simulator ? 'the device, through the window it sits in' : 'the window being recorded')
+    from.push(plan.simulator ? 'everything this Mac plays, the device among it' : 'everything this Mac plays')
   }
   if (plan.mic) from.push('the microphone')
 
@@ -144,15 +148,14 @@ function startedAudio(plan = {}) {
 }
 
 // What reaches the file when system audio is on, in the scope Recorder.swift actually
-// has: its exclusion is a list of apps with windows, taken once at the start.
+// has: the display's sound, with no app left out (its start() says why).
 function SCOPE_SAID(simulator) {
-  return `What reaches the file is the sound of the ${simulator ? 'device' : 'window being recorded'}, and also any ` +
-    'process with no window of its own (another booted simulator is one) and any app opened after the take ' +
-    'started. Apps whose windows were open when it started are left out.'
+  return `What reaches the file is everything this Mac plays while the take runs: the ${simulator ? 'device' : 'window'}, ` +
+    'and any other sound on the Mac, music or a call included.'
 }
 
-const FALLBACK_SAID = 'That is on Fetch\'s own recorder. Where this Mac cannot use it, the take is ' +
-  'kept silent rather than record everything the Mac plays.'
+const FALLBACK_SAID = 'That default is Fetch\'s own recorder\'s. Where this Mac cannot use it, a take ' +
+  'whose sound was only the default is kept silent, because the browser capture is only given sound somebody asked for.'
 
 /**
  * What the finished file actually has, said in the result rather than left for the next
@@ -175,7 +178,7 @@ function takeAudio(plan = {}, meta = {}, o = {}) {
         'gets its sound from a second capture of the display, and that one can fail on ' +
         'its own without stopping the picture' +
         (plan.simulator && plan.asked === 'default'
-          ? '; or this Mac recorded it without Fetch\'s own recorder, where a default simulator take is kept silent rather than record everything the Mac plays'
+          ? '; or this Mac recorded it without Fetch\'s own recorder, where a take whose sound was only the default is kept silent'
           : '') +
         `. ${TRACK_READERS}, so they have nothing to ` +
         'read. Tell the person the take is silent, or record it again with system_audio true.'
@@ -221,15 +224,14 @@ function takeAudio(plan = {}, meta = {}, o = {}) {
 const SIM_AUDIO_SAID =
   'System audio is on by default for a simulator take: the sound is what a capture of ' +
   'the device framebuffer has no track for at all, and it is what the transcript, the ' +
-  'beats and the captions are built from. What reaches the file is the device\'s sound ' +
-  'and any sound from a process with no window of its own, another booted simulator ' +
-  'among them, and from any app opened after the take started; apps whose windows were ' +
-  'open at the start are left out. Where Fetch\'s own recorder cannot run, a default ' +
-  'take is kept silent rather than record everything the Mac plays. Pass system_audio ' +
-  'false to record it silent. What actually landed is on the result, not here.'
+  'beats and the captions are built from. What reaches the file is everything this Mac ' +
+  'plays while the take runs, the device among it, so music or a call on this Mac is in ' +
+  'it too. Where Fetch\'s own recorder cannot run, a take whose sound was only the ' +
+  'default is kept silent. Pass system_audio false to record it silent. What actually ' +
+  'landed is on the result, not here.'
 
 const SYS_AUDIO_ARG_SAID =
-  'Include the sound of what is being recorded. Default off, and on for a simulator take.'
+  'Include what this Mac plays while it records. Default off, and on for a simulator take.'
 
 const SIM_LIST_SAID =
   'the take carries the device\'s sound by default, where a capture of the device ' +

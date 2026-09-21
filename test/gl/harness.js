@@ -2193,11 +2193,34 @@ app.whenReady().then(async () => {
       console.log('cancel and fall back')
       const dest = path.join(OUT, 'cancel.mp4')
       try { fs.unlinkSync(dest) } catch {}
-      const run = host.exportEdit(take, { backdrop: 'dusk', format: 'mp4', dest, engine: 'gl', quality: 'high' }, null, 'gl-test-cancel')
-      setTimeout(() => proc.cancel('gl-test-cancel'), 1200)
-      let cancelled = false
-      try { await run } catch (e) { cancelled = !!e.cancelled }
-      is('a cancelled export stops and says so', cancelled)
+      // Two cancels, neither on a clock. One fixed 1200 ms cancel landed while the export
+      // was drawing on an idle Mac and while it was still probing at load 200, where it
+      // was lost and the wait ran to the end of a whole export. Each wait is bounded, so a
+      // cancel that regresses fails here instead of hanging the run.
+      const bounded = (p, ms) => Promise.race([p, new Promise((_, rej) =>
+        setTimeout(() => rej(new Error('cancel took over ' + ms + ' ms')), ms))])
+      const high = { backdrop: 'dusk', format: 'mp4', dest, engine: 'gl', quality: 'high' }
+      // 1. at the first instant, before anything under the id has started
+      {
+        const run = host.exportEdit(take, high, null, 'gl-test-cancel-early')
+        const found = proc.cancel('gl-test-cancel-early')
+        const t = Date.now(); let cancelled = false, why = ''
+        try { await bounded(run, 2000) } catch (e) { cancelled = !!e.cancelled; why = e.cancelled ? '' : ' ' + e.message }
+        is('a cancel at the first instant is found and stops the export', found && cancelled, `${Date.now() - t} ms${why}`)
+      }
+      // 2. while drawing: at the first progress tick, not at a clock time
+      {
+        let fire
+        const drawing = new Promise(r => { fire = r })
+        const run = host.exportEdit(take, high, () => fire(), 'gl-test-cancel')
+        let started = true
+        try { await bounded(drawing, 120000) } catch { started = false }
+        proc.cancel('gl-test-cancel')
+        const t = Date.now(); let cancelled = false, why = ''
+        try { await bounded(run, 2000) } catch (e) { cancelled = !!e.cancelled; why = e.cancelled ? '' : ' ' + e.message }
+        is('a cancelled export stops and says so', started && cancelled,
+          `${started ? '' : 'never started drawing, '}${Date.now() - t} ms${why}`)
+      }
       const again = await host.exportEdit(take, { backdrop: 'dusk', format: 'mp4', dest, engine: 'gl', end: 2 }, null, 'gl-test-after')
       is('the next export still draws', again.engine === 'gl' && fs.existsSync(dest), again.engine)
       // a MediaRecorder webm with no length: the compositor refuses, the classic path remuxes it

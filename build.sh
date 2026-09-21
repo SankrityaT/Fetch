@@ -3,6 +3,23 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# `./build.sh helpers` builds only the Swift helpers, beside the source, where a checkout
+# run with `npx electron .` finds them. No bundle, no signing, no DMG, nothing in dist
+# touched. Shot is built there only once git ignores it, so a binary is never left
+# waiting to be committed.
+if [ "${1:-}" = "helpers" ]; then
+  swiftc -O WindowList.swift -o WindowList
+  swiftc -O Elements.swift -o Elements
+  swiftc -O Recorder.swift -o Recorder
+  if git check-ignore -q Shot 2>/dev/null; then swiftc -O Shot.swift -o Shot
+  else
+    T=$(mktemp -d); swiftc -O Shot.swift -o "$T/Shot"; rm -rf "$T"
+    echo "Shot compiles; not written beside the source, since git does not ignore it"
+  fi
+  echo "built: WindowList Elements Recorder$(git check-ignore -q Shot 2>/dev/null && echo " Shot")"
+  exit 0
+fi
+
 ID="Developer ID Application: Sankritya Thakur (J94T84BVCP)"
 # One source of truth. A hardcoded "1.0" is not valid semver, parsed as 0.0.0, and
 # made every release look newer than the app itself: a permanent update loop.

@@ -69,11 +69,14 @@ const foundBy = new Map()      // path -> { at, boxes: Map(id -> box) }
 // a take the agent was just told has nothing to hear.
 const heardSilent = new Set()
 // The same, for a pass Fetch ran for itself rather than for the agent: the lasso's
-// snapping while the person scrubs, and the frame a zoom's aim is read from. E ids are
-// positional per frame (ui/targets.js:143), so putting a background pass into foundBy
-// would quietly renumber the ids the agent is still holding from its own
-// find_on_screen, and E7 would resolve to a different element's box with no warning.
-// Its ids still resolve; they just never take one away from the pass that minted it.
+// snapping while the person scrubs, and the frame a zoom's aim is read from. A pass
+// handed no earlier list numbers E1, E2... in reading order, and one handed a list
+// keeps that list's ids where it is sure (ui/targets.js carryIds). Either way a
+// background pass never goes into foundBy and is never handed the agent's list as its
+// prior: that would renumber, or carry forward, ids the agent is still holding from its
+// own find_on_screen, and E7 would resolve to a different element's box with no
+// warning. Its ids still resolve; they just never take one away from the pass that
+// minted it.
 const foundFor = new Map()     // path -> { at, boxes: Map(id -> box) }
 // What the person lassoed on the stage, per recording: R1, R2... An area someone drew
 // with their own hand is a better target than anything a search ranks, so it is kept
@@ -205,8 +208,11 @@ const ops = {
     // simctl offers cannot, and every transcript-spine feature Fetch has reads that
     // track. Can, and now does: system audio was off by default on every path, so what
     // an agent actually got was the silent file this sentence said it would not be
-    // (ui/recorder-opts.js). What lands on it is what the window is playing, which is the
-    // honest claim. Nothing is brought to the front to do it.
+    // (ui/recorder-opts.js). What lands on it is everything this Mac plays while it
+    // records, the device's sound among it: a window take's sound is taken from the
+    // display with no app named, because a filter naming apps is what took replayd, and
+    // with it every screen capture on the Mac, down (Recorder.swift start). Nothing is
+    // brought to the front to do it.
     let sim = args.simulator != null ? await simTarget(args.simulator) : null
     if (sim) args = { ...args, window: String(sim.window.id) }
 
@@ -847,6 +853,7 @@ const ops = {
       opts.fps = want.fps.out
     }
     const r = await deps.exportDoc(args.path, opts)
+    await cornerOntoDoc(args.path, meta)
     const mb = r && r.file && require('fs').existsSync(r.file)
       ? +(require('fs').statSync(r.file).size / 1e6).toFixed(1) : null
     // which renderer drew it: gl (the compositor) or classic, and what kept it classic
@@ -931,9 +938,19 @@ const ops = {
     const meta = shot ? null : await deps.proc.probeMeta(args.path).catch(() => ({}))
     const crop = args.cropped === false ? null
       : shot ? shot.crop || null : deps.proc.readDoc(args.path, meta && meta.duration).crop || null
-    const r = await deps.proc.findOnScreen(args.path, shot ? SHOT_AT : args.at, { crop, query: args.query, limit: args.limit })
+    // The list this picture already has, as the prior, so the same control keeps its id:
+    // a picture of a device goes on from that device's run, and a second search of the
+    // same moment goes on from the first. Only ever the agent's own list (foundBy), never
+    // a background pass's.
+    const run = chainOf.get(args.path) || null
+    const before = foundBy.get(args.path) || null
+    const at = shot ? SHOT_AT : args.at
+    const prior = run ? simChain.get(run) || null
+      : before && before.all && Math.abs((+before.at || 0) - (+at || 0)) <= 1 ? before.all : null
+    const r = await deps.proc.findOnScreen(args.path, at, { crop, query: args.query, limit: args.limit, prior })
     // only boxes measured in apply_edit's frame (after the crop) can be named there
     const all = r.all || r.elements
+    if (run) joinRun(run, args.path, prior, all)
     // a card, grid or panel a lift would come out wrong on says so here, with the one
     // inside it to lift instead, so the agent does not have to be refused to learn it
     // the frame the elements were measured in, which is what turns the type ruler in
@@ -1719,8 +1736,10 @@ async function enforceAccess(args, ctx) {
     const what = sim ? `the ${sim.name} simulator`
       : args.window != null ? `a ${app || 'window'} window` : 'your whole screen'
     const heardSaid = !sound ? ''
-      : ' ' + [heard.systemAudio ? `Its sound is recorded too: the ${sim ? 'device\'s' : 'window\'s'} own, any ` +
-        'background process with no window, and any app you open while it records.' : '',
+      // What they are saying yes to, in the scope the recorder really has: a window take's
+      // sound is the display's, with no app left out (Recorder.swift start says why).
+      : ' ' + [heard.systemAudio ? 'Its sound is recorded too, and that is everything this Mac plays while it ' +
+        `records: the ${sim ? 'device' : 'window'}, and your music or a call as well if they are playing.` : '',
       heard.mic ? 'Your microphone is recorded too.' : ''].filter(Boolean).join(' ')
     const answer = await askPerson(
       `${who} wants to ${still ? 'take a screenshot of' : 'record'} ${what}${sound ? ', with sound' : ''}.`,
@@ -2074,6 +2093,62 @@ function dropScratch(file) {
 // without being handed the path the id was minted on.
 const simSeen = new Map()
 
+// One device's screens as one run of ids. Each new picture of the device is handed the
+// last list as its prior, so the same control keeps the same id from ready to
+// record_start to every tap, and anything new is numbered past every id the run has
+// handed out (ui/targets.js carryIds). An id held from any screen in the run means the
+// same control on the newest one, or is not on it and is refused. The one case carryIds
+// cannot tell apart is the same words at the same size and place on a screen the device
+// went on to (a Done in the same corner), which it carries as the same control.
+//
+// That holds only while the carry really happens, so it is checked on every pass
+// (carriedOn) rather than assumed: a pass that came back numbered from E1 again starts
+// the run over, and ids from before it are not trusted on the newest screen.
+const simChain = new Map()     // udid -> the newest list in the run
+const chainOf = new Map()      // path -> udid, for every picture whose list is in a run
+
+/**
+ * Whether `all` was numbered on from `prior` rather than from E1. A list that kept an
+ * id kept it on purpose; a list that kept none is on from prior only if every id in it
+ * is past the highest prior could have handed out. A pass that ignored prior numbers
+ * from E1, which is neither.
+ *
+ * A prior that handed out nothing proves nothing: numbering on from 0 and starting at E1
+ * are the same list, and taking that for a carry is how an id held from a screen before
+ * an empty one came to resolve on a different control. A screen with nothing on it keeps
+ * the run going when it kept the count (its seq is past the prior's top), so the ids
+ * after it are numbered past everything before it.
+ */
+function carriedOn(prior, all) {
+  if (!Array.isArray(prior) || !Array.isArray(all)) return false
+  const num = e => +String(e && e.id).slice(1) || 0
+  const top = Math.max(+prior.seq || 0, 0, ...prior.map(num))
+  if (!(top > 0)) return false
+  // where the list says how far it counted, that has to reach past what prior handed out
+  if (typeof all.seq === 'number' && !(all.seq >= top)) return false
+  if (!all.length) return typeof all.seq === 'number'
+  if (all.carried > 0) return true
+  return all.every(e => num(e) > top)
+}
+
+// A pass on a device's picture joins its run when it carried on from it, and starts the
+// run over when it did not. A search of an older picture in the run is numbered on from
+// the run too, but it does not become the run's newest list: the next screen of the
+// device is matched against the screen before it, not against an older one searched late.
+// One that did not carry leaves the run on its own and takes nothing else with it.
+function joinRun(udid, file, prior, all) {
+  const on = !!prior && carriedOn(prior, all)
+  const newest = simSeen.get(udid) === file || !simChain.has(udid)
+  if (!newest) {
+    if (on) chainOf.set(file, udid); else chainOf.delete(file)
+    return on
+  }
+  if (!on) for (const [p, u] of chainOf) if (u === udid) chainOf.delete(p)
+  simChain.set(udid, all)
+  chainOf.set(file, udid)
+  return on
+}
+
 /**
  * What is on the glass, named, off the same capture that measured it.
  *
@@ -2093,14 +2168,23 @@ async function simScreen(sim, o = {}) {
   try {
     // No crop: a tap is aimed through the glass rectangle and that arithmetic starts in
     // the whole frame, so the boxes have to be measured there too.
-    const r = await deps.proc.findOnScreen(file, 0, { limit: Math.max(1, Math.min(24, +o.limit || 12)) })
+    // The device's last screen as the prior, so a button that has not moved keeps its id
+    const prior = simChain.get(sim.udid) || null
+    const r = await deps.proc.findOnScreen(file, 0, { limit: Math.max(1, Math.min(24, +o.limit || 12)), prior })
     noteFound(file, 0, r.elements, r.all, { aspect: r.width > 0 && r.height > 0 ? r.width / r.height : 0 })
     simSeen.set(sim.udid, file)
+    const carries = joinRun(sim.udid, file, prior, r.all || r.elements)
+    const kept = carries ? Math.max(0, +(r.all || []).carried || 0) : 0
     return {
       path: file, found: r.found,
       elements: r.elements.map(e => ({ id: e.id, text: e.text, kind: e.kind, box: e.box, confidence: e.confidence })),
-      how: 'these ids are what simulator tap takes as element. They are minted on this picture, so the next ' +
-        'call that changes the screen mints new ones.',
+      ...(carries ? { kept_ids: kept } : {}),
+      how: carries
+        ? 'these ids are what simulator tap takes as element. A control that was on this device\'s last screen ' +
+          `keeps the id it had there (${kept} did), and anything new is numbered past every id handed out on ` +
+          'this device before, so an id you hold from an earlier screen names the same control here or is refused.'
+        : 'these ids are what simulator tap takes as element. They are minted on this picture, so use these and ' +
+          'not an id from an earlier call.',
     }
   } catch { return null }
 }
@@ -2212,6 +2296,25 @@ function simFacts(sim, bar) {
     ...(bar && bar.said ? { status_bar: `Fetch set ${bar.said}, and puts back ${bar.restores} when this is over` } : {}),
     ...(bar && bar.failed ? { status_bar: `the status bar was left alone: ${bar.failed}` } : {}),
   }
+}
+
+// A take of a device written before the capture stored its glass's corner has the
+// corner read off one of its frames when it is drawn (ui/compositor/prepare.js). Once
+// that has been read, it goes onto the document, so it is read once and never again, and
+// review and the editor see the same corner the export drew. Only ever added: a corner
+// already there is the capture's own and wins.
+async function cornerOntoDoc(src, meta) {
+  try {
+    if (!src || !fs.existsSync(src) || isShot(src)) return
+    const m = meta && meta.width > 0 ? meta : await deps.proc.probeMeta(src).catch(() => null)
+    const doc = deps.proc.readDoc(src, m && m.duration)
+    const g = await require('./compositor/prepare').glassFor(src, doc, m)
+    if (!g || !(g.corner > 0 && g.corner < 0.5)) return
+    // read again at the moment of writing, so nothing written while the frame was read is lost
+    const now = deps.proc.readDoc(src, m && m.duration)
+    if (!now.viewport || +now.viewport.corner > 0) return
+    deps.proc.writeDoc(src, { ...now, viewport: { ...now.viewport, corner: g.corner } })
+  } catch (e) { console.warn('[bridge] the glass corner was not written onto the edit:', e && e.message) }
 }
 
 // What a capture of a device writes onto its document. The rectangle is the same object
@@ -2471,10 +2574,13 @@ async function simTap(sim, args, ctx) {
     ...(note ? { note } : {}),
     ...(screen ? { screen } : {}),
     do_next: screen
-      ? 'the next tap takes an element id off screen above. The ids are minted on that picture, so use the ' +
-        'newest ones and never an id from an earlier call.'
+      ? (screen.kept_ids != null
+        ? 'the next tap takes an element id off screen above. An id from an earlier screen of this device still ' +
+          'works where that control is still there, and is refused where it is not.'
+        : 'the next tap takes an element id off screen above. The ids are minted on that picture, so use the ' +
+          'newest ones and never an id from an earlier call.')
       : 'take_shot the device and call find_on_screen on it before the next tap: the screen has moved and the ' +
-        'ids are minted per pass.',
+        'ids on it have not been read.',
   }
 }
 
@@ -2500,10 +2606,20 @@ async function simPoint(sim, args) {
     // the screen they left behind, so the common case is an id off the last call and no
     // path to carry.
     const seenHere = simSeen.get(sim.udid) || null
-    const on = args.path || (seenHere && seenHere === lastFoundOn ? seenHere : null)
+    const id = String(args.element).trim().toUpperCase()
+    // The last search was on another picture of this same device, in the same run of
+    // ids: an id off it is the same control on the newest screen, or is not there.
+    const inRun = !!seenHere && !!lastFoundOn && lastFoundOn !== seenHere &&
+      chainOf.get(lastFoundOn) === sim.udid && chainOf.get(seenHere) === sim.udid
+    if (!args.path && inRun && !holds(foundBy.get(seenHere), id)) {
+      throw new Error(`${id} is not on ${sim.name}'s newest screen. Ids carry from screen to screen on one device, ` +
+        'so it was on an earlier screen and that control has gone, or it was new on the picture find_on_screen ' +
+        'last read. Send that picture\'s path to tap it there, or pick an id off the newest screen.')
+    }
+    const on = args.path || (seenHere && (seenHere === lastFoundOn || inRun) ? seenHere : null)
     if (!on && seenHere) {
       throw new Error('a tap on an element needs path here: find_on_screen has named another picture since ' +
-        `${sim.name}'s last screen, and ids restart at E1 on every pass, so ${String(args.element).toUpperCase()} ` +
+        `${sim.name}'s last screen, and an id off that picture can name something else on this one, so ${id} ` +
         'without a path could be a different thing. Send the path the id was minted on.')
     }
     if (!on) {
@@ -2655,6 +2771,14 @@ const LEAD_SAID = 0.001        // processor.js LEAD_MIN: under this the graphs a
 // How short a sound may end against its picture before it is called drift: two frames,
 // and never under the 50 ms a recorder of the time lost to the stream closing at Stop
 const shortSaid = fps => Math.max(0.05, 2 / (+fps > 0 ? +fps : 30))
+// A track whose last buffer came in this long before Stop stopped arriving mid take. The
+// buffers in flight at a clean Stop are tens of milliseconds (53 ms on the take that
+// checked the replayd fix). The recorder fills the rest with silence so the file keeps
+// its length, which is why nothing else here would notice: the end lands with the
+// picture. Since that fix, a window take's sound stream that stops with an error is let
+// go and not reopened (Recorder.swift stream(_:didStopWithError:)), so this is the one
+// place that says a take went quiet part way.
+const TAIL_SAID_MS = 500
 // The header with where its sound ends, read only where a sync is said (a stream copy,
 // no decode). A copy, since probeMeta's answer is shared.
 async function withAudioEnd(src, meta) {
@@ -2700,6 +2824,13 @@ function soundSync(meta, sound) {
     said.push(`${Math.round(lostMs)} ms of sound was let go when the file fell behind; silence stands in its place, ` +
       'so sync holds and that sound is gone')
   }
+  const cut = tracks.filter(t => +t.tailMs > TAIL_SAID_MS)
+  for (const t of cut) {
+    said.push(`the ${t.track === 'mic' ? 'microphone' : 'system sound'} stopped arriving ${(+t.tailMs / 1000).toFixed(2)} s ` +
+      'before the take was stopped, and silence fills the file from there to the end. Sync holds, and anything ' +
+      'that played in that stretch is not in the file')
+  }
+  const quietMs = cut.length ? Math.round(Math.max(...cut.map(t => +t.tailMs))) : 0
   const measured = Number.isFinite(short)
   return {
     // true only when the end was measured and lands with the picture; unmeasured is not in sync
@@ -2707,6 +2838,7 @@ function soundSync(meta, sound) {
     ...(Number.isFinite(lead) ? { starts_s: +lead.toFixed(3) } : {}),
     ...(measured ? { ends_early_s: +Math.max(0, short).toFixed(3) } : {}),
     ...(tracks.length ? { filled_ms: Math.round(startMs + gapMs), ...(lostMs > 0 ? { lost_ms: Math.round(lostMs) } : {}) } : {}),
+    ...(quietMs ? { silent_end_ms: quietMs } : {}),
     said: said.length ? said.map(x => x[0].toUpperCase() + x.slice(1)).join('. ') + '.'
       : measured ? 'the sound starts with the picture and ends with it, measured on this file.'
         : 'the sound starts with the picture, measured on this file. Where it ends was not measured.',
@@ -2828,6 +2960,16 @@ function withElements(src, doc, prev) {
 // One id, one box. R ids come from the lasso, E ids from an Elements pass, and neither
 // map can shadow the other. The agent's own find_on_screen is read before a pass Fetch
 // ran for itself, so a background pass never takes an E id away from it.
+// Only on a list that carried ids on from an earlier one: there an id the agent was shown
+// before can be on this frame without being among the ones shown now. On a list minted
+// fresh, the ids it did not show are ones nobody has seen, and a typo should not land.
+const boxInList = (found, id) => {
+  const all = found && Array.isArray(found.all) && found.all.carried > 0 ? found.all : null
+  const e = all ? all.find(x => x && x.id === id) : null
+  return e ? e.box : null
+}
+const holds = (found, id) => !!(found && (found.boxes.has(id) || boxInList(found, id)))
+
 function resolveElement(src, seen, mine, crop, it) {
   const { element, ...rest } = it
   const id = String(element).trim().toUpperCase()
@@ -2839,7 +2981,10 @@ function resolveElement(src, seen, mine, crop, it) {
     }
     return { ...rest, box: regionBox(region, crop) }
   }
-  const box = (seen && seen.boxes.get(id)) || (mine && mine.boxes.get(id))
+  // An id from an earlier screen can be carried onto this one without being among the
+  // ones this pass showed, so the whole list is read too: same pass, same frame.
+  const box = (seen && seen.boxes.get(id)) || (mine && mine.boxes.get(id)) ||
+    boxInList(seen, id) || boxInList(mine, id)
   if (!box) {
     const at = seen || mine
     throw new Error(`${element} is not in the last find_on_screen result for this recording` +
@@ -3842,7 +3987,8 @@ async function takeLevels(src, doc, meta) {
   let lv = null
   try {
     lv = await require('./compositor/levels').measure(src, {
-      crop, width: meta && meta.width, height: meta && meta.height, timeout: 8000 })
+      crop, width: meta && meta.width, height: meta && meta.height, timeout: 8000,
+      viewport: (doc && doc.viewport) || null, screen: (doc && doc.device && doc.device.screen) || null })
   } catch {}
   takeLevelCache.set(key, lv)
   return lv
@@ -3974,8 +4120,10 @@ async function applySetup(win, args, heard) {
     mic: heard.mic,
     systemAudio: heard.systemAudio,
     camera: heard.camera,
-    // Sound nobody asked for by name rides only on Fetch's own recorder, which leaves
-    // other apps out; the browser capture's system audio is everything the Mac plays.
+    // Sound nobody asked for by name rides only on Fetch's own recorder. That recorder
+    // now hears everything the Mac plays as well (Recorder.swift start: a filter naming
+    // apps is what crashed replayd), so both paths hear the same and this flag only keeps
+    // the older rule. Whether it should stay is ui/recorder-opts.js's.
     sysNativeOnly: !!(heard.systemAudio && heard.asked === 'default'),
   }
   // The take borrows the person's setup card. What it held is kept aside and put back
@@ -4245,6 +4393,9 @@ module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEnde
   simArgs, deviceHint,
   // where a take's sound sits against its picture, as record_stop and probe say it
   soundSync,
+  // whether a pass kept on numbering from the list it was handed, which is what lets an
+  // id off one screen of a device stand on the next (simScreen, find, simPoint)
+  carriedOn,
   // the two rules that are code rather than prose, exercised by test/lasso.test.js
   withElements, aimZooms,
   // the person's answer to a question or a proposal. main.js does not call it: the

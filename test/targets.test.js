@@ -407,5 +407,134 @@ console.log('what to call an area whose middle holds nothing')
   is('a box that is not a box is Area', T.regionLabel({ x: 0.2, y: 0.2, w: 0, h: 0.05 }, SCREEN, null), 'Area')
 }
 
+console.log('the same control keeps the same id')
+// The judged simulator job: ready listed "Sign in with Apple" as E18, record_start took
+// its own picture of the same, unchanged screen and listed it as E17, and the tap sent
+// with E18 was refused. One small thing above it (a tooltip over the Simulator toolbar)
+// was on the first picture and not the second, and every id below it moved up by one.
+{
+  const words = (text, x, y, w, h = 0.018) => ({ text, conf: 1, box: { x, y, w, h }, bg: '#FFFFFF', bgShare: 0.9 })
+  const chip = (text, x, y, w, h = 0.018, pad = 0.012) => ({ ...words(text, x, y, w, h),
+    container: { x: x - pad, y: y - pad, w: w + 2 * pad, h: h + 2 * pad }, bg: '#111111', outside: '#FFFFFF' })
+  const at = (list, name) => list.find(e => e.text === name)
+  const idOf = (list, name) => (at(list, name) || {}).id
+  // the Simulator window: its toolbar, the device's status bar, then the app's sign-in
+  const toolbar = [words('Yolk-ProMax', 0.05, 0.012, 0.1), words('iOS 26.5', 0.05, 0.03, 0.06),
+    chip('Home', 0.8, 0.015, 0.03), chip('Rotate', 0.88, 0.015, 0.04)]
+  const app = [
+    words('9:41', 0.1, 0.07, 0.04),
+    words('Yolk', 0.44, 0.2, 0.12, 0.04),
+    words('Breakfast, planned for you', 0.3, 0.26, 0.4),
+    words('Recipes for the week', 0.2, 0.34, 0.3), words('Grocery list', 0.2, 0.38, 0.2),
+    words('Leftovers', 0.2, 0.42, 0.15), words('Pantry', 0.2, 0.46, 0.12),
+    words('Reminders', 0.2, 0.5, 0.16), words('Family sharing', 0.2, 0.54, 0.22),
+    words('Nutrition', 0.2, 0.58, 0.14),
+    chip('Continue with Google', 0.3, 0.7, 0.4), words('or', 0.49, 0.735, 0.02),
+    chip('Sign in with Apple', 0.3, 0.77, 0.4),
+    words('Terms', 0.3, 0.85, 0.08), words('Privacy', 0.6, 0.85, 0.1),
+  ]
+  const tip = words('Save screen', 0.8, 0.05, 0.08)
+  const READY = { width: 1400, height: 2900, texts: [...toolbar, tip, ...app] }
+  const RECORD = { width: 1400, height: 2900, texts: [...toolbar, ...app] }
+  const ready = T.elementsFrom(READY)
+  is('ready lists Sign in with Apple as E18, as it did in the job', idOf(ready, 'Sign in with Apple'), 'E18')
+  is('numbered afresh, record_start\'s picture would call it E17', idOf(T.elementsFrom(RECORD), 'Sign in with Apple'), 'E17')
+  const record = T.elementsFrom(RECORD, ready)
+  is('carried from ready, it is still E18', idOf(record, 'Sign in with Apple'), 'E18')
+  is('and so is everything else that did not change',
+    record.every(e => e.id === idOf(ready, e.text)), true)
+  is('the id of the tooltip that went is not handed to anything', record.some(e => e.id === idOf(ready, 'Save screen')), false)
+  is('ids on one picture are still one each', new Set(record.map(e => e.id)).size, record.length)
+  is('reading order is still the order of the list', record.map(e => e.text), T.elementsFrom(RECORD).map(e => e.text))
+  // the same button a second time, after a tap, with nothing changed at all
+  const again = T.elementsFrom(RECORD, record)
+  is('a third picture of the same screen changes nothing', again.map(e => e.id), record.map(e => e.id))
+
+  // Something appears above and pushes the rest down: a banner, an error, a keyboard bar
+  const shift = 0.06
+  const down = t => ({ ...t, box: { ...t.box, y: t.box.y + shift }, ...(t.container ? { container: { ...t.container, y: t.container.y + shift } } : {}) })
+  const BANNER = { width: 1400, height: 2900, texts: [...toolbar, words('9:41', 0.1, 0.07, 0.04),
+    chip('Check your email to finish signing up', 0.2, 0.12, 0.6), ...app.slice(1).map(down)] }
+  const banner = T.elementsFrom(BANNER, record)
+  is('a banner pushing the screen down renumbers nothing',
+    ['Sign in with Apple', 'Continue with Google', 'Terms', 'Yolk', 'Rotate'].map(n => idOf(banner, n)),
+    ['Sign in with Apple', 'Continue with Google', 'Terms', 'Yolk', 'Rotate'].map(n => idOf(record, n)))
+  is('the banner is new, numbered past every id handed out', idOf(banner, 'Check your email to finish signing up'), 'E' + (record.seq + 1))
+  is('everything else was carried', banner.carried, banner.length - 1)
+
+  // An id held from any earlier picture means the same thing or nothing: the tooltip's
+  // E-number, and the highest one of all, are never handed out again down the chain
+  const NOAPPLE = { width: 1400, height: 2900, texts: [...toolbar, ...app.filter(t => t.text !== 'Privacy')] }
+  const gone = T.elementsFrom(NOAPPLE, banner)
+  const back = T.elementsFrom({ ...NOAPPLE, texts: [...NOAPPLE.texts, words('Help', 0.6, 0.85, 0.08)] }, gone)
+  is('an element that went takes its id with it', gone.some(e => e.id === idOf(banner, 'Privacy')), false)
+  is('a new one after it gets a number never used on this screen',
+    [idOf(ready, 'Save screen'), idOf(banner, 'Check your email to finish signing up'), idOf(banner, 'Privacy')].includes(idOf(back, 'Help')), false)
+  is('even when the list only came back through JSON', idOf(T.elementsFrom({ ...NOAPPLE, texts: [...NOAPPLE.texts, words('Help', 0.6, 0.85, 0.08)] },
+    JSON.parse(JSON.stringify(banner))), 'Help'), 'E' + (Math.max(...banner.map(e => +e.id.slice(1))) + 1))
+
+  // Two different buttons wrongly sharing an id is worse than one changing its id
+  const OTHER = { width: 1400, height: 2900, texts: [...toolbar, words('Welcome back', 0.3, 0.2, 0.4, 0.04),
+    chip('Sign in with Apple', 0.05, 0.12, 0.25, 0.012)] }
+  const other = T.elementsFrom(OTHER, record)
+  is('the same words at another size are another control', idOf(other, 'Sign in with Apple') === idOf(record, 'Sign in with Apple'), false)
+  const renamed = T.elementsFrom({ ...RECORD, texts: RECORD.texts.map(t => t.text === 'Sign in with Apple' ? { ...t, text: 'Signed in with Apple' } : t) }, record)
+  is('a label that changed is a new element', idOf(renamed, 'Signed in with Apple') === idOf(record, 'Sign in with Apple'), false)
+  const turned = T.elementsFrom({ ...RECORD, width: 2900, height: 1400 }, record)
+  is('a picture of another shape carries nothing', turned.carried, 0)
+  is('and still numbers past what was handed out', Math.min(...turned.map(e => +e.id.slice(1))), record.seq + 1)
+  const lost = T.elementsFrom({ ...RECORD, texts: RECORD.texts.map(t => t.text === 'Sign in with Apple' ? { ...t, container: undefined } : t) }, record)
+  is('a button whose fill Vision missed this time is the same button', idOf(lost, 'Sign in with Apple'), idOf(record, 'Sign in with Apple'))
+
+  // The same words on every row: a "Delete" per person. A scroll by exactly one row puts
+  // Bob's Delete where Alice's was, and it must stay Bob's.
+  const rows = (names, y0) => names.flatMap((n, i) => [words(n, 0.1, y0 + i * 0.06, 0.2), chip('Delete', 0.75, y0 + i * 0.06, 0.1)])
+  const LIST = { width: 1400, height: 2900, texts: [words('People', 0.1, 0.1, 0.2, 0.03), ...rows(['Alice', 'Bob', 'Carol'], 0.3)] }
+  const list = T.elementsFrom(LIST)
+  const deletes = l => l.filter(e => e.text === 'Delete').sort((a, b) => a.box.y - b.box.y).map(e => e.id)
+  const moved = T.elementsFrom({ ...LIST, texts: [LIST.texts[0], ...rows(['Bob', 'Carol', 'Dave'], 0.3)] }, list)
+  is('scrolled one row, the names keep their ids', ['Bob', 'Carol'].map(n => idOf(moved, n)), ['Bob', 'Carol'].map(n => idOf(list, n)))
+  is('each Delete keeps its own row\'s id, not the one of the row that was there', deletes(moved).slice(0, 2), deletes(list).slice(1))
+  is('Dave\'s Delete is new', list.some(e => e.id === deletes(moved)[2]), false)
+  // A row action moved from Alice's row to Carol's, and every name stayed where it was.
+  // "Delete" is unique on both pictures and moved 0.16 of the frame on its own, past two
+  // rows that did not move: it is Carol's Delete, and holding Alice's id must not reach it.
+  const people = ['Alice', 'Bob', 'Carol', 'Dave'].map((n, i) => words(n, 0.1, 0.3 + i * 0.08, 0.15))
+  const head = [words('9:41', 0.1, 0.02, 0.04), words('Contacts', 0.4, 0.1, 0.2, 0.03)]
+  const onAlice = T.elementsFrom({ width: 1400, height: 2900, texts: [...head, ...people, chip('Delete', 0.75, 0.3, 0.12)] })
+  const onCarol = T.elementsFrom({ width: 1400, height: 2900, texts: [...head, ...people, chip('Delete', 0.75, 0.46, 0.12)] }, onAlice)
+  is('a lone control that moved past rows that stayed is a new one', idOf(onCarol, 'Delete') === idOf(onAlice, 'Delete'), false)
+  is('and the rows that stayed keep theirs', ['Alice', 'Carol'].map(n => idOf(onCarol, n)), ['Alice', 'Carol'].map(n => idOf(onAlice, n)))
+  // the same, with a second action riding along: two that moved together still passed rows that did not
+  const pair = y => [chip('Delete', 0.75, y, 0.12), chip('Archive', 0.55, y, 0.12)]
+  const twoA = T.elementsFrom({ width: 1400, height: 2900, texts: [...head, ...people, ...pair(0.3)] })
+  const twoC = T.elementsFrom({ width: 1400, height: 2900, texts: [...head, ...people, ...pair(0.46)] }, twoA)
+  is('nor does a pair of them that moved together', ['Delete', 'Archive'].some(n => idOf(twoC, n) === idOf(twoA, n)), false)
+  // a sheet sliding up over nothing that stayed keeps its words
+  const SHEET = y => ({ width: 1400, height: 2900, texts: [...head, words('Share to', 0.1, y, 0.2), chip('Copy link', 0.1, y + 0.05, 0.3)] })
+  const s1 = T.elementsFrom(SHEET(0.8)), s2 = T.elementsFrom(SHEET(0.62), s1)
+  is('a sheet that slid up past nothing that stayed keeps its ids', ['Share to', 'Copy link'].map(n => idOf(s2, n)), ['Share to', 'Copy link'].map(n => idOf(s1, n)))
+
+  // with nothing unique on screen to say how it moved, repeated words are not guessed at
+  const bare = { width: 1400, height: 2900, texts: [0, 1, 2].map(i => chip('Delete', 0.75, 0.3 + i * 0.06, 0.1)) }
+  const bare1 = T.elementsFrom(bare)
+  const bare2 = T.elementsFrom({ ...bare, texts: bare.texts.map(t => ({ ...t, box: { ...t.box, y: t.box.y + 0.03 }, container: { ...t.container, y: t.container.y + 0.03 } })) }, bare1)
+  is('repeated words half a row away are not matched by guess', bare2.carried, 0)
+  is('the same repeated words where they were are', T.elementsFrom(bare, bare1).map(e => e.id), bare1.map(e => e.id))
+
+  // a card says what it sits in by the ids the list now carries
+  const card = (label, x, y) => ({ text: label, conf: 1, box: { x: x + 0.008, y: y + 0.015, w: 0.03, h: 0.014 }, bg: '#FCFBF7', bgShare: 1,
+    container: { x, y, w: 0.11, h: 0.09 }, outside: '#FFFFFF' })
+  const PANE = { width: 1600, height: 988, texts: [card('KEY', 0.748, 0.522), card('TEMPO', 0.864, 0.522),
+    card('METER', 0.748, 0.622), card('LENGTH', 0.864, 0.622), card('RANGE', 0.748, 0.722), card('HANDS', 0.864, 0.722)],
+    rects: [{ box: { x: 0.7363, y: 0.1852, w: 0.2488, h: 0.7905 }, bg: '#FCFBF7', conf: 0.9, edges: true }] }
+  const pane1 = T.elementsFrom(PANE)
+  const pane2 = T.elementsFrom({ ...PANE, texts: [{ text: 'Now playing', conf: 1, box: { x: 0.75, y: 0.2, w: 0.1, h: 0.02 }, bg: '#FFFFFF', bgShare: 1 },
+    ...PANE.texts.map(t => t.text === 'TEMPO' ? { ...t, text: 'TEMPO 96' } : t)] }, pane1)
+  const kinds = l => ['panel', 'grid'].map(k => l.find(e => e.kind === k).id)
+  is('a panel and a grid whose words changed inside are still themselves', kinds(pane2), kinds(pane1))
+  is('and a card in it points at the carried grid', pane2.find(e => e.text === 'KEY').in, pane1.find(e => e.kind === 'grid').id)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

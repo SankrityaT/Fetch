@@ -62,8 +62,26 @@ function app_desktop() {
 // Every child is registered under its job id so a job can be cancelled.
 const running = new Map()
 
+// A cancel is kept for a minute after it lands, so a child registered under the id
+// afterwards (the next stage of a job whose current stage was just killed, or a job that
+// had nothing running at the instant of the cancel) is killed on arrival instead of
+// running to its end. Job ids are made from the clock, so a live job never meets an old
+// cancel of its own id.
+const cancelled = new Map()
+const TOMBSTONE_MS = 60 * 1000
+
+function wasCancelled(jobId) {
+  if (jobId == null) return false
+  const t = cancelled.get(jobId)
+  if (t == null) return false
+  if (Date.now() - t > TOMBSTONE_MS) { cancelled.delete(jobId); return false }
+  return true
+}
+const cancelledError = () => Object.assign(new Error('cancelled'), { cancelled: true })
+
 function register(jobId, child) {
   if (jobId == null) return
+  if (wasCancelled(jobId)) { try { child.kill('SIGKILL') } catch {} ; return }
   if (!running.has(jobId)) running.set(jobId, new Set())
   running.get(jobId).add(child)
 }
@@ -71,7 +89,16 @@ function unregister(jobId, child) {
   const s = running.get(jobId)
   if (s) { s.delete(child); if (!s.size) running.delete(jobId) }
 }
-function cancel(jobId) {
+// o.keep: kill what runs under the id now and leave the id usable, for a stage that
+// failed and hands the job to another (render-host's killChildren). A plain cancel is
+// the job's end.
+function cancel(jobId, o = {}) {
+  if (jobId == null) return false
+  if (!o.keep) {
+    const now = Date.now()
+    for (const [id, t] of cancelled) if (now - t > TOMBSTONE_MS) cancelled.delete(id)
+    cancelled.set(jobId, now)
+  }
   const s = running.get(jobId)
   if (!s) return false
   for (const c of s) { try { c.kill('SIGKILL') } catch {} }
@@ -125,16 +152,21 @@ const timeWatcher = (onProgress, total) => l => {
 // ---- probing -----------------------------------------------------------
 // `ffmpeg -i` alone exits non-zero but prints the header instantly. The old
 // code decoded the entire file with `-f null -` just to read the duration.
-async function probeMeta(src) {
+// A jobId makes the probe part of that job: its ffmpeg is registered, so a cancel kills
+// it, and a cancelled probe rejects as cancelled rather than answer from half a header.
+async function probeMeta(src, jobId) {
   // Read stderr whole. run() hands its callback chunk pieces split on newlines, and a
   // chunk boundary inside "Stream #0:1: Audio: aac" turned into a fake line break, so
   // under load a file with audio was sometimes probed as having none.
-  const out = await new Promise(resolve => {
-    let buf = ''
+  if (wasCancelled(jobId)) throw cancelledError()
+  const out = await new Promise((resolve, reject) => {
+    let buf = '', killed = false
     const p = spawn(FFMPEG, ['-hide_banner', '-i', src])
+    register(jobId, p)
+    p.once('exit', (code, sig) => { if (sig === 'SIGKILL') killed = true })
     p.stderr.on('data', d => { buf += d })
-    p.on('close', () => resolve(buf))
-    p.on('error', () => resolve(buf))
+    p.on('close', () => { unregister(jobId, p); killed ? reject(cancelledError()) : resolve(buf) })
+    p.on('error', () => { unregister(jobId, p); resolve(buf) })
   })
   const meta = { duration: 0, width: 0, height: 0, fps: 0, hasAudio: false, vcodec: null, acodec: null, audioTracks: 0 }
   const d = /Duration: (\d+):(\d+):(\d+\.\d+)/.exec(out)
@@ -148,7 +180,9 @@ async function probeMeta(src) {
   // a native take can carry system audio and the mic as two separate tracks
   meta.audioTracks = (out.match(/Stream #\d+:\d+.*?: Audio: /g) || []).length
   meta.cadence = await probeCadence(src)
+  if (wasCancelled(jobId)) throw cancelledError()
   meta.audioLead = meta.hasAudio ? await probeAudioLead(src) : 0
+  if (wasCancelled(jobId)) throw cancelledError()
   return meta
 }
 
@@ -1229,6 +1263,19 @@ async function thumbnail(srcArg, atSec, onProgress, jobId) {
   } finally { done() }
 }
 
+// A crop as ffmpeg takes it. Where the frame's size is known and the take is a device's,
+// in the whole pixels the compositor crops (Plan.cropPx, held to the glass's own pixels,
+// so no row of the Simulator's black ring comes along on the top and the left); anywhere
+// else the expression it always was, which ffmpeg rounds down to even.
+function cropArg(c, cap = {}) {
+  if (!c) return null
+  if (cap && cap.screen && cap.viewport && cap.W > 0 && cap.H > 0) {
+    const px = require('./ui/compositor/plan').cropPx(c, cap.W, cap.H, { viewport: cap.viewport, screen: cap.screen })
+    return `crop=${px.w}:${px.h}:${px.x}:${px.y}`
+  }
+  return `crop=w='2*floor(iw*${c.w}/2)':h='2*floor(ih*${c.h}/2)':x='iw*${c.x}':y='ih*${c.y}'`
+}
+
 // ---- a frame for an agent to look at ------------------------------------
 // Separate from thumbnail(), which writes the library poster. A model that can read
 // images uses this to place a zoom, a redaction or a step by what is on screen, so
@@ -1274,14 +1321,19 @@ async function findOnScreen(srcArg, atSec, opts = {}) {
   // wider than an agent's frame: small UI text reads more surely at this size
   const f = await frameAt(srcArg, atSec, 1600, opts.crop || null)
   const raw = JSON.parse(await runOut(elementsBin(), [f.file]))
-  const all = Targets.elementsFrom(raw)
+  // opts.prior: the list an earlier pass on the same screen handed back. A control found
+  // again keeps its id from it (Targets.carryIds); with none, ids are E1.. in reading order.
+  const all = Targets.elementsFrom(raw, opts.prior || null)
   const query = String(opts.query || '').trim()
   const limit = Math.max(1, Math.min(60, +opts.limit || (query ? 8 : 40)))
+  // `all` is in reading order. A carried id is not, so the order is read off the list
+  // rather than off the number in the id.
+  const order = new Map(all.map((e, i) => [e.id, i]))
   const list = query
     ? Targets.pick(all, query, limit)
     // no query: the things with edges first (chips, buttons, cards), then text
     : all.filter(e => e.kind !== 'text').concat(all.filter(e => e.kind === 'text')).slice(0, limit)
-      .sort((a, b) => +a.id.slice(1) - +b.id.slice(1))
+      .sort((a, b) => order.get(a.id) - order.get(b.id))
   // a name of its own, so the chat's card for an earlier search keeps its picture
   const image = f.file.replace(/\.jpg$/, '') + `-marks-${Date.now().toString(36)}.jpg`
   await runOut(elementsBin(), ['--draw', f.file, image, JSON.stringify(list.map(e => ({ label: e.id, box: e.box })))])
@@ -1579,8 +1631,8 @@ function pointerTrack(srcArg, opts = {}) {
 // How much of each side of the frame is the window's own margin (Overlays.gutterInsets),
 // judged on three frames of the kept range and taking the middle answer per side, so a
 // toast along one edge in one frame does not decide it.
-async function frameGutter(src, from, to, crop) {
-  const cropF = crop ? `crop=w='2*floor(iw*${crop.w}/2)':h='2*floor(ih*${crop.h}/2)':x='iw*${crop.x}':y='ih*${crop.y}',` : ''
+async function frameGutter(src, from, to, crop, cap = null) {
+  const cropF = crop ? cropArg(crop, cap) + ',' : ''
   const found = []
   for (const k of [0.2, 0.5, 0.8]) {
     const at = from + (to - from) * k
@@ -2261,9 +2313,9 @@ function captionClutterTimes(src, { start, end, crop, zooms, zoomsOut, autoZoom,
 // spotlights pulled in to what they light (Overlays.spotFit) with its corner radius
 // measured (Overlays.cornerRadius, in pixels of the recording), each judged on a grey
 // copy of the cropped picture a moment after it lands. The rest come back as they were.
-async function stepSpots(src, marks, crop, content) {
+async function stepSpots(src, marks, crop, content, cap = null) {
   const k = Math.min(1, 960 / content.w), w = 2 * Math.round(content.w * k / 2), h = 2 * Math.round(content.h * k / 2)
-  const vf = [crop ? `crop=w='2*floor(iw*${crop.w}/2)':h='2*floor(ih*${crop.h}/2)':x='iw*${crop.x}':y='ih*${crop.y}'` : null,
+  const vf = [crop ? cropArg(crop, cap) : null,
     `scale=${w}:${h}:flags=area`, 'format=gray'].filter(Boolean).join(',')
   const grab = at => new Promise(res => {
     const p = spawn(FFMPEG, ['-v', 'error', '-ss', at.toFixed(3), '-i', src, '-frames:v', '1', '-an', '-vf', vf, '-f', 'rawvideo', '-'])
@@ -2278,7 +2330,7 @@ async function stepSpots(src, marks, crop, content) {
     const M = 8, X = Math.max(0, Math.floor(m.x * content.w) - M), Y = Math.max(0, Math.floor(m.y * content.h) - M)
     const bw = Math.min(content.w - X, Math.ceil(m.w * content.w) + 2 * M), bh = Math.min(content.h - Y, Math.ceil(m.h * content.h) + 2 * M)
     if (!(bw > 16 && bh > 16) || bw * bh > 4e6) return res(null)
-    const cv = [crop ? `crop=w='2*floor(iw*${crop.w}/2)':h='2*floor(ih*${crop.h}/2)':x='iw*${crop.x}':y='ih*${crop.y}'` : null,
+    const cv = [crop ? cropArg(crop, cap) : null,
       `crop=${bw}:${bh}:${X}:${Y}`, 'format=gray'].filter(Boolean).join(',')
     const p = spawn(FFMPEG, ['-v', 'error', '-ss', at.toFixed(3), '-i', src, '-frames:v', '1', '-an', '-vf', cv, '-f', 'rawvideo', '-'])
     const bufs = []
@@ -2923,7 +2975,9 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
 
     const vf = []
     // round crop to even pixels: libx264 rejects odd dimensions
-    const cropFilter = c ? `crop=w='2*floor(iw*${c.w}/2)':h='2*floor(ih*${c.h}/2)':x='iw*${c.x}':y='ih*${c.y}'` : null
+    // on a device take, the same pixels the compositor crops (cropArg)
+    const cap = { W: srcW, H: srcH, viewport: opts.viewport, screen: opts.screen }
+    const cropFilter = cropArg(c, cap)
     if (cropFilter) vf.push(cropFilter)
 
     // Explicit zooms (Z1, Z2) apply whenever they exist, and win over auto-zoom: a
@@ -2953,7 +3007,8 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
         })
       : null
     // marks first: a redaction must cover the content wherever a zoom then moves it
-    const content = c ? { w: 2 * Math.floor(srcW * c.w / 2), h: 2 * Math.floor(srcH * c.h / 2) } : { w: srcW, h: srcH }
+    const cpx = c ? require('./ui/compositor/plan').cropPx(c, srcW, srcH, { viewport: opts.viewport, screen: opts.screen }) : null
+    const content = cpx ? { w: cpx.w, h: cpx.h } : { w: srcW, h: srcH }
     const outSpan = clock(end || dur)
     // the Mac's pointer out before anything is drawn over where it was
     const macSpans = macCursorSpans(srcArg, opts)
@@ -2974,7 +3029,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     // Lifts, spotlights and steps, drawn in the recording's own space so a zoom carries them
     const overlayFonts = assFonts(opts)
     overlayDir = overlayFonts.dir
-    const drawn = await stepSpots(src, (opts.marks || []).filter(m => m && (m.kind === 'step' || Overlays.FOCUS_KINDS.includes(m.kind))), c, content)
+    const drawn = await stepSpots(src, (opts.marks || []).filter(m => m && (m.kind === 'step' || Overlays.FOCUS_KINDS.includes(m.kind))), c, content, cap)
     const onClock = drawn.map(m => ({ ...m, start: clock(m.start), end: clock(m.end) }))
     const zoomsOut = (opts.zooms || []).map(z => ({ start: clock(z.start), end: clock(z.end), scale: z.scale }))
     // output pixels per recorded pixel before any zoom, so an edge or a feather is
@@ -3220,14 +3275,12 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
     // A take folder's export is its deliverable, rewritten each time; a loose file on
     // the Desktop keeps its -edit copy beside it. A preview (previewFrame) names its
     // own scratch file and never touches either.
-    const deliverable = opts.dest ? null : deliverablePath(srcArg, fmt.ext)
     const dest = opts.dest || exportDest(srcArg, fmt.ext)
-    // The deliverable is encoded beside itself and swapped in once finished: ffmpeg
-    // cannot read and write one file, and a cancelled or failed re-export must not
-    // destroy the last good one.
-    const out = deliverable
-      ? path.join(path.dirname(dest), `.${path.parse(dest).name}.partial.${fmt.ext}`) : dest
-    if (out !== dest) tmpFiles.push(out)
+    // Every export is encoded beside where it goes and swapped in once finished: ffmpeg
+    // cannot read and write one file, a cancelled or failed re-export must not destroy
+    // the last good one, and one to a path of its own must not leave a cut off file there.
+    const out = path.join(path.dirname(dest), `.${path.parse(dest).name}.partial${path.extname(dest) || '.' + fmt.ext}`)
+    tmpFiles.push(out)
     const args = ['-y']
     // with cuts or a rate the trim happens inside the graph, so do not also seek the input
     if (!cutGraph && start > 0) args.push('-ss', String(start))
@@ -3263,7 +3316,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
         outWidth: opts.scale === 720 ? 1280 : 1920,
         outAspect: opts.backdropAspect || null,   // null keeps the source shape
         reveal, close,
-        gutter: await frameGutter(src, start, end || dur, c),
+        gutter: await frameGutter(src, start, end || dur, c, cap),
         // the blurred ground from the whole frame, before any zoom, on a constant rate
         // so the composite keeps the zoom's frames (a native take is variable rate)
         fill: BACKDROPS[opts.backdrop] && BACKDROPS[opts.backdrop].video ? 'bdraw' : null,
@@ -3316,7 +3369,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
       const bed = await musicBed(out, opts.music, fmt, cutDur || span, meta.hasAudio, jobId)
       if (bed) fs.renameSync(bed, out)
     }
-    if (out !== dest) fs.renameSync(out, dest)
+    fs.renameSync(out, dest)
     return { file: dest, duration: +((cutDur || span) || await probeDuration(dest)).toFixed(1),
              cuts: cuts.length,
              format: fmt.ext, mb: +(fs.statSync(dest).size / 1e6).toFixed(1) }

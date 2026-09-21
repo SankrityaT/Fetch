@@ -399,6 +399,69 @@ function cornerOf(row, x0, x1, px) {
   return { px: up, share: Math.ceil(up / Math.min(px.w, px.h) * 1e4) / 1e4 }
 }
 
+// How far outside the stored rectangle the ring is looked for. The ring measured 13 to 15
+// points on every device here, so six pixels starts inside it at any capture scale, and
+// it keeps the walk off the window's edge, which in a recording is black and not clear.
+const NEAR = 6
+
+/**
+ * The glass's corner, for a take whose document has the rectangle and not the corner:
+ * everything captured before the corner was measured. The frame is one frame of the take
+ * itself (RGBA, as measureGlass takes it) and the viewport is the rectangle the document
+ * already carries, as fractions of that frame.
+ *
+ * measureGlass cannot simply be run again on it. A recording has no alpha, so the clear
+ * gap under the toolbar is black and the device is no longer a band of its own; and the
+ * rectangle is already known. So the edges are found again only near where the document
+ * says they are, which corrects the fractions' rounding to the frame's own pixels, and
+ * then the corner is read off the same ring by the same rule as a new capture's.
+ *
+ * Returns {ok, value:{px, share, rect}} or {ok:false, reason}. share is the number a
+ * viewport's `corner` is. A square screen answers ok with no corner at all.
+ */
+function measureCorner(frame, viewport) {
+  const f = frameOf(frame)
+  if (!f) return { ok: false, reason: 'that is not a frame: the corner is read off a frame of the take as RGBA bytes with its own width and height.' }
+  const v = viewport && viewport.value ? viewport.value : viewport
+  const r = v && (v.rect || v)
+  if (!r || !(num(r.w) > 0 && num(r.h) > 0) || num(r.x) == null || num(r.y) == null) {
+    return { ok: false, reason: 'there is no rectangle to read a corner round: the take has no measured glass.' }
+  }
+  const gx = r.x * f.w, gy = r.y * f.h, gw = r.w * f.w, gh = r.h * f.h
+  const x0 = Math.max(0, Math.floor(gx) - NEAR), x1 = Math.min(f.w - 1, Math.ceil(gx + gw) + NEAR)
+  const y0 = Math.max(0, Math.floor(gy) - NEAR), y1 = Math.min(f.h - 1, Math.ceil(gy + gh) + NEAR)
+  if (!(x1 - x0 > 2 * NEAR && y1 - y0 > 2 * NEAR)) return { ok: false, reason: 'the rectangle is too small to be a device screen in this frame.' }
+  const cls = classify(f)
+  const row = y => x => cls[y * f.w + x]
+  const col = x => y => cls[y * f.w + x]
+  const lefts = [], rights = [], tops = [], bottoms = []
+  const my = (y1 - y0) >> 2, mx = (x1 - x0) >> 2
+  for (let y = y0 + my; y < y1 - my; y++) {
+    const l = ringEdge(row(y), x0, x1, true), rr = ringEdge(row(y), x0, x1, false)
+    if (l != null && rr != null && rr > l) { lefts.push(l); rights.push(rr) }
+  }
+  for (let x = x0 + mx; x < x1 - mx; x++) {
+    const t = ringEdge(col(x), y0, y1, true), b = ringEdge(col(x), y0, y1, false)
+    if (t != null && b != null && b > t) { tops.push(t); bottoms.push(b) }
+  }
+  const L = agreed(lefts), R = agreed(rights), T = agreed(tops), B = agreed(bottoms)
+  if (L.at == null || R.at == null || T.at == null || B.at == null) {
+    return { ok: false, reason: 'no ring was found round the glass in this frame, which is what a frame from before the device finished booting looks like.' }
+  }
+  if (Math.min(L.agree, R.agree, T.agree, B.agree) < 0.25) {
+    return { ok: false, reason: 'the edges of the screen did not agree across this frame, which is what an app dark to its own edge looks like. Read a frame with something on the screen.' }
+  }
+  const px = { x: L.at, y: T.at, w: R.at - L.at + 1, h: B.at - T.at + 1 }
+  // Found again, not found somewhere else: two pixels a side is the rounding with room,
+  // the same allowance glassTol makes, and anything past it is not the stored glass.
+  if (Math.abs(px.x - gx) > 2 || Math.abs(px.y - gy) > 2 || Math.abs(px.x + px.w - gx - gw) > 2 || Math.abs(px.y + px.h - gy - gh) > 2) {
+    return { ok: false, reason: 'the ring in this frame is not where the document says the glass is, so no corner is read off it.' }
+  }
+  const corner = cornerOf(row, x0, x1, px)
+  return { ok: true, value: { px: corner ? corner.px : 0, share: corner ? corner.share : 0,
+    rect: { x: r4(px.x / f.w), y: r4(px.y / f.h), w: r4(px.w / f.w), h: r4(px.h / f.h) } } }
+}
+
 // A measured glass, handed in as measureGlass returned it or as plain fractions, as the
 // fractions of the frame everything downstream reads. Checked against the device's own
 // aspect first: a rectangle of the wrong shape is a measurement that found something
@@ -705,7 +768,7 @@ function pointToFrame(sim, x, y) {
 module.exports = {
   parseDevices, parseRuntimes, parseDeviceTypes, deviceTypesFromRuntimes,
   parseProfile, profilePath, readProfiles,
-  measureGlass, glassOrient, glassViewport, viewport, density, densityNote, glassNote,
+  measureGlass, measureCorner, glassOrient, glassViewport, viewport, density, densityNote, glassNote,
   pointToFrame, orientOf, glassPoints,
   simulators, resolve, claim, titleSegments,
 }

@@ -146,7 +146,15 @@ masks the take at the glass's measured corner (`viewport.corner`, a share of the
 short side, from `ui/simulator.js cornerOf`), and cuts the shell concentric with it, so no
 crescent of the Simulator's bezel shows inside Fetch's. The corner rides the viewport
 through `ui/fetchdoc.js cleanViewport` into the edit and the still alike; a viewport
-without one, and every golden, draws exactly as before.
+without one, and every golden, draws exactly as before. A take recorded before the capture
+stored the corner has it read in `prepare.js` (`glass`, one RGBA frame of the take at its
+own size through `ui/simulator.js measureCorner`, only where the crop is the glass), and
+the plan takes it as `prepared.glass.corner` (`viewWithCorner`) when the viewport has none.
+The crop on a device take starts on the glass's own pixels (`Plan.cropPx`): the start is
+rounded up to even inside the glass rather than down onto the Simulator's ring, and the
+content size `prepare.js` hands the passes, the levels read and the classic renderer's crop
+are the same pixels. A plain export of a device take is masked at the glass's corner too,
+black in the corner where the ring was black.
 Every shape is generic by construction and by intent. Nothing is traced, nothing carries
 a wordmark, a window's three dots are the shell's own tone and never one desktop's three
 colours, a laptop is a slab and a shallow foot with no keyboard and no hinge, and a

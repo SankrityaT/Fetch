@@ -29,19 +29,39 @@ captions, `fit_to_length` and finding the moment by its words are all dead on it
 records the window instead, and **system audio is on by default for a simulator take**,
 so the take has a track and the spine survives. That default is the sentence's other half:
 with it off, recording the window was the framebuffer capture's silent file with a boot in
-front of it, and three tool descriptions said otherwise. Every link of that was measured on this Mac bar one: a simulated app is its own
-host audio process, it is not in the exclusion list a window take builds, and a process of
-exactly that shape was captured and transcribed word for word. The last link, a guest app's
-own sound through the speakers at a level, is not measured, because measuring it means
-making a sound on somebody's Mac and that refusal outranks the measurement. So the claim to
-make is that Fetch records the window and keeps the sound of it, not that the device's own
-audio has been watched landing. Every surface should lean on the part that is true, and say
-the scope as it is: the exclusion is a list of apps with windows taken when the take starts,
-so a process with no window (a second booted simulator is one) and an app opened mid take are
-in the file too. The person's approval says **with sound**, and a yes to a silent take is not
-a yes to one with it. The default rides only on Fetch's own recorder; where the Mac falls back
-to the browser capture, whose system audio is everything the Mac plays, a take whose sound
-was only the default is recorded silent and the result says why.
+front of it, and three tool descriptions said otherwise. A simulated app is its own host
+audio process, and a process of exactly that shape was captured and transcribed word for
+word. Its own sound through the speakers at a level is not measured, because measuring it
+means making a sound on somebody's Mac and that refusal outranks the measurement. So the
+claim to make is that Fetch records the window and keeps the sound with it, not that the
+device's own audio has been watched landing.
+
+**The scope of that sound is everything the Mac plays while the take runs**, and every
+surface says so: the tool descriptions, the result, and the question the person answers,
+which names their music and a call. It used to be narrower. A window take's sound left out
+every app that had a window when the take started, by naming those apps in the capture's
+filter. That filter is what took macOS's screen capture service down: replayd crashed 25
+times between Sep 18 and Sep 21, every one a use after free in its audio input callback,
+because a filter that names apps (or asks to leave the recorder's own process out) has
+replayd watch those processes and rebuild its audio queue whenever one changes state, and a
+buffer in flight lands on the capture it just freed. Each crash took screen capture away from
+the whole Mac, the system's own screenshots included, for up to 20 minutes. So no capture
+names an app any more, only one stream ever captures sound, and the streams stop one at a
+time, sound first, each awaited, with any failure written down (`Recorder.swift`). A Stop that
+lands while a capture is still starting waits for the start to answer (up to 10 s) and stops
+what it opened, rather than exiting under it. A window that drops out of capture is started
+again once, when it is back on screen, and never at all when the service itself went away:
+a start straight after replayd fell over is what keeps it down. The narrow
+scope can come back through a CoreAudio process tap in the recorder itself, which has its own
+permission prompt and has not been built. The person's approval says **with sound**, and a
+yes to a silent take is not a yes to one with it. The default rides only on Fetch's own
+recorder; where the Mac falls back to the browser capture, a take whose sound was only the
+default is recorded silent and the result says why: the default is the recorder's, and the
+browser capture is only given sound somebody asked for. The default stays on now that the
+recorder hears the whole Mac too, because the sound is the reason to record the window and an
+agent's take never starts without the person's yes, which says **with sound** and names their
+music and a call. A person who would rather not turns System audio off in Settings, and a
+simulator take keeps that.
 
 ## Users
 
@@ -836,7 +856,17 @@ that box, and where it would run off the picture (a share of 0.95 put it past al
 edges) it is fitted inside the box instead, a smaller take and never a cut shell. The
 glass's measured corner rides with the viewport into the edit and the still alike, so the
 screen is masked at the device's own radius and no crescent of Simulator bezel shows in
-its corners. **The picture is the
+its corners. The crop starts on the glass's own pixels: it used to round its start down to
+even, two pixels onto Simulator's black ring on the top and the left, and now rounds it up
+onto the glass. The classic renderer and the levels read cut the same pixels
+(`Plan.cropPx`), so a GIF and the black point see no ring either. A plain export of a device
+take is masked at that corner too: with nothing behind it the corner is black, which is what
+the ring was there. A take recorded before the corner was stored has it read off one of its
+own frames when it is drawn (`ui/compositor/prepare.js`, the middle frame, then a quarter
+and three quarters if the screen is dark there), within a few pixels of the stored rectangle
+(`ui/simulator.js measureCorner`). An `export` writes that corner onto the edit's viewport,
+so it is read once, and review and the editor see the corner the export drew. A corner the
+capture stored always wins. **The picture is the
 length**: the sound is padded to the edit, never the other way round. The written file is
 measured again afterwards, frames counted off the file, and the result's `seconds` is that
 count, so nothing is called a store file that is not one: a file short of its edit is not
@@ -876,7 +906,12 @@ go, in numbers and one sentence, and the recorder's own account on `record_stop`
 is true only when the end was measured and lands with the picture: the judged take's sound
 ends 1.71 s early because the recorder of the time dropped 20 ms at a time inside the take,
 and no export can put that back, so it says `in_sync: false` and says to record again or
-narrate with voiceover.
+narrate with voiceover. A window take's sound stream that stops with an error part way is
+let go and never reopened (a capture that just failed is not started again), and the
+recorder fills the file to Stop with silence, so its track ends with the picture and nothing
+downstream would notice. The recorder's own account does: `sync.silent_end_ms` on
+`record_stop` says how much of the end is silence, and the sentence says the sound stopped
+arriving that long before Stop.
 
 **The named job is five calls plus the loop's three.** `ready`, `record_start`, a tap a
 screen, `record_stop`, `export`, and the `direct`, `fit_to_length` and `review` every job
@@ -897,10 +932,33 @@ on games and on custom drawn UI where a label does not exist. The element's box 
 back through the edit's crop and the glass rectangle into the device's own points, and
 the same call reports the touch onto the pointer track, so an injected tap and the mark
 drawn for it are one number rather than two that agree by habit. A point sent by hand is
-taken where nothing on screen can be named, and comes back marked hand aimed. An id sent
-with no `path` is read off the device's newest screen only while that screen is also the
-newest `find_on_screen` pass, since ids restart at E1 on every pass, and a screen is only
-handed back from a capture the same call made.
+taken where nothing on screen can be named, and comes back marked hand aimed.
+
+**The same control keeps the same id.** Ids used to be positions, E1, E2... in reading
+order on each picture, so in the judged job `ready` listed Sign in with Apple as E18,
+`record_start` took its own picture of the unchanged screen with one tooltip gone above it
+and listed it as E17, and the tap sent with E18 was refused. Now each picture of a device
+is handed that device's last list, and `ui/targets.js` keeps an id wherever it is sure the
+element is the same one (the same words, the same sort of thing, the same size, and where the
+rest of the screen says it should be) and numbers everything else past every id the run has
+handed out. Where it is has to agree with the rest of the screen: a word that moved is kept
+only when the words around it moved with it, and never when it passed rows that stayed where
+they were, so a row's Delete that shows on Carol's row after it showed on Alice's is a new id
+and the one held for Alice's is refused. So an id held from an earlier screen of the device
+names the same control on the newest one, or is refused as not there. The one thing it cannot
+tell apart is a control with the same words, size and place on a screen the device navigated
+to (a Done in the same corner), and that is carried as the same control. A second
+`find_on_screen` of the same moment keeps its ids the same way, and a search of an older
+picture in the run is numbered on from the run without becoming the screen the next picture is
+matched against. The bridge checks that each pass really carried on rather than starting at E1
+again (a list that handed out nothing is no proof), and where one did not, the run starts over
+and a bare id is trusted only on the newest pass, as before. An id sent with no `path` is read
+off the device's newest screen while that screen is the newest `find_on_screen` pass, or while
+the newest pass was another picture in the same run; an id off any other picture needs its
+`path`, because it was numbered on that picture and can name something else on the device. A
+screen is only handed back from a capture the same call made. `processor.js findOnScreen`
+passes the earlier list through, and keeps the shown list in reading order rather than by the
+number in each id.
 
 **What it refuses, permanently.** The device framebuffer capture, which writes pixels
 that never passed the never-record check and makes a file with no audio track. A region
@@ -968,7 +1026,11 @@ agent thinks, Esc goes back to the app in front so a terminal's Esc still reache
 but the brake stays armed for as long as the agent is connected (until its socket closes or
 five quiet minutes): the pill's Stop, Agent > Stop, the tray and Esc in Fetch's own window
 all stop it then. A message to the in-app chat lets only the chat's own agent go on (its
-shim names itself with `--chat`); a stopped terminal agent waits for Let it continue. Cmd+. and the Stop button on the working pill do the same,
+shim names itself with `--chat`); a stopped terminal agent waits for Let it continue. Stopping
+the chat turn is bounded: the CLI is asked to stop, told to two seconds later, and the turn is
+ended by Fetch two seconds after that whether or not the process has gone, so the pane is
+free again in under five seconds even when the CLI is sitting on a tool call.
+Cmd+. and the Stop button on the working pill do the same,
 and an Esc in Fetch's own window is caught ahead of every other handler, which covers the case
 of macOS not handing a bare Esc to a global shortcut (proven through the registered callback,
 never by pressing a key).

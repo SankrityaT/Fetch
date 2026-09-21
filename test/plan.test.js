@@ -682,6 +682,73 @@ console.log('the glass is round, and the mask is as round as it')
     of({ device: { kind: 'browser' } }, { viewport: { x: 0, y: 0.12, w: 1, h: 0.88 }, crop: { x: 0, y: 0.12, w: 1, h: 0.88 } }).device.screen.r)
 }
 
+console.log('the crop starts on the glass, not on the ring round it')
+{
+  // The judged take's glass is 706 x 1534 at 44, 154 of a 794 x 1718 capture, and the
+  // document keeps it to four places: 0.0554 x 794 = 43.99 and 0.0896 x 1718 = 153.93.
+  // Floored and made even that crop started at 42, 152, two pixels of the Simulator's
+  // black ring along the top and the left of every phone and none on the other two
+  // sides (.context/survey/v-taste.md, section 3).
+  const meta = { width: 794, height: 1718, duration: 10, fps: 30 }
+  const SCREEN = { w: 1320, h: 2868, scale: 3 }
+  const stored = { x: 0.0554, y: 0.0896, w: 0.8892, h: 0.8929 }
+  const crop = p => [p.crop.x, p.crop.y, p.crop.w, p.crop.h]
+  const of = (extra = {}) => Plan.prepare({ backdrop: 'dusk', inset: 0.08, ...extra, look: { device: { kind: 'phone' } } }, meta)
+  const was = Plan.prepare({ crop: { ...stored } }, meta)
+  is('a crop of the same numbers on a take that is not a device is as it was', crop(was), [42, 152, 706, 1534])
+  const now = of({ screen: SCREEN, viewport: stored, crop: { ...stored } })
+  is('on a device take it starts on the glass and ends where the glass does', crop(now), [44, 154, 706, 1534])
+  is('the plain export too', crop(Plan.prepare({ screen: SCREEN, viewport: stored, crop: { ...stored } }, meta)), [44, 154, 706, 1534])
+  // exact fractions and the ones the document rounds come to the same pixels
+  const exact = { x: 44 / 794, y: 154 / 1718, w: 706 / 794, h: 1534 / 1718 }
+  is('a glass stored a hair past its pixel gives up no app for it', crop(of({ screen: SCREEN, viewport: exact, crop: { ...exact } })), [44, 154, 706, 1534])
+  // A glass that starts on an odd pixel: the even start is the next pixel in, never out.
+  const odd = { x: 45 / 794, y: 155 / 1718, w: 704 / 794, h: 1532 / 1718 }
+  const o = of({ screen: SCREEN, viewport: odd, crop: { ...odd } })
+  is('an odd start is rounded in to the next even pixel', [o.crop.x, o.crop.y], [46, 156])
+  is('and the end never passes the glass\'s', [o.crop.x + o.crop.w <= 749, o.crop.y + o.crop.h <= 1687], [true, true])
+  // A crop inside the glass does not touch its edges and keeps the start it had.
+  const inner = { x: 0.2, y: 0.3, w: 0.5, h: 0.4 }
+  is('a crop well inside the glass starts where it always did',
+    [of({ screen: SCREEN, viewport: stored, crop: inner }).crop.x, of({ screen: SCREEN, viewport: stored, crop: inner }).crop.y],
+    [Plan.prepare({ crop: inner }, meta).crop.x, Plan.prepare({ crop: inner }, meta).crop.y])
+  // A crop that kept the bezel is a picture of the device, and its edges are its own.
+  const wide = { x: 0.01, y: 0.05, w: 0.98, h: 0.94 }
+  is('a crop round the glass is left alone', crop(of({ screen: SCREEN, viewport: stored, crop: wide })), crop(Plan.prepare({ crop: wide }, meta)))
+  // The judged box survives: sizes.js judged 706 x 1534 and that is what it is held to.
+  is('the crop sizes.js judged is the crop drawn', [now.crop.w, now.crop.h], [706, 1534])
+}
+
+console.log('old takes and plain exports lose their crescents too')
+{
+  const meta = { width: 794, height: 1718, duration: 10, fps: 30 }
+  const SCREEN = { w: 1320, h: 2868, scale: 3 }
+  const old = { x: 0.0554, y: 0.0896, w: 0.8892, h: 0.8929 }
+  const measured = { glass: { corner: 0.1578 } }
+  const phone = { look: { device: { kind: 'phone' } } }
+  const at = (extra, P) => Plan.prepare({ backdrop: 'dusk', inset: 0.08, screen: SCREEN, viewport: old, crop: { ...old }, ...phone, ...extra }, meta, P ? { prepared: P } : {})
+  // A take measured before the corner was: the document has the rectangle only, and the
+  // corner comes off the take's own frame (prepare.js, from ui/simulator.js measureCorner).
+  const bare = at({}, null), read = at({}, measured)
+  is('without a corner an old take is masked as it always was', bare.device.screen.r < 0.05 * bare.device.screen.w, true)
+  is('with one read off its pixels it is masked at the glass', Math.abs(read.device.screen.r - 0.1578 * read.device.screen.w) < 1, true)
+  is('the same as a new take that wrote the corner itself',
+    JSON.stringify(read.device), JSON.stringify(at({ viewport: { ...old, corner: 0.1578 } }, null).device))
+  is('and a corner the document has wins over one read again',
+    Math.abs(at({ viewport: { ...old, corner: 0.15 } }, measured).device.screen.r - 0.15 * read.device.screen.w) < 1, true)
+  is('a reading that is not a share is ignored', JSON.stringify(at({}, { glass: { corner: 0.9 } }).device), JSON.stringify(bare.device))
+  // The plain export: nothing behind the take, and square it kept the Simulator's grey
+  // highlight and ring in all four corners. Masked, the corner is black, which the ring
+  // there already was.
+  const plain = (v, P) => Plan.prepare({ screen: SCREEN, viewport: v, crop: { ...v } }, meta, P ? { prepared: P } : {})
+  const p = plain({ ...old, corner: 0.1578 })
+  is('a plain export of the glass is masked at its corner', Math.round(p.radius), Math.round(0.1578 * Math.min(p.rect.w, p.rect.h)))
+  is('and an old take\'s plain export as well', Math.round(plain(old, measured).radius), Math.round(p.radius))
+  is('with nothing drawn behind it', p.bg.kind, 'none')
+  is('a plain export that is not a device\'s glass stays square', Plan.prepare({ crop: { ...old } }, meta).radius, 0)
+  is('nor is one that kept the bezel', Plan.prepare({ screen: SCREEN, viewport: { ...old, corner: 0.1578 } }, meta).radius, 0)
+}
+
 console.log('the take at the store plan\'s box')
 {
   // The judged app preview: the ProMax take into app-preview-6.9 at padding 0.11, so

@@ -1452,7 +1452,18 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
       if (ev.event === 'stopped') { take.stoppedEv = ev; if (take.resolveStop) take.resolveStop(ev) }
     }
   })
-  child.stderr.on('data', d => { if (!app.isPackaged) console.log('recorder stderr:', String(d).trim()) })
+  // Most of what the recorder writes here is chatter, but a sound stream that stopped part
+  // way or a stream that did not stop cleanly is written nowhere else, so those lines are
+  // kept on the take and logged in a packaged build too.
+  child.stderr.on('data', d => {
+    const text = String(d).trim()
+    if (!app.isPackaged) console.log('recorder stderr:', text)
+    for (const line of text.split('\n')) {
+      if (!/system audio|did not stop cleanly|kept an output/.test(line)) continue
+      if (app.isPackaged) console.error('recorder:', line)
+      if ((take.warnings || (take.warnings = [])).length < 8) take.warnings.push(line)
+    }
+  })
   child.on('close', () => {
     // the capture is over however it ended, so the agent's cursor has nothing to point at
     if (nativeRec === take) hideAgentCursor()
@@ -1509,7 +1520,8 @@ ipcMain.handle('native-stop', async () => {
     return { ok: false, error: take.error || 'the take was not written', endedAlone: !!take.endedAlone, kind: take.kind }
   }
   return { ok: true, tmp: take.out, frames: ev.frames, dropped: ev.dropped, stillMs: ev.stillMs || 0, endedAlone: !!take.endedAlone, kind: take.kind,
-    ...(Array.isArray(ev.sound) ? { sound: ev.sound } : {}) }
+    ...(Array.isArray(ev.sound) ? { sound: ev.sound } : {}),
+    ...(take.warnings && take.warnings.length ? { warnings: take.warnings } : {}) }
 })
 
 // Move a finished native take into the save folder, reusing the same naming and

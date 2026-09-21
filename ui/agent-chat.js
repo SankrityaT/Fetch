@@ -297,6 +297,7 @@ function send({ engine = 'claude', model = null, effort = null, prompt, attachme
     if (current !== child) return
     current = null
     sink = null
+    clearTimeout(child.stopTimer)
     // Anything still waiting on the person goes with the turn: the tool that asked has
     // long since been handed its do_next and moved on.
     turnEnded(child.cancelled ? 'cancelled' : 'timeout')
@@ -304,6 +305,9 @@ function send({ engine = 'claude', model = null, effort = null, prompt, attachme
     if (child.cancelled) onEvent({ kind: 'done', ms: Date.now() - t0, ok: false, cancelled: true, error: null })
     else onEvent({ kind: 'done', ms: Date.now() - t0, ok, error: error || null })
   }
+  // the end cancel() falls back on when the CLI will not go: the turn ends here, and the
+  // close that comes later finds it already ended
+  child.forceEnd = () => finish(false, null)
   child.on('error', e => finish(false, e.message))
   child.on('close', code => {
     if (code === 0) return finish(true, null)
@@ -424,9 +428,32 @@ function summarise(content) {
 }
 
 // Marked before the kill, so the turn ends as "Stopped" rather than as an error.
-const cancel = () => { if (current) { current.cancelled = true; try { current.kill('SIGTERM') } catch {} } }
+//
+// Bounded. A CLI in the middle of a tool call can sit on SIGTERM while it waits for the
+// tool to answer, and an export or a question to the person can take minutes to, so a
+// Stop that only asked left the pane busy and the next message refused for that long.
+// Asked first, so the CLI can save its session; told STOP_KILL_MS later; and the turn
+// is ended by Fetch STOP_END_MS after that whether or not the process has gone, so
+// Stop is over in under five seconds on any Mac.
+const STOP_KILL_MS = 2000
+const STOP_END_MS = 2000
+const cancel = () => {
+  const child = current
+  if (!child) return
+  child.cancelled = true
+  try { child.kill('SIGTERM') } catch {}
+  if (child.stopTimer) return
+  child.stopTimer = setTimeout(() => {
+    if (current !== child) return
+    try { child.kill('SIGKILL') } catch {}
+    child.stopTimer = setTimeout(() => { if (current === child && child.forceEnd) child.forceEnd() }, STOP_END_MS)
+    if (child.stopTimer.unref) child.stopTimer.unref()
+  }, STOP_KILL_MS)
+  if (child.stopTimer.unref) child.stopTimer.unref()
+}
 const busy = () => !!current
 
 module.exports = { send, cancel, busy, newConversation, translate, argsFor, ALLOWED, splitAttachments,
+  STOP_KILL_MS, STOP_END_MS,
   // a card a tool raised, into this thread, and the end of the turn it belongs to
   say, onTurnEnd }

@@ -1037,6 +1037,170 @@ async function main() {
     assert.ok(/still: doc && doc\.kind === 'shot' \? true : null/.test(src), 'a recording is called a still frame')
   })
 
+  // ── this round: the capture service, ids that stay put, a Stop that ends ──────
+  // replayd crashed 25 times under window takes with sound. The fix took the list of
+  // apps out of the sound's filter (Recorder.swift start), so a window take's sound is
+  // now everything the Mac plays. Every sentence a person or a model reads about that
+  // scope has to say so, in both directions: nothing may promise the old exclusion, and
+  // the recorder has to really have given it up before anything says it did.
+  t('what a take is said to hear is the scope the recorder has now', () => {
+    const rec = fs.readFileSync(path.join(__dirname, '..', 'Recorder.swift'), 'utf8')
+    const namesApps = /excludingApplications|including:\s*\[?SCRunningApplication|SCContentFilter\([^)]*applications/.test(rec)
+    const OLD = /windows were open (at the start|when it started)|not in the exclusion list|apps whose windows|the window's own sound|that window\\'s own sound|leaves\s+other apps out/i
+    const bridgeSrc = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+    if (!namesApps) {
+      for (const [where, src] of [['mcp/index.js', SRC], ['ui/agent-bridge.js', bridgeSrc]]) {
+        assert.ok(!OLD.test(src), `${where} still promises a window take leaves other apps out of its sound, which ` +
+          'Recorder.swift no longer does: ' + (src.match(OLD) || [''])[0])
+      }
+      // the question the person answers says the scope they are agreeing to
+      const ask = bridgeSrc.slice(bridgeSrc.indexOf('const heardSaid'), bridgeSrc.indexOf('const answer = await askPerson('))
+      assert.ok(/everything this Mac plays/.test(ask), 'the approval asks about a narrower sound than the take records')
+      assert.match(String(server._registeredTools.simulator.description), /everything this Mac plays while it records/)
+    } else {
+      assert.ok(!/everything this Mac plays/.test(bridgeSrc.slice(bridgeSrc.indexOf('const heardSaid'), bridgeSrc.indexOf('const answer = await askPerson('))),
+        'the approval says the whole Mac is heard and Recorder.swift names apps again')
+    }
+    // The shared sentences live in ui/recorder-opts.js, and record_start's description and
+    // result read them, so they are held to the same scope.
+    const Opts = require('../ui/recorder-opts')
+    const stale = ['SIM_AUDIO_SAID', 'SYS_AUDIO_ARG_SAID'].filter(k => !namesApps && OLD.test(Opts[k] || ''))
+      .concat(!namesApps && /windows were open|left out/.test(Opts.startedAudio({ systemAudio: true }).note) ? ['SCOPE_SAID'] : [])
+    assert.deepStrictEqual(stale, [], 'ui/recorder-opts.js says a window take leaves other apps out of its sound, and ' +
+      'Recorder.swift no longer does: ' + stale.join(', '))
+    if (!namesApps) {
+      assert.match(Opts.SIM_AUDIO_SAID, /everything this Mac plays/, 'record_start\'s description does not say the scope')
+      assert.match(String(server._registeredTools.record_start.description), /everything this Mac plays/)
+    }
+  })
+
+  t('a pass that kept numbering on is told from one that started again at E1', () => {
+    const T = require('../ui/targets')
+    const words = (text, y) => ({ text, conf: 1, box: { x: 0.3, y, w: 0.3, h: 0.018 }, bg: '#FFFFFF', bgShare: 0.9 })
+    const A = { width: 1400, height: 2900, texts: [words('Tip', 0.05), words('Yolk', 0.2), words('Continue', 0.7), words('Sign in with Apple', 0.77)] }
+    const B = { width: 1400, height: 2900, texts: [words('Yolk', 0.2), words('Continue', 0.7), words('Sign in with Apple', 0.77)] }
+    const a = T.elementsFrom(A)
+    assert.strictEqual(bridge.carriedOn(a, T.elementsFrom(B, a)), true, 'a carried list is not taken as carried')
+    assert.strictEqual(bridge.carriedOn(a, T.elementsFrom(B)), false, 'a list numbered from E1 again is taken as carried')
+    assert.strictEqual(bridge.carriedOn(null, T.elementsFrom(B)), false)
+    // nothing in common, still numbered on: every id is new, and none is reused
+    const C = { width: 1400, height: 2900, texts: [words('Settings', 0.2)] }
+    assert.strictEqual(bridge.carriedOn(a, T.elementsFrom(C, a)), true)
+    // through JSON, where seq is gone and the ids are all there is
+    const b = T.elementsFrom(B, a)
+    assert.strictEqual(bridge.carriedOn(JSON.parse(JSON.stringify(a)), b), true)
+    // A screen where nothing was found, then one numbered from E1: the empty list handed
+    // out nothing, so the E1 list is not a carry, and an id held from before is not trusted.
+    const empty = T.elementsFrom({ width: 1400, height: 2900, texts: [] })
+    assert.strictEqual(bridge.carriedOn(empty, T.elementsFrom(B)), false, 'a list after an empty one is taken as carried')
+    // the same empty screen, reached by a pass that kept the count, keeps the run going
+    const emptyOn = T.elementsFrom({ width: 1400, height: 2900, texts: [] }, a)
+    assert.strictEqual(bridge.carriedOn(a, emptyOn), true, 'an empty screen that kept the count broke the run')
+    assert.strictEqual(bridge.carriedOn(emptyOn, T.elementsFrom(B, emptyOn)), true)
+    assert.ok(T.elementsFrom(B, emptyOn).every(e => +e.id.slice(1) > a.length), 'ids after an empty screen reuse old numbers')
+  })
+
+  // find_on_screen twice on one moment, against a processor that honours prior and one
+  // that does not, with the judged screens: E18 on the first picture, one line gone above
+  // it on the second.
+  await (async () => {
+    const T = require('../ui/targets')
+    const words = (text, x, y, w, h = 0.018) => ({ text, conf: 1, box: { x, y, w, h }, bg: '#FFFFFF', bgShare: 0.9 })
+    const base = [words('Yolk', 0.44, 0.2, 0.12, 0.04), words('Breakfast, planned for you', 0.3, 0.26, 0.4),
+      words('Continue with Google', 0.3, 0.7, 0.4), words('Sign in with Apple', 0.3, 0.77, 0.4)]
+    const READY = { width: 1400, height: 2900, texts: [words('Save screen', 0.8, 0.05, 0.08), ...base] }
+    const LATER = { width: 1400, height: 2900, texts: base }
+    let raw = READY, honour = true
+    const stub = {
+      probeMeta: async () => ({ duration: 10 }),
+      readDoc: () => ({}),
+      findOnScreen: async (p, at, o = {}) => {
+        const all = T.elementsFrom(raw, honour ? o.prior : null)
+        return { image: '/tmp/none.jpg', at, width: raw.width, height: raw.height, found: all.length, elements: all, all }
+      },
+    }
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-ids-'))
+    const take = path.join(home, 'Yolk.mov')
+    fs.writeFileSync(take, '')
+    const win = { isDestroyed: () => false, isVisible: () => true, webContents: { send: () => {}, executeJavaScript: async () => null } }
+    bridge.start({ getWindow: () => win, proc: stub, isRecording: () => false })
+    try {
+      const idOf = (r, name) => (r.elements.find(e => e.text === name) || {}).id
+      const first = await bridge.ops.find({ path: take, at: 2 })
+      raw = LATER
+      const second = await bridge.ops.find({ path: take, at: 2.4 })
+      t('a second find_on_screen of the same moment keeps the id of what it finds again', () => {
+        assert.strictEqual(idOf(first, 'Sign in with Apple'), 'E5')
+        assert.strictEqual(idOf(second, 'Sign in with Apple'), 'E5', 'the button was renumbered by a line going above it')
+        assert.ok(!second.elements.some(e => e.id === idOf(first, 'Save screen')), 'a gone element\'s id went to another')
+      })
+      // a moment far off is another screen, and is numbered afresh as it always was
+      honour = true; raw = READY
+      await bridge.ops.find({ path: take, at: 2 })
+      raw = LATER
+      const far = await bridge.ops.find({ path: take, at: 8 })
+      t('a search of another moment is not handed the earlier list', () => {
+        assert.strictEqual(idOf(far, 'Sign in with Apple'), 'E4')
+      })
+    } finally { bridge.stop(); fs.rmSync(home, { recursive: true, force: true }) }
+  })()
+
+  t('every picture of a device is handed the last one, and a tap trusts only a run that really carried', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+    const screen = src.slice(src.indexOf('async function simScreen('), src.indexOf('async function simScreen(') + 2400)
+    assert.ok(/findOnScreen\(file, 0, \{[^}]*prior \}\)/.test(screen), 'simScreen mints each device screen afresh')
+    assert.ok(/joinRun\(sim\.udid, file, prior,/.test(screen), 'simScreen never checks the carry happened')
+    const point = src.slice(src.indexOf('async function simPoint('), src.indexOf('function devicePoint('))
+    assert.ok(/chainOf\.get\(lastFoundOn\) === sim\.udid/.test(point), 'a bare id is trusted off a picture outside the run')
+    assert.ok(/!holds\(foundBy\.get\(seenHere\), id\)/.test(point), 'an id the newest screen lacks is not refused by name')
+    const find = src.slice(src.indexOf('  async find('), src.indexOf("  async 'edit.preview'("))
+    assert.ok(/foundBy\.get\(args\.path\)/.test(find) && !/foundFor\.get\(args\.path\)/.test(find),
+      'find is handed a background pass\'s list, which would carry ids the agent never saw')
+  })
+
+  t('a take whose sound stopped part way says so, though its track runs to the end', () => {
+    // The recorder fills a track to Stop with silence, so a sound stream that dropped
+    // mid take ends with the picture and nothing else would notice.
+    const clean = bridge.soundSync({ hasAudio: true, audioLead: 0, duration: 3.01, fps: 30, audioEnd: 3.01 },
+      [{ track: 'system', leadMs: 0, gaps: 0, gapMs: 0, lostMs: 0, tailMs: 53 }])
+    assert.strictEqual(clean.silent_end_ms, undefined, 'a clean Stop\'s last buffers were called a sound that stopped')
+    assert.strictEqual(clean.in_sync, true)
+    const cut = bridge.soundSync({ hasAudio: true, audioLead: 0, duration: 30, fps: 30, audioEnd: 30 },
+      [{ track: 'system', leadMs: 0, gaps: 0, gapMs: 0, lostMs: 0, tailMs: 21400 }])
+    assert.strictEqual(cut.silent_end_ms, 21400)
+    assert.match(cut.said, /system sound stopped arriving 21\.40 s before the take was stopped/)
+    assert.match(String(server._registeredTools.record_stop.description), /audio\.sync\.silent_end_ms/)
+  })
+
+  // Stop in the pane is over in bounded time, even under a CLI that will not go. The
+  // stand-in ignores SIGTERM the way a CLI sitting on a tool call can.
+  await (async () => {
+    const connect = require('../ui/agent-connect')
+    const was = connect.binFor
+    const fake = path.join(dir, 'stubborn-cli')
+    const armed = path.join(dir, 'stubborn-armed')
+    // it says when SIGTERM is ignored, so a slow start under load is not read as a Stop
+    fs.writeFileSync(fake, `#!/bin/sh\ntrap "" TERM\ntouch '${armed}'\nexec sleep 30\n`, { mode: 0o755 })
+    connect.binFor = () => fake
+    try {
+      const done = new Promise(resolve => {
+        agentChat.send({ engine: 'claude', prompt: 'hold' }, ev => { if (ev.kind === 'done') resolve(ev) })
+      })
+      for (let i = 0; i < 100 && !fs.existsSync(armed); i++) await new Promise(r => setTimeout(r, 50))
+      const t0 = Date.now()
+      agentChat.cancel()
+      const bound = agentChat.STOP_KILL_MS + agentChat.STOP_END_MS
+      const ev = await Promise.race([done, new Promise(r => setTimeout(() => r(null), bound + 1500))])
+      const took = Date.now() - t0
+      t('Stop ends the turn in bounded time when the CLI ignores being asked', () => {
+        assert.ok(ev, `the turn was still running ${bound + 1500} ms after Stop`)
+        assert.strictEqual(ev.cancelled, true, 'a Stop ended as an error')
+        assert.ok(took >= agentChat.STOP_KILL_MS - 100 && took <= bound + 500, `${took} ms`)
+        assert.strictEqual(agentChat.busy(), false, 'the pane is still busy after Stop')
+      })
+    } finally { connect.binFor = was }
+  })()
+
   fs.rmSync(dir, { recursive: true, force: true })
   console.log(`\n${n} tool surface checks passed`)
 }

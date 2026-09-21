@@ -96,6 +96,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var micIn: AVAssetWriterInput?
 
     private let lock = NSLock()
+    // start() has returned, one way or the other. finish() waits for it (waitForStart),
+    // so a Stop, a closed stdin or main.js's SIGTERM while a capture is still starting
+    // never exits under a startCapture replayd has not answered yet.
+    private var startDone = false
     private var started = false
     private var paused = false
     private var finished = false
@@ -160,6 +164,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     init(opts: Options) { self.opts = opts }
 
     func start() async {
+        defer { markStartDone() }
         // A generated take needs no screen and no permission: it goes through the same
         // route, writer and padding as a real one, which is the part being measured
         if let spec = opts.testSource {
@@ -177,6 +182,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         } catch {
             fail("could not read shareable content: \(error.localizedDescription). Screen Recording permission is probably not granted.")
         }
+        // stopped while that was being read: nothing has been started, so nothing to stop
+        if isFinished() { return }
 
         var filter: SCContentFilter
         var width = 0, height = 0
@@ -189,11 +196,21 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // A window filter hears only its app's own process, and a browser (Chrome,
             // Electron, Safari) plays every page from a helper process that belongs to
             // no app, so a browser window's take came out digitally silent. Its sound
-            // comes from the display instead, with every other app that has a window
-            // left out: the app, its helpers and system sounds, not the person's music.
+            // comes from the display instead, on a stream of its own.
+            //
+            // That filter names no application, and this is load bearing. A filter that
+            // names apps, to hear them or to leave them out, has replayd watch every
+            // process of every one of them and rebuild its audio queue whenever one
+            // starts, quits or changes state. Rebuilt while a buffer is in flight, the
+            // queue calls back into a capture it has already freed, and replayd, which
+            // does all screen capture on this Mac, goes down with it: 25 times between
+            // Sep 18 and Sep 21, every one in _SCAudioCapture_handleInputBuffer, and the
+            // newest with the process monitor freeing the capture session on another
+            // thread. Leaving the other apps out cost the whole Mac its screen capture
+            // for up to 20 minutes at a time. So a window take with sound hears what the
+            // display plays, the same as a display take does.
             if opts.systemAudio, let d = content.displays.first(where: { $0.frame.intersects(win.frame) }) ?? content.displays.first {
-                let others = content.applications.filter { $0.processID != win.owningApplication?.processID }
-                soundFilter = SCContentFilter(display: d, excludingApplications: others, exceptingWindows: [])
+                soundFilter = SCContentFilter(display: d, excludingWindows: [])
             }
             // A window's frame is in points. Derive the backing scale from the display
             // it sits on by comparing that display's pixel mode against its point size,
@@ -247,11 +264,16 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         cfg.pixelFormat = kCVPixelFormatType_32BGRA
         cfg.colorSpaceName = CGColorSpace.sRGB
         cfg.queueDepth = 8
-        cfg.capturesAudio = opts.systemAudio
-        if opts.systemAudio {
+        // One stream captures sound, never two. A window take's sound is the sound
+        // stream's, so the picture's stream captures none: it used to capture it anyway
+        // with nowhere to send it, a second audio queue in replayd whose filter names
+        // the window's app and is watched for it (see above). A window take whose sound
+        // stream could not be set up is silent rather than heard through the window.
+        cfg.capturesAudio = opts.systemAudio && opts.windowID == nil
+        if cfg.capturesAudio {
             cfg.sampleRate = 48000
             cfg.channelCount = 2
-            cfg.excludesCurrentProcessAudio = true    // never record our own UI sounds
+            cfg.excludesCurrentProcessAudio = false   // see soundOnly()
         }
         if opts.mic, #available(macOS 15.0, *) {
             cfg.captureMicrophone = true
@@ -264,12 +286,27 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // The sound stream first, so it is already running when the first picture starts
         // the clock. Opened second, the 0.7 to 2.3 s it takes to start was sound that was
         // never captured at all, and a narrator's first words went with it.
+        //
+        // Stop can land while either one is still starting. finish() waits for this to
+        // return, and this stops whatever it opened, each awaited, sound first, before
+        // it does: a stream is never left starting or running under an exit.
         if let sf = soundFilter { await openSoundStream(sf) }
+        if isFinished() { await stopSound(); return }
+        let s: SCStream
         do {
-            stream = try await openStream(filter)
+            s = try await openStream(filter)
         } catch {
+            // the sound is already running, and a process that exits under a live capture
+            // leaves replayd to tear it down on its own
+            await stopSound()
             fail("could not start capture: \(error.localizedDescription)")
         }
+        if isFinished() {
+            await stopSound()
+            await stop(s, "picture", outputs: pictureOutputs)
+            return
+        }
+        stream = s
         startHolding()
 
         emit(["event": "started",
@@ -591,7 +628,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let cfg = config else { throw CocoaError(.featureUnsupported) }
         let s = SCStream(filter: filter, configuration: cfg, delegate: self)
         try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
-        if opts.systemAudio, soundFilter == nil { try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue) }
+        if cfg.capturesAudio { try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue) }
         if opts.mic, #available(macOS 15.0, *) {
             try s.addStreamOutput(self, type: .microphone, sampleHandlerQueue: sampleQueue)
         }
@@ -603,15 +640,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     // Same host clock as the picture, so its samples line up through the one writer.
     // Losing it loses the sound, never the take.
     private func openSoundStream(_ f: SCContentFilter) async {
-        let c = SCStreamConfiguration()
-        c.width = 2; c.height = 2
-        c.minimumFrameInterval = CMTime(value: 1, timescale: 1)
-        c.showsCursor = false
-        c.capturesAudio = true
-        c.sampleRate = 48000
-        c.channelCount = 2
-        c.excludesCurrentProcessAudio = true
-        let s = SCStream(filter: f, configuration: c, delegate: nil)
+        let s = SCStream(filter: f, configuration: soundOnly(), delegate: self)
         do {
             try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
             try await s.startCapture()
@@ -621,39 +650,130 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    // excludesCurrentProcessAudio stays off. This helper never plays a sound, so there
+    // is nothing of ours to leave out, and asking for it has replayd add this process to
+    // an excluded list and watch it, which is the same watched path a filter naming
+    // apps takes: the one that ends in replayd's crash (see start).
+    private func soundOnly() -> SCStreamConfiguration {
+        let c = SCStreamConfiguration()
+        c.width = 2; c.height = 2
+        c.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        c.showsCursor = false
+        c.capturesAudio = true
+        c.sampleRate = 48000
+        c.channelCount = 2
+        c.excludesCurrentProcessAudio = false
+        return c
+    }
+
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         let message = error.localizedDescription
-        Task { await recover(from: message) }
+        // The sound stream going is the sound going, never the take. It is not reopened:
+        // a capture that just failed is not started again straight away.
+        if stream === soundStream {
+            soundStream = nil
+            FileHandle.standardError.write("system audio stopped mid take: \(message)\n".data(using: .utf8)!)
+            return
+        }
+        Task { await recover(from: error) }
+    }
+
+    // Stops one stream and waits for it. ScreenCaptureKit delivers nothing to an output
+    // once stopCapture has returned, so the outputs come off after it, not before: taken
+    // off a running stream, a buffer already on its way has nowhere to land. A failure is
+    // written down, never swallowed, and the take still finishes.
+    private func stop(_ s: SCStream?, _ name: String, outputs: [SCStreamOutputType]) async {
+        guard let s else { return }
+        do { try await s.stopCapture() } catch {
+            FileHandle.standardError.write("the \(name) stream did not stop cleanly: \(error.localizedDescription)\n".data(using: .utf8)!)
+        }
+        for type in outputs {
+            do { try s.removeStreamOutput(self, type: type) } catch {
+                FileHandle.standardError.write("the \(name) stream kept an output: \(error.localizedDescription)\n".data(using: .utf8)!)
+            }
+        }
+    }
+
+    // The sound stream stopped and let go of, so nothing stops it a second time
+    private func stopSound() async {
+        let s = soundStream
+        soundStream = nil
+        await stop(s, "sound", outputs: [.audio])
+    }
+
+    // What openStream added, so exactly that comes off again
+    private var pictureOutputs: [SCStreamOutputType] {
+        var o: [SCStreamOutputType] = [.screen]
+        if config?.capturesAudio == true { o.append(.audio) }
+        if opts.mic, #available(macOS 15.0, *) { o.append(.microphone) }
+        return o
     }
 
     // A window can drop out of capture for a moment (a Space change, a display
     // reconfiguring) and come straight back with the same id. That is held as a pause
     // and the same window picked up again. Only a window that stays gone ends the take,
     // and what was captured up to then is still finished into a playable file.
-    private func recover(from message: String) async {
-        guard let wid = opts.windowID, beginInterruption() else {
+    //
+    // It is picked up again with one start, never a run of them. When the capture
+    // service itself went away (replayd crashed or dropped the connection, or the
+    // person stopped sharing from the menu bar) nothing is reopened at all: a start
+    // straight after the service fell over is the start after start that keeps it down,
+    // and launchd holds it off for up to 20 minutes after repeated crashes.
+    private func recover(from error: Error) async {
+        let message = error.localizedDescription
+        guard let wid = opts.windowID, !Recorder.serviceGone(error), beginInterruption() else {
             emit(["event": "error", "message": "capture stopped: \(message)"])
             await finish()
             return
         }
         emit(["event": "interrupted", "message": message])
-        for _ in 0..<6 {
-            try? await Task.sleep(nanoseconds: 500_000_000)
+        // Wait for the window to be back by asking what is on screen, which starts no
+        // capture, and then start once.
+        var win: SCWindow?
+        for wait in [1.0, 1.0, 1.5] {
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             if isFinished() { return }
-            guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false),
-                  let win = content.windows.first(where: { $0.windowID == wid }),
-                  let s = try? await openStream(SCContentFilter(desktopIndependentWindow: win)) else { continue }
-            stream = s
-            if isFinished() { try? await s.stopCapture(); return }
-            endInterruption()
-            emit(["event": "recovered"])
-            return
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+                win = content.windows.first(where: { $0.windowID == wid })
+            } catch {
+                FileHandle.standardError.write("could not read what is on screen while the window was gone: \(error.localizedDescription)\n".data(using: .utf8)!)
+                break
+            }
+            if win != nil { break }
         }
+        if let win, !isFinished() {
+            do {
+                let s = try await openStream(SCContentFilter(desktopIndependentWindow: win))
+                if isFinished() { await stop(s, "picture", outputs: pictureOutputs); return }
+                stream = s
+                endInterruption()
+                emit(["event": "recovered"])
+                return
+            } catch {
+                FileHandle.standardError.write("the window came back and its capture did not start: \(error.localizedDescription)\n".data(using: .utf8)!)
+            }
+        }
+        if isFinished() { return }
         emit(["event": "error", "message": "capture stopped: \(message)"])
         await finish()
     }
 
+    // The capture service is gone, not the window: the connection to replayd was cut or
+    // is invalid, it failed inside, the system stopped the stream, or the person stopped
+    // sharing. Codes are SCStreamError's (-3804 connection invalid, -3805 connection
+    // interrupted, -3811 internal, -3817 user stopped, -3821 system stopped), and an XPC
+    // connection interrupted or invalidated (4097, 4099) is the same thing a layer down.
+    static func serviceGone(_ error: Error) -> Bool {
+        let e = error as NSError
+        if e.domain == SCStreamErrorDomain { return [-3804, -3805, -3811, -3817, -3821].contains(e.code) }
+        if e.domain == NSCocoaErrorDomain { return [4097, 4099].contains(e.code) }
+        return false
+    }
+
     private func isFinished() -> Bool { lock.lock(); defer { lock.unlock() }; return finished }
+    private func isStartDone() -> Bool { lock.lock(); defer { lock.unlock() }; return startDone }
+    private func markStartDone() { lock.lock(); startDone = true; lock.unlock() }
 
     private func beginInterruption() -> Bool {
         lock.lock()
@@ -742,15 +862,34 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         return (true, frames, dropped, CMTimeSubtract(at, CMTimeAdd(sessionStart, pausedTotal)))
     }
 
+    // Waits for start() to return, so nothing it is opening is left starting. Checked on
+    // a short tick rather than awaited on the task, so a start replayd never answers
+    // cannot hold the take open for ever: after 10 s the file is finished without it,
+    // and that is written down.
+    private func waitForStart() async {
+        for _ in 0..<200 {
+            if isStartDone() { return }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        FileHandle.standardError.write("the capture was still starting 10 s after Stop; finishing without waiting for it\n".data(using: .utf8)!)
+    }
+
     func finish() async {
         let (proceed, f, d, end) = claimFinish()
         guard proceed else { return }
+        await waitForStart()
         // Stop can land before start has opened the file (capture is slow to answer while
         // the screen is locked), and the writer is not there to finish: say so, not trap
         guard writer != nil else { fail("stopped before capture started") }
 
-        try? await stream?.stopCapture()
-        try? await soundStream?.stopCapture()
+        // One at a time, each awaited, the sound first: it is the stream with an audio
+        // queue in replayd, and it goes quiet while the picture is still running rather
+        // than the two coming down together. The picture's own clock claimed the end
+        // above, and the sound's last few milliseconds are filled to it.
+        await stopSound()
+        let s = stream
+        stream = nil
+        await stop(s, "picture", outputs: pictureOutputs)
         testSource?.stop()
         // after any sample still being handled, so the held frame is the last one
         sampleQueue.sync { holdToEnd(end) }

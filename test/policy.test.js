@@ -253,21 +253,19 @@ is('agent cannot edit the never-record devices list',
 // ── what a window take hears, which is the reason simctl's own capture is refused ──
 // A framebuffer capture is a file with no audio track at all, and with it go the
 // transcript, the beats, the captions, fit_to_length and remove_dead_air. So Fetch
-// records the Mac window instead, and what that take hears has to be the app and not
-// the room. Measured on this Mac while the person's own browser played to the speakers
-// through a Simulator window take: -91.0 dB mean and -91.0 dB peak, which is the noise
-// floor and nothing else. The other application's sound is not in the file.
+// records the Mac window instead, and the take has a track.
 //
-// The rule lives in Recorder.swift and is read here rather than restated: a window
-// take's system audio comes from the display with every other application excluded by
-// process id, so the target app, its helpers and system sounds reach the file and
-// nothing else on the Mac does. Delete that filter and the measurement above stops
-// being true without a single test noticing, which is what this one is for.
+// That track used to leave out every other app with a window, by naming them in the
+// sound's filter. A filter that names apps is what took replayd, and with it all screen
+// capture on the Mac, down 25 times (Recorder.swift start says how), so a window take's
+// sound is now the display's: everything the Mac plays, which every sentence about it
+// says (ui/recorder-opts.js). The rule lives in Recorder.swift and is read here rather
+// than restated, in the direction that keeps the capture service up.
 const rec = require('fs').readFileSync(require('path').join(__dirname, '..', 'Recorder.swift'), 'utf8')
-is('a window take hears its own app and no other application on the Mac',
-  /content\.applications\.filter \{ \$0\.processID != win\.owningApplication\?\.processID \}/.test(rec) &&
-  /excludingApplications: others/.test(rec), true)
-is('and only a window take gets that filter, since a display take cannot honour it',
+is('a window take\'s sound names no application, to hear it or to leave it out',
+  !/excludingApplications|including: \[?\w*[Aa]pp/.test(rec) &&
+  /soundFilter = SCContentFilter\(display: d, excludingWindows: \[\]\)/.test(rec), true)
+is('and the picture of a window take is that window alone',
   /SCContentFilter\(desktopIndependentWindow: win\)/.test(rec), true)
 
 console.log(`\n  ${pass} passed, ${fail} failed`)

@@ -18,20 +18,20 @@ const proc = require('../../processor')
 const TAIL = 0.004
 
 /**
- * measure(src, { start, end, crop, width, height, timeout }) resolves { lo, hi } in
+ * measure(src, { start, end, crop, width, height, viewport, screen, timeout }) resolves { lo, hi } in
  * 0..1, the black and white points to stretch between, or null when there is nothing
  * worth stretching or the take could not be read. Never rejects, and always settles: a
  * take with no levels simply draws without them.
  */
-function measure(src, { start = 0, end = 0, crop = null, width = 0, height = 0, timeout = 20000 } = {}) {
+function measure(src, { start = 0, end = 0, crop = null, width = 0, height = 0, viewport = null, screen = null, timeout = 20000 } = {}) {
   return new Promise(resolve => {
     const vf = []
     if (crop && crop.w > 0 && crop.h > 0 && width && height) {
-      // the crop the export will use, rounded exactly as plan.prepare rounds it
-      const cw = 2 * Math.floor(width * crop.w / 2), ch = 2 * Math.floor(height * crop.h / 2)
-      const cx = Math.min(width - cw, Math.floor(width * crop.x) & ~1)
-      const cy = Math.min(height - ch, Math.floor(height * crop.y) & ~1)
-      if (cw > 1 && ch > 1) vf.push(`crop=${cw}:${ch}:${cx}:${cy}`)
+      // the crop the export will use, in the pixels plan.prepare takes (Plan.cropPx): on a
+      // device take that is held to the glass, so no row of the Simulator's black ring is
+      // read into the black point
+      const px = require('./plan').cropPx(crop, width, height, { viewport, screen })
+      if (px.w > 1 && px.h > 1) vf.push(`crop=${px.w}:${px.h}:${px.x}:${px.y}`)
     }
     vf.push('scale=64:36:flags=bilinear', 'format=gray')
     const args = ['-v', 'error', '-skip_frame', 'nokey']

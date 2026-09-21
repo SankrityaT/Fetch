@@ -12,6 +12,7 @@ CamBubble.app/
 Transcribe.app/
 transcribe
 WindowList
+Shot
 
 # scratch, editor and session junk
 .DS_Store

@@ -276,6 +276,24 @@ console.log('the glass is round, and how round is read off the pixels')
   is('and its viewport is the plain rectangle', Object.keys(S.viewport(DEVICE.se.win, DEVICE.se.screen,
     { glass: S.measureGlass(frameOf(DEVICE.se, { homeButton: true })) })), ['x', 'y', 'w', 'h'])
   is('a corner that is not a share of anything is dropped', Object.keys(S.glassViewport({ ...v, corner: 0.7 }, d.screen)), ['x', 'y', 'w', 'h'])
+
+  // A take measured before the corner was: the document has the rectangle and nothing
+  // else, and the only pixels left are the recording's. A recording has no alpha, so
+  // what was clear round the device is black, and the toolbar is no band of its own.
+  const video = f => { for (let p = 3; p < f.data.length; p += 4) f.data[p] = 255; return f }
+  const old = { x: 0.0554, y: 0.0896, w: 0.8892, h: 0.8929 }
+  const got = S.measureCorner(video(frameOf(d, { corner: PROFILE })), old)
+  is('an old take\'s corner is read off a frame of the take, round the rectangle it already has',
+    got.ok && { px: got.value.px, share: got.value.share }, { px: 111.4, share: 0.1578 })
+  is('and the rectangle is found again to the frame\'s own pixels', got.value.rect, old)
+  is('it is the same number a new capture writes', got.value.share, v.corner)
+  is('a square screen answers with no corner', S.measureCorner(video(frameOf(DEVICE.se, { homeButton: true })),
+    S.viewport(DEVICE.se.win, DEVICE.se.screen, { glass: S.measureGlass(frameOf(DEVICE.se, { homeButton: true })) })).value.share, 0)
+  is('a frame of an app black to its edge reads no corner rather than a wrong one',
+    S.measureCorner(video(frameOf(d, { corner: PROFILE, app: 'black' })), old).ok, false)
+  is('a rectangle the ring is not round reads nothing',
+    S.measureCorner(video(frameOf(d, { corner: PROFILE })), { ...old, x: 0.08 }).ok, false)
+  is('and no rectangle is no corner', S.measureCorner(video(frameOf(d)), null).ok, false)
 }
 
 console.log('where the glass is inside the window, worked out rather than seen')

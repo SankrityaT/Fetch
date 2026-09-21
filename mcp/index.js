@@ -161,7 +161,8 @@ export function build() {
         'no name may be renamed shortly after, from what was said; the path returned here keeps ' +
         'working with every tool, and list_recordings shows the new one. ' +
         'audio on the result is read off the written file rather than off what was asked for, so a take ' +
-        'that came out silent says so here instead of leaving transcribe to break the news. A device take ' +
+        'that came out silent says so here instead of leaving transcribe to break the news, and one whose ' +
+        'sound stopped part way says for how long the end is silence (audio.sync.silent_end_ms). A device take ' +
         'also puts back everything Fetch changed on the device and writes the device screen rectangle onto ' +
         'the edit, and a brief directed before the take existed becomes the job on it.',
       inputSchema: z.object({}),
@@ -282,8 +283,8 @@ export function build() {
         'The iOS simulators on this Mac, and the few things Fetch does to one. Recording a simulator ' +
         'is record_start with simulator, and a screenshot of one is take_shot with simulator: the ' +
         'window is captured where it sits and nothing is ever brought to the front. A take of it ' +
-        'carries that window\'s own sound by default, where a capture of the device framebuffer has ' +
-        'no audio track at all.\n' +
+        'carries sound by default, where a capture of the device framebuffer has no audio track at all, ' +
+        'and that sound is everything this Mac plays while it records, the device among it.\n' +
         'list: every device, its state, its own screen in pixels and points, and its window if one is ' +
         'on screen. Where a picture of that window has been taken it also carries the screen rectangle ' +
         'inside it and density, the captured pixels per pixel the device really has: under 1 the window ' +
@@ -1383,4 +1384,13 @@ function isTheProgram() {
   if (!process.argv[1]) return false
   try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch { return true }
 }
-if (isTheProgram()) serveStdio(build)
+if (isTheProgram()) {
+  serveStdio(build)
+  // The client is the only reason this process exists. When its end of stdin goes (it
+  // exited, or Fetch's Stop killed the CLI outright with no chance to shut its servers
+  // down), this goes too: left running, its socket to Fetch kept the agent counted as
+  // connected, the brake stayed armed, and every forced Stop left one more behind.
+  const gone = () => process.exit(0)
+  process.stdin.once('end', gone)
+  process.stdin.once('close', gone)
+}

@@ -66,15 +66,24 @@ is('and no preferences at all is the plain default', sim({}, { prefs: null }).sy
 console.log('\nwhat record_start may say about sound')
 const startSim = Opts.startedAudio(sim({}))
 is('it says system audio is on', startSim.system_audio, true)
-is('and where the sound comes from', startSim.from, ['the device, through the window it sits in'])
+is('and where the sound comes from, the whole Mac', startSim.from, ['everything this Mac plays, the device among it'])
 is('it does not promise a track before the file exists', /track/.test(startSim.note) && /landed/.test(startSim.note), true)
-// The exclusion is a list of apps with windows taken at the start, so the sentence may
-// not promise more than that (finding 7 and 19 of the round's review).
+// No capture names an app any more (Recorder.swift start: a filter that names apps is
+// what took replayd down), so a take with system audio hears everything the Mac plays,
+// and no sentence may promise it leaves anything out.
+const NARROW = /left out|windows were open|process with no window|opened after the take started|only the window|Only (this|that) window/i
 is('it never says only the window\'s own sound reaches the file', /Only (this|that) window/.test(startSim.note), false)
-is('it says a process with no window is in it', /process with no window/.test(startSim.note), true)
-is('and an app opened after the take started', /opened after the take started/.test(startSim.note), true)
-is('and that the default is kept silent off Fetch\'s own recorder', /kept silent rather than record everything the Mac plays/.test(startSim.note), true)
-is('the description says the same scope', /process with no window/.test(Opts.SIM_AUDIO_SAID) && !/rest of the Mac/.test(Opts.SIM_AUDIO_SAID), true)
+is('it says the whole Mac is heard', /everything this Mac plays/.test(startSim.note), true)
+is('and names the person\'s music and a call', /music or a call/.test(startSim.note), true)
+is('and promises no exclusion', NARROW.test(startSim.note), false)
+is('a window take says the same scope', /everything this Mac plays/.test(Opts.startedAudio(mac({ system_audio: true })).note) &&
+  !NARROW.test(Opts.startedAudio(mac({ system_audio: true })).note), true)
+is('and that the default is kept silent off Fetch\'s own recorder', /only the default is kept silent/.test(startSim.note), true)
+is('without a reason that is no longer a difference', /rather than record everything the Mac plays/.test(startSim.note), false)
+is('the description says the same scope', /everything this Mac plays/.test(Opts.SIM_AUDIO_SAID) && !NARROW.test(Opts.SIM_AUDIO_SAID), true)
+is('and so does the argument', /this Mac plays/.test(Opts.SYS_AUDIO_ARG_SAID), true)
+is('a missing track does not give the old reason either',
+  /rather than record everything/.test(Opts.takeAudio(sim({}), { hasAudio: false }).note), false)
 // A microphone is a track: saying "no audio track" of a take with mic true is wrong.
 const micOnly = Opts.startedAudio(mac({ mic: true }))
 is('a take with the mic on is never told it has no audio track', /no audio track/.test(micOnly.note), false)
@@ -93,7 +102,7 @@ is('a take held silent by their own setting says whose choice it was',
 const startMac = Opts.startedAudio(mac({}))
 is('a plain silent take says it plainly', startMac.note, 'This take has no audio track: system_audio and mic are both off. transcribe, list_beats, the captions and fit_to_length all read that track.')
 is('both sources are named when both are on', Opts.startedAudio(sim({ mic: true })).from,
-  ['the device, through the window it sits in', 'the microphone'])
+  ['everything this Mac plays, the device among it', 'the microphone'])
 
 console.log('\nwhat record_stop says the file actually has')
 const planOn = sim({})
@@ -160,6 +169,58 @@ is('and turns it into a capture and a track',
 is('a sound stream that will not open does not take the picture with it',
   /catch \{[\s\S]{0,160}no system audio for this window/.test(rec), true)
 
+// ── never the thing that takes replayd down ──────────────────────────────
+// replayd, the daemon behind all screen capture on a Mac, crashed 25 times between Sep 18
+// and Sep 21 in its audio queue's input callback (_SCAudioCapture_handleInputBuffer),
+// calling into a capture it had already freed. It watches every process a filter's audio
+// names, and rebuilds the queue when one of them changes state; the newest report has
+// that process monitor freeing the capture session on the next thread over. Each crash
+// took screen capture away from the whole Mac for up to 20 minutes. These pin the four
+// things the recorder does so as never to walk it down that path.
+console.log('\nnever the thing that takes replayd down')
+is('no capture names apps to hear or to leave out',
+  !/excludingApplications|including: \[?\w*[Aa]pp/.test(rec), true)
+is('and it never asks replayd to leave this process out, which is watched the same way',
+  !/excludesCurrentProcessAudio = true/.test(rec) && /excludesCurrentProcessAudio = false/.test(rec), true)
+is('a window take\'s sound comes from the display alone',
+  /soundFilter = SCContentFilter\(display: d, excludingWindows: \[\]\)/.test(rec), true)
+is('only one stream captures sound: the picture\'s does only on a display take',
+  /cfg\.capturesAudio = opts\.systemAudio && opts\.windowID == nil/.test(rec) &&
+  /if cfg\.capturesAudio \{ try s\.addStreamOutput\(self, type: \.audio/.test(rec), true)
+const fin = rec.slice(rec.indexOf('func finish() async'))
+is('Stop brings the streams down one at a time, the sound first',
+  fin.indexOf('await stopSound()') > 0 && fin.indexOf('await stopSound()') < fin.indexOf('await stop(s, "picture"'), true)
+// Stop, a closed stdin or main.js's SIGTERM at 6 s can land while start() is still inside
+// startCapture. Exiting then leaves a start replayd has not answered, and a failed picture
+// start and a Stop could both stop the one sound stream at once.
+is('Stop waits for a start still in progress before it stops anything',
+  fin.indexOf('await waitForStart()') > 0 && fin.indexOf('await waitForStart()') < fin.indexOf('await stopSound()'), true)
+is('and that wait is bounded, so a start replayd never answers cannot hold the take for ever',
+  /func waitForStart\(\) async \{\s*for _ in 0\.\.<\d+/.test(rec), true)
+const st = rec.slice(rec.indexOf('func start() async'), rec.indexOf('private func setUpWriter'))
+is('start says when it is done however it ends', /defer \{ markStartDone\(\) \}/.test(st), true)
+is('a start that finds the take stopped stops what it opened, the sound first',
+  /openSoundStream\(sf\) \}\s*if isFinished\(\) \{ await stopSound\(\); return \}/.test(st) &&
+  /if isFinished\(\) \{\s*await stopSound\(\)\s*await stop\(s, "picture"/.test(st), true)
+is('the sound stream is let go of when it is stopped, so it is never stopped twice',
+  /func stopSound\(\) async \{\s*let s = soundStream\s*soundStream = nil/.test(rec), true)
+// recover() used to reopen the window's stream up to six times, 0.5 s apart, every failure
+// swallowed, and the likeliest reason the stream stopped was replayd going down.
+const rv = rec.slice(rec.indexOf('private func recover(from'), rec.indexOf('static func serviceGone'))
+is('a capture service that went away is not reopened', /!Recorder\.serviceGone\(error\)/.test(rv) &&
+  /-3805/.test(rec) && /-3817/.test(rec), true)
+is('a window that comes back is started once, never in a loop',
+  (rv.match(/openStream\(/g) || []).length === 1 && !/for [^\n]*\{[^}]*openStream/.test(rv) && !/try\? await openStream/.test(rv), true)
+is('and a start that fails there is written down', /its capture did not start/.test(rv), true)
+is('no stop is swallowed', !/try\? await [\w?.]*stopCapture/.test(rec) && /did not stop cleanly/.test(rec), true)
+is('outputs come off only after the stream has stopped',
+  /try await s\.stopCapture\(\)[\s\S]{0,300}?removeStreamOutput/.test(rec), true)
+is('a picture that will not start does not leave the sound running',
+  /catch \{[\s\S]{0,260}?await stopSound\(\)[\s\S]{0,80}?fail\("could not start capture/.test(rec), true)
+is('a sound stream that fails is heard about, and not reopened',
+  /configuration: soundOnly\(\), delegate: self/.test(rec) && /stream === soundStream \{[\s\S]{0,200}?return/.test(rec), true)
+is('no em dashes in the recorder', /\u2014/.test(rec), false)
+
 // ── sound on the picture's clock ─────────────────────────────────────────
 // A simulator take's sound started 2.3 s after its picture. The file was honest about
 // it through an edit list, and every ffmpeg graph that trims the track or decodes it to
@@ -169,7 +230,7 @@ is('a sound stream that will not open does not take the picture with it',
 // 20 ms at a time. These pin the fix in the source, then measure it in a written file.
 console.log('\nsound on the picture\'s clock')
 is('a window take opens its sound before its picture',
-  rec.indexOf('if let sf = soundFilter { await openSoundStream(sf) }') < rec.indexOf('stream = try await openStream(filter)'), true)
+  rec.indexOf('if let sf = soundFilter { await openSoundStream(sf) }') < rec.indexOf('s = try await openStream(filter)'), true)
 is('sound that arrives while the writer is full waits rather than being dropped',
   /default:\s*queueSound\(sb, at: shifted/.test(rec) && !/sysAudioIn, a\.isReadyForMoreMediaData else \{ return \}/.test(rec), true)
 is('a hole before a sample is filled with silence before the sample goes in',

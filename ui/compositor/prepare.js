@@ -14,6 +14,9 @@
 //             its own content is there and the top is clear), so those phrases go up
 //   autoZooms auto zoom's moments (processor.zoomMoments), when the edit has no zooms
 //             of its own, on the output clock
+//   glass     the corner of a device's glass on a take whose document has none (one
+//             written before the capture stored it): read off one frame of the take
+//             (ui/simulator.js measureCorner), only where the crop is the glass
 //   levels    the take's black and white points (levels.js), while the look asks for
 //             auto level, for a glow, or for the one grade the pair moves: treatment
 //             stretches every frame between the same two, the bright pass reads what is
@@ -56,6 +59,38 @@ function memo(key, fn) {
 
 const FOCUS = new Set(['lift', 'spotlight'])
 
+// One frame of the take at its own size as RGBA bytes: no scale and no crop, since the
+// glass is measured in the take's whole pixels.
+function frameRGBA(src, at, W, H) {
+  return new Promise(resolve => {
+    const chunks = []
+    const p = require('child_process').spawn(proc.FFMPEG, ['-v', 'error', '-nostdin', ...(at > 0 ? ['-ss', at.toFixed(3)] : []),
+      '-i', src, '-frames:v', '1', '-an', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-'])
+    p.stdout.on('data', d => chunks.push(d))
+    p.on('close', () => {
+      const data = Buffer.concat(chunks)
+      resolve(data.length >= W * H * 4 ? { width: W, height: H, data: data.subarray(0, W * H * 4) } : null)
+    })
+    p.on('error', () => resolve(null))
+  })
+}
+
+// The glass's corner on a take whose document has none, read off the take itself. The
+// middle frame first; a dark screen there (an app black to its own edge) refuses, so a
+// quarter and three quarters are tried, and nothing past that.
+async function glassCorner(src, viewport, W, H, dur) {
+  const Sim = require('../simulator')
+  const times = dur > 0.2 ? [0.5, 0.25, 0.75].map(k => k * dur) : [0]
+  for (const t of times) {
+    const frame = await frameRGBA(src, t, W, H)
+    if (!frame) continue
+    const r = Sim.measureCorner(frame, viewport)
+    if (r.ok) return r.value.share > 0 ? { corner: r.value.share, at: +t.toFixed(3) } : null
+  }
+  return null
+}
+const sameBox = (a, b) => !!a && !!b && ['x', 'y', 'w', 'h'].every(k => Math.abs(+a[k] - +b[k]) <= 0.002)
+
 // Lifts and spotlights held to the part of their span where their element is on
 // screen, as apply_edit holds an agent's (agent-bridge timeFocus), so a mark a person
 // placed a moment early does not raise the empty page before the card opens
@@ -90,11 +125,20 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
     const end = opts.end && opts.end > start ? Math.min(opts.end, dur || opts.end) : dur
     const crop = opts.crop && opts.crop.w > 0 && opts.crop.h > 0 ? opts.crop : null
     const W = m.width || 1920, H = m.height || 1080
-    const content = crop ? { w: 2 * Math.floor(W * crop.w / 2), h: 2 * Math.floor(H * crop.h / 2) } : { w: W, h: H }
+    // the crop's size in pixels as the plan takes it, held to the glass on a device take
+    const px = crop ? Plan.cropPx(crop, W, H, { viewport: opts.viewport, screen: opts.screen }) : null
+    const content = px ? { w: px.w, h: px.h } : { w: W, h: H }
+    // what processor's own crops need to cut the same pixels (processor.cropArg)
+    const dev = { W, H, viewport: opts.viewport, screen: opts.screen }
     const tasks = {}
 
+    const v = opts.viewport
+    if (opts.screen && v && !(+v.corner > 0) && sameBox(crop, v)) {
+      tasks.glass = memo(`gl|${id}|${JSON.stringify(v)}`, () => glassCorner(seek.src, v, W, H, dur))
+    }
+
     if (opts.backdrop) {
-      tasks.gutter = memo(`g|${id}|${JSON.stringify([start, end, crop])}`, () => proc.frameGutter(seek.src, start, end, crop).catch(() => null))
+      tasks.gutter = memo(`g|${id}|${JSON.stringify([start, end, crop, px])}`, () => proc.frameGutter(seek.src, start, end, crop, dev).catch(() => null))
     }
     if (String(opts.backdrop || '').startsWith('img:')) {
       const hit = proc.imageBackdrops().find(b => b.id === opts.backdrop)
@@ -106,9 +150,9 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
       .map(x => ({ ...x, k0: Plan.markKey(x) }))
     if (drawn.length) {
       // one at a time, so editing one mark does not read the take again for the others
-      tasks.marks = Promise.all(drawn.map(x => memo(`m|${id}|${JSON.stringify([x, crop])}`, async () => {
+      tasks.marks = Promise.all(drawn.map(x => memo(`m|${id}|${JSON.stringify([x, crop, px])}`, async () => {
         const [timed] = await presence(seek.src, [x], crop)
-        const [fit] = await proc.stepSpots(seek.src, [timed], crop, content)
+        const [fit] = await proc.stepSpots(seek.src, [timed], crop, content, dev)
         return fit
       }).catch(() => x))).then(list => {
         // badges on one grid of cards share rows and columns
@@ -158,8 +202,8 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
     const T = (opts.look && opts.look.treatment) || {}
     const grades = +T.contrast > 0 && (+T.brightness || 0) !== 0
     if (T.autoLevel || +T.bloom > 0 || +T.halation > 0 || grades) {
-      tasks.levels = memo(`lv|${id}|${JSON.stringify([start, end, crop])}`,
-        () => Levels.measure(seek.src, { start, end, crop, width: W, height: H }))
+      tasks.levels = memo(`lv|${id}|${JSON.stringify([start, end, crop, px])}`,
+        () => Levels.measure(seek.src, { start, end, crop, width: W, height: H, viewport: opts.viewport, screen: opts.screen }))
     }
 
     const spans = proc.macCursorSpans(src, opts)
@@ -219,4 +263,20 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
   }
 }
 
-module.exports = { prepareRender }
+/**
+ * The corner prepareRender reads for a device take whose document has none, from the
+ * same cache, so a caller that writes it onto the document (agent-bridge export) does not
+ * read the take a second time. Null where the document has a corner, the crop is not the
+ * glass, or no frame gave one.
+ */
+async function glassFor(src, doc, meta) {
+  const v = doc && doc.viewport, crop = doc && doc.crop
+  const screen = doc && doc.device && doc.device.screen
+  if (!src || !fs.existsSync(src) || !screen || !v || +v.corner > 0 || !sameBox(crop, v)) return null
+  if (!(meta && meta.width > 0 && meta.height > 0)) return null
+  const st = fs.statSync(src)
+  const id = `${src}#${st.mtimeMs}#${st.size}`
+  return memo(`gl|${id}|${JSON.stringify(v)}`, () => glassCorner(src, v, meta.width, meta.height, meta.duration || 0))
+}
+
+module.exports = { prepareRender, glassFor }

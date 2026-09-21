@@ -231,6 +231,47 @@ function glassCorner(cap = {}) {
   if (!k || !cap.screen || !c) return 0
   return ['x', 'y', 'w', 'h'].every(n => Math.abs(+c[n] - +v[n]) <= VIEW_EPS) ? k : 0
 }
+// The crop in the whole pixels ffmpeg's crop takes: an even size, and an even offset for
+// 4:2:0 chroma. Rounded down, as it always was, except against a device's glass.
+//
+// Down is the wrong way at the glass's top and left edges. The judged take's glass
+// starts at 0.0554 x 794 = 43.99 and 0.0896 x 1718 = 153.9; floored and then made even
+// that is 42 and 152, two pixels of the Simulator's black ring along the top and the left
+// of every phone, and none on the right or the bottom, since flooring the size takes
+// those edges inward. So where the crop lies inside the measured glass, both of its
+// edges are held inside the glass's own whole pixels: the start rounded up to even and
+// the end rounded down, which on that take is 44 and 154 and the same right and bottom
+// edges as before. The slack is one step of the viewport's own rounding (ui/simulator.js
+// r4), so a glass stored a hair past a pixel does not give up two pixels of app for it.
+// A crop that keeps the bezel, and every take that is not of a device, is untouched.
+const evenUp = n => n + (n & 1)
+function cropPx(c, W, H, cap = {}) {
+  if (!c) return { x: 0, y: 0, w: W & ~1, h: H & ~1 }
+  const w = 2 * Math.floor(W * c.w / 2), h = 2 * Math.floor(H * c.h / 2)
+  const x = Math.min(W - w, Math.floor(W * c.x) & ~1), y = Math.min(H - h, Math.floor(H * c.y) & ~1)
+  const v = cap.viewport
+  if (!cap.screen || !insideView(c, v)) return { x, y, w, h }
+  const ex = W * 1e-4, ey = H * 1e-4
+  const gx0 = evenUp(Math.max(0, Math.ceil(W * v.x - ex))), gy0 = evenUp(Math.max(0, Math.ceil(H * v.y - ey)))
+  const gx1 = Math.min(W, Math.floor(W * (v.x + v.w) + ex)), gy1 = Math.min(H, Math.floor(H * (v.y + v.h) + ey))
+  // the crop's own ends, not the floored ones: flooring the size already took a pixel
+  // or two off the right and the bottom, and taking them again would narrow the app
+  const cx1 = Math.floor(W * (c.x + c.w) + ex), cy1 = Math.floor(H * (c.y + c.h) + ey)
+  const sx = Math.max(x, gx0), sy = Math.max(y, gy0)
+  const sw = 2 * Math.floor((Math.min(cx1, gx1) - sx) / 2), sh = 2 * Math.floor((Math.min(cy1, gy1) - sy) / 2)
+  // a glass too small to hold the crop is not a glass anybody measured
+  return sw >= 2 && sh >= 2 ? { x: sx, y: sy, w: sw, h: sh } : { x, y, w, h }
+}
+
+// The viewport with its glass's corner on it: the one the capture wrote, else the one
+// prepare.js measured off the take (`prepared.glass.corner`, a share of the glass's short
+// side, the same number ui/simulator.js cornerOf writes), else as it came.
+function viewWithCorner(v, P) {
+  if (!v || (+v.corner > 0 && +v.corner < 0.5)) return v
+  const k = P && P.glass ? +P.glass.corner : 0
+  return k > 0 && k < 0.5 ? { ...v, corner: k } : v
+}
+
 function ownChrome(cap = {}) {
   const crop = cap.crop && cap.crop.w > 0 && cap.crop.h > 0 ? cap.crop : null
   if (cap.screen) return !insideView(crop || WHOLE, cap.viewport)
@@ -486,7 +527,6 @@ function groupSpec(raw, D = {}, radius = 0) {
   const list = members.map(m => {
     const w = Math.max(1, +m.w || 1), h = Math.max(1, +m.h || 1)
     const c = m.crop && m.crop.w > 0 && m.crop.h > 0 ? m.crop : null
-    const cw = c ? 2 * Math.floor(w * c.w / 2) : w & ~1, chh = c ? 2 * Math.floor(h * c.h / 2) : h & ~1
     const asked = m.device === undefined || m.device === null ? D.kind : m.device
     const kind = DEVICES[asked] ? asked : null
     const own = ownChrome({ captured: m.captured, crop: c, viewport: m.viewport, screen: m.screen })
@@ -494,7 +534,7 @@ function groupSpec(raw, D = {}, radius = 0) {
     const q = { src: m.src || null, w, h, scale: m.scale, ppi: m.ppi, mm: m.mm, kind,
       ...text, own, bez: kind ? bezel(kind, text.address, own) : null,
       marks: Array.isArray(m.marks) ? m.marks : [],
-      crop: { x: c ? Math.min(w - cw, Math.floor(w * c.x) & ~1) : 0, y: c ? Math.min(h - chh, Math.floor(h * c.y) & ~1) : 0, w: cw, h: chh },
+      crop: cropPx(c, w, h, { viewport: m.viewport, screen: m.screen }),
       radius }
     // the shape the frame is drawn to is the crop's, not the capture's: a member cropped
     // square must not be hung in a shell cut for the whole window
@@ -798,12 +838,20 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const frames = Math.max(1, Math.round(span * fps))
 
   // The crop as the classic export's ffmpeg crop takes it: even size, and an offset
-  // rounded down to even for 4:2:0 chroma. Even with no crop, so NV12 always fits.
+  // rounded down to even for 4:2:0 chroma, except where that would reach past a device's
+  // glass (cropPx). Even with no crop, so NV12 always fits.
   const c = opts.crop && opts.crop.w > 0 && opts.crop.h > 0 ? opts.crop : null
-  const cw = c ? 2 * Math.floor(srcW * c.w / 2) : srcW & ~1
-  const ch = c ? 2 * Math.floor(srcH * c.h / 2) : srcH & ~1
-  const cx = c ? Math.min(srcW - cw, Math.floor(srcW * c.x) & ~1) : 0
-  const cy = c ? Math.min(srcH - ch, Math.floor(srcH * c.y) & ~1) : 0
+  const P = ctx.prepared || null
+  // The glass's corner, off the document where the capture wrote it, and off the take's
+  // own pixels where it did not (prepare.js, `glass`, from ui/simulator.js
+  // measureCorner): a take measured before the corner was has a viewport with no corner
+  // on it, and its store file kept a crescent of Simulator bezel in every corner.
+  const view = viewWithCorner(opts.viewport, P)
+  const px0 = cropPx(c, srcW, srcH, { viewport: view, screen: opts.screen })
+  const cw = px0.w, ch = px0.h, cx = px0.x, cy = px0.y
+  // what a store plan judged the box against, which is the crop before the glass held it:
+  // a pixel or two of ring is not a reason to turn the judged box down
+  const cwJudged = c ? 2 * Math.floor(srcW * c.w / 2) : cw, chJudged = c ? 2 * Math.floor(srcH * c.h / 2) : ch
 
   const look = opts.look || {}
   const L = sec => look[sec] || {}
@@ -813,7 +861,6 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   // export and the editor's layers lay them out; without it the stage's canvas drew the
   // take where the caption sits. ctx.cues overrides the count (0: none drawn here).
   const cst = opts.captionStyle || {}
-  const P = ctx.prepared || null
   const cues = ctx.cues != null ? ctx.cues
     : (opts.cues || []).length || (P && P.captions && (P.captions.cues || []).length) || 0
   const band = framed && opts.captions && cues > 0 && (!cst.position || cst.position === 'bottom') && cst.fx == null
@@ -876,7 +923,7 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   // pair and the take is that box, and a shell grows round it. Not under a headline:
   // the type has taken room the plan never knew about, and a smaller take is only ever
   // a smaller upscale.
-  const at = framed && !gl && !still ? storeBox(opts, cw, ch) : null
+  const at = framed && !gl && !still ? storeBox(opts, cwJudged, chJudged) : null
   if (at) {
     g = { ...g, outW: at.size.w, outH: at.size.h, vidW: at.w, vidH: at.h, ox: at.x, oy: at.y,
       radius: Math.max(6, Math.round(num(opts.radius, Math.min(at.w, at.h) * 0.035))),
@@ -886,9 +933,12 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   // never tighter than the window's own rounded corner, or its black corner shows
   const gut = framed && ctx.gutter ? ctx.gutter : null
   const corner = gut && gut.corner ? Math.ceil(gut.corner * g.vidW * 1.45) + 2 : 0
-  // and never squarer than the device's glass, where the crop is that glass
-  const glass = framed ? glassCorner({ viewport: opts.viewport, crop: opts.crop, screen: opts.screen }) : 0
-  const radius = framed ? Math.max(g.radius, corner, glass * Math.min(g.vidW, g.vidH)) : 0
+  // and never squarer than the device's glass, where the crop is that glass. A plain
+  // export too: it is the default export of every device take, and square it kept the
+  // Simulator's grey highlight and ring in all four corners. With nothing behind it the
+  // corner is the black the ring already was there, and the highlight is gone.
+  const glass = glassCorner({ viewport: view, crop: opts.crop, screen: opts.screen })
+  const radius = framed ? Math.max(g.radius, corner, glass * Math.min(g.vidW, g.vidH)) : glass * Math.min(g.vidW, g.vidH)
 
   // The window's own margin trimmed off inside the frame, covered to the frame's shape,
   // as the classic export does after its zoom: fractions of what the zoom shows.
@@ -978,7 +1028,7 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   // take's black corner never shows; frame.radius belongs to a take with no device
   const device = framed && !gl
     ? devicePlan(L('device'), L('frame').chrome, g, corner, end0, bg,
-      { viewport: opts.viewport, captured: opts.captured, crop: opts.crop, screen: opts.screen,
+      { viewport: view, captured: opts.captured, crop: opts.crop, screen: opts.screen,
         ...(at ? { at: { x: at.x, y: at.y, w: at.w, h: at.h } } : {}) })
     : null
   // A group has no one device and no one screen: each member carries its own, and what
@@ -1612,4 +1662,4 @@ function cameraFrames(spec, pts) {
   return frameMap(pts, spec.frames, n => Timeline.camTime(spec.cam, srcAt(spec.keep, n / spec.fps)))
 }
 
-module.exports = { prepare, framePlan, camAt, srcAt, rateAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL, realMM, groupLayout, GROUP_MAX, MM_DESK, MM_HAND }
+module.exports = { prepare, cropPx, framePlan, camAt, srcAt, rateAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL, realMM, groupLayout, GROUP_MAX, MM_DESK, MM_HAND }
