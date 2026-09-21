@@ -519,6 +519,14 @@ app.whenReady().then(async () => {
     // character it typed because the capture knew the field was safe to show. The same
     // presses without those characters are what Fetch has when it cannot tell.
     const TYPED = 'fetch the take'.split('').map((c, i) => ({ t: 2.6 + i * 0.09, key: c === ' ' ? 'space' : c, char: c }))
+    // A simulator standing in the middle of this 1440 x 900 desktop take: the device M0
+    // measured, a 1320 x 2868 screen at scale 3 and so 440 points across, and the
+    // rectangle its glass occupies in the recorded frame. The two together are what size
+    // the disc, since 44 points is a tenth of that screen's width at any capture scale.
+    // The screen's own aspect fixes the height: 0.276 of 1440 is 397 px across, and 397
+    // times 956 / 440 is 863, which is 0.959 of 900.
+    const SIM = { screen: { w: 1320, h: 2868, scale: 3 }, viewport: { x: 0.362, y: 0.02, w: 0.276, h: 0.959 } }
+    const TOUCH = { ...SIM, look: { ...look, cursor: { style: 'touch' } } }
     const cases = {
       'framed-dusk': { opts: { backdrop: 'dusk', inset: 0.08, shadow: 0.6, look }, n: 90 },
       'framed-16x9-crop': { opts: { backdrop: 'ink', inset: 0.06, backdropAspect: 16 / 9, crop: { x: 0.1, y: 0.1, w: 0.7, h: 0.6 }, look }, n: 200 },
@@ -760,6 +768,32 @@ app.whenReady().then(async () => {
       // at all. Centred here, which is the one place a 9:16 clip has room for it.
       'keys-ground': { opts: { backdrop: 'ink', inset: 0.08, backdropAspect: 9 / 16,
         look: { ...look, keys: { place: 'centre' } }, keys: [{ t: 3, key: 'k', mods: ['cmd'] }] }, n: 105 },
+      // The touch disc: where a finger went on a device Fetch was filming. Four moments
+      // rather than four settings, because the mark is a function of the plan and the
+      // time like everything else here. This take goes out at 30 fps, so frame n is
+      // n / 30 seconds, and every tap is inside SIM's screen rectangle.
+      //
+      // One tap, caught 33 ms after contact: full strength and part way into the squash,
+      // which is the frame that says the disc presses rather than appears.
+      'touch-tap': { opts: { ...TOUCH, backdrop: 'dusk', inset: 0.06,
+        pointer: [{ t: 3, x: 0.5, y: 0.4, click: true }] }, n: 91 },
+      // A held tap, half a second into a one second glide: one finger still down, drawn
+      // where the ease has carried it, not a trail and not two discs. The second point
+      // carries the first one's id, which is the whole of how a hold is told from a tap.
+      'touch-glide': { opts: { ...TOUCH, backdrop: 'dusk', inset: 0.06,
+        pointer: [{ id: 'f1', t: 3, x: 0.44, y: 0.3, click: true }, { id: 'f1', t: 4, x: 0.56, y: 0.62 }] }, n: 105 },
+      // Two fingers on the glass 50 ms apart, read at 3.1 s: the first is settling out of
+      // its press and the second is at the bottom of its own. A plan that held one disc
+      // would draw either a flicker or a glide between two places nothing travelled.
+      'touch-two': { opts: { ...TOUCH, backdrop: 'dusk', inset: 0.06,
+        pointer: [{ id: 'a', t: 3, x: 0.43, y: 0.34, click: true }, { id: 'b', t: 3.05, x: 0.57, y: 0.58, click: true }] }, n: 93 },
+      // And a tap inside a zoom that has landed. The disc is drawn on the recording
+      // rather than over the finished frame, so the zoom carries it and scales it the
+      // way it carries the thing that was tapped. A disc drawn over the frame would sit
+      // at the same size beside a control twice the size it was.
+      'touch-zoom': { opts: { ...TOUCH, backdrop: 'slate', inset: 0.06,
+        zooms: [{ start: 1, end: 6, scale: 2, x: 0.5, y: 0.4 }],
+        pointer: [{ t: 4, x: 0.5, y: 0.4, click: true }] }, n: 123 },
     }
 
     // Every built-in look, drawn end to end: the preset as the editor and the MCP
@@ -809,7 +843,7 @@ app.whenReady().then(async () => {
       // zoom-glide is here now that the shutter is open by default: it is the one case
       // that draws through the multi-tap blur, and preview and export have to agree on it
       for (const name of ['framed-dusk', 'framed-16x9-crop', 'blur-ground', 'bokeh-ground', 'zoom-hold', 'zoom-glide', 'cut-dissolve', 'reveal', 'camera', 'marks', 'lift', 'pointer', 'text', 'caption-plate', 'glow',
-        'auto-level', 'auto-level-hard', 'treat-furniture', 'treat-all', 'device-browser', 'tilt-device', 'loupe', 'arrow', 'keys-chord']) {
+        'auto-level', 'auto-level-hard', 'treat-furniture', 'treat-all', 'device-browser', 'tilt-device', 'loupe', 'arrow', 'keys-chord', 'touch-glide']) {
         const c = cases[name]
         const r = await call('parity', { ...base, ...c })
         // A crop's first and last rows can differ at a sharp colour edge: the <video>
@@ -863,6 +897,11 @@ app.whenReady().then(async () => {
       // and nothing else, so it comes back byte for byte after other frames
       const d = await call('stateless', { ...base, ...cases['cut-dissolve'] }, [30, 91, 200])
       is('a frame in the middle of a dissolve', d.max === 0, `max ${d.max}`)
+      // the touch disc is a closed form of the time since its own tap: where the finger
+      // is, how present it is and how far it has squashed all read t and nothing else,
+      // so a frame in the middle of a held glide comes back byte for byte out of turn
+      const tc = await call('stateless', { ...base, ...cases['touch-glide'] }, [80, 105, 118])
+      is('a touch disc part way along a held glide', tc.max === 0, `max ${tc.max}`)
 
       // A dissolve asked for with no far side to mix in. The near side alone is the
       // frame, and it is the same frame whatever was drawn before it: reading the side
@@ -911,6 +950,10 @@ app.whenReady().then(async () => {
         ['an arrow up at the end and not at the start', { ...loopOpts, marks: [{ kind: 'arrow', start: 5, end: 9, x: 0.45, y: 0.4, w: 0.14, h: 0.1 }] }, false, 'marks.arrow'],
         ['a caption mid-phrase at the last frame', { ...loopOpts, captions: true, captionStyle: {}, cues: [{ start: 4.5, end: 7, text: 'Every row shows the' }] }, false, 'text', capCtx],
         ['the cursor somewhere else at the end', { ...loopOpts, pointer: [{ t: 0.5, x: 0.2, y: 0.3 }, { t: 3, x: 0.6, y: 0.5, click: true }, { t: 6, x: 0.4, y: 0.7 }] }, false, 'marks.pointer'],
+        ['a tap still on screen at the last frame', { ...loopOpts, look: { ...loopLook, cursor: { style: 'touch' } },
+          pointer: [{ t: 5.9, x: 0.5, y: 0.4, click: true }] }, false, 'marks.touch'],
+        ['a tap that is gone well before the wrap', { ...loopOpts, look: { ...loopLook, cursor: { style: 'touch' } },
+          pointer: [{ t: 2, x: 0.5, y: 0.4, click: true }] }, true, null],
         ['the take still settling under a closing title card', { ...loopOpts, texts: [{ text: 'Fetch', subtitle: 'fetch.app', start: 0, end: 2, style: 'title' }] }, false, 'move'],
       ]
       for (const [label, opts, loops, id, ctx] of checks) {
@@ -1085,6 +1128,74 @@ app.whenReady().then(async () => {
       const clear = Plan.prepare(loopOpts, loopMeta, {})
       clear.keys = Marks.planKeys([{ t: 1, key: 'k', mods: ['cmd'] }], { W: clear.W, H: clear.H, box: clear.rect, clock: Timeline.outClock(null, 0, 6, null), span: clear.span })
       is('and a chord that is over before the end does not', GL.loopCheck(clear).loops, GL.loopCheck(clear).faults.map(f => f.id).join(' ') || 'no faults')
+    }
+
+    if (want('touch')) {
+      console.log('what was tapped')
+      const Marks = require('../../ui/compositor/marks')
+      const Timeline = require('../../ui/timeline')
+      const clock = Timeline.outClock(null, 0, 12, null)
+      // the recording's own pixels, which is what the disc is sized and placed in
+      const W = 1440, H = 900
+      const plan = (pts, o = {}) => Marks.planPointer(pts, { W, H, clock, crop: null, scale: null, span: 12, px: 1, zooms: [], style: 'touch', ...o })
+      const discs = (P, t) => Marks.at({ erase: [], redact: [], blur: [], focus: [], steps: [], loupe: [], arrow: [], pointer: P }, t).touch
+      const tap = [{ t: 3, x: 0.5, y: 0.4, click: true }]
+
+      // The size is a measurement, not a taste. 44 points is a tenth of a 440 point
+      // screen, and the screen is 0.276 of this frame, so the disc is 0.0276 of it
+      // whatever the capture was scaled at. Sized against the frame instead it would be
+      // right on one device and wrong on every other.
+      const real = plan(tap, { device: SIM })
+      is('the disc is a 44 point touch target, measured through the device\'s own screen',
+        Math.abs(real.disc - 0.0276 * W) < 0.01, `${real.disc.toFixed(2)} px of ${W}, wanted ${(0.0276 * W).toFixed(2)}`)
+      // and it follows the screen rather than the frame: the same device in half the
+      // window is half the disc
+      const half = plan(tap, { device: { screen: SIM.screen, viewport: { ...SIM.viewport, w: SIM.viewport.w / 2 } } })
+      is('and it follows the screen rather than the frame', Math.abs(half.disc * 2 - real.disc) < 0.01,
+        `${half.disc.toFixed(2)} against ${real.disc.toFixed(2)}`)
+      // With no device the honest answer is the mark Fetch already draws where a click
+      // landed, sized off the frame. Never a physical size asserted confidently.
+      const blind = plan(tap)
+      const arrow = plan(tap, { style: 'arrow' })
+      is('with no device it falls back to the click ripple\'s own diameter, not a guess',
+        Math.abs(blind.disc - 2 * arrow.ripple) < 1e-9, `${blind.disc.toFixed(2)} px against a ripple ${arrow.ripple.toFixed(2)} across`)
+
+      // The absence rule, which is the whole difference between a finger and a cursor.
+      const two = plan([{ t: 3, x: 0.4, y: 0.35, click: true }, { t: 5, x: 0.6, y: 0.55, click: true }])
+      is('nothing is on the glass between two taps',
+        !discs(two, 2.8).length && discs(two, 3).length === 1 && !discs(two, 4).length && discs(two, 5).length === 1 && !discs(two, 5.5).length,
+        [2.8, 3, 4, 5, 5.5].map(t => discs(two, t).length).join(' '))
+      // and the disc replaces the cursor rather than standing beside it
+      is('a touch take draws no arrow, no badge and no name tag',
+        !Marks.at({ erase: [], redact: [], blur: [], focus: [], steps: [], loupe: [], arrow: [], pointer: two }, 3).pointer &&
+        !two.badge.length && !two.tags.length && !two.clicks.length && two.rippleOn === false, 'pointer null')
+
+      // A held tap is one finger, drawn where the ease has carried it. Two taps are two
+      // marks that never travel toward each other.
+      const held = plan([{ id: 'f1', t: 3, x: 0.3, y: 0.3, click: true }, { id: 'f1', t: 4, x: 0.7, y: 0.6 }])
+      const mid = discs(held, 3.5)
+      is('a held tap is one disc gliding, not two and not a trail',
+        mid.length === 1 && Math.abs(mid[0].x - 0.5 * W) < 1 && Math.abs(mid[0].y - 0.45 * H) < 1,
+        `${mid.length} disc at ${mid[0].x.toFixed(1)},${mid[0].y.toFixed(1)}`)
+      const pair = discs(plan([{ id: 'a', t: 3, x: 0.43, y: 0.34, click: true }, { id: 'b', t: 3.05, x: 0.57, y: 0.58, click: true }]), 3.1)
+      is('two fingers 50 ms apart are two discs, each where its own tap landed',
+        pair.length === 2 && Math.abs(pair[0].x - pair[1].x) > 0.13 * W, `${pair.length} discs`)
+
+      // It arrives and leaves the way the badges do, and it presses on contact: three
+      // closed forms of the time since the tap, and nothing else.
+      const one = plan(tap)
+      const app = discs(one, 2.955)[0], land = discs(one, 3)[0], press = discs(one, 3.03)[0], gone = discs(one, 3.25)[0]
+      is('it grows in as it comes down, squashes on contact and settles back as it lifts',
+        app.op > 0.4 && app.op < 0.6 && app.scale < 0.93 && land.op === 1 && land.scale === 1 &&
+        press.scale < 0.95 && gone.op < 0.7 && gone.scale < 1,
+        `approach ${app.scale.toFixed(3)}, contact ${land.scale.toFixed(3)}, press ${press.scale.toFixed(3)}, lift ${gone.scale.toFixed(3)} at op ${gone.op.toFixed(2)}`)
+      // and every one of those is a function of t alone: 40 frames asked for backwards
+      // are the 40 asked for forwards, which is what the stateless golden then proves in
+      // pixels as well
+      const fwd = range(0, 39).map(i => JSON.stringify(discs(held, 2.9 + i / 30)))
+      const back = range(0, 39).map(i => 39 - i).map(i => JSON.stringify(discs(held, 2.9 + i / 30))).reverse()
+      is('and each is a closed form of t: 40 frames backwards are the 40 forwards',
+        fwd.join('|') === back.join('|'), `${fwd.filter((x, i) => x !== back[i]).length} of 40 differ`)
     }
 
     if (want('hold')) {
@@ -1417,6 +1528,22 @@ app.whenReady().then(async () => {
         const d = step(rgbOf(small.file), rgbOf(gold))
         is('a ground, a browser frame, a lift, a loupe, an arrow and a redaction in one still',
           d.max <= 2 && d.mean < 0.05, `max ${d.max} LSB, mean ${d.mean}`)
+      }
+
+      // A store deliverable is a pair of integers, and the only reading of one that
+      // counts is the file's own header. Drawn at a width and a shape, every preset but
+      // the one that divides evenly came out a pixel short on the height, and a file a
+      // pixel out is rejected at upload after the writing, the shooting and the styling
+      // are all done, with nothing to say which step lied.
+      const Sizes = require('../../ui/sizes')
+      const ihdr = f => { const b = fs.readFileSync(f); return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) } }
+      for (const id of ['app-store-6.9', 'app-store-13']) {
+        const P = Sizes.get(id)
+        const made = await host.renderShot(src, { ...plainOpts, backdropAspect: P.w / P.h },
+          { size: { w: P.w, h: P.h }, dest: path.join(OUT, `store-${id}.png`) }, 'gl-test-store-' + id)
+        const got = ihdr(made.file)
+        is(`${id} is exactly ${P.w} by ${P.h}, read from the file's own header`,
+          got.w === P.w && got.h === P.h, `${got.w}x${got.h}`)
       }
 
       // The sizes. A plan is one plan at one size and a bigger still is that same plan

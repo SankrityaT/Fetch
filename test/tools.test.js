@@ -181,6 +181,159 @@ async function main() {
     assert.ok(/source/.test(doc('can_loop')), 'can_loop does not say the recording\'s own half is the agent\'s to check')
   })
 
+  // ── a simulator is a window with a machine inside it ─────────────────────
+  // The round that made a simulator a thing Fetch knows cost one tool and four
+  // arguments, and the reason it could is that the command line it drives already does
+  // everything except the touch. These checks hold both halves: the surface stays one
+  // tool, and nothing on it reimplements a verb that ships with Xcode.
+  const SIM_SRC = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+
+  t('the one tool a simulator adds is the simulator', () => {
+    assert.ok(registered.includes('simulator'), 'simulator is not registered')
+    const drives = source.find(s => s.name === 'simulator').ops
+    assert.deepStrictEqual(drives, ['sim.do'], 'simulator drives ' + drives.join(', '))
+    // Five actions behind one op. Six tools for six command line verbs would be six
+    // descriptions of prose in every context window for one capability.
+    const simOps = Object.keys(bridge.ops).filter(op => /^sim\./.test(op))
+    assert.deepStrictEqual(simOps, ['sim.do'],
+      'the bridge answers ' + simOps.join(', ') + '; a simulator is another subject, not another surface')
+    const chunk = SRC.split("'simulator',")[1] || ''
+    const head = chunk.slice(0, chunk.indexOf('async args') + 1 || 4000)
+    for (const a of ['list', 'ready', 'go', 'tap', 'restore']) {
+      assert.ok(new RegExp(`'${a}'`).test(head), `the simulator tool does not offer ${a}`)
+      assert.ok(new RegExp(`'${a}: `).test(head), `${a} is offered and never explained`)
+    }
+  })
+
+  t('the surface reimplements nothing that ships with Xcode', () => {
+    // The whole plan rests on this: Fetch builds argv, reads an exit code and says a
+    // sentence (ui/simctl.js), and every other file stays out of it. A second place
+    // building a command line is where the two go out of step with each other.
+    for (const [name, src] of [['mcp/index.js', SRC], ['ui/agent-bridge.js', SIM_SRC]]) {
+      assert.ok(!/xcrun/.test(src), `${name} spawns a command line of its own`)
+      assert.ok(!/recordVideo|'screenshot'/.test(src),
+        `${name} names simctl's own capture, which writes pixels with no audio track and no policy check`)
+      for (const verb of ['erase', 'uninstall', ' clone ']) {
+        assert.ok(!new RegExp(`simctl[^\\n]*${verb}`).test(src), `${name} reaches for ${verb.trim()}`)
+      }
+    }
+  })
+
+  t('a tap aims at a box, and its consent is never the agent\'s to give', () => {
+    const chunk = SRC.split("'simulator',")[1] || ''
+    const head = chunk.slice(0, chunk.indexOf('async args') + 1 || 4000)
+    assert.ok(/element: z\.string\(\)[\s\S]{0,200}find_on_screen/.test(head),
+      'the simulator tool does not say a tap is aimed with find_on_screen')
+    assert.ok(/never a coordinate/.test(head), 'the tool no longer refuses a coordinate by name')
+    // Nothing on the surface takes consent as an argument. An agent that can set its own
+    // consent flag has no consent rule at all, so the flag is minted where the person is
+    // asked and nowhere else.
+    assert.ok(!/consent/.test(head), 'the simulator tool takes consent as an argument')
+    assert.ok(!/consent: args|consent: String\(args/.test(SIM_SRC),
+      'the bridge hands the policy a consent the agent passed in')
+    const ask = SIM_SRC.slice(SIM_SRC.indexOf('async function simAsk('))
+    assert.ok(/askPerson\(/.test(ask.slice(0, ask.indexOf('\n}'))),
+      'the bridge no longer asks the person before driving their device')
+  })
+
+  t('a simulator take is judged as a device and put back as it was', () => {
+    // Both halves of the promise, in the one place that can keep them: the never-record
+    // list is per device, because every simulator answers to one app name, and anything
+    // Fetch changed goes back when the take stops.
+    assert.ok(/neverRecordDevices: prefs.neverRecordDevices/.test(SIM_SRC),
+      'the access check no longer carries the never record devices list')
+    assert.ok(/kind: \(sim \|\| unresolved\) \? 'simulator'/.test(SIM_SRC), 'a simulator take is judged as a plain window')
+    // A window named by its id has to go through the device join too, or the never
+    // record devices list is bypassed by naming the window instead of the device: an
+    // agent reads the Simulator window id out of list_windows and records it.
+    assert.ok(/attachDevices\(\[hit\], \{ strict: true \}\)/.test(SIM_SRC),
+      'record_start aimed by window id never asks which device is inside that window')
+    assert.ok(/'udid:' \+ sim.udid/.test(SIM_SRC),
+      'one yes to Simulator is a yes to every device on the Mac: the session key is not the device')
+    const stop = SIM_SRC.slice(SIM_SRC.indexOf("async 'record.stop'"), SIM_SRC.indexOf("async 'record.pointer'"))
+    assert.ok(/simAfterTake\(/.test(stop) && /simUndress\(/.test(stop),
+      'a take of a device can end without the status bar going back')
+    assert.ok(typeof require('../ui/record-policy').simDecide === 'function',
+      'ui/record-policy.js answers no simDecide, so nothing is checked before a spawn')
+  })
+
+  t('a tap lands where the element was, on the device measured on this Mac', () => {
+    // The one piece of arithmetic between an id from find_on_screen and a touch, run
+    // rather than read, on the window this Mac really reports for an iPhone 16 Pro Max:
+    // 396 x 856 points of window over a 1320 x 2868 screen at scale 3.
+    const Sim = require('../ui/simulator')
+    const screen = { w: 1320, h: 2868, scale: 3, points: { w: 440, h: 956 } }
+    const viewport = Sim.viewport({ w: 396, h: 856 }, screen)
+    const sim = { name: 'Round-Shots-16PM', screen, viewport }
+    const mid = bridge.devicePoint(sim, viewport.x + viewport.w / 2, viewport.y + viewport.h / 2)
+    assert.ok(Math.abs(mid.x - 220) < 0.5 && Math.abs(mid.y - 478) < 0.5,
+      `the middle of the glass came out at ${mid.x}, ${mid.y} in device points`)
+    // and back again through the map the touch disc is drawn with, so an injected tap
+    // and a drawn one are the same place rather than two places that agree by habit
+    const back = Sim.pointToFrame(sim, mid.x, mid.y)
+    assert.ok(Math.abs(back.x - (viewport.x + viewport.w / 2)) < 0.001, 'the tap and the mark disagree across the frame')
+    assert.ok(Math.abs(back.y - (viewport.y + viewport.h / 2)) < 0.001, 'the tap and the mark disagree down the frame')
+    // A box on the Mac's part of the window is not tapped at the edge of the glass: a
+    // touch a whole element away from what was asked for is worse than a refusal.
+    assert.throws(() => bridge.devicePoint(sim, -0.2, 0.5), /off a 440 by 956 point screen/)
+  })
+
+  t('a store size is refused before it is drawn, and the file is measured after', () => {
+    // The half of the exact sizes that is mine and works today, run rather than read.
+    // On the window M0 measured, 792 x 1712, every store size is an upscale, and that
+    // refusal is the common case: a default Simulator window is at 0.6 of the device.
+    assert.throws(() => bridge.storeSize('app-store-6.9', { w: 792, h: 1712 }),
+      /does not upscale into a store size/)
+    assert.throws(() => bridge.storeSize('app-store-6.9', { w: 792, h: 1712 }), /Pixel Accurate/)
+    // The one size nobody may ask for is refused by its own name rather than as a typo,
+    // and names what to use: 9:16 round a phone is a bar, and Fetch never draws one.
+    assert.throws(() => bridge.storeSize('app-preview-1080', { w: 1320, h: 2868 }), /app-preview-6\.9/)
+    // A video size on a still says so instead of writing a PNG at a preview's shape
+    assert.throws(() => bridge.storeSize('app-preview-6.9', { w: 1320, h: 2868 }), /video size/)
+
+    // A capture that is the device's own pixels goes through, and the verdict is read
+    // off the written file rather than off the plan, because the store measures the file.
+    const want = bridge.storeSize('6.9', { w: 1320, h: 2868 })
+    assert.deepStrictEqual(want.size, { w: 1320, h: 2868 }, 'the preset is not a pair of integers')
+    assert.strictEqual(bridge.sizeVerdict(want, { w: 1320, h: 2868 }).exact, true)
+    const off = bridge.sizeVerdict(want, { w: 1320, h: 2867 })
+    assert.strictEqual(off.exact, false, 'a file one pixel out passed as a store file')
+    assert.ok(/will not call this a store file/.test(off.not_the_store_size),
+      'a file the store would reject comes back with nothing said about it')
+  })
+
+  t('the named scenario is five calls', () => {
+    // "Boot an iPhone, open my app, tap through the onboarding and record it": ready,
+    // record_start, tap, record_stop, export. Each one is a tool here, and the two that
+    // take a capture take the device by name rather than a window id nobody has yet.
+    for (const name of ['simulator', 'record_start', 'record_stop', 'export', 'find_on_screen']) {
+      assert.ok(registered.includes(name), name + ' is not registered')
+    }
+    for (const name of ['record_start', 'take_shot']) {
+      const chunk = SRC.split(`'${name}',`)[1] || ''
+      const head = chunk.slice(0, chunk.indexOf('async args') + 1 || 4000)
+      assert.ok(/simulator: z\.string\(\)\.optional\(\)/.test(head),
+        `${name} does not take a simulator where it takes a window`)
+      assert.ok(/status_bar: z\.boolean\(\)/.test(head), `${name} cannot be told to leave the status bar alone`)
+    }
+    const ex = SRC.split("'export',")[1] || ''
+    assert.ok(/size: z\.string\(\)\.optional\(\)/.test(ex.slice(0, ex.indexOf('async args'))),
+      'export takes no store size, so Fetch still draws every part of a store screenshot and cannot save one')
+    // Read off the built tool rather than off the source, because the ids come from
+    // ui/sizes.js at import: a second copy of a table in a description goes stale
+    // silently, and this one is read before a tool is chosen.
+    const sizeDoc = String(server._registeredTools.export.inputSchema.shape.size.description || '')
+    for (const P of require('../ui/sizes').list()) {
+      assert.ok(sizeDoc.includes(P.id) && sizeDoc.includes(`${P.w}x${P.h}`),
+        `export never names ${P.id}, so nothing leads a model to it`)
+    }
+    // and the sizes themselves live in one table, not in a tool description
+    const Sizes = require('../ui/sizes')
+    for (const p of Sizes.list()) {
+      assert.ok(/^\d+$/.test(String(p.w)) && /^\d+$/.test(String(p.h)), `${p.id} is not a pair of integers`)
+    }
+  })
+
   // ── a shot is a take of one frame ────────────────────────────────────────
   // The whole of this round on the tool surface is one new tool and a set of old ones
   // that now take a capture. These four hold that shape: they fail if stills grow a

@@ -24,7 +24,16 @@ agent drives; the person watches, steers and can undo.
 **The transcript is the spine.** Fetch transcribes on device and keeps word-level
 timings, so the timeline is named from what was said and an agent can find a moment by
 its words. Competitors that record a simulator or a cloud browser have no audio to build
-this from. Every surface should lean on it.
+this from: a framebuffer capture is a file with no audio track at all, so beats,
+captions, `fit_to_length` and finding the moment by its words are all dead on it. Fetch
+records the window instead, so a simulator take has an audio track and the spine
+survives. Every link of that was measured on this Mac bar one: a simulated app is its own
+host audio process, it is not in the exclusion list a window take builds, and a process of
+exactly that shape was captured and transcribed word for word. The last link, a guest app's
+own sound through the speakers at a level, is not measured, because measuring it means
+making a sound on somebody's Mac and that refusal outranks the measurement. So the claim to
+make is that Fetch records the window and keeps the sound of it, not that the device's own
+audio has been watched landing. Every surface should lean on the part that is true.
 
 ## Users
 
@@ -343,13 +352,15 @@ now too, so what is left for the classic ffmpeg renderer is a sound file and a s
 which leave out the fields marked `classic: false`, and there the warning names them and the
 output that caused it. Five fields nothing draws yet
 (`frame.scale`, `frame.offsetX`, `frame.offsetY`, `cursor.smoothing`, `typography.titleFont`)
-are named whatever runs. The inspector shows what the engine drawing the stage draws, 61 of 68
+are named whatever runs. The inspector shows what the engine drawing the stage draws, 62 of 69
 fields with the three subtlest behind an Advanced disclosure, which is 44 controls a person
 could not reach at all before.
 Output keeps the take's shape; a chosen shape is filled by the background, and with no
-background by a soft blur of the take, never black bars. Browser chrome is a setting:
-for a take whose agent reported the page's viewport, `frame.chrome: remove` crops to the
-page exactly. A framed take is never masked tighter than the window's own corner.
+background by a soft blur of the take, never black bars. Capture chrome is a setting:
+for a take whose agent reported the page's viewport, and for a take of a simulator, whose
+device screen rectangle Fetch writes onto the document itself, `frame.chrome: remove`
+crops to the content exactly, which is what keeps a device's own drawn outline out of a
+deliverable. A framed take is never masked tighter than the window's own corner.
 Look changes are undo steps like any other edit.
 
 **The compositor** (`ui/compositor/`, passes in `PASSES.md`). A WebGL2 renderer that
@@ -359,7 +370,10 @@ names, with motion blur read off that ease's own velocity and the shutter at the
 standard 180 degrees, `treatment.motionBlur`),
 fades, cuts, the camera bubble, and since M3 everything placed on the take: the Mac's
 pointer lifted out, redactions, blurs, spotlights, lifts, steps, the agent's cursor with
-its ripples and Biscuit's badge, captions with the spoken word and frosted glass, title
+its ripples and Biscuit's badge (or, where the take was of a device, the touch disc that
+replaces the arrow: 44 of that device's own points across, appearing where a tap landed and
+gone between taps, with no badge and no name tag on it, because a finger does not sign its
+work), captions with the spoken word and frosted glass, title
 cards, lower thirds and labels. It draws what happens at a cut and at the two ends of a
 take, which nothing drew before: `motion.reveal` brings the take up into its frame over
 a third of a second and settles it back out at the end (only where the look puts
@@ -503,8 +517,8 @@ preview frame, a contact sheet cell and an exported PNG of one plan are the same
 the same format. What is left for the classic ffmpeg renderer is a sound file and a
 preview still taken off its own path.
 
-**MCP tools** (`mcp/index.js`), 39: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `take_shot`, `pointer`,
-`list_windows`, `list_displays`, `list_recordings`, `probe`, `transcribe`,
+**MCP tools** (`mcp/index.js`), 40: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `take_shot`, `pointer`,
+`list_windows`, `list_displays`, `list_recordings`, `simulator`, `probe`, `transcribe`,
 `list_beats`, `get_edit`, `apply_edit`, `direct`, `review`, `fit_to_length`, `revert_my_edit`,
 `ask`, `propose`, `can_loop`,
 `export`, `rename_recording`,
@@ -738,7 +752,62 @@ every capture) and goes when the take stops. Nothing moves the person's mouse. I
 are what auto-zoom follows. The track is `pointer` in the edit document, so it can be
 supplied or corrected afterwards.
 
+**A simulator is a thing Fetch knows** (`ui/simulator.js`, `ui/simctl.js`, `simulator`).
+A Simulator window was a window with a name that happened to match; it is now a window
+with a machine inside it. `ui/simulator.js` joins the three reads the command line
+already answers to the window list and to the device type's own `profile.plist`, which is
+the only place the native framebuffer size exists, and hands back one record a device:
+which device, its screen in pixels and points, the rectangle the glass occupies inside
+the window, and `density`, the captured pixels per pixel the device really has. Measured
+on this Mac: a default window for a 1320 x 2868 phone is 396 x 856 points, a viewport of
+`{0.0026, 0, 0.9949, 1}` and a density of **0.60**, so a store sized export from it would
+be a 1.67x upscale and is refused by name. `list_windows` carries that block on any
+simulator window, so nothing has to match on an app name.
+
+**The surface is one tool and four extensions.** `simulator` takes an action: `list`,
+`ready` (boot, open the window in the background, install, launch, set the status bar,
+switch the appearance, and name every one of those in words), `go` (a deep link, which
+lands on the same screen every time where a run of taps does not), `tap`, and `restore`.
+`record_start` and `take_shot` take `simulator` where they take `window`, and write the
+device screen rectangle onto the document, which is what makes the crop, the drawn phone
+and the touch mark's coordinates fall out for free. `export` takes `size`, a pair of
+integers from one table (`ui/sizes.js`), never an aspect, because a store file one pixel
+out is rejected: a capture the size would have to enlarge is refused before anything is
+drawn, with the device to shoot on instead, and the result is read back off the written
+file's own header so nothing is called a store file that is not one. `pointer` gains nothing: the take's target decides the mark, so an
+agent reporting a tap on a device gets a finger without knowing there is a setting. The
+whole named job is five calls: ready, `record_start`, tap for each step, `record_stop`,
+`export`.
+
+**A tap aims at a box, never at a coordinate**, which is the rule the rest of the product
+already enforces and the one place pixels beat a tree: `find_on_screen` works on canvas,
+on games and on custom drawn UI where a label does not exist. The element's box is read
+back through the edit's crop and the glass rectangle into the device's own points, and
+the same call reports the touch onto the pointer track, so an injected tap and the mark
+drawn for it are one number rather than two that agree by habit. A point sent by hand is
+taken where nothing on screen can be named, and comes back marked hand aimed.
+
+**What it refuses, permanently.** The device framebuffer capture, which writes pixels
+that never passed the never-record check and makes a file with no audio track. A region
+of the device screen, which is judged as a display and gives frozen pixels when something
+covers it. Creating, cloning, erasing, deleting, upgrading and uninstalling, refused to
+everyone including the person through an agent, because a device is theirs to destroy at
+a command line. Bringing anything to the front, moving this Mac's mouse, pressing its
+keyboard, and making a sound. **Booting, installing, launching, opening a link and
+tapping each need the person's word**, which Fetch asks them for in a dialog and mints
+itself: an agent that can set its own consent flag has no consent rule at all, so
+`consent` is not an argument on any tool. `neverRecordDevices` is a never list by UDID
+beside the one by app name, human only, because a simulator is one app hosting anything
+and "not that phone" cannot be said in app names. Anything Fetch changes on a device is
+written down before it changes it and put back on stop, on failure, and on the next
+launch if Fetch died mid take, so nobody's simulator is left reading 9:41.
+
 **Not built**, and not to be claimed: driving apps (Fetch records, other tools drive),
+a touch injector for the Simulator (a private input path that breaks with each Xcode, and
+somebody else's engineering project), an accessibility tree driver (Fetch aims at pixels,
+which exist on canvas, in games and in custom drawn UI where a tree does not), a swipe
+trail, a long press or a pinch, the locale and device matrix batch runner, and a
+simulator as a member of a group shot,
 capturing the keyboard, reading the project's source code, a fourth capture in one
 picture, a mark that spans two of them, and per-member tilt (each device angled its own
 way is two cameras, and a group that wants two angles wants two pictures). Version
@@ -756,8 +825,13 @@ document to keep its own past, and that is the editor's side of the house.
    terminals, editors, browsers. Every surface should make that concrete rather than
    claimed.
 3. **Fetch records, it does not drive.** Playwright drives browsers (headed, or there is
-   no window to record), Lore Pilot drives native apps, `simctl` drives the Simulator.
-   Composition, not reimplementation. Lore Pilot stays private; do not pull its code
+   no window to record), Lore Pilot drives native apps, and the command line that ships
+   with Xcode boots, installs, launches and deep links a simulator. Composition, not
+   reimplementation: Fetch builds the argv, reads the exit code and says a sentence, and
+   a line of Fetch code that reimplements one of those verbs is wrong and should be
+   deleted in review. That command line has no tap, no swipe and no type, forty two
+   subcommands and no gesture of any kind, so a touch is driven by a tool the person
+   installed or it is refused in words. Lore Pilot stays private; do not pull its code
    into this GPL repo.
 4. **Policy is enforced in code, never in a tool description.** A rule written into an
    MCP description is prompt prose, and prompt prose is a suggestion. Access rules live

@@ -351,7 +351,10 @@ function cursorLayout(track, { W, H, clock = t => t, crop = null, scale = null, 
   for (const p of normalizeTrack(track)) {
     const fx = c ? (p.x - c.x) / c.w : p.x, fy = c ? (p.y - c.y) / c.h : p.y
     const k = kept(p.t)
-    const q = { t: clock(p.t), x: fx * W, y: fy * H, click: k && !!p.click, jump: !k }
+    // The id comes through because it is the only thing that tells one finger held down
+    // from two separate taps, and by here the click flag alone cannot: every point of a
+    // hold after the landing has click false, exactly as a mouse move does.
+    const q = { ...(p.id ? { id: p.id } : {}), t: clock(p.t), x: fx * W, y: fy * H, click: k && !!p.click, jump: !k }
     const prev = pts[pts.length - 1]
     if (prev && prev.jump && Math.abs(prev.t - q.t) < 0.005) { pts.pop(); q.jump = true }
     pts.push(q)
@@ -379,7 +382,11 @@ function cursorLayout(track, { W, H, clock = t => t, crop = null, scale = null, 
 function inView(pts, zooms, W, H, size) {
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i]
-    if (p.click || p.jump) continue
+    // A point carrying the id of the one before it is one finger still down, not a
+    // cursor travelling to it. Nudging that inside the zoom would draw the disc pinned
+    // to the edge of the view, where nobody touched. A finger that leaves the view is
+    // gone from it, which is what the absence rule already says.
+    if (p.click || p.jump || (p.id && i > 0 && pts[i - 1].id === p.id)) continue
     const until = i + 1 < pts.length ? pts[i + 1].t : p.t + 1
     let v = null
     for (let k = 0; k <= 4; k++) {

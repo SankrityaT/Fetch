@@ -29,6 +29,11 @@ const path = require('path')
 const policy = require('./record-policy')
 const activity = require('./activity-log')
 const Shot = require('./shot')
+// The machine inside a Simulator window: which device it is, how big its screen really
+// is, and where the glass sits inside the frame. Pure arithmetic over strings, so it
+// costs nothing to hold here (ui/simulator.js). ui/simctl.js, which spawns, is required
+// at the call so a Mac with no Xcode pays for it only when an agent asks.
+const Sim = require('./simulator')
 
 let app, ipcMain
 try { ({ app, ipcMain } = require('electron')) } catch {}
@@ -117,6 +122,7 @@ const TITLES = {
   'voice.speak': 'Generated a voiceover',
   'memory.remember': 'Remembered something',
   'shot.take': 'Took a screenshot',
+  'sim.do': 'Worked with a simulator',
 }
 
 // ── a shot is a take of one frame ────────────────────────────────────────
@@ -173,6 +179,16 @@ const ops = {
     const win = deps.getWindow()
     if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
 
+    // A simulator is named by device and recorded as the window it sits in. That is the
+    // whole of it: the take then has an audio track, which the framebuffer capture simctl
+    // offers does not have at all, and every transcript-spine feature Fetch has reads
+    // that track. What lands on it is what the window is playing, which is the honest
+    // claim: the guest app's own sound through the speakers was never measured at a
+    // level here, because measuring it means making a sound on somebody's Mac.
+    // Nothing is brought to the front to do it.
+    let sim = args.simulator != null ? await simTarget(args.simulator) : null
+    if (sim) args = { ...args, window: String(sim.window.id) }
+
     // Window first: with no window and no display named, the take is the window of the
     // app in front, not the whole screen, which caught the person's other windows,
     // notifications and desktop. The terminal or chat the agent itself runs in, and
@@ -188,7 +204,7 @@ const ops = {
     // Access check before anything starts. This is the enforcement point: the rule
     // lives here rather than in the MCP tool description, because a description is
     // prose and prose is a suggestion.
-    await enforceAccess({ ...args, kind: 'take' }, ctx)
+    await enforceAccess({ ...args, kind: 'take', sim }, ctx)
 
     // macOS sends no frames for the part of a window another covers, so a take of a
     // covered window is a frozen picture. Say so before recording anything, with the
@@ -198,39 +214,63 @@ const ops = {
       if (hold) return hold
     }
 
-    await applySetup(win, args)
-    // In the background unless the person asked to watch (a person-only setting).
-    const quiet = !(deps.getPrefs && deps.getPrefs().agentTakesVisible)
-    if (deps.setQuiet) deps.setQuiet(quiet, true)
-    await win.webContents.executeJavaScript(`window.__quietTake = ${quiet}`)
-    // A name the agent gives is used as it is and never replaced by an automatic one
-    const naming = require('./naming')
-    const given = args.name != null ? naming.fit(naming.clean(args.name)) : ''
-    await win.webContents.executeJavaScript(`window.__takeName = ${JSON.stringify(given || null)}`)
-    deps.toRenderer('start')
+    // The house status bar, after the last thing that can refuse and before a frame is
+    // captured, so nothing is left dressed for a take that never started. Put back on
+    // stop. It is a property of the source rather than of the picture, so it is not a
+    // look field: nothing after the fact can change what the clock said.
+    const bar = sim && args.status_bar !== false ? await simDressed(sim) : null
+    // Held from the moment it is dressed, not from the moment the take starts: between
+    // those two lines are a setup, a renderer and a thirty second wait, and a failure in
+    // any of them used to leave the device wearing Fetch's 9:41 with nothing holding a
+    // reference to undo it. Cleared and undressed below on the way out.
+    takeSim = sim ? { sim, bar } : null
 
-    // The renderer counts down before it captures, so allow for that plus a margin.
-    const started = await new Promise((resolve, reject) => {
-      pendingTake = {
-        phase: 'starting', resolve, reject,
-        timer: setTimeout(() => {
-          pendingTake = null
-          // the name was for this take, not the person's next one
-          if (!win.isDestroyed()) win.webContents.executeJavaScript('window.__takeName = null').catch(() => {})
-          reject(new Error('the recording did not start in time'))
-        }, 30000),
+    try {
+      await applySetup(win, args)
+      // In the background unless the person asked to watch (a person-only setting).
+      const quiet = !(deps.getPrefs && deps.getPrefs().agentTakesVisible)
+      if (deps.setQuiet) deps.setQuiet(quiet, true)
+      await win.webContents.executeJavaScript(`window.__quietTake = ${quiet}`)
+      // A name the agent gives is used as it is and never replaced by an automatic one
+      const naming = require('./naming')
+      const given = args.name != null ? naming.fit(naming.clean(args.name)) : ''
+      await win.webContents.executeJavaScript(`window.__takeName = ${JSON.stringify(given || null)}`)
+      deps.toRenderer('start')
+
+      // The renderer counts down before it captures, so allow for that plus a margin.
+      const started = await new Promise((resolve, reject) => {
+        pendingTake = {
+          phase: 'starting', resolve, reject,
+          timer: setTimeout(() => {
+            pendingTake = null
+            // the name was for this take, not the person's next one
+            if (!win.isDestroyed()) win.webContents.executeJavaScript('window.__takeName = null').catch(() => {})
+            reject(new Error('the recording did not start in time'))
+          }, 30000),
+        }
+      })
+
+      // say which window was picked, so an agent that meant another can stop and name it
+      if (sim && started && typeof started === 'object') {
+        return { ...started, simulator: simFacts(sim, bar) }
       }
-    })
-    // say which window was picked, so an agent that meant another can stop and name it
-    return front && started && typeof started === 'object'
-      ? { ...started, recording: { window: String(front.id), app: front.app, title: front.title || '', chosen: 'the app in front' } }
-      : started
+      return front && started && typeof started === 'object'
+        ? { ...started, recording: { window: String(front.id), app: front.app, title: front.title || '', chosen: 'the app in front' } }
+        : started
+    } catch (e) {
+      // Nothing is left dressed for a take that never started, which is what the comment
+      // above the dressing has always claimed and what this makes true.
+      const held = takeSim
+      takeSim = null
+      if (held) await simUndress(held.sim.udid)
+      throw e
+    }
   },
 
   async 'record.stop'() {
     if (!deps.isRecording() && endedTake && Date.now() - endedTake.at < 30 * 60e3) {
       const { at, ...r } = endedTake; endedTake = null
-      return r
+      return await simAfterTake(r)
     }
     const ending = !deps.isRecording() && endingAt && Date.now() - endingAt < 2 * 60e3
     if (!deps.isRecording() && !ending) throw new Error('not recording')
@@ -247,7 +287,19 @@ const ops = {
       }
     })
     if (!ending) deps.toRenderer('stop')
-    return await done
+    // The device's screen rectangle goes onto the document here, and the status bar goes
+    // back. Both happen whatever the take did, which is what "every override is restored,
+    // including on the failure path" means in code rather than in a promise.
+    try {
+      return await simAfterTake(await done)
+    } catch (e) {
+      // A take that never finished saving still dressed a device, and leaving it dressed
+      // is the one failure the person sees on their own machine for days.
+      const held = takeSim
+      takeSim = null
+      if (held) await simUndress(held.sim.udid)
+      throw e
+    }
   },
 
   // Where the agent's own pointer is, during its take. The take has no Mac pointer in
@@ -287,9 +339,15 @@ const ops = {
   // benefit, and this server's rule is paths and summaries rather than payloads.
   async 'windows.list'() {
     const list = await deps.listWindows()
-    return (list || [])
+    // A simulator window carries what is inside it, so an agent stops string-matching
+    // the app name to find a phone and reads the device, its own screen and whether the
+    // pixels on screen are the device's own. One join, and only when there is a
+    // simulator window to join to.
+    const withDevice = await attachDevices(list || [])
+    return withDevice
       .filter(w => w.width > 120 && w.height > 120)   // drop tooltips and shadow panes
-      .map(w => ({ id: w.id, app: w.app, title: w.title, width: w.width, height: w.height }))
+      .map(w => ({ id: w.id, app: w.app, title: w.title, width: w.width, height: w.height,
+        ...(w.device ? { device: w.device } : {}) }))
   },
 
   async 'displays.list'() {
@@ -302,6 +360,46 @@ const ops = {
       height: d.size.height,
       scale: d.scaleFactor,
     }))
+  },
+
+  // ── the machine inside the window ──────────────────────────────────────
+  // One op behind one tool with five actions, because six tools for six simctl verbs
+  // would be six tool descriptions of prose in every context window for one capability.
+  //
+  // Everything here except the touch already ships with Xcode, and Fetch writes none of
+  // it: ui/simctl.js builds argv, reads the exit code and says a sentence. simctl has no
+  // tap, no swipe and no type, so a touch is driven by a tool the person installed or it
+  // is refused in words, and the take is recorded either way with the disc drawn where a
+  // finger went.
+  //
+  // Consent is never a field the agent passes: it is the person's own yes, asked for
+  // here (askPerson) and handed to policy.simDecide, which is checked before any spawn.
+  async 'sim.do'(args = {}, ctx) {
+    const action = String(args.action || '').trim().toLowerCase()
+    if (!SIM_DOES.includes(action)) {
+      throw new Error(`simulator does ${SIM_DOES.join(', ')}, and not "${args.action || ''}". ` +
+        'Creating, erasing and deleting somebody\'s devices is refused to everyone, and the rest ' +
+        'is a command line of their own.')
+    }
+    const sims = await simModel()
+    if (action === 'list') return simList(sims)
+
+    // tap and restore default to the device the take in hand is of. The documented loop
+    // is record_start on a simulator and then a tap per screen, and naming the device on
+    // every one of those calls is a UDID the model has to carry for the whole take. boot
+    // and go are not defaulted: those change something, and the thing they change has to
+    // be named out loud.
+    const fallback = (action === 'tap' || action === 'restore') && takeSim ? takeSim.sim.udid : null
+    const found = Sim.resolve(sims, args.device != null ? args.device : fallback)
+    if (!found.ok) {
+      throw new Error(`${found.reason} simulator with action list says which devices are here.` +
+        (fallback ? '' : ' With a recording of a simulator running, tap and restore take that device by default.'))
+    }
+    const sim = found.value
+    if (action === 'ready') return await simReady(sim, args, ctx)
+    if (action === 'go') return await simGo(sim, args, ctx)
+    if (action === 'tap') return await simTap(sim, args, ctx)
+    return await simRestore(sim)
   },
 
   // ── one frame ──────────────────────────────────────────────────────────
@@ -317,7 +415,12 @@ const ops = {
     }
     const region = args.region && typeof args.region === 'object' ? args.region : null
     let front = null, target = null
-    if (args.window != null) target = { windowId: String(args.window) }
+    // A simulator is a window, always. A region of the device screen is judged as a
+    // display, sees whatever is under it, and gives frozen pixels where something covers
+    // it, so the device is named and the glass is cropped to in the picture instead.
+    const sim = args.simulator != null ? await simTarget(args.simulator) : null
+    if (sim) target = { windowId: String(sim.window.id) }
+    else if (args.window != null) target = { windowId: String(args.window) }
     else if (region) target = { region, ...(args.display != null ? { displayId: String(args.display) } : {}) }
     else if (args.display != null) target = { displayId: String(args.display) }
     else {
@@ -336,9 +439,23 @@ const ops = {
     // The person's say, through the same gate a take goes through and asked once for
     // the session. take-shot refuses an unapproved agent capture on its own, so this
     // is the question rather than a second opinion about the policy.
-    await enforceAccess({ kind: 'shot', window: target.windowId, display: target.displayId }, ctx)
-    const got = await deps.takeShot({ ...target, by: 'agent', approved: true,
-      cursor: args.cursor === true })
+    await enforceAccess({ kind: 'shot', window: target.windowId, display: target.displayId, sim }, ctx)
+    // Dressed for the picture and undressed again in the same call: a still is over
+    // before the dialog is off the screen, so nobody's simulator is left at 9:41.
+    //
+    // Unless a take of this same device is already holding the dressing. The documented
+    // loop shoots the device it is recording, once before every tap, and undressing here
+    // put the person's own clock back in the middle of the video: the take came out half
+    // at 9:41 and half not, and record_stop then restored nothing while still claiming
+    // it had. Only what this call dressed does this call take off.
+    const worn = !!(sim && takeSim && takeSim.sim.udid === sim.udid)
+    const bar = worn ? takeSim.bar
+      : (sim && args.status_bar !== false ? await simDressed(sim) : null)
+    let got = null
+    try {
+      got = await deps.takeShot({ ...target, by: 'agent', approved: true,
+        cursor: args.cursor === true })
+    } finally { if (sim && !worn) await simUndress(sim.udid) }
     if (!got || !got.ok) throw new Error(`Fetch took no screenshot: ${(got && got.error) || 'the capture failed'}`)
 
     // Named from what it captured, the way a take is named from the app in front. A
@@ -365,7 +482,11 @@ const ops = {
     // (ui/compositor/plan.js) and review's double-chrome are the only things that read
     // it, and neither can work it out from pixels.
     const cap = { kind: got.kind, ...(got.app ? { app: got.app } : {}), ...(got.title ? { title: got.title } : {}) }
-    const shot = await inEditor(file, `${docOf(file)}.apply(${JSON.stringify({ captured: cap })})`)
+    // And where the glass is, on a simulator. That one rectangle is what crops the
+    // device's own outline out of the picture, what turns a device point into a place on
+    // the frame, and what lets the drawn phone be the only phone in the deliverable.
+    const written = { captured: cap, ...(sim ? simOnDoc(sim) : {}) }
+    const shot = await inEditor(file, `${docOf(file)}.apply(${JSON.stringify(written)})`)
       .catch(() => inEditor(file, `${docOf(file)}.get()`).catch(() => null))
     // The picture, with the capture. This is the one tool that makes the only artefact
     // in the job, and it was the one tool that handed back no image of it, so an agent
@@ -378,6 +499,7 @@ const ops = {
         ...(got.display != null ? { display: String(got.display) } : {}),
         ...(got.clipped ? { clipped: true } : {}),
         ...(front ? { chosen: 'the app in front' } : {}) },
+      ...(sim ? { simulator: simFacts(sim, bar) } : {}),
       ...(shot ? { shot: summariseShot(shot, file) } : {}),
       ...(p ? { preview: { image: p.file, at: SHOT_AT, why: 'the capture as it stands, unstyled. Look at it before deciding what to do with it.' } } : {}),
       do_next: 'direct writes what the picture is for, apply_look styles it, find_on_screen names what is on it, ' +
@@ -590,6 +712,23 @@ const ops = {
       // a recording nobody has edited has no clips yet; export all of it
       doc.clips = [{ id: 'C1', start: 0, end: (meta && meta.duration) || doc.dur }]
     }
+    // An exact size on a recording, said plainly rather than written wrong. The picture
+    // is drawn at the take's own shape or at 720 or 1080 tall, so a preview the store
+    // measures to the pixel is not something this can write, and a file one pixel out is
+    // rejected on upload. The other two rules it is judged by are worth the call anyway.
+    if (args.size != null) {
+      const Sizes = require('./sizes')
+      const got = Sizes.resolve(args.size)
+      if (!got.ok) throw new Error(got.reason)
+      const p = got.preset
+      const clip = p.kind === 'video' ? Sizes.checkClip({ seconds: FD.outDuration(doc), codec: 'h264' }, p.id) : null
+      throw new Error(`${p.id} is ${p.w} by ${p.h} exactly and Fetch draws a video at the take's own shape ` +
+        `or at 720 or 1080 tall, so it will not hand you a file and call it one. ` +
+        (p.kind === 'still' ? 'That size is a screenshot: take_shot the device and export that instead. '
+          : 'Export this at 1080 and tell the person it is not the store size. ') +
+        ((clip && !clip.ok ? `While you are here: ${(clip.problems || []).join(', ')}.` : '')))
+    }
+
     const opts = FD.toExportOpts(doc, {
       format: args.format || 'mp4',
       quality: args.quality || 'balanced',
@@ -1286,18 +1425,37 @@ async function enforceAccess(args, ctx) {
   const p = {
     mode: prefs.recordAccess,
     neverRecord: prefs.neverRecord,
+    // A simulator is one app hosting anything, so a device with a real account, a push
+    // token and somebody's photos cannot be named by app. The lever is the UDID, and an
+    // agent can neither add to this list nor take anything off it (HUMAN_ONLY_PREFS).
+    neverRecordDevices: prefs.neverRecordDevices,
     allowedApps: prefs.allowedRecordApps,
   }
 
-  let app = null
+  // A window named by id goes through the device join too, or the never record devices
+  // list is bypassed by naming the window instead of the device: list_windows hands back
+  // the Simulator window id of a protected device, and record_start with that id used to
+  // resolve only the app name. The join is not best effort here. Where it fails on a
+  // Simulator window, the device cannot be told, and a device that cannot be told is
+  // exactly the one that might be on the list, so decide() refuses it for the missing
+  // udid rather than recording it.
+  let app = null, device = null, unresolved = false
   if (args.window != null) {
     const list = await deps.listWindows()
     const hit = (list || []).find(w => String(w.id) === String(args.window))
     app = hit && hit.app
+    if (hit && String(app || '') === policy.SIMULATOR_APP) {
+      let joined = null
+      try { joined = (await attachDevices([hit], { strict: true }))[0] } catch { joined = null }
+      device = (joined && joined.device) || null
+      unresolved = !device
+    }
   }
 
+  const sim = args.sim || (device ? { udid: device.udid, name: device.name } : null)
   const verdict = policy.decide(
-    { by: 'agent', kind: args.window != null ? 'window' : 'display', app }, p)
+    { by: 'agent', kind: (sim || unresolved) ? 'simulator' : (args.window != null ? 'window' : 'display'), app,
+      ...(sim ? { udid: sim.udid, device: sim.name } : {}) }, p)
 
   // What the person is being asked to allow. A recording and one captured frame are
   // different acts: one runs until something stops it and turns the menu bar icon red,
@@ -1313,10 +1471,14 @@ async function enforceAccess(args, ctx) {
   // agents recorded without anyone saying yes. The question is a native dialog on
   // Fetch's own window, which an agent cannot answer, and saying nothing is a no.
   if (verdict.needsApproval) {
-    const key = (still ? 'shot|' : 'take|') + (args.window != null ? 'app:' + (app || '') : 'display')
+    // Keyed on the device for a simulator, never on the app: one yes to Simulator would
+    // otherwise be a yes to every device on the Mac, and they are not the same machine.
+    const key = (still ? 'shot|' : 'take|') +
+      (sim ? 'udid:' + sim.udid : args.window != null ? 'app:' + (app || '') : 'display')
     if (sessionAllowed.has(key)) return
     const who = (ctx && ctx.client) || 'An agent'
-    const what = args.window != null ? `a ${app || 'window'} window` : 'your whole screen'
+    const what = sim ? `the ${sim.name} simulator`
+      : args.window != null ? `a ${app || 'window'} window` : 'your whole screen'
     const answer = await askPerson(
       `${who} wants to ${still ? 'take a screenshot of' : 'record'} ${what}.`,
       (args.window != null
@@ -1325,9 +1487,11 @@ async function enforceAccess(args, ctx) {
       (still
         ? ' One frame is written, now. Nothing keeps running afterwards.'
         : ' The menu bar icon turns red while it records.'),
-      args.window != null
-        ? `Allow ${still ? 'screenshots of ' : ''}${app || 'this app'} until Fetch quits`
-        : null,
+      sim
+        ? `Allow ${still ? 'screenshots of ' : ''}${sim.name} until Fetch quits`
+        : args.window != null
+          ? `Allow ${still ? 'screenshots of ' : ''}${app || 'this app'} until Fetch quits`
+          : null,
       still)
     if (answer === 'unanswered') throw new Error(`Fetch refused to ${act}: ${verdict.unanswered}`)
     if (answer === 'no') throw new Error(`Fetch refused to ${act}: the person at the Mac said no`)
@@ -1354,9 +1518,11 @@ const sessionAllowed = new Set()
 // answer that arrives after the deadline lands on a promise nobody holds: this call
 // already refused and will not capture anything on the strength of a late yes.
 const ASK_WAIT_MS = 60000
-async function askPerson(message, detail, sessionLabel, still = false) {
+async function askPerson(message, detail, sessionLabel, still = false, allowLabel = null) {
   const { dialog } = require('electron')
-  const buttons = [still ? 'Allow this shot' : 'Allow this take', ...(sessionLabel ? [sessionLabel] : []), 'Don\'t allow']
+  // Driving somebody's device is not recording it, so the button says which it is.
+  const buttons = [allowLabel || (still ? 'Allow this shot' : 'Allow this take'),
+    ...(sessionLabel ? [sessionLabel] : []), 'Don\'t allow']
   const no = buttons.length - 1
   let timer = null
   const asked = dialog.showMessageBox({
@@ -1366,6 +1532,545 @@ async function askPerson(message, detail, sessionLabel, still = false) {
     const waited = new Promise(res => { timer = setTimeout(() => res('unanswered'), ASK_WAIT_MS) })
     return await Promise.race([asked, waited])
   } finally { if (timer) clearTimeout(timer) }
+}
+
+// ── simulators, as things Fetch knows ────────────────────────────────────
+//
+// The scope of this whole section, stated once: simctl has forty two subcommands and no
+// tap, no swipe and no type. So everything except the touch is a command that ships with
+// Xcode, built as argv by ui/simctl.js, and nothing below reimplements one of them. The
+// touch is driven by a tool the person put on their own PATH, or it is refused in a
+// sentence and the person taps it themselves, which is a take Fetch records beautifully.
+//
+// The capture itself is not special at all: a simulator is a window, so it goes through
+// record.start and shot.take, through decide(), through the never-record lists and
+// through the one renderer, and it keeps its sound. simctl's own framebuffer capture is
+// refused in ui/record-policy.js for exactly that reason: no audio track, and pixels
+// that never passed the policy.
+
+const SIM_DOES = ['list', 'ready', 'go', 'tap', 'restore']
+
+// Required at the call, not at the top: ui/simctl.js spawns, and a Mac with no Xcode on
+// it should pay nothing for a feature it cannot use.
+let simctlMod = null
+const simctl = () => (simctlMod || (simctlMod = require('./simctl')))
+
+// The join that names the device inside a Simulator window is an enhancement to a
+// capture, not the capture, so it waits seconds and not minutes. The wrapper's 180 s
+// first call budget is right for a boot an agent asked for and wrong in front of a
+// screenshot: with an empty stash nothing has spawned yet, so the first simctl call of
+// the session is this one, and a person pressing record waited up to three minutes with
+// nothing on screen. That is the hang the budget was written to avoid, arriving by the
+// other door. A join that runs out is a window with no device named on it.
+const CAPTURE_JOIN_MS = 6000
+let simctlQuick = null
+const simctlFast = () => (simctlQuick || (simctlQuick = require('./simctl')
+  .make({ budget: { read: CAPTURE_JOIN_MS }, firstMs: CAPTURE_JOIN_MS })))
+
+// The device a take or a shot is of, held from start to stop. Only the two things that
+// outlive the call: what to write onto the document, and what to put back.
+let takeSim = null
+const dressed = new Set()     // the devices whose status bar Fetch is holding right now
+
+
+const readQuiet = (bin, argv) => new Promise(res => {
+  require('child_process').execFile(bin, argv, { timeout: 8000, maxBuffer: 4 << 20 },
+    (err, out) => res(err ? null : String(out)))
+})
+
+// profile.plist is the only place on this Mac the native framebuffer size exists, and it
+// is a binary plist, so plutil converts it. Read once per device type rather than once
+// per device, and read only.
+async function simProfiles(typeIds, types) {
+  const ids = [...new Set(typeIds)].filter(Boolean)
+  // Fetched here because plutil is a process and this file is the one that spawns; the
+  // keying, the parse and the once-per-type rule are the model's (Sim.readProfiles), so
+  // two booted iPhone 16s read one profile between them and there is one copy of what a
+  // profile means.
+  const text = {}
+  await Promise.all(ids.map(async id => {
+    const p = Sim.profilePath(types[id])
+    if (p) text[p] = await readQuiet('/usr/bin/plutil', ['-convert', 'json', '-o', '-', p])
+  }))
+  return Sim.readProfiles(ids, types, path => text[path] || null)
+}
+
+/**
+ * Every simulator on this Mac, joined to the windows on screen. Never cached: the person
+ * creates and deletes devices between turns, and `list devices -j` is a fifth of a second.
+ */
+async function simModel(windows, o = {}) {
+  const c = o.budget ? simctlFast() : simctl()
+  const [dev, run, types] = await Promise.all([c.listDevices(), c.listRuntimes(), c.listDeviceTypes()])
+  if (!dev.ok) throw new Error(dev.reason)
+  const runtimes = run.ok ? Sim.parseRuntimes(run.value) : {}
+  const typeMap = { ...Sim.deviceTypesFromRuntimes(runtimes), ...Sim.parseDeviceTypes(types.ok ? types.value : null) }
+  const devices = Sim.parseDevices(dev.value)
+  const profiles = await simProfiles([...new Set(devices.map(d => d.deviceTypeId))], typeMap)
+  const wins = windows || (deps.listWindows ? await deps.listWindows().catch(() => []) : [])
+  return Sim.simulators({ devices, runtimes, deviceTypes: types.ok ? types.value : null,
+    profiles, windows: wins, scaleOf: displayScale })
+}
+
+/**
+ * The scale factor of the display a window is on, or null where it cannot be told.
+ *
+ * Not the primary display's: with the Simulator window on a 1x external screen beside a
+ * Retina main one, the primary reads 2 where the window is really 1, so a density of 0.3
+ * is reported as 0.6 and a store export that should be refused ships an upscale. The
+ * window list carries the window's own origin for exactly this (WindowList.swift), and
+ * with no origin there is no answer: null, and no density, rather than a guess.
+ */
+function displayScale(win) {
+  const x = +(win && win.x), y = +(win && win.y)
+  const w = +(win && win.w) || 0, h = +(win && win.h) || 0
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  try {
+    const d = require('electron').screen.getDisplayMatching({ x, y, width: Math.max(1, w), height: Math.max(1, h) })
+    return (d && d.scaleFactor) || null
+  } catch { return null }
+}
+
+/**
+ * The window list with the machine inside each Simulator window named on it. The join
+ * costs three simctl reads, so it is only paid where there is a simulator window to join
+ * to, and a Mac with no Xcode gets back exactly what it handed in.
+ */
+async function attachDevices(windows, o = {}) {
+  const list = windows || []
+  if (!list.some(w => String(w.app || '') === policy.SIMULATOR_APP)) return list
+  let sims = null
+  // strict is the enforcement path: there the join failing is not "no device on this
+  // window", it is "Fetch cannot tell", and the two must not look alike. Everywhere else
+  // the join is an enhancement to a list and a Mac with no Xcode gets its list back.
+  // The capture path also gets its own short deadline: waiting three minutes on Xcode's
+  // first launch check is the hang the wrapper was written to avoid, and this join is
+  // not what the person pressed record for.
+  try { sims = await simModel(list, { budget: o.strict ? null : CAPTURE_JOIN_MS }) }
+  catch (e) { if (o.strict) throw e; return list }
+  const byWindow = new Map()
+  for (const s of sims) if (s.window) byWindow.set(String(s.window.id), s)
+  return list.map(w => {
+    const s = byWindow.get(String(w.id))
+    if (!s) return w
+    return { ...w, device: {
+      udid: s.udid, name: s.name, family: s.family, state: s.state, booted: s.booted,
+      ...(s.screen ? { screen: `${s.screen.w}x${s.screen.h}`, points: s.glass || s.screen.points } : {}),
+      ...(s.orientation === 'landscape' ? { orientation: 'landscape' } : {}),
+      ...(s.viewport ? { viewport: s.viewport } : {}),
+      ...(s.density != null ? { density: s.density } : {}),
+      ...(Sim.densityNote(s) ? { density_note: Sim.densityNote(s) } : {}),
+    } }
+  })
+}
+
+// A device named on record_start or take_shot, resolved to the window Fetch records.
+// Nothing is brought to the front to make one: a window that is not there is a boot the
+// person has not asked for yet, and ready is where they ask.
+async function simTarget(q) {
+  const sims = await simModel()
+  const found = Sim.resolve(sims, q)
+  if (!found.ok) throw new Error(`${found.reason} simulator with action list says which devices are here.`)
+  const sim = found.value
+  if (!sim.window) {
+    throw new Error(`${sim.name} has no window on screen, and Fetch records windows. ` +
+      `simulator { action: 'ready', device: '${sim.name}' } boots it and opens its window. ` +
+      (sim.booted ? 'The device is booted, so Simulator is closed or showing another one.' : ''))
+  }
+  return sim
+}
+
+function simList(sims) {
+  const never = (deps.getPrefs ? deps.getPrefs() : {}).neverRecordDevices
+  return {
+    devices: sims.map(s => ({
+      // Said here rather than discovered by being refused three calls later. The device
+      // is still listed, because a device the person can see in Simulator and not here
+      // reads as Fetch being broken rather than as their own list doing its job.
+      ...(policy.isDeviceProtected({ udid: s.udid, name: s.name }, never)
+        ? { never_record: 'this device is on the person\'s never record devices list, so Fetch neither records it nor drives it, with any consent. Only they can take it off that list.' }
+        : {}),
+      udid: s.udid, name: s.name, family: s.family, device_type: s.deviceType, runtime: s.runtime,
+      state: s.state, booted: s.booted,
+      ...(s.screen ? { screen: `${s.screen.w}x${s.screen.h}`, scale: s.screen.scale, points: s.glass || s.screen.points } : {}),
+      ...(s.orientation === 'landscape' ? { orientation: 'landscape' } : {}),
+      ...(s.window ? { window: String(s.window.id), window_size: `${s.window.w}x${s.window.h}` } : {}),
+      ...(s.density != null ? { density: s.density } : {}),
+      ...(Sim.densityNote(s) ? { density_note: Sim.densityNote(s) } : {}),
+      ...(s.note ? { note: s.note } : {}),
+      ...(s.availabilityError ? { unavailable: s.availabilityError } : {}),
+    })),
+    how: 'record_start and take_shot take simulator where they take window, and record the device ' +
+      'where it sits: nothing is brought to the front, and the take has an audio track where a capture ' +
+      'of the device framebuffer has none at all. ' +
+      'density is captured pixels per pixel the device has; under 1 a store sized export would be ' +
+      'an upscale and is refused.',
+  }
+}
+
+// What the result says about the device a capture is of.
+function simFacts(sim, bar) {
+  return {
+    udid: sim.udid, device: sim.name, family: sim.family, runtime: sim.runtime,
+    ...(sim.window ? { window: String(sim.window.id) } : {}),
+    ...(sim.screen ? { screen: `${sim.screen.w}x${sim.screen.h}`, scale: sim.screen.scale, points: sim.glass || sim.screen.points } : {}),
+    ...(sim.orientation === 'landscape' ? { orientation: 'landscape, so the points a tap is aimed in are the long edge across' } : {}),
+    ...(sim.viewport ? { viewport: sim.viewport } : {}),
+    ...(sim.density != null ? { density: sim.density } : {}),
+    ...(Sim.densityNote(sim) ? { density_note: Sim.densityNote(sim) } : {}),
+    ...(bar && bar.said ? { status_bar: `Fetch set ${bar.said}, and puts back ${bar.restores} when this is over` } : {}),
+    ...(bar && bar.failed ? { status_bar: `the status bar was left alone: ${bar.failed}` } : {}),
+  }
+}
+
+// What a capture of a device writes onto its document. The rectangle is the same object
+// an agent's browser viewport is (ui/pointer.js viewportBox), so frame.chrome crops to
+// the glass with no new plumbing, the drawn phone becomes the only phone in the picture,
+// and the screen beside it is what the touch disc's 44 points are measured through.
+const simOnDoc = sim => ({
+  viewport: sim.viewport || null,
+  device: {
+    udid: sim.udid, name: sim.name, family: sim.family,
+    // Which way up it was, because the same framebuffer turned is a different screen to
+    // aim in and to measure 44 points across. A device on its side with this missing
+    // draws a disc several times too small.
+    ...(sim.screen ? { screen: { w: sim.screen.w, h: sim.screen.h, scale: sim.screen.scale,
+      ...(sim.orientation === 'landscape' ? { orientation: 'landscape' } : {}) } } : {}),
+    ...(sim.density != null ? { density: sim.density } : {}),
+  },
+})
+
+// ── conduct, which is checked before any spawn ───────────────────────────
+
+// The policy's answer, or a refusal with its sentence. Never a flag a caller can forget
+// to read: this throws.
+function simAllowed(verb, sim, consent, extra = {}) {
+  const prefs = deps.getPrefs ? deps.getPrefs() : {}
+  const v = policy.simDecide(verb, { udid: sim.udid, device: sim.name, consent, ...extra },
+    { neverRecordDevices: prefs.neverRecordDevices })
+  if (!v.allow) throw new Error(`Fetch refused: ${v.reason}`)
+  return v
+}
+
+/**
+ * The person's own yes, asked here and never read off the agent's arguments.
+ *
+ * An agent that can set its own consent flag has no consent rule at all, so the flag
+ * simDecide takes is minted in this function and nowhere else.
+ */
+async function simAsk(verb, sim, ctx, say) {
+  // The policy first, so a device on the never list is refused rather than raised as a
+  // question nobody's yes could answer. Only what needs consent is ever asked for.
+  const prefs = deps.getPrefs ? deps.getPrefs() : {}
+  const first = policy.simDecide(verb, { udid: sim.udid, device: sim.name },
+    { neverRecordDevices: prefs.neverRecordDevices })
+  if (!first.allow && !first.needsConsent) throw new Error(`Fetch refused: ${first.reason}`)
+  if (first.allow) return true
+  const key = `sim|${verb}|${sim.udid}`
+  if (sessionAllowed.has(key)) return true
+  const who = (ctx && ctx.client) || 'An agent'
+  const answer = await askPerson(`${who} ${say.wants} ${sim.name}.`, say.detail,
+    say.session ? `${say.session} until Fetch quits` : null, false, say.allow)
+  if (answer === 'unanswered') {
+    throw new Error(`Fetch refused: driving somebody's device needs their word, and nobody was at the ` +
+      'Mac to give it. Ask them in the chat and try again.')
+  }
+  if (answer === 'no') throw new Error('Fetch refused: the person at the Mac said no.')
+  if (answer === 'session') sessionAllowed.add(key)
+  return true
+}
+
+// ── the five actions ─────────────────────────────────────────────────────
+
+/**
+ * Boot, show, install, launch, dress. One yes carries the sequence, because a person who
+ * asked for a device to be made ready did not want to be asked again about the boot
+ * inside it, and the result names every part of it in words.
+ */
+async function simReady(sim, args, ctx) {
+  const c = simctl()
+  const app = args.app ? String(args.app) : null
+  const bundle = args.bundle ? String(args.bundle) : null
+  const will = [
+    sim.booted ? null : 'boot it',
+    sim.window ? null : 'open Simulator in the background, without bringing it to the front',
+    app ? `install ${path.basename(app)}` : null,
+    bundle ? `launch ${bundle}` : null,
+    args.status_bar === false ? null : 'set the status bar to 9:41 with full bars and a charged battery, and put your own back afterwards',
+    args.appearance ? `switch it to ${String(args.appearance).toLowerCase()}` : null,
+  ].filter(Boolean)
+  await simAsk('ready', sim, ctx, {
+    wants: 'wants to get a simulator ready to record:',
+    detail: `It will ${will.join(', ')}. Nothing moves your mouse, presses your keyboard or makes a sound, ` +
+      'and no device is created, erased or deleted.',
+    allow: 'Allow',
+  })
+
+  const changed = []
+  if (!sim.booted) {
+    simAllowed('boot', sim, ['ready'])
+    const r = await c.boot(sim.udid)
+    if (!r.ok) throw new Error(r.reason)
+    changed.push(r.value.changed ? `booted ${sim.name}` : `${sim.name} was already booted`)
+  }
+  // simctl boot is headless and produces no window at all, so a boot the person asked
+  // for would otherwise happen invisibly. Opened in the background: an invisible boot is
+  // worse than a visible one, and a window dragged in front of their work is worse again.
+  if (!sim.window) {
+    simAllowed('open simulator', sim, ['ready'])
+    if (!deps.openSimulator) throw new Error('this build of Fetch cannot open Simulator, so the booted device has no window to record.')
+    await deps.openSimulator()
+    changed.push('opened Simulator in the background; nothing was brought to the front')
+  }
+  if (app) {
+    simAllowed('install', sim, ['ready'])
+    if (!fs.existsSync(app)) throw new Error(`there is no app bundle at ${app}. Build it first, and send the path to the .app.`)
+    const r = await c.install(sim.udid, app)
+    if (!r.ok) throw new Error(r.reason)
+    changed.push(`installed ${path.basename(app)}`)
+  }
+  if (bundle) {
+    simAllowed('launch', sim, ['ready'])
+    const r = await c.launch(sim.udid, bundle)
+    if (!r.ok) throw new Error(r.reason)
+    changed.push(`launched ${bundle}`)
+  }
+  let bar = null
+  if (args.status_bar !== false) {
+    bar = await simDressed(sim, true)
+    if (bar && bar.said) changed.push(`set the status bar: ${bar.said}`)
+    if (bar && bar.failed) changed.push(`left the status bar alone: ${bar.failed}`)
+  }
+  if (args.appearance) {
+    simAllowed('ui appearance', sim, ['ready'])
+    // Read, written to disk, then set (ui/simctl.js dressAppearance). On disk and not in
+    // this process's memory, because a crash loses the memory and the device stays dark:
+    // an override nobody can see is wrong is the one that most needs to survive.
+    const r = await c.dressAppearance(sim.udid, args.appearance)
+    if (!r.ok) throw new Error(r.reason)
+    changed.push(`switched it to ${r.value.appearance}${r.value.was ? `, from ${r.value.was}` : ''}`)
+  }
+
+  // Simulator takes a moment to put the window up, and a device with no window is a
+  // device Fetch cannot record, so this is worth waiting for rather than reporting.
+  const now = await simSettled(sim.udid, sim.window ? 0 : 25000)
+  return {
+    ...simFacts(now || sim, bar),
+    changed,
+    restore: 'record_stop puts the status bar back on its own. simulator with action restore does it by hand, ' +
+      'and so does the next launch if Fetch dies mid take.',
+    do_next: `record_start { simulator: '${sim.udid}' } records that window, with sound, ` +
+      'find_on_screen on a shot of it names what is on the glass, and simulator with action tap taps the id it hands back.',
+  }
+}
+
+// The device again once whatever was asked for has settled, waiting for a window where
+// one is expected. The model is re-read rather than patched: the window id, the glass
+// rectangle and the density are all measurements, and a guess at any of them lands a tap
+// somewhere nobody pointed.
+async function simSettled(udid, waitMs) {
+  const until = Date.now() + Math.max(0, waitMs || 0)
+  for (;;) {
+    let sims = null
+    try { sims = await simModel() } catch { return null }
+    const hit = sims.find(s => s.udid === udid) || null
+    if (!hit || hit.window || Date.now() >= until) return hit
+    await new Promise(r => setTimeout(r, 1000))
+  }
+}
+
+// A deep link, which is the one navigation primitive simctl does hand us and the
+// reliable one: it lands on the same screen every time, where a tap script does not.
+async function simGo(sim, args, ctx) {
+  const url = String(args.url || '').trim()
+  if (!url) throw new Error('go needs url: the deep link to open on the device, for example myapp://onboarding.')
+  await simAsk('openurl', sim, ctx, {
+    wants: 'wants to open a link on', detail: `The link is ${url}. It opens on the device, not on your Mac.`,
+    allow: 'Open it', session: `Allow links on ${sim.name}`,
+  })
+  simAllowed('openurl', sim, ['openurl'])
+  const r = await simctl().openurl(sim.udid, url)
+  if (!r.ok) throw new Error(r.reason)
+  return { udid: sim.udid, device: sim.name, opened: url,
+    do_next: 'take_shot with simulator to see where it landed, then find_on_screen to name what is on it.' }
+}
+
+/**
+ * A touch, and the mark of it, in one call.
+ *
+ * The aim is an element id from find_on_screen, never a coordinate: pixels always exist
+ * where a label may not, and a point read off a picture lands on the wrong thing. A raw
+ * point in device points is taken where nothing can be named and comes back marked hand
+ * aimed, the same way a hand aimed zoom does.
+ */
+async function simTap(sim, args, ctx) {
+  const pt = await simPoint(sim, args)
+  await simAsk('tap', sim, ctx, {
+    wants: 'wants to send a tap to', detail: 'The touch goes into the device\'s own input path. It never moves this ' +
+      'Mac\'s mouse and never presses its keyboard.',
+    allow: 'Allow this tap', session: `Allow taps on ${sim.name}`,
+  })
+  simAllowed('tap', sim, ['tap'])
+  const r = await simctl().tap(sim.udid, pt.x, pt.y)
+  if (!r.ok) throw new Error(r.reason)
+  // Reported onto the pointer track in the same call, on the take's own clock, so the
+  // disc is drawn where the finger went and nothing has to be aimed twice. Only a touch
+  // that was really sent is drawn: a mark for a tap that never happened is a lie in the
+  // one part of the picture that says what the agent did.
+  const f = Sim.pointToFrame(sim, pt.x, pt.y)
+  let drawn = null, note = null
+  if (f && deps.pointer) {
+    try { drawn = deps.pointer({ x: f.x, y: f.y, click: true }) }
+    catch (e) { note = `the tap was sent and nothing drew it: ${e.message}` }
+  }
+  return {
+    udid: sim.udid, device: sim.name,
+    tapped: { x: pt.x, y: pt.y, units: 'device points' }, aimed: pt.aimed, by: r.value.by,
+    ...(drawn ? { drawn: { x: drawn.x, y: drawn.y, at: drawn.at, points: drawn.points } } : {}),
+    ...(note ? { note } : {}),
+    do_next: 'find_on_screen again before the next tap: the screen has moved and the ids are minted per pass.',
+  }
+}
+
+// Where on the glass, in the device's own points. Everything in between is the take's:
+// the element's box is measured in the frame the edit works in, so the crop goes back on
+// before the viewport comes off.
+async function simPoint(sim, args) {
+  if (!sim.screen || !sim.viewport) {
+    throw new Error(`Fetch cannot tell where ${sim.name}'s own screen sits inside its window, so there is ` +
+      'nowhere for a tap to land. simulator with action list says what is known about the device, and ' +
+      'ready opens its window.')
+  }
+  const pts = sim.glass || sim.screen.points
+  if (args.element != null) {
+    if (!args.path) {
+      throw new Error('a tap on an element needs path as well: the shot or recording find_on_screen was ' +
+        'called on, which is where that id was minted.')
+    }
+    const seen = foundBy.get(args.path) || null, mine = foundFor.get(args.path) || null
+    const box = resolveElement(args.path, seen, mine, null, { element: args.element }).box
+    const crop = await cropOfTake(args.path)
+    const fx = crop ? crop.x + crop.w * (box.x + box.w / 2) : box.x + box.w / 2
+    const fy = crop ? crop.y + crop.h * (box.y + box.h / 2) : box.y + box.h / 2
+    return { ...devicePoint(sim, fx, fy), aimed: `the middle of ${String(args.element).toUpperCase()}` }
+  }
+  const x = +args.x, y = +args.y
+  if (Number.isFinite(x) && Number.isFinite(y)) {
+    if (x < 0 || y < 0 || x > pts.w || y > pts.h) {
+      throw new Error(`${sim.name}'s screen is ${pts.w} by ${pts.h} points and (${x}, ${y}) is off it.`)
+    }
+    return { x, y, aimed: 'hand aimed: a point, not a box anything on screen was found at' }
+  }
+  throw new Error('a tap aims at a box, never at a coordinate: call find_on_screen on a shot of the device ' +
+    'in the person\'s own words and send the id it hands back as element, with that shot\'s path. ' +
+    'x and y in device points are taken where nothing on screen can be named, and are reported as hand aimed.')
+}
+
+function devicePoint(sim, fx, fy) {
+  // The points the device is showing, which on a device lying on its side are the
+  // framebuffer's axes swapped (ui/simulator.js glassPoints).
+  const v = sim.viewport, pts = sim.glass || sim.screen.points
+  const x = ((fx - v.x) / v.w) * pts.w, y = ((fy - v.y) / v.h) * pts.h
+  if (!(x >= -1 && y >= -1 && x <= pts.w + 1 && y <= pts.h + 1)) {
+    throw new Error(`that element is at (${Math.round(x)}, ${Math.round(y)}) in device points, off a ` +
+      `${pts.w} by ${pts.h} point screen: it is on the Mac's part of the window rather than on the glass.`)
+  }
+  const hold = (n, max) => Math.round(Math.min(Math.max(n, 0), max) * 10) / 10
+  return { x: hold(x, pts.w), y: hold(y, pts.h) }
+}
+
+// The crop an element's box was measured inside, which is the one the edit works in.
+async function cropOfTake(src) {
+  try {
+    if (isShot(src)) { const s = await shotOf(src); return (s && s.crop) || null }
+    const meta = await deps.proc.probeMeta(src).catch(() => ({}))
+    return deps.proc.readDoc(src, meta && meta.duration).crop || null
+  } catch { return null }
+}
+
+// ── the status bar, which Fetch sets and Fetch puts back ─────────────────
+
+/**
+ * Dress the device for the picture. Free while Fetch is the thing capturing it, and only
+ * because the old values are written down first and go back afterwards: take the restore
+ * away and this is an ordinary edit to somebody's machine.
+ */
+async function simDressed(sim, forReady) {
+  simAllowed('status bar override', sim, forReady ? ['ready'] : null,
+    forReady ? {} : { capturing: true, restores: true })
+  const r = await simctl().setStatusBar(sim.udid)
+  // A bar Fetch could not set is a worse picture, not a failed take. The refusal is
+  // reported and the capture goes on.
+  if (!r.ok) return { failed: r.reason }
+  dressed.add(sim.udid)
+  return { said: r.value.said, restores: r.value.restores }
+}
+
+// Put it back. On stop, on failure, and on the next launch if Fetch died mid take
+// (ui/simctl.js restorePending, called from main.js). Restoring is never refused, even
+// on a device that has since gone onto the never list: a simulator stuck at 9:41 is
+// Fetch's mess and not the person's.
+async function simUndress(udid) {
+  if (!udid || !dressed.has(udid)) return null
+  dressed.delete(udid)
+  // restoreStatusBar puts the appearance back too where `ready` set one: everything in
+  // the stash comes off together, so record_stop keeps the promise the tool description
+  // makes rather than half of it.
+  let back = null
+  try {
+    const r = await simctl().restoreStatusBar(udid)
+    back = r.ok ? r.value : { failed: r.reason }
+  } catch (e) { back = { failed: String((e && e.message) || e) } }
+  return back
+}
+
+// The end of a take of a device: the glass rectangle onto the document, and everything
+// Fetch changed put back. Both happen whatever the take did.
+async function simAfterTake(r) {
+  const held = takeSim
+  takeSim = null
+  if (!held) return r
+  const back = await simUndress(held.sim.udid)
+  let wrote = null
+  try {
+    // through follow(), because a take is renamed from what was said shortly after it
+    // lands and the path this call is holding may already have moved
+    const src = r && r.path ? follow(r.path) : null
+    if (src && fs.existsSync(src)) {
+      const meta = await deps.proc.probeMeta(src).catch(() => ({}))
+      const doc = deps.proc.readDoc(src, meta && meta.duration)
+      // A finger, not an arrow, without anybody setting anything: the look decides the
+      // mark and the take's target decides the look. Inert until ui/look-schema.js
+      // carries cursor.style, because Look.merge keeps only what the schema names.
+      const look = { ...(doc.look || {}), cursor: { ...((doc.look || {}).cursor || {}), style: 'touch' } }
+      const out = deps.proc.writeDoc(src, { ...doc, look, ...simOnDoc(held.sim) })
+      wrote = 'the device screen rectangle is on the edit, so the look crops to the glass and the ' +
+        'drawn phone is the only phone in the picture'
+      if (out && out.look && out.look.cursor && out.look.cursor.style === 'touch') {
+        wrote += ', and the pointer track draws a finger rather than an arrow'
+      }
+    }
+  } catch (e) { wrote = `the device could not be written onto the edit: ${(e && e.message) || e}` }
+  return { ...r, simulator: { ...simFacts(held.sim, held.bar),
+    ...(back ? { restored: back } : {}), ...(wrote ? { document: wrote } : {}) } }
+}
+
+// Everything Fetch changed on a device, put back by hand. The appearance is only known
+// within this run of the app; the status bar survives a crash because it is stashed on
+// disk where a person can see the clock is wrong.
+async function simRestore(sim) {
+  simAllowed('restore', sim, null)
+  const out = []
+  // One call, because one stash holds everything Fetch is wearing on this device: the
+  // status bar and, where `ready` set one, the appearance. Putting back a value Fetch
+  // set is the free action rather than a second mutation of their device, which is why
+  // this is allowed even on a device that has since gone onto the never list.
+  const back = await simctl().restoreStatusBar(sim.udid)
+  out.push(back.ok ? (back.value.said || `the status bar: ${back.value.restored}`) : `the status bar could not be put back: ${back.reason}`)
+  if (back.ok) for (const line of back.value.also || []) out.push(line)
+  dressed.delete(sim.udid)
+  return { udid: sim.udid, device: sim.name, restored: out,
+    note: 'Fetch never changed anything else on this device: it does not create, erase or delete one.' }
 }
 
 // A lift or spotlight an agent times to the narration can start before the card it
@@ -2002,18 +2707,74 @@ async function applyToShot(args) {
 // One picture of the shot, through ui/render-host.js. `width` draws the plan at an
 // exact pixel width, which is how a preview is the export made narrow rather than a
 // second opinion of it; with no width the shot is drawn at the size it ships at.
-async function drawShot(shot, src, { width, dest, format, look } = {}) {
+async function drawShot(shot, src, { width, dest, format, look, size } = {}) {
   const host = require('./render-host')
   const s = look && typeof look === 'object' ? Shot.mergeShot(shot, { look }) : shot
   const opts = Shot.toExportOpts(s)
+  // A deliverable the store measures is a pair of integers, not a shape: the picture is
+  // planned at the preset's own ratio and drawn at its own width, and the pair travels
+  // beside it for the renderer that can set both (ui/compositor/index.js, job.size).
+  if (size) opts.backdropAspect = size.w / size.h
   // A photo backdrop is a file on this Mac, resolved the way an export resolves it.
   try {
     const id = opts.backdrop
     const hit = id ? deps.proc.backdropList().find(b => b.id === id && b.image) : null
     if (hit && hit.file) opts.imageFile = hit.file
   } catch {}
-  return await host.renderShot(src, opts, { dest, format: format || 'png', width,
-    scale: width ? undefined : 'native' }, dest ? `agent-shot-${Date.now()}` : undefined)
+  const w = size ? size.w : width
+  return await host.renderShot(src, opts, { dest, format: format || 'png', width: w, size: size || undefined,
+    scale: w ? undefined : 'native' }, dest ? `agent-shot-${Date.now()}` : undefined)
+}
+
+// ── the sizes a store measures ───────────────────────────────────────────
+// One table, ui/sizes.js, and no number restated here. Two rules it enforces and this
+// only relays: the size is a pair of integers rather than a shape, because a file one
+// pixel out is rejected, and the capture is never enlarged into it, because a soft store
+// asset is worse than none. The refusal is the deliverable in the common case: a default
+// Simulator window is at 0.6 of the device's own pixels, so most people meet it first.
+function storeSize(name, shot) {
+  const Sizes = require('./sizes')
+  const got = Sizes.resolve(name)
+  if (!got.ok) throw new Error(got.reason)
+  const preset = got.preset
+  if (preset.kind !== 'still') {
+    throw new Error(`${preset.id} is a video size (${preset.what}) and this is a shot. ` +
+      'Export a recording for a preview; a screenshot takes the still sizes.')
+  }
+  // The crop on a document is fractions of the capture and fit() reads pixels, so a
+  // crop of 0.995 arrived as a one pixel capture and the shot cropped to the device's
+  // glass, which is the whole point of the round, was the one input that could not be
+  // exported at a size. Multiplied out here, where the capture's own pixels are.
+  const c = shot.crop
+  const box = c && +c.w > 0 && +c.h > 0
+    ? { w: Math.round(shot.w * +c.w), h: Math.round(shot.h * +c.h) } : null
+  const fit = Sizes.fit({ w: shot.w, h: shot.h }, preset.id, { crop: box })
+  // The reason and its ways out on their own lines: three routes run together in one
+  // paragraph is a refusal an agent relays as prose instead of acting on.
+  if (!fit.ok) throw new Error([fit.reason, ...(fit.fix || [])].join('\n'))
+  // Not a refusal: what this size will cost the look it is drawn with, so a long wait is
+  // expected rather than read as a hang (ui/sizes.js cost).
+  const slow = Sizes.cost(shot.look, preset.id)
+  return { preset, size: fit.size, fit, ...(slow.warnings.length ? { slow: slow.warnings } : {}) }
+}
+
+// Said after the file exists, off the file's own pixels rather than off the plan: the
+// store measures the file, so this reports what the store will see.
+function sizeVerdict(want, drawn) {
+  const exact = drawn.w === want.size.w && drawn.h === want.size.h
+  return {
+    size: want.preset.id,
+    store_size: `${want.size.w}x${want.size.h}`,
+    exact,
+    ...(exact ? {} : { not_the_store_size: `this file is ${drawn.w}x${drawn.h} and ${want.preset.what} is ` +
+      `exactly ${want.size.w}x${want.size.h}, which is what the store measures. Fetch will not call this a ` +
+      'store file. Say so rather than uploading it.' }),
+    ...(want.slow ? { slow: want.slow } : {}),
+    ...(want.fit.pristine ? { pristine: 'the capture is drawn at its own pixels, so nothing was resampled' } : {}),
+    ...(want.fit.leftover && (want.fit.leftover.w || want.fit.leftover.h)
+      ? { filled: `${want.fit.leftover.w} by ${want.fit.leftover.h} pixels of the picture are not the capture, ` +
+        'and are drawn: Fetch never writes a black bar' } : {}),
+  }
 }
 
 // export, on a capture: the PNG the editor's own Export button writes, beside the
@@ -2029,13 +2790,18 @@ async function exportShot(args) {
       'path of a recording.')
   }
   const shot = await shotOf(args.path)
+  // An exact size the store measures, from the one table that holds those numbers
+  // (ui/sizes.js). Refused before anything is drawn where the capture cannot fill it,
+  // because a soft store asset is worse than no store asset.
+  const store = args.size != null ? storeSize(args.size, shot) : null
   const dest = deps.proc.exportDest(args.path, fmt === 'png' ? 'png' : 'jpg')
-  const r = await drawShot(shot, args.path, { dest, format: fmt })
+  const r = await drawShot(shot, args.path, { dest, format: fmt, ...(store ? { size: store.size } : {}) })
   const mb = r && r.file && fs.existsSync(r.file) ? +(fs.statSync(r.file).size / 1e6).toFixed(2) : null
   const checked = await reviewShot({ path: args.path, shot }).catch(() => null)
   return {
     path: r.file, mb, pixels: `${r.w}x${r.h}`, scale: r.scale, format: fmt, engine: r.engine,
     capture: r.capture, density: r.density,
+    ...(store ? sizeVerdict(store, r) : {}),
     // Capture pixels per output pixel, which is the one number that tells a deliverable
     // from a preview and the one an agent cannot derive from two sizes it was handed.
     density_means: '1 is the capture at the size it was captured; over 1 is that much of it thrown away',
@@ -2622,6 +3388,17 @@ module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEnde
   // the lasso: main.js registers what the Elements pass found and the areas the person
   // drew, and apply_edit resolves R ids out of the same store
   noteFound, noteRegion, regionFor, forgetRegion,
+  // the machine inside a Simulator window, for the capture paths in main.js: the never
+  // record devices list can only be honoured by id, and the id is on the window or it is
+  // nowhere (ui/record-policy.js windowsToExclude)
+  attachDevices, simModel,
+  // a place on the frame to a place on the glass, which is the one piece of arithmetic
+  // between an element id and a touch. test/tools.test.js walks it against
+  // ui/simulator.js pointToFrame, which is the same map pointing the other way.
+  devicePoint,
+  // the store size, and what the written file really is. Both are refusals more often
+  // than they are answers, so test/tools.test.js runs them rather than reading them.
+  storeSize, sizeVerdict,
   // the two rules that are code rather than prose, exercised by test/lasso.test.js
   withElements, aimZooms,
   // the person's answer to a question or a proposal. main.js does not call it: the

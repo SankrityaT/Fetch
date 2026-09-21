@@ -38,7 +38,9 @@ async function loadAssets(comp, spec) {
   for (const e of (spec.marks && spec.marks.erase) || []) if (e.plate && e.plate.file) files.add(e.plate.file)
   await Promise.all([...files].filter(f => !comp.images.has(f)).map(f => loadImage(f)
     .then(img => { comp.setImage(f, img, true); n++ }).catch(e => console.warn(e.message))))
-  if (spec.marks && spec.marks.pointer && !comp.imgEls.has('badge')) {
+  // A touch take draws no badge: the disc is the mark and the finger does not sign its
+  // work, so the picture is decoded and uploaded for nothing.
+  if (spec.marks && spec.marks.pointer && !spec.marks.pointer.touch && !comp.imgEls.has('badge')) {
     const { BADGE } = require('../pointer')
     const file = [path.join(process.resourcesPath || '', 'app', BADGE.file), path.join(__dirname, '..', '..', BADGE.file)].find(f => require('fs').existsSync(f))
     if (file) { try { comp.imgEls.set('badge', await loadImage(file)); n++ } catch (e) { console.warn(e.message) } }
@@ -344,9 +346,17 @@ async function renderShot(job, hooks = {}) {
   // resized to what the shot is actually drawn at
   const comp = new Compositor(spec.W, spec.H, { preserve: true })
   try {
-    const k = job.width ? Math.max(0.02, job.width / spec.W)
-      : shotScale(spec, job.scale, comp.gl.getParameter(comp.gl.MAX_TEXTURE_SIZE))
-    comp.resize(spec.W * k, spec.H * k)
+    // A store deliverable is a pair of integers, not a width and a shape. The plan is
+    // already composed at the preset's own ratio (ui/sizes.js, through backdropAspect),
+    // so this is the last rounding and it is the one that has to land on the number: a
+    // file one pixel short of 1320 x 2868 is rejected at upload, after the writing, the
+    // shooting and the styling are all done. Scaling by a width instead left the height
+    // a pixel out on every preset but the one that divides evenly.
+    const k = job.size ? job.size.w / spec.W
+      : job.width ? Math.max(0.02, job.width / spec.W)
+        : shotScale(spec, job.scale, comp.gl.getParameter(comp.gl.MAX_TEXTURE_SIZE))
+    if (job.size) comp.resize(job.size.w, job.size.h)
+    else comp.resize(spec.W * k, spec.H * k)
     if (spec.bg.kind === 'image') {
       try { comp.setImage(spec.bg.file, await loadImage(spec.bg.file)) } catch (e) { console.warn(e.message) }
     }

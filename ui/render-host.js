@@ -384,7 +384,8 @@ function shotPlan(image, opts = {}, size = null) {
  * Draw a finished screenshot.
  *   image  the captured picture (PNG or JPEG)
  *   opts   the export options bag, as a clip's edit hands it over
- *   out    { dest, scale, format, quality, width, at }
+ *   out    { dest, scale, format, quality, width, size, at }
+ * size is a pair of integers the output is drawn at exactly, for a store deliverable.
  * scale is 1, 2, 3 or 'native' (the default: the capture at its own size, so a shot ships
  * at the size it was captured unless a smaller one is asked for). at defaults to the
  * middle of the shot's own span. Returns what was written, with the size it was drawn at
@@ -404,6 +405,10 @@ async function renderShot(image, opts = {}, out = {}, jobId) {
   const t0 = Date.now()
   try {
     const r = await drawStills({ spec, image, out: partial, format, quality: out.quality,
+      // An exact pair of integers, where the caller asked for a size the store measures.
+      // Carried through rather than turned into a width: a width plus an aspect rounds,
+      // and the whole point of a preset is that it does not.
+      size: out.size || null,
       scale: out.scale == null ? 'native' : out.scale, width: out.width, at: out.at }, jobId)
     moveInto(partial, dest)
     return { ...r, file: dest, engine: 'gl', ms: Date.now() - t0, capture: `${size.width}x${size.height}` }

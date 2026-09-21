@@ -187,11 +187,25 @@ const SHELL = {
 // crop to the page where the page's place is known, and a crop somebody drew by hand
 // does the same work, so a capture with its top gone has no chrome left to collide with.
 //
+// And where the content's own rectangle inside the capture is known, that settles it
+// outright, which is the case a device screen brings. A simulator's window is very
+// nearly the screen: measured here the viewport starts at the window's own top edge, so
+// the crop that takes the device's outline off takes nothing off the top, and the rule
+// above alone called a picture that is now only the screen a picture with chrome in it.
+// A crop that lands inside the viewport has the content and nothing round it, wherever
+// the edges it removed happened to be, so the shell drawn round it is the only shell.
+//
 // Same question ui/review.js asks before it names double-chrome, and the same answer, so
 // the picture and the judge of the picture cannot disagree about what is in it.
 const CHROME_OF = { window: true, display: true, region: false }
-function ownChrome(captured, crop) {
-  if (crop && crop.w > 0 && crop.h > 0 && crop.y > 0.01) return false
+const VIEW_EPS = 0.002   // the tolerance ui/fetchdoc.js chromeCrop matches a crop on
+function insideView(crop, v) {
+  if (!v || !(v.w > 0) || !(v.h > 0)) return false
+  return crop.x >= v.x - VIEW_EPS && crop.y >= v.y - VIEW_EPS &&
+    crop.x + crop.w <= v.x + v.w + VIEW_EPS && crop.y + crop.h <= v.y + v.h + VIEW_EPS
+}
+function ownChrome(captured, crop, viewport) {
+  if (crop && crop.w > 0 && crop.h > 0 && (crop.y > 0.01 || insideView(crop, viewport))) return false
   return !!(captured && CHROME_OF[captured.kind])
 }
 
@@ -223,19 +237,29 @@ function barText(said, captured) {
   return { title: t, address: isAddress(t) }
 }
 
-// How tall a shell's top bezel is, as a share of the screen's own width. The whole of
-// what this round changed about the shape of a drawn frame.
+// A shell's top bezel, its foot and whether it keeps the one detail that names it, all
+// as shares of the screen's own width. What a drawn frame is shaped like, in one place.
 //
 // An even bezel where the capture has chrome of its own: the shell is then a frame round
 // a window that already has a title bar, rather than a second window round the first.
 // A window's bar where a browser has no address to show, because a browser's bar is
 // taller than a window's for exactly one reason, which is that an address field stands
 // in it. With no field there is no toolbar, only a title bar.
-function barShare(kind, address, own) {
+//
+// The same answer for a phone, which is what a simulator asks for. A capture of a
+// device's own window is already a phone shaped picture with a phone's outline drawn in
+// it, and Fetch's phone round that is a phone inside a phone. So a phone that is asked
+// for over a capture that kept its own device is a plain frame: bezel, foot and sides
+// all one thickness, and no speaker slit, since the slit is the one stroke that says
+// phone and saying it twice in a picture is the doubling. A phone's two bezels are a
+// pair, so the foot comes down with the bar; browser, window and laptop already have a
+// foot the thickness of their sides and are left exactly as they were.
+function bezel(kind, address, own) {
   const d = DEVICES[kind]
-  if (kind !== 'browser' && kind !== 'window') return d.bar
-  if (own) return d.side
-  return kind === 'browser' && !address ? DEVICES.window.bar : d.bar
+  if (kind === 'phone') return own ? { bar: d.side, foot: d.side, slit: false } : { bar: d.bar, foot: d.foot, slit: true }
+  if (kind !== 'browser' && kind !== 'window') return { bar: d.bar, foot: d.foot, slit: false }
+  const bar = own ? d.side : kind === 'browser' && !address ? DEVICES.window.bar : d.bar
+  return { bar, foot: d.foot, slit: false }
 }
 
 /**
@@ -257,12 +281,12 @@ function devicePlan(D = {}, chrome, g, corner, end, bg = {}, cap = {}) {
   const d = DEVICES[kind]
   const a = g.vidW / g.vidH
   const base = d.base || 0
-  const own = ownChrome(cap.captured, cap.crop)
+  const own = ownChrome(cap.captured, cap.crop, cap.viewport)
   const text = barText(D.title, cap.captured)
-  const bar = barShare(kind, text.address, own)
+  const bez = bezel(kind, text.address, own)
   // the largest screen of the take's own shape that leaves room for the shell round it
-  const sw = Math.min(g.vidW / (1 + 2 * d.side), g.vidH / (1 / a + bar + d.foot + base))
-  return { ...shellAt(kind, sw, a, g.ox + g.vidW / 2, g.oy + g.vidH / 2, corner, bar),
+  const sw = Math.min(g.vidW / (1 + 2 * d.side), g.vidH / (1 / a + bez.bar + bez.foot + base))
+  return { ...shellAt(kind, sw, a, g.ox + g.vidW / 2, g.oy + g.vidH / 2, corner, bez),
     ...shellTone(D, end, bg), ...text, own }
 }
 
@@ -272,11 +296,12 @@ function devicePlan(D = {}, chrome, g, corner, end, bg = {}, cap = {}) {
  * the layout and one capture standing beside another in a group are the same shape
  * solved from a different width rather than two shapes that have to be kept in step.
  */
-function shellAt(kind, sw, a, cx, cy, corner, bar = DEVICES[kind].bar) {
+function shellAt(kind, sw, a, cx, cy, corner, bez = bezel(kind, false, false)) {
   const d = DEVICES[kind]
   const base = d.base || 0
   const sh = sw / a
-  const boxW = sw * (1 + 2 * d.side), boxH = sh + sw * (bar + d.foot)
+  const bar = bez.bar
+  const boxW = sw * (1 + 2 * d.side), boxH = sh + sw * (bar + bez.foot)
   const box = { x: Math.round(cx - boxW / 2), y: Math.round(cy - (boxH + sw * base) / 2), w: Math.round(boxW), h: Math.round(boxH), r: sw * d.r }
   const screen = {
     x: Math.round(box.x + sw * d.side), y: Math.round(box.y + sw * bar),
@@ -289,7 +314,7 @@ function shellAt(kind, sw, a, cx, cy, corner, bar = DEVICES[kind].bar) {
     r: sw * base * 0.35, taper: sw * base * 0.5,
   } : null
   // a phone's speaker, the one detail on it: a slit in the top bezel, centred
-  const slit = kind === 'phone' ? { w: sw * 0.10, h: Math.max(2, sw * 0.006), y: box.y + sw * bar * 0.42 } : null
+  const slit = bez.slit ? { w: sw * 0.10, h: Math.max(2, sw * 0.006), y: box.y + sw * bar * 0.42 } : null
   const pad = Math.ceil(sw * 0.02)
   const x0 = Math.min(box.x, foot ? foot.x : box.x) - pad, y0 = box.y - pad
   const x1 = Math.max(box.x + box.w, foot ? foot.x + foot.w : 0) + pad, y1 = (foot ? foot.y + foot.h : box.y + box.h) + pad
@@ -312,12 +337,12 @@ function shellTone(D = {}, end, bg = {}) {
 
 // The room that shell needs, and where its centre sits inside it, with no placement at
 // all: what a group has to know about a member before it knows where the member goes.
-function shellExtent(kind, sw, a, bar) {
+function shellExtent(kind, sw, a, bez) {
   const d = DEVICES[kind]
   if (!d) return { w: sw, h: sw / a, cdx: sw / 2, cdy: sw / (2 * a) }
   const base = d.base || 0, over = d.over || 0, pad = sw * 0.02
-  const b = bar == null ? d.bar : bar
-  const boxW = sw * (1 + 2 * d.side), boxH = sw / a + sw * (b + d.foot)
+  const b = bez || bezel(kind, false, false)
+  const boxW = sw * (1 + 2 * d.side), boxH = sw / a + sw * (b.bar + b.foot)
   const w = (base ? boxW + 2 * sw * over : boxW) + 2 * pad
   return { w, h: boxH + sw * base + 2 * pad, cdx: w / 2, cdy: pad + (boxH + sw * base) / 2 }
 }
@@ -366,7 +391,7 @@ function realMM(m) {
  */
 const GROUP_MAX = 3
 function groupLayout(list, gap, align) {
-  const cells = list.map(m => ({ ...shellExtent(m.kind, m.mm, m.a, m.bar), sw: m.mm }))
+  const cells = list.map(m => ({ ...shellExtent(m.kind, m.mm, m.a, m.bez), sw: m.mm }))
   const unit = Math.max(...cells.map(c => c.w))
   // clamped so a gap can never fold the group onto one point
   const sp = clamp(num(gap, 0.06), -0.45, 0.6) * unit
@@ -383,13 +408,13 @@ function groupLayout(list, gap, align) {
  * The group as the caller states it, in this module's own words, or null where there is
  * nothing to arrange. A group of one is a take, and goes down the path a take goes down.
  *   opts.group  { gap, align, members } or just the members
- * A member is { src, w, h, scale, ppi, mm, device, title, captured, crop }: its file, its
- * captured pixels, what is known about how big the thing really is, what it was a capture
- * of, and the frame it wears. The frame is the member's own, because a handset and a
- * browser window in one picture is the case this exists for; where a member does not name
- * one it wears the look's. So is the chrome question: each member answers it about its own
- * capture, which is the only way a handset with no title bar can stand beside a window
- * that has one and both be drawn right.
+ * A member is { src, w, h, scale, ppi, mm, device, title, captured, crop, viewport }: its
+ * file, its captured pixels, what is known about how big the thing really is, what it was
+ * a capture of, and the frame it wears. The frame is the member's own, because a handset
+ * and a browser window in one picture is the case this exists for; where a member does not
+ * name one it wears the look's. So is the chrome question: each member answers it about
+ * its own capture, viewport and all, which is the only way a handset with no title bar can
+ * stand beside a window that has one and both be drawn right.
  */
 function groupSpec(raw, D = {}, radius = 0) {
   const members = (Array.isArray(raw) ? raw : (raw && raw.members) || []).filter(Boolean).slice(0, GROUP_MAX)
@@ -401,10 +426,10 @@ function groupSpec(raw, D = {}, radius = 0) {
     const cw = c ? 2 * Math.floor(w * c.w / 2) : w & ~1, chh = c ? 2 * Math.floor(h * c.h / 2) : h & ~1
     const asked = m.device === undefined || m.device === null ? D.kind : m.device
     const kind = DEVICES[asked] ? asked : null
-    const own = ownChrome(m.captured, c)
+    const own = ownChrome(m.captured, c, m.viewport)
     const text = barText(m.title == null ? D.title : m.title, m.captured)
     const q = { src: m.src || null, w, h, scale: m.scale, ppi: m.ppi, mm: m.mm, kind,
-      ...text, own, bar: kind ? barShare(kind, text.address, own) : null,
+      ...text, own, bez: kind ? bezel(kind, text.address, own) : null,
       marks: Array.isArray(m.marks) ? m.marks : [],
       crop: { x: c ? Math.min(w - cw, Math.floor(w * c.x) & ~1) : 0, y: c ? Math.min(h - chh, Math.floor(h * c.y) & ~1) : 0, w: cw, h: chh },
       radius }
@@ -434,7 +459,7 @@ function placeGroup(G, gl, g, corner, end, bg) {
     const cx = Math.round(ox + (c.x + c.cdx) * S), cy = Math.round(oy + (c.y + c.cdy) * S)
     const sw = m.mm * S
     const shell = m.kind
-      ? { ...shellAt(m.kind, sw, m.a, cx, cy, corner, m.bar), ...tone, title: m.title, address: m.address, own: m.own }
+      ? { ...shellAt(m.kind, sw, m.a, cx, cy, corner, m.bez), ...tone, title: m.title, address: m.address, own: m.own }
       : null
     const w = 2 * Math.round(sw / 2), h = 2 * Math.round(sw / m.a / 2)
     const rect = shell ? shell.screen : { x: Math.round(cx - w / 2), y: Math.round(cy - h / 2), w, h }
@@ -922,7 +947,12 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   const raw = Array.isArray(opts.pointer) ? opts.pointer : null
   const points = raw && !raw.length ? null : P && P.pointer ? P.pointer.points : raw
   const pointer = points ? Marks.planPointer(points, { W: cw, H: ch, clock, crop: c, scale: P && P.pointer ? P.pointer.scale : null,
-    span, px, zooms: pm.zooms, size: Cu.size, ripple: Cu.ripple }) : null
+    span, px, zooms: pm.zooms, size: Cu.size, ripple: Cu.ripple, style: Cu.style,
+    // The device the take was of, so a 44 point touch target is measured through its own
+    // screen rather than guessed against the frame. Written onto the document by a
+    // capture of a simulator (ui/agent-bridge.js simOnDoc); absent on every other take,
+    // where the disc falls back to the click ripple's own size.
+    device: opts.screen ? { screen: opts.screen, viewport: opts.viewport } : null }) : null
   const marks = { ...pm, erase, pointer }
   // Each member of a group carries its own marks, and they go through this planner, on
   // that member's own pixels, at that member's own drawn size. A lift is fitted to the

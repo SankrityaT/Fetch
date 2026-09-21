@@ -117,12 +117,35 @@
       '</span>').join('')
   }
 
+  // The device list, written the way the app list above is. Two differences, both
+  // forced by what a simulator is: every simulator on the Mac answers to one app name,
+  // so the lever is the UDID rather than a name, and nobody knows their own UDIDs, so
+  // the devices Fetch can see are offered and the field is there for the rest.
+  function deviceChipsHtml(list) {
+    if (!list.length) {
+      return '<p class="acc-empty">No device is held back. An agent can record and drive any simulator on this Mac.</p>'
+    }
+    return list.map(d => {
+      const udid = typeof d === 'string' ? d : (d && d.udid) || ''
+      const name = typeof d === 'string' ? '' : (d && d.name) || ''
+      const label = name || udid
+      return '<span class="chip chip-static acc-chip" title="' + esc(udid) + '">' + esc(label) +
+        (name && udid ? '<span class="acc-chip-sub">' + esc(udid.slice(0, 8)) + '</span>' : '') +
+        '<button class="acc-chip-x" data-remove-device="' + esc(udid || label) + '" ' +
+          'aria-label="Stop protecting ' + esc(label) + '">' + ico('x', 'icon-sm') + '</button>' +
+      '</span>'
+    }).join('')
+  }
+
   function renderSettings() {
     const mount = $('settingsMount')
     if (!mount) return
     const p = window.prefs || {}
     const mode = ACCESS_MODES.includes(p.recordAccess) ? p.recordAccess : 'ask'
     const never = Array.isArray(p.neverRecord) ? p.neverRecord : DEFAULT_NEVER
+    // Empty rather than seeded, deliberately: no device is dangerous on every Mac, and a
+    // made up id would teach somebody that this list knows something it does not.
+    const neverDevices = Array.isArray(p.neverRecordDevices) ? p.neverRecordDevices : []
 
     mount.innerHTML = `
       <div class="set-wrap">
@@ -235,6 +258,18 @@
             <button class="btn btn-sm" type="submit" id="neverAddBtn" disabled>Add</button>
           </form>
 
+          <div class="acc-sub">
+            <span class="acc-sub-title">Never touched</span>
+            <p class="acc-sub-note">Simulators an agent may neither record nor drive, whatever you or it
+              says afterwards. Every simulator on this Mac is the same application, so a device with your
+              real account signed into it can only be named by its own id.</p>
+          </div>
+          <div class="acc-chips" id="deviceChips">${deviceChipsHtml(neverDevices)}</div>
+          <form class="acc-add" id="deviceAdd">
+            <select id="devicePick"><option value="">Loading your simulators...</option></select>
+            <button class="btn btn-sm" type="submit" id="deviceAddBtn" disabled>Add</button>
+          </form>
+
           ${row('rowAgentVisible', 'eye', 'Show agent recordings on screen',
             'Off: an agent records in the background and nothing appears over your work. ' +
             'On: the red border and floating controls show, as for your own takes.',
@@ -314,6 +349,71 @@
       paintNever(currentNever().filter(n => n !== name))
       toast(name + ' can be recorded again', 'ok')
     })
+
+    // --- the devices, the same shape as the apps above ---
+    const currentDevices = () =>
+      Array.isArray(window.prefs.neverRecordDevices) ? window.prefs.neverRecordDevices.slice() : []
+
+    const udidOf = d => String((typeof d === 'string' ? d : (d && d.udid)) || '').toUpperCase()
+
+    function paintDevices(list) {
+      window.savePrefs({ neverRecordDevices: list })
+      window.prefs.neverRecordDevices = list
+      $('deviceChips').innerHTML = deviceChipsHtml(list)
+    }
+
+    $('deviceChips').addEventListener('click', e => {
+      const btn = e.target.closest('[data-remove-device]')
+      if (!btn) return
+      const id = btn.dataset.removeDevice
+      const list = currentDevices()
+      const gone = list.find(d => udidOf(d) === id.toUpperCase() || (typeof d !== 'string' && d && d.name === id))
+      paintDevices(list.filter(d => d !== gone))
+      toast((gone && gone.name ? gone.name : 'That device') + ' can be recorded again', 'ok')
+      fillDevicePicker()
+    })
+
+    // The devices Fetch can see, so nobody has to copy a UDID out of a terminal to
+    // protect their own phone. A Mac with no Xcode gets an empty list and says so; the
+    // list is the thing that protects, so it never pretends it is unavailable.
+    async function fillDevicePicker() {
+      const pick = $('devicePick')
+      if (!pick) return
+      let devices = []
+      try { devices = await ipcRenderer.invoke('sim-devices') } catch { devices = [] }
+      const held = new Set(currentDevices().map(udidOf))
+      const free = (devices || []).filter(d => d && d.udid && !held.has(String(d.udid).toUpperCase()))
+      if (!free.length) {
+        pick.innerHTML = '<option value="">' +
+          (devices && devices.length ? 'Every simulator here is already held back' : 'No simulators on this Mac') +
+          '</option>'
+        pick.disabled = true
+        $('deviceAddBtn').disabled = true
+        return
+      }
+      pick.disabled = false
+      pick.innerHTML = '<option value="">Choose a simulator...</option>' + free.map(d =>
+        '<option value="' + esc(d.udid) + '" data-name="' + esc(d.name || '') + '">' +
+          esc(d.name || d.udid) + (d.booted ? ' (booted)' : '') + '</option>').join('')
+      $('deviceAddBtn').disabled = true
+    }
+    $('devicePick').onchange = () => { $('deviceAddBtn').disabled = !$('devicePick').value }
+    $('deviceAdd').onsubmit = e => {
+      e.preventDefault()
+      const pick = $('devicePick')
+      const udid = pick.value
+      if (!udid) return
+      const name = pick.selectedOptions[0] ? pick.selectedOptions[0].dataset.name : ''
+      const list = currentDevices()
+      if (list.some(d => udidOf(d) === udid.toUpperCase())) {
+        toast((name || 'That device') + ' is already held back', 'bad')
+        return
+      }
+      paintDevices(list.concat([{ udid, ...(name ? { name } : {}) }]))
+      toast((name || 'That device') + ' will never be recorded or driven', 'ok')
+      fillDevicePicker()
+    }
+    fillDevicePicker()
 
     // Disabled until there is something to add, and a duplicate is refused out loud
     // rather than silently ignored, so pressing Add always does something visible.

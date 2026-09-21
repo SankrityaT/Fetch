@@ -66,6 +66,11 @@ const DEFAULT_PREFS = {
   recordAccess: 'ask',
   neverRecord: null,       // null means "use the seeded list"
   allowedRecordApps: [],
+  // UDIDs an agent may never record and never drive. Empty rather than seeded: no device
+  // is dangerous on every Mac, and a made up UDID would teach a person that the list
+  // knows something it does not. A simulator is one app hosting anything, so the app
+  // name above cannot express "not that phone" and the UDID is the only lever.
+  neverRecordDevices: [],
   agentTakesVisible: false, // an agent's take runs in the background unless this is on
   agentNames: null,        // name takes with the person's agent; null means on when one is connected
 }
@@ -122,6 +127,18 @@ ipcMain.handle('prefs-set', (e, patch) => {
 ipcMain.handle('updater-check', () => updater.checkNow(true))
 ipcMain.handle('updater-restart', () => updater.requestRestart())
 ipcMain.handle('updater-get-state', () => updater.getState())
+// The devices Settings offers under "Never touched". Reading somebody's simulators is a
+// free action in the policy because it costs them nothing, and the alternative is making
+// a person copy a UDID out of a terminal to protect their own phone, which is the sort
+// of thing a list nobody can fill looks like from the inside. Empty on a Mac with no
+// Xcode, and the text field still takes a name or a UDID by hand.
+ipcMain.handle('sim-devices', async () => {
+  try {
+    const sims = await require('./ui/agent-bridge').simModel()
+    return sims.map(s => ({ udid: s.udid, name: s.name, state: s.state, booted: !!s.booted }))
+  } catch { return [] }
+})
+
 ipcMain.handle('pick-save-dir', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openDirectory', 'createDirectory'],
@@ -273,6 +290,15 @@ app.whenReady().then(() => {
       },
     }),
     setQuiet: (on, agent) => { quietTake = !!on; agentTake = !!agent },
+    // The one app Fetch ever opens on somebody's Mac, and only inside a `ready` they
+    // asked for: `simctl boot` is headless and puts no window on screen, so the boot
+    // they asked for would otherwise happen invisibly, and an invisible boot is worse
+    // than a visible one. -g opens it without bringing it to the front, because nothing
+    // here ever takes the front: a simulator is driven and recorded where it sits.
+    openSimulator: () => new Promise((resolve, reject) => {
+      require('child_process').execFile('/usr/bin/open', ['-g', '-a', 'Simulator'], { timeout: 20000 },
+        err => err ? reject(new Error('Simulator would not open: ' + err.message)) : resolve(true))
+    }),
     nameTake: p => takeNamer.name(p, { local: true }),     // rename_recording without a name
     pointer: agentPointer,
     setPrefs: patch => {
@@ -285,6 +311,18 @@ app.whenReady().then(() => {
       run: () => require('./ui/render-host').exportEdit(src, opts, null, 'agent-export-' + Date.now()),
     }),
   })
+
+  // Any status bar Fetch was still holding when it died. Before anything else touches a
+  // simulator, so nobody's device is left reading 9:41 because an export crashed. Silent
+  // when there is nothing owed, which is almost always, and it never spawns on a Mac
+  // with no stash file.
+  require('./ui/simctl').restorePending()
+    // Counted off what really went back, not off what was attempted: an entry whose
+    // device the person has since deleted can never be restored, and printing it as
+    // restored was the log agreeing with itself rather than with the Mac.
+    .then(r => { const n = (r && r.value && r.value.ok) || 0
+      if (n) console.log(`[sim] put back what Fetch was still wearing on ${n} device${n > 1 ? 's' : ''}`) })
+    .catch(err => console.warn('[sim] simulator restore:', err && err.message))
 
   // Onboarding's Connect screen. Resolving binaries needs a login shell, which costs
   // about a second, so warm it now: by the time anyone reaches that screen the answer
@@ -1133,8 +1171,13 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
   if (!opts.windowId) {
     try {
       const recordPolicy = require('./ui/record-policy')
-      const wins = await listWindowsJson()
-      const drop = recordPolicy.windowsToExclude(wins, { neverRecord: loadPrefs().neverRecord })
+      const prefs = loadPrefs()
+      // The device inside each Simulator window comes with the list, because a protected
+      // device can only be kept out of a display capture by its window id: every
+      // simulator answers to the same app name.
+      const wins = await agentBridge.attachDevices(await listWindowsJson())
+      const drop = recordPolicy.windowsToExclude(wins,
+        { neverRecord: prefs.neverRecord, neverRecordDevices: prefs.neverRecordDevices })
       if (drop.length) args.push('--exclude', drop.join(','))
     } catch (err) { console.error('exclusion list failed:', err.message) }
   }
@@ -1348,16 +1391,28 @@ async function takeShot(opts = {}) {
   // The never-record list is applied here, before a pixel is read, exactly as a take
   // applies it: a protected window is never the target, and on anything wider it is
   // left out of the frame rather than captured and cropped afterwards.
-  const wins = await listWindowsJson()
-  let app = null
+  // Each Simulator window carries the device inside it, so the never record devices list
+  // can be honoured here too. A device nobody could name refuses the capture rather than
+  // passing it: the one that cannot be resolved is exactly the one that might be listed.
+  const wins = await agentBridge.attachDevices(await listWindowsJson())
+  let app = null, device = null
   if (kind === 'window') {
     const hit = wins.find(w => String(w.id) === String(opts.windowId))
     app = hit && hit.app
+    device = (hit && hit.device) || null
   }
   // A region is judged as a display: it sees whatever happens to be under it, and no
   // list of apps can be honoured by excluding windows from a rectangle.
-  const verdict = policy.decide({ by, kind: kind === 'window' ? 'window' : 'display', app },
-    { mode: prefs.recordAccess, neverRecord: prefs.neverRecord, allowedApps: prefs.allowedRecordApps })
+  // A Simulator window with no device on it is not "a window": it is a device Fetch
+  // could not tell, and the one it could not tell is exactly the one that might be on
+  // the never record devices list. Judged as a simulator with no udid, which decide()
+  // refuses, rather than waved through as an ordinary window.
+  const blind = kind === 'window' && !device &&
+    String(app || '') === policy.SIMULATOR_APP && by === 'agent'
+  const request = { by, kind: (device || blind) ? 'simulator' : kind === 'window' ? 'window' : 'display', app,
+    ...(device ? { udid: device.udid, device: device.name } : {}) }
+  const verdict = policy.decide(request, { mode: prefs.recordAccess, neverRecord: prefs.neverRecord,
+    neverRecordDevices: prefs.neverRecordDevices, allowedApps: prefs.allowedRecordApps })
   if (!verdict.allow) return { ok: false, error: `Fetch refused to capture: ${verdict.reason}` }
   // 'Ask' means a person approves every agent capture. The question belongs to whoever
   // is holding the agent's request (ui/agent-bridge.js asks it once and can remember a
@@ -1382,7 +1437,8 @@ async function takeShot(opts = {}) {
     // filtered for readability and so cannot see a password manager's small panel or a
     // second window with the same title and size. The helper matches the names against
     // every window it can see, so what is left out is decided where the pixels are read.
-    const drop = policy.windowsToExclude(wins, { neverRecord: prefs.neverRecord })
+    const drop = policy.windowsToExclude(wins,
+      { neverRecord: prefs.neverRecord, neverRecordDevices: prefs.neverRecordDevices })
     if (drop.length) args.push('--exclude', drop.join(','))
     for (const name of policy.appsToExclude({ neverRecord: prefs.neverRecord })) args.push('--exclude-app', name)
   }

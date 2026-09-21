@@ -1510,11 +1510,21 @@ function still(input = {}) {
   }
   const doubled = captures.filter(c => {
     const d = c.device
-    if (!d || !['browser', 'window', 'laptop'].includes(d.kind) || d.own) return false
+    // phone is here now that a simulator window is a capture Fetch understands: a drawn
+    // phone round a capture that still carries the device's own outline is a phone
+    // inside a phone, which is the same doubling and the same fix.
+    if (!d || !['browser', 'window', 'laptop', 'phone'].includes(d.kind) || d.own) return false
     // a shell that stood down drew no bar at all (ui/compositor/plan.js, ownChrome), so
     // what is left to warn about is the capture Fetch was told nothing about
     const cap = capturedOf(c)
     if (cap && cap.kind && cap.kind !== 'window') return false
+    // A phone is the one shell that is right over a capture Fetch knows nothing about:
+    // a handset screenshot has no title bar and wants a handset drawn round it. It
+    // doubles only where the capture is known to be of a window, which is what a
+    // simulator's capture is, and there the device's own outline is in the picture
+    // already. Silent otherwise, rather than telling somebody off for a bar their phone
+    // shot never had.
+    if (d.kind === 'phone' && !(cap && cap.kind === 'window')) return false
     return c.shown.y <= c.src.h * 0.01
   })
   if (doubled.length && !shot.viewport) {
@@ -1550,6 +1560,9 @@ function still(input = {}) {
     const d = c.device
     if (!d || !d.kind || d.kind === 'none') continue
     const tall = c.shown.h > c.shown.w
+    // A phone over a capture that still carries the device it was of is the doubling
+    // double-chrome names, so the shape argument does not get to recommend it.
+    if (tall && d.own) continue
     if ((d.kind === 'phone') === tall) continue
     add('device-fit', 'should',
       `${c.what} is ${tall ? 'taller than it is wide' : 'wider than it is tall'} and it is hung in a ${d.kind} frame, which is cut the other way. ` +

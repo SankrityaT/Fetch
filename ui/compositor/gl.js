@@ -1904,7 +1904,8 @@ class Compositor {
    * Returns { tex, size } to sample in place of the source, or null when nothing shows.
    */
   contentPass(spec, M, cropUV, m = null) {
-    const any = M.erase.length || M.redact.length || M.blur.length || M.focus.length || M.steps.length || M.pointer || M.loupe.length || M.arrow.length
+    const touch = (M.touch || []).length
+    const any = M.erase.length || M.redact.length || M.blur.length || M.focus.length || M.steps.length || M.pointer || touch || M.loupe.length || M.arrow.length
     if (!any) return null
     // the capture this is drawn on, and the content space its marks were placed in: a
     // member of a group answers for both itself, which is the whole of what this pass
@@ -1986,7 +1987,9 @@ class Compositor {
     for (const a of M.arrow) this.arrowSprite(cur, a, sx, sy)
     for (const s of M.steps) this.stepSprite(cur, s, sx)
     if (M.pointer) this.pointerSprites(cur, M.pointer, spec.marks.pointer, sx, sy)
-    if (cur !== A || M.steps.length || M.arrow.length || M.pointer) this.mip(cur)
+    // a touch take draws the disc where the cursor would have been: one mark, never both
+    else if (touch) this.touchSprites(cur, M.touch, spec.marks.pointer, sx, sy)
+    if (cur !== A || M.steps.length || M.arrow.length || M.pointer || touch) this.mip(cur)
     return { tex: cur, size: [tw, th] }
   }
 
@@ -2133,6 +2136,43 @@ class Compositor {
         return { canvas: cv, x: -n / 2, y: -n / 2, w: n, h: n }
       })
       if (p) this.sprite(dst, p, [x + Pointer.BADGE.cx * size + p.x, y + Pointer.BADGE.cy * size + p.y, p.w, p.h], P.badge * P.op, 0, null, true)
+    }
+  }
+
+  // A tap: where a finger went on a device Fetch was filming (marks.js, ui/touch.js).
+  //
+  // Fetch's own mark rather than a copy of any system indicator, and in the gold the
+  // click ripple beside it already uses, so a touch take reads as the same house as a
+  // mouse take. Translucent on purpose: the disc is showing a control, not covering one,
+  // and the thing that was tapped has to stay readable underneath it. So the body gives
+  // way at the rim, one light hairline carries the shape, and a soft deep-gold halo
+  // keeps that shape on a white app page as well as on a dark one. No arrow, no badge,
+  // no name tag: a finger is not an agent's cursor and does not sign its work.
+  //
+  // One picture per size, cached like every other mark here, placed and scaled about its
+  // own centre from the plan's own closed form of time. Nothing accumulates and nothing
+  // reads the frame before, which is also why there is no trail. Carved out of the mask
+  // like the cursor: none of this was on the screen that was recorded.
+  touchSprites(dst, list, plan, sx, sy) {
+    const D = plan.disc * sx, ring = Math.max(1, D * 0.038)
+    const p = this.pic(`touch|${D.toFixed(2)}|${ring.toFixed(2)}`, () => {
+      const R = D / 2, m = Math.ceil(ring * 4 + D * 0.06), n = Math.ceil(D + 2 * m)
+      const cv = canvas(n, n), g = cv.getContext('2d'), c = n / 2
+      g.save(); g.filter = `blur(${(ring * 1.5).toFixed(2)}px)`
+      g.strokeStyle = 'rgba(201,127,30,0.40)'; g.lineWidth = ring * 1.8
+      g.beginPath(); g.arc(c, c, R, 0, Math.PI * 2); g.stroke(); g.restore()
+      const body = g.createRadialGradient(c, c, 0, c, c, R)
+      body.addColorStop(0, 'rgba(240,169,60,0.32)')
+      body.addColorStop(0.7, 'rgba(240,169,60,0.25)')
+      body.addColorStop(1, 'rgba(240,169,60,0.07)')
+      g.fillStyle = body; g.beginPath(); g.arc(c, c, R, 0, Math.PI * 2); g.fill()
+      g.strokeStyle = 'rgba(251,250,248,0.74)'; g.lineWidth = ring
+      g.beginPath(); g.arc(c, c, R - ring / 2, 0, Math.PI * 2); g.stroke()
+      return { canvas: cv, x: -c, y: -c, w: n, h: n }
+    })
+    for (const d of list) {
+      const w = p.w * d.scale
+      this.sprite(dst, p, [d.x * sx - w / 2, d.y * sy - w / 2, w, w], d.op, 0, null, true)
     }
   }
 
@@ -2377,6 +2417,7 @@ const LOOP_NAMES = [
   ['marks.redact', 'a redaction covers one end of the loop and not the other', 'run it across the whole clip, or none of it'],
   ['marks.erase', 'an erase covers one end of the loop and not the other', 'run it across the whole clip, or none of it'],
   ['marks.pointer', 'the cursor is not where it starts by the last frame', 'end the take with the pointer where it began, or set cursor.show false'],
+  ['marks.touch', 'a tap is still on screen at the last frame', 'leave the last half second of the clip without a tap in it, or set cursor.show false'],
   ['marks', 'a mark does not end the clip the way it starts it', MARK_FIX],
   ['text', 'a caption or a title is mid-phrase at the last frame', 'end the phrase before the last frame; captions.show false takes them all off'],
   ['keys', 'a key is still on screen at the last frame', 'leave the last second of the clip without a keystroke in it; keys.show false takes them off'],

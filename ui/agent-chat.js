@@ -60,6 +60,8 @@ const ALLOWED = [
   // recording edits one of these too, so this is the only name stills add here
   'take_shot',
   'list_windows', 'list_displays', 'list_recordings',
+  // a simulator, which is a window with a machine inside it: list, ready, go, tap, restore
+  'simulator',
   'probe', 'transcribe',
   'get_edit', 'apply_edit', 'list_beats', 'export', 'rename_recording',
   'get_frame', 'find_on_screen', 'preview_frame', 'contact_sheet', 'remove_dead_air', 'enhance_audio', 'get_settings', 'set_settings', 'delete_recording',

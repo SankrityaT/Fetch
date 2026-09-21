@@ -81,7 +81,12 @@ func listWindows() async throws -> [[String: Any]] {
         let isStripHelper = title.isEmpty && aspect > 5
         if isSquareHelper || isStripHelper { continue }
 
-        let key = "\(owner.applicationName)|\(title)|\(Int(r.width))x\(Int(r.height))"
+        // Keyed on the window id alone. The old key was app, title and size, which is
+        // the same string for two booted simulators of one model with no app in front,
+        // so one of them vanished from the list and "film two devices side by side" was
+        // broken. A window id is unique already, so the same window reported twice is
+        // still dropped and two different windows are never confused for one.
+        let key = String(w.windowID)
         if seen.contains(key) { continue }
         seen.insert(key)
 
@@ -95,6 +100,11 @@ func listWindows() async throws -> [[String: Any]] {
             "title": title,
             "icon": iconFor(owner.processID),
             "width": Int(r.width), "height": Int(r.height),
+            // Where it sits, so the caller can ask which display it is on. A window on a
+            // 1x screen beside a Retina main display has a different scale factor, and a
+            // density measured against the wrong one refuses a good store shot or ships
+            // a soft one.
+            "x": Int(r.origin.x), "y": Int(r.origin.y),
             "_front": isFront, "_regular": isRegular,
         ])
     }

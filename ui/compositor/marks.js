@@ -20,6 +20,7 @@
 
 const Overlays = require('../overlays')
 const Pointer = require('../pointer')
+const Touch = require('../touch')
 const Focus = require('./focus')
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
@@ -306,17 +307,53 @@ function planErase(spans, plates, { src, crop, content, clock, end, span }) {
 }
 
 /**
+ * How wide the touch disc is, in content pixels: a 44 point touch target measured
+ * through the device's own screen, so it is a fingertip on a handset and a fingertip on
+ * a 13 inch tablet rather than right on exactly one of them (ui/touch.js discPixels).
+ *
+ * The viewport is fractions of the recorded window and the content is a crop of that
+ * window, so the measure is taken against the whole window's width in content pixels,
+ * `W / crop.w`. Without a device, or with a viewport the document cannot vouch for, the
+ * fallback is the click ripple's own diameter: the mark Fetch already draws where a
+ * click landed, sized off the frame, rather than a physical size guessed confidently.
+ */
+function discSize(L, device, W, crop) {
+  const c = crop && crop.w > 0 ? crop.w : 1
+  const ripple = 2 * Math.max(L.size * 1.1, 14 * L.unit)
+  if (!device || !device.screen) return ripple
+  try {
+    return Touch.discPixels({ screen: device.screen, viewport: device.viewport, W: W / c }) || ripple
+  } catch { return ripple }
+}
+
+/**
  * The agent's cursor, from its track (Pointer.cursorLayout): where it glides, when it
  * presses, when Biscuit's badge and name show and the ripples of its clicks.
  *   size    the look's cursor.size, 1 is about 30 px tall at 1080
  *   ripple  the look's cursor.ripple
+ *   style   the look's cursor.style: 'arrow' is the cursor, 'touch' is a finger
+ *   device  { screen, viewport } of the simulator this take was of, for the disc's size
  */
-function planPointer(points, { W, H, clock, crop, scale, span, px, zooms, size = 1, ripple = true }) {
+function planPointer(points, { W, H, clock, crop, scale, span, px, zooms, size = 1, ripple = true, style = 'arrow', device = null }) {
   if (!Array.isArray(points) || !points.length) return null
   // cursorLayout sizes the arrow for the finished frame from px; a larger cursor is the
   // same arrow for a frame with fewer pixels per content pixel
   const L = Pointer.cursorLayout(points, { W, H, clock, crop, scale, end: span, out: px / clamp(+size || 1, 0.6, 2), zooms })
   if (!L) return null
+  // A finger is not on the glass between taps, so a touch take is its touches and
+  // nothing in between: no glide from one tap to the next, no badge, no name tag, no
+  // ripple, because the disc is the mark the ripple would have been under. Everything
+  // before this point is shared on purpose: the output clock, the crop, the zoom fit and
+  // the size are the same work whether the track came off a mouse or off a device, and a
+  // tap is a position and a moment exactly as a click is (ui/touch.js).
+  if (style === 'touch') {
+    const tp = Touch.planTouch(L.pts)
+    if (!tp) return null
+    // The empty lists are the refusal written down rather than left to be inferred: a
+    // touch take has no click ripple, no Biscuit badge and no name tag on it.
+    return { touch: tp, disc: discSize(L, device, W, crop), stop: Math.max(L.stop, tp.stop),
+      clicks: [], badge: [], tags: [], rippleOn: false }
+  }
   const { BADGE, LOOK, TAG } = Pointer
   const d = 2 * Math.max(4, Math.round(BADGE.r * L.size), Math.round(LOOK.badgeMin * L.unit / 2))
   const br = Math.max(BADGE.r * L.size, LOOK.badgeMin * L.unit / 2)
@@ -562,16 +599,26 @@ function keysAt(K, t, measure = KEY_MEASURE) {
 // ── one moment ───────────────────────────────────────────────────────────
 const RIPPLE = 0.56, FADE_IN = 0.16
 
+// A tap arrives and leaves the way a badge does, in the one part of a badge's manner a
+// finger has: it grows in on the way down and settles back as it lifts, with no
+// overshoot, because a finger does not bounce. Written against the presence ui/touch.js
+// already solved, so it stays a closed form of the time since the tap and any frame
+// still draws alone: op runs 0 to 1 over the approach and 1 back to 0 over the lift.
+const GROW = { down: 0.82, up: 0.92 }
+const growOf = d => (d.age < 0 ? GROW.down + (1 - GROW.down) * d.op : GROW.up + (1 - GROW.up) * d.op)
+
 /**
  * Everything drawn in content space at output time t, from planMarks, planErase and
- * planPointer: { erase, redact, blur, focus, steps, pointer }, each only what shows.
+ * planPointer: { erase, redact, blur, focus, steps, pointer, touch }, each only what
+ * shows. `pointer` is the agent's cursor and `touch` the discs of a touch take; a plan
+ * carries one or the other, never both.
  */
 function at(m, t) {
   const live = x => t >= x.a && t < x.b
   const out = {
     erase: (m.erase || []).filter(live).slice(0, MAX.erase + 16),
     redact: (m.redact || []).filter(live).slice(0, MAX.redact),
-    blur: [], focus: [], steps: [], loupe: [], arrow: [], pointer: null,
+    blur: [], focus: [], steps: [], loupe: [], arrow: [], pointer: null, touch: [],
   }
   for (const b of m.blur || []) {
     if (!live(b)) continue
@@ -634,8 +681,26 @@ function at(m, t) {
     out.arrow.push({ ...a, op, grow, x: x - a.ux * back, y: y - a.uy * back })
   }
 
+  // A point on a lifted card rides the card, whichever mark is drawn there.
+  const rideLift = (x, y) => {
+    let rx = x, ry = y
+    m.focus.forEach((f, i) => {
+      const sh = f.shape, L = lifted[i]
+      if (sh.kind !== 'lift' || !(L > 0) || x < sh.x || x > sh.x + sh.w || y < sh.y || y > sh.y + sh.h) return
+      const q = onLift(sh, L, x, y); rx = q.x; ry = q.y
+    })
+    return { x: rx, y: ry }
+  }
+
   const P = m.pointer
-  if (P && t >= P.pl.start && t <= P.stop) {
+  // Every disc is its own closed form of the time since its own tap, so two taps inside
+  // one lift are two marks and neither of them reads the frame before it.
+  if (P && P.touch) {
+    for (const d of Touch.discsAt(P.touch, t)) {
+      const q = rideLift(d.x, d.y)
+      out.touch.push({ x: q.x, y: q.y, op: d.op, scale: d.press * growOf(d) })
+    }
+  } else if (P && t >= P.pl.start && t <= P.stop) {
     const pos = Pointer.positionAt(P.pl, t)
     if (pos) {
       let press = 1
@@ -649,13 +714,7 @@ function at(m, t) {
       const tag = P.tags.find(s => t >= s.a && t <= s.b)
       // pointing at something on a lifted card, the cursor rises with the card, the
       // same scale about the same centre and the same move in as the piece
-      let x = pos.x, y = pos.y
-      m.focus.forEach((f, i) => {
-        const sh = f.shape, L = lifted[i]
-        if (sh.kind !== 'lift' || !(L > 0) || pos.x < sh.x || pos.x > sh.x + sh.w || pos.y < sh.y || pos.y > sh.y + sh.h) return
-        const k = 1 + (sh.lift - 1) * L, ccx = sh.x + sh.w / 2, ccy = sh.y + sh.h / 2
-        x = ccx + (pos.x - ccx) * k + sh.nudge.dx * L; y = ccy + (pos.y - ccy) * k + sh.nudge.dy * L
-      })
+      const { x, y } = rideLift(pos.x, pos.y)
       out.pointer = {
         x, y, press, ripples,
         op: Math.min(1, Math.max(0, t - P.pl.start) / FADE_IN),

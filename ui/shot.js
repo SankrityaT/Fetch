@@ -84,6 +84,10 @@ function emptyShot(src, size = {}, id = null) {
     // What take_shot captured: { kind: 'window' | 'display' | 'region', app, title }. The
     // drawn frame is the only thing that reads it, and the only thing that can.
     captured: null,
+    // The machine it was a capture of, where it was a simulator. Same field and same
+    // meaning as an edit's: the device's own framebuffer, which is the only way the
+    // touch disc knows how wide 44 of that device's points are.
+    device: null,
     // The words on the picture: a headline, the quieter line under it, a caption, a
     // label or a callout pinned to a point. No times on any of them.
     texts: [],
@@ -247,6 +251,7 @@ function normalize(shot, src, size) {
   out.cropAR = Look.CROP_ARS.includes(shot.cropAR) ? shot.cropAR : 'free'
   out.viewport = Targets.cleanBox(shot.viewport) || null
   out.captured = cleanCaptured(shot.captured)
+  out.device = Fetchdoc.cleanDevice(shot.device)
   // The page's place arriving for the first time crops the chrome off, once; a crop the
   // person or an agent later changed stays theirs. Same rule and same code as an edit's.
   if (out.viewport && !shot.viewportApplied) {
@@ -319,7 +324,7 @@ const byId = (shot, id) => {
  * v2 place by the edit document's own router, so an agent built against either
  * document drives this one.
  */
-const SETTABLE = ['src', 'w', 'h', 'crop', 'cropAR', 'viewport', 'captured', 'id']
+const SETTABLE = ['src', 'w', 'h', 'crop', 'cropAR', 'viewport', 'captured', 'device', 'id']
 function mergeShot(current, patch) {
   let out = JSON.parse(JSON.stringify(current || {}))
   if (out.kind !== 'shot') out = normalize(out, out.src, out)
@@ -399,7 +404,7 @@ function toRenderSpec(shot) {
     // inviting someone to set a gain on it.
     audio: null, clipAudio: null,
     crop: s.crop || null, viewport: s.viewport || null,
-    captured: s.captured || null,
+    captured: s.captured || null, device: s.device || null,
     zooms: [], marks: timed(s.marks), texts: s.texts || [], cues: [],
     // [] is no cursor at all, as against null, which means the track the take recorded.
     // A capture has no track, so the distinction has one honest answer here.
@@ -427,6 +432,9 @@ function toExportOpts(shot, extra = {}) {
     crop: s.crop || null,
     viewport: s.viewport || null,
     captured: s.captured || null,
+    // The device's own framebuffer, for the one mark that is measured in the device's
+    // points rather than in the frame's pixels.
+    screen: (s.device && s.device.screen) || null,
     keys: null,
     texts: s.texts || [],
     audioTrack: null,

@@ -60,6 +60,10 @@ function emptyDoc(src, dur) {
     // Where a browser's page sits in its window, as fractions {x, y, w, h}, when an
     // agent reported it (pointer with viewport). What frame.chrome remove crops to.
     viewport: null,
+    // The machine the take was of, where it was a simulator: the device's own
+    // framebuffer and which phone it was. The screen is the only part anything drawn
+    // reads, and it reads it for one number, the 44 points a touch target really is.
+    device: null,
     camera: null, audioTrack: null,
     autoZoom: false,
     nextId: { C: 1, Z: 1, T: 1, S: 1, B: 1, M: 1 },
@@ -75,6 +79,32 @@ const LEGACY = ['backdrop', 'backdropFile', 'outAspect', 'capStyle', 'hideMacCur
 // round it. Look owns the pair, because Look.warnings has to say the same thing about
 // a take where neither can happen.
 const CROPS_CHROME = Look.CROPS_CHROME
+
+/**
+ * The device a capture was of, cleaned. Written by a capture of a simulator beside the
+ * viewport (ui/agent-bridge.js simOnDoc), and read by exactly one thing that draws: the
+ * touch disc, which is 44 of the device's own points across and cannot know how wide
+ * that is without the device's own screen. Everything else here is for a person reading
+ * the document, so a wrong field is dropped rather than refused.
+ *
+ * orientation is carried because a device on its side shows the same framebuffer turned,
+ * and a disc sized off the portrait width would be several times too small.
+ */
+function cleanDevice(d) {
+  if (!d || typeof d !== 'object') return null
+  const n = v => (Number.isFinite(+v) && +v > 0 ? +v : null)
+  const s = d.screen && typeof d.screen === 'object' ? d.screen : null
+  const out = {}
+  if (d.udid) out.udid = String(d.udid)
+  if (d.name) out.name = String(d.name)
+  if (d.family) out.family = String(d.family)
+  if (s && n(s.w) && n(s.h)) {
+    out.screen = { w: n(s.w), h: n(s.h), scale: n(s.scale) || 1,
+      ...(String(s.orientation || '') === 'landscape' ? { orientation: 'landscape' } : {}) }
+  }
+  if (n(d.density)) out.density = n(d.density)
+  return Object.keys(out).length ? out : null
+}
 
 // Every level in the document is decibels against the take as recorded, and the same
 // ten either way wherever it is asked for: enough to rescue a passage a metre off the
@@ -314,6 +344,7 @@ function normalize(doc, src, dur) {
   out.v = 2
   for (const k of LEGACY) delete out[k]
   out.viewport = Targets.cleanBox(doc.viewport) || null
+  out.device = cleanDevice(doc.device)
   // The page's place arriving for the first time crops the chrome off, once: a crop
   // the person or an agent later changes or clears stays theirs.
   if (out.viewport && !doc.viewportApplied) {
@@ -442,6 +473,10 @@ function toExportOpts(doc, extra = {}) {
     // where the page sits in a browser take, for the compositor: frame.chrome clean
     // only draws its own browser where the real one could be cropped off
     viewport: doc.viewport || null,
+    // The device's own framebuffer on a take of a simulator, so the touch disc is a real
+    // 44 point target measured through that screen rather than a size guessed against
+    // the frame. Null on every other take, where the disc has no business being drawn.
+    screen: (doc.device && doc.device.screen) || null,
     // the keys as they were pressed, for the strip marks.js draws over the finished
     // frame. Nothing is drawn until a take carries a key track, which is the capture
     // side and its own round, and without this line nothing ever would be.
@@ -497,7 +532,7 @@ function toRenderSpec(doc) {
     v: 2, src: d.src, dur: d.dur,
     keep, length: +Timeline.outLength(keep).toFixed(3),
     look: Look.resolve(d.look), audio: A, clipAudio: clipAudioFor(clipAudio, A),
-    crop: d.crop || null, viewport: d.viewport || null,
+    crop: d.crop || null, viewport: d.viewport || null, device: d.device || null,
     zooms: d.zooms, marks: d.marks, texts: d.texts, cues: d.cues,
     pointer: d.pointer, camera: d.camera && d.camera.on !== false ? d.camera : null,
     autoZoom: !!d.autoZoom, audioTrack: d.audioTrack || null,
@@ -735,7 +770,7 @@ function focusAlongside(prev, doc) {
 }
 
 module.exports = {
-  KINDS, emptyDoc, mintId, ensureIds, normalize, fromLegacy, AUDIO_DEFAULTS, cleanAudio, lookPatchOf, chromeCrop,
+  KINDS, emptyDoc, mintId, ensureIds, normalize, fromLegacy, AUDIO_DEFAULTS, cleanAudio, lookPatchOf, chromeCrop, cleanDevice,
   clipsFromTrim, trimFromClips, toExportOpts, toRenderSpec, outDuration, byId, mergeDoc, settleFocus,
   cleanRate, rateOf, RATE_MIN, RATE_MAX, cleanClipAudio, clipAudioOf, GAIN_DB,
   mergeMarks, adoptIds, sameItem, focusClashes, zoomClashes, focusAlongside,

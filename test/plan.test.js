@@ -413,6 +413,74 @@ console.log('the drawn device, and the tilt')
   is('and the turn is a perspective, not a skew', r3(t14.fit) < 1 && t14.sin > 0 && Number.isFinite(left), true)
 }
 
+console.log('a phone inside a phone')
+{
+  // A device's own window, at the numbers it measured on this Mac
+  // (.context/survey/sim-m0.md): a 792 x 1712 take of a 396 x 856 point window whose
+  // screen is 440 x 956 points. 856 * 440 / 956 is 394 points of glass across a 396
+  // point window, so the screen is the window to within a point either side and the
+  // crop that takes the device's own outline off takes nothing off the top at all.
+  // That is the case the old rule got wrong: it counted only what a crop removed from
+  // the top, so a picture that is now nothing but the screen still read as a picture
+  // with chrome in it, and the phone shell round it came out a plain frame.
+  const meta = { width: 792, height: 1712, duration: 10, fps: 30 }
+  const WIN = { kind: 'window', app: 'Simulator', title: 'Round-Shots-16PM' }
+  const glass = { x: 0.0025, y: 0, w: 0.995, h: 1 }
+  const of = (look, extra = {}) => Plan.prepare({ backdrop: 'dusk', inset: 0.08, ...extra, look }, meta)
+  const dev = (kind, extra) => of({ device: { kind } }, extra).device
+  // the four thicknesses a shell is judged by, in pixels of the finished frame
+  const sides = d => ({ top: d.screen.y - d.box.y, side: d.screen.x - d.box.x,
+    foot: d.box.y + d.box.h - d.screen.y - d.screen.h })
+
+  const cut = dev('phone', { captured: WIN, viewport: glass, crop: glass })
+  is('a capture cropped to the device\'s screen has no chrome left in it', cut.own, false)
+  is('so the shell round it is a phone and not a frame', !!cut.slit, true)
+  const c = sides(cut)
+  is('a phone\'s bezel and foot are a pair, and both stand off its sides',
+    [Math.abs(c.top - c.foot) <= 1, c.top > c.side + 2], [true, true])
+
+  // Asked for anyway, over a capture that kept the device it was of. Fetch draws the
+  // shell rather than refusing it silently, and draws it as a plain frame: one
+  // thickness on all four sides and no speaker slit, because the slit is the stroke
+  // that says phone and the picture already has a phone in it.
+  const kept = dev('phone', { captured: WIN, viewport: glass })
+  is('a phone asked for over a capture that kept its own device is still drawn', !!kept.box, true)
+  is('but it wears no speaker slit, since the picture already has a phone in it', kept.slit, null)
+  const k = sides(kept)
+  is('and it is a plain frame: one thickness on all four sides',
+    [Math.abs(k.top - k.side) <= 1, Math.abs(k.foot - k.side) <= 1], [true, true])
+  is('which is thinner than the bezel a phone of its own gets', k.top < c.top, true)
+
+  // The rule is the viewport, not the edge a crop happened to come off. A crop tighter
+  // than the screen is inside it, so it is screen too; a crop that keeps what stands
+  // round the screen is not.
+  is('a crop tighter than the screen carries no chrome either',
+    dev('phone', { captured: WIN, viewport: glass, crop: { x: 0.1, y: 0.2, w: 0.6, h: 0.5 } }).own, false)
+  is('and a crop that keeps what stands round it does',
+    dev('phone', { captured: WIN, viewport: glass, crop: { x: 0, y: 0, w: 1, h: 1 } }).own, true)
+  is('as does no crop at all where the screen\'s place is unknown', dev('phone', { captured: WIN }).own, true)
+
+  // Nothing above changes the answer for the shells that already had one. A window
+  // capture with no viewport is the case the plain bezel was written for.
+  const win = dev('window', { captured: WIN })
+  is('a window shell round a capture with its own bar is unchanged', win.own, true)
+  is('and its top is still the same bezel as its sides', Math.abs(sides(win).top - sides(win).side) <= 1, true)
+  const region = dev('phone', { captured: { kind: 'region' } })
+  is('a region capture never had chrome, so a phone is a phone', [region.own, !!region.slit], [false, true])
+
+  // A member of a group answers the same question about its own capture, so a device
+  // standing beside a window is drawn from the same rule as one on its own.
+  const two = [{ src: '/tmp/a.png', w: 3420, h: 1780, scale: 2, device: 'window' },
+    { src: '/tmp/b.png', w: 792, h: 1712, scale: 2, device: 'phone', captured: WIN, viewport: glass, crop: glass }]
+  const set = Plan.prepare({ backdrop: 'dusk', inset: 0.08, backdropAspect: 16 / 9,
+    group: { members: two }, look: { device: {} } }, { width: 3420, height: 1780, duration: 10, fps: 30 })
+  is('a group member cropped to its screen is a phone too', !!set.group[1].device.slit, true)
+  const plain = Plan.prepare({ backdrop: 'dusk', inset: 0.08, backdropAspect: 16 / 9,
+    group: { members: [two[0], { ...two[1], crop: null }] }, look: { device: {} } },
+  { width: 3420, height: 1780, duration: 10, fps: 30 })
+  is('and one that kept its own device is a plain frame', plain.group[1].device.slit, null)
+}
+
 console.log('the picture\'s own type, and the room it takes')
 {
   const meta = { width: 2560, height: 1600, duration: 60, fps: 30 }

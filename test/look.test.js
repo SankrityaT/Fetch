@@ -159,8 +159,9 @@ console.log('the inspector and the agent docs')
   // about 4 characters a token: the whole schema stays inside a couple of thousand of
   // them. It grew a section at M5 (the drawn device), and again at R3: motion.loop, the
   // three keys fields, and [gif] becoming [classic] on every field the classic renderer
-  // leaves out, which is a longer word on a lot of lines and a truer one.
-  is('the agent docs fit a token budget', doc.length < 11500, true)
+  // leaves out, which is a longer word on a lot of lines and a truer one. Again at the
+  // simulator round: cursor.style, which is what tells a finger from an arrow.
+  is('the agent docs fit a token budget', doc.length < 12000, true)
   is('no em dashes in the agent docs', /\u2014/.test(doc), false)
   is('when hides a field that does not apply', L.visible(S.BY_PATH.get('background.color'), L.defaults()), false)
   is('the advanced fields are a handful, so one disclosure holds them',

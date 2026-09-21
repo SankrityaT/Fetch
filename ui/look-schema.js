@@ -91,9 +91,10 @@ const FIELDS = [
   f('frame.shadow', 'number', 0.6, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Shadow',
     doc: 'Strength of the soft shadow under the framed take.',
     when: { 'background.kind': '!none' } }),
-  f('frame.chrome', 'enum', 'remove', { options: ['keep', 'remove', 'clean'], label: 'Browser chrome',
-    doc: 'A browser take\'s tabs and toolbar. remove crops them off where Fetch knows the page\'s place ' +
-      '(an agent recorded it by reporting its pointer with viewport); keep leaves them; clean crops the same way and draws a frame of Fetch\'s own round the page.',
+  f('frame.chrome', 'enum', 'remove', { options: ['keep', 'remove', 'clean'], label: 'Capture chrome',
+    doc: 'A browser take\'s tabs and toolbar, or the outline a device\'s own window draws round its screen. remove crops ' +
+      'to the content where Fetch knows its place (an agent reported its pointer with viewport, or the take is a ' +
+      'simulator\'s); keep leaves it; clean crops the same way and draws a frame of Fetch\'s own round it.',
     classicOptions: ['clean'] }),
   f('frame.scale', 'number', 1, { min: 0.5, max: 1.2, step: 0.01, unit: 'x', label: 'Scale', doc: 'Size of the framed take.', undrawn: true, advanced: true }),
   f('frame.offsetX', 'number', 0, { min: -0.5, max: 0.5, step: 0.01, unit: '%', label: 'Offset X', doc: 'Moves the framed take across.', undrawn: true, advanced: true }),
@@ -106,7 +107,8 @@ const FIELDS = [
   f('device.kind', 'enum', 'none', { options: ['none', 'browser', 'window', 'laptop', 'phone'], label: 'Device',
     doc: 'A drawn frame round the take: generic shapes, never a real product. frame.chrome clean draws the browser one on its own. ' +
       'A shot of several captures draws one frame each, the capture\'s own or this. Round a capture that already has chrome in it ' +
-      'the frame wears a plain bezel, so the picture has one title bar and not two.',
+      'the frame wears a plain bezel, so the picture has one title bar and not two. A phone over a capture that kept its own ' +
+      'device is that bezel with no speaker slit either: crop to the screen to draw the phone in full.',
     classic: false }),
   f('device.title', 'string', '', { label: 'Address or title',
     doc: 'What the bar says. Anything shaped like a host is drawn as a browser\'s address, anything else as a centred title. ' +
@@ -196,6 +198,10 @@ const FIELDS = [
   f('cursor.size', 'number', 1, { min: 0.6, max: 2, step: 0.05, unit: 'x', label: 'Cursor size', doc: 'Size of the drawn cursor.', classic: false }),
   f('cursor.smoothing', 'number', 0.5, { min: 0, max: 1, step: 0.05, label: 'Smoothing', doc: 'How much the cursor\'s path is smoothed.', undrawn: true }),
   f('cursor.ripple', 'bool', true, { label: 'Click ripple', doc: 'A gold ripple on each click.', classic: false }),
+  f('cursor.style', 'enum', 'arrow', { options: ['arrow', 'touch'], label: 'Cursor style',
+    doc: 'What the take\'s pointer track draws. arrow is the agent\'s cursor. touch is a finger: a disc that ' +
+      'appears where a tap landed and is gone between taps, and defaults on a take whose target was a simulator. ' +
+      'The classic export path draws the arrow only.', classic: false }),
 
   // ── keys ──
   // Drawn from the take's own key track (marks.js planKeys), which the recorder does not
