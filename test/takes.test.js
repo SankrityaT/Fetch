@@ -31,6 +31,7 @@ function take(stem) {
   fs.mkdirSync(side, { recursive: true })
   fs.writeFileSync(path.join(side, stem + '.cam.mov'), 'cam')
   fs.writeFileSync(path.join(side, stem + '.srt'), '1\n00:00:00,000 --> 00:00:01,000\nhi\n')
+  fs.writeFileSync(path.join(side, stem + '.history.jsonl'), '{"n":1,"at":0,"by":null,"how":"start","doc":{}}\n')
   fs.writeFileSync(path.join(side, stem + '.cam.json'), JSON.stringify({ file: path.join(side, stem + '.cam.mov') }))
   fs.writeFileSync(path.join(side, stem + '.fetchdoc.json'),
     JSON.stringify({ v: 1, camera: { on: true, file: path.join(side, stem + '.cam.mov') } }))
@@ -93,6 +94,10 @@ function take(stem) {
     is('sidecars move with the raw take',
       ['.cam.mov', '.srt', '.cam.json', '.fetchdoc.json'].map(e => exists(path.join(t2, 'Original', '.fetch', 'Linear · Triage' + e))),
       [true, true, true, true])
+    // the take-namer renames every new take, so a history left under the old name was
+    // every take opening with no past
+    is('its version history moves with it', [exists(path.join(t2, 'Original', '.fetch', 'Linear · Triage.history.jsonl')),
+      exists(path.join(t2, 'Original', '.fetch', 'recording-1789000000001.history.jsonl'))], [true, false])
     const cam = JSON.parse(fs.readFileSync(path.join(t2, 'Original', '.fetch', 'Linear · Triage.cam.json'), 'utf8'))
     is('the camera sidecar points at the moved camera take', cam.file, path.join(t2, 'Original', '.fetch', 'Linear · Triage.cam.mov'))
     const doc = JSON.parse(fs.readFileSync(path.join(t2, 'Original', '.fetch', 'Linear · Triage.fetchdoc.json'), 'utf8'))

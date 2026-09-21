@@ -627,5 +627,131 @@ console.log('which engine')
   is('classic on request', Plan.engineFor({}, {}, 'classic').engine, 'classic')
 }
 
+console.log('the glass is round, and the mask is as round as it')
+{
+  // Yolk-ProMax again: 706 x 1534 of glass in a 794 x 1718 capture, and the corner
+  // ui/simulator.js measured off that capture's pixels, 110.33 px or 0.1563 of the
+  // glass's short side. Before this, the drawn screen was rounded at 0.03 of its width
+  // and a crescent of Simulator bezel showed in each corner (st-taste.md, section 5).
+  const meta = { width: 794, height: 1718, duration: 10, fps: 30 }
+  const SCREEN = { w: 1320, h: 2868, scale: 3 }
+  const glass = { x: 44 / 794, y: 154 / 1718, w: 706 / 794, h: 1534 / 1718 }
+  const round = { ...glass, corner: 0.1563 }
+  const of = (look, extra = {}) => Plan.prepare({ backdrop: 'dusk', inset: 0.08, ...extra, look }, meta)
+  // the real capture's ring, row by row down from the corner (test/simulator.test.js)
+  const PROFILE = [97, 89, 82, 77, 73, 69, 66, 63, 60, 58, 56, 53, 51, 49, 48, 46, 44, 43, 41, 40, 38, 37,
+    36, 35, 34, 32, 31, 30, 29, 28, 27, 26, 26, 25, 24, 23, 22, 21, 21, 20, 19, 18, 18, 17, 16, 16, 15, 15, 14,
+    14, 13, 12, 12, 11, 11, 11, 10, 10, 9, 9, 8, 8, 8, 7, 7, 7, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 3,
+    2, 2, 2, 2, 2, 2, 1, 1]
+  // Bezel left showing: rows of the capture's ring the drawn circle does not cover,
+  // scaled to the screen the take is drawn at. 0.2 px of slack for the capture's own
+  // anti-aliasing, which is a fraction of one pixel either way.
+  const showing = (r, k) => PROFILE.filter((d, t) => {
+    const tp = (t + 0.5) * k
+    const hidden = tp >= r ? 0 : r - Math.sqrt(r * r - (r - tp) ** 2)
+    return hidden < d * k - 0.2
+  }).length
+
+  const was = of({ device: { kind: 'phone' } }, { screen: SCREEN, viewport: glass, crop: { ...glass } }).device
+  const now = of({ device: { kind: 'phone' } }, { screen: SCREEN, viewport: round, crop: { ...round } }).device
+  const k = now.screen.w / 706
+  is('the phone as it was: rows of bezel showing in every corner', showing(was.screen.r, was.screen.w / 706) > 60, true)
+  is('with the glass measured, none', showing(now.screen.r, k), 0)
+  is('the screen is rounded by the glass, measured, not a share guessed per device',
+    Math.abs(now.screen.r - 0.1563 * now.screen.w) < 1, true)
+  // concentric: the bezel is as thick round the corner as down the side
+  is('the shell is cut round the same centre, so its bezel does not thicken at the corners',
+    Math.abs(now.box.r - now.screen.r - (now.screen.x - now.box.x)) < 1, true)
+  is('and the take is masked by that radius', of({ device: { kind: 'phone' } }, { screen: SCREEN, viewport: round, crop: { ...round } }).radius, now.screen.r)
+
+  // A framed take with no device: the same crescent, the same fix.
+  const bare = of({}, { screen: SCREEN, viewport: round, crop: { ...round } })
+  is('with no device drawn the take is still masked to its glass', Math.round(bare.radius), Math.round(0.1563 * Math.min(bare.rect.w, bare.rect.h)))
+
+  // Only where the crop is the glass. Anywhere else the corners are app, or the whole
+  // bezel, and rounding them is either cutting the product or pointless.
+  const tight = { x: 0.1, y: 0.2, w: 0.5, h: 0.4 }
+  is('a crop inside the glass is not rounded to it',
+    of({ device: { kind: 'phone' } }, { screen: SCREEN, viewport: round, crop: tight }).device.screen.r,
+    of({ device: { kind: 'phone' } }, { screen: SCREEN, viewport: glass, crop: tight }).device.screen.r)
+  is('a take that kept the window keeps the plain frame it had',
+    JSON.stringify(of({ device: { kind: 'phone' } }, { screen: SCREEN, viewport: round }).device),
+    JSON.stringify(of({ device: { kind: 'phone' } }, { screen: SCREEN, viewport: glass }).device))
+  is('and a browser page is never a device\'s glass', of({ device: { kind: 'browser' } },
+    { viewport: { x: 0, y: 0.12, w: 1, h: 0.88, corner: 0.2 }, crop: { x: 0, y: 0.12, w: 1, h: 0.88 } }).device.screen.r,
+    of({ device: { kind: 'browser' } }, { viewport: { x: 0, y: 0.12, w: 1, h: 0.88 }, crop: { x: 0, y: 0.12, w: 1, h: 0.88 } }).device.screen.r)
+}
+
+console.log('the take at the store plan\'s box')
+{
+  // The judged app preview: the ProMax take into app-preview-6.9 at padding 0.11, so
+  // ui/sizes.js preview() judged the upscale at a 0.78 share and planned the take at
+  // 689 x 1497, at 99, 212 of 886 x 1920. What the compositor drew instead was 690 x
+  // 1498 at 98, 211 in a plain frame, and 650 x 1414 at 118, 254 inside a drawn phone:
+  // six percent smaller than the picture that was judged.
+  const Sizes = require('../ui/sizes')
+  const meta = { width: 794, height: 1718, duration: 28, fps: 60 }
+  const SCREEN = { w: 1320, h: 2868, scale: 3 }
+  const glass = { x: 44 / 794, y: 154 / 1718, w: 706 / 794, h: 1534 / 1718, corner: 0.1563 }
+  const want = Sizes.preview({ w: 794, h: 1718, seconds: 28, fps: 60, hasAudio: true, family: 'iphone' },
+    'app-preview-6.9', { crop: { w: 706, h: 1534 }, share: 0.78, device: { w: 1320, h: 2868 } })
+  is('the plan, as the store gate makes it', [want.ok, want.size, want.box], [true, { w: 886, h: 1920 }, { w: 689, h: 1497, x: 99, y: 212 }])
+  const base = { backdrop: 'blur', inset: 0.11, backdropAspect: 886 / 1920, size: want.size,
+    screen: SCREEN, viewport: glass, crop: { ...glass } }
+  const draw = (look, box) => Plan.prepare({ ...base, look, ...(box ? { box } : {}) }, meta)
+  const box4 = r => [r.x, r.y, r.w, r.h]
+  const B = box4(want.box)
+
+  is('without the box, a plain frame is a pixel off it', box4(draw({}).rect), [98, 211, 690, 1498])
+  is('and a drawn phone is well inside it', box4(draw({ frame: { chrome: 'clean' } }).rect), [118, 254, 650, 1414])
+  const flat = draw({}, want.box)
+  is('with it, the take is the box', box4(flat.rect), B)
+  is('on the store\'s exact pair', [flat.W, flat.H], [886, 1920])
+  const ph = draw({ frame: { chrome: 'clean' } }, want.box)
+  is('inside a drawn phone the screen is the box', box4(ph.device.screen), B)
+  is('and the shell grows round it rather than shrinking the take',
+    [ph.device.box.x < 99, ph.device.box.y < 212, ph.device.box.x + ph.device.box.w > 788, ph.device.box.y + ph.device.box.h > 1709], [true, true, true, true])
+  is('still inside the picture', [ph.device.extent.x >= 0, ph.device.extent.y >= 0,
+    ph.device.extent.x + ph.device.extent.w <= 886, ph.device.extent.y + ph.device.extent.h <= 1920], [true, true, true, true])
+  is('keeping its phone\'s own bezels', [!!ph.device.slit, ph.device.own], [true, false])
+  is('and its glass corner', Math.round(ph.device.screen.r), Math.round(0.1563 * 689))
+  // what the store gate judged is what is drawn: capture pixels per drawn pixel
+  is('so the density drawn is the density judged', +(706 / ph.rect.w).toFixed(3), want.density)
+
+  // A box of another shape would stretch the app, and one off the picture is not a place.
+  is('a box of the wrong shape is not drawn at', box4(draw({}, { ...want.box, w: 600 }).rect), [98, 211, 690, 1498])
+  is('nor one off the picture', box4(draw({}, { ...want.box, x: 400 }).rect), [98, 211, 690, 1498])
+  is('nor a box with no size to be a box in', box4(Plan.prepare({ ...base, size: null, box: want.box, look: {} }, meta).rect), [98, 211, 690, 1498])
+  is('and an unframed take has nowhere to put one', Plan.prepare({ crop: { ...glass }, size: want.size, box: want.box }, meta).rect.x, 0)
+
+  // A shell grown round a box near the edges runs off the picture: at a 0.95 share the
+  // box is 24, 48, 839 x 1824 and the phone round it reached -18, -11, 923 x 1942 on an
+  // 886 x 1920 canvas. Then the shell is fitted inside the box, as the layout does.
+  {
+    const big = Sizes.preview({ w: 1320, h: 2868, seconds: 28, fps: 60, hasAudio: true, family: 'iphone' },
+      'app-preview-6.9', { share: 0.95, device: { w: 1320, h: 2868 } })
+    const full = { x: 0, y: 0, w: 1, h: 1, corner: 0.1563 }
+    const p = Plan.prepare({ backdrop: 'blur', backdropAspect: 886 / 1920, size: big.size, box: big.box,
+      screen: SCREEN, viewport: full, crop: { ...full }, look: { frame: { chrome: 'clean' } } },
+    { width: 1320, height: 2868, duration: 28, fps: 60 })
+    const e = p.device.extent
+    is('the box a 0.95 share plans', box4(big.box), [24, 48, 839, 1824])
+    is('a phone that would leave the picture is kept inside it', [e.x >= 0, e.y >= 0, e.x + e.w <= 886, e.y + e.h <= 1920], [true, true, true, true])
+    is('by fitting inside the box, never by growing past it',
+      [p.rect.x >= 24, p.rect.y >= 48, p.rect.x + p.rect.w <= 24 + 839, p.rect.y + p.rect.h <= 48 + 1824], [true, true, true, true])
+  }
+
+  // A size whose ratio the layout rounds: the iPad's 1200 x 1600 was composed at 1440 x
+  // 1920 and scaled, so a box in the store's pixels lands in the store's pixels only if
+  // the plan is drawn at that pair.
+  const ipad = Sizes.preview({ w: 1640, h: 2360, seconds: 20, fps: 60, hasAudio: true, family: 'ipad' },
+    'app-preview-13', { share: 0.84 })
+  if (ipad.ok) {
+    const s = Plan.prepare({ backdrop: 'blur', inset: 0.08, backdropAspect: ipad.size.w / ipad.size.h, size: ipad.size, box: ipad.box, look: {} },
+      { width: 1640, height: 2360, duration: 20, fps: 60 })
+    is('an iPad preview is planned at its own pair and its own box', [s.W, s.H, ...box4(s.rect)], [ipad.size.w, ipad.size.h, ...box4(ipad.box)])
+  } else is('an iPad preview plans', ipad.reason, null)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

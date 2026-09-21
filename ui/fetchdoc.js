@@ -90,6 +90,17 @@ const CROPS_CHROME = Look.CROPS_CHROME
  * orientation is carried because a device on its side shows the same framebuffer turned,
  * and a disc sized off the portrait width would be several times too small.
  */
+// The glass's rectangle and its measured corner (ui/simulator.js cornerOf), a share of
+// the glass's short side. cleanBox keeps the rectangle alone, and a corner dropped here
+// never reaches the plan, which then masks with the window's small radius and leaves a
+// crescent of Simulator bezel in each corner of the phone.
+function cleanViewport(v) {
+  const box = Targets.cleanBox(v)
+  if (!box) return null
+  const corner = +v.corner
+  return corner > 0 && corner < 0.5 ? { ...box, corner } : box
+}
+
 function cleanDevice(d) {
   if (!d || typeof d !== 'object') return null
   const n = v => (Number.isFinite(+v) && +v > 0 ? +v : null)
@@ -343,7 +354,7 @@ function normalize(doc, src, dur) {
   }
   out.v = 2
   for (const k of LEGACY) delete out[k]
-  out.viewport = Targets.cleanBox(doc.viewport) || null
+  out.viewport = cleanViewport(doc.viewport)
   out.device = cleanDevice(doc.device)
   // The page's place arriving for the first time crops the chrome off, once: a crop
   // the person or an agent later changes or clears stays theirs.
@@ -770,7 +781,7 @@ function focusAlongside(prev, doc) {
 }
 
 module.exports = {
-  KINDS, emptyDoc, mintId, ensureIds, normalize, fromLegacy, AUDIO_DEFAULTS, cleanAudio, lookPatchOf, chromeCrop, cleanDevice,
+  KINDS, emptyDoc, mintId, ensureIds, normalize, fromLegacy, AUDIO_DEFAULTS, cleanAudio, lookPatchOf, chromeCrop, cleanDevice, cleanViewport,
   clipsFromTrim, trimFromClips, toExportOpts, toRenderSpec, outDuration, byId, mergeDoc, settleFocus,
   cleanRate, rateOf, RATE_MIN, RATE_MAX, cleanClipAudio, clipAudioOf, GAIN_DB,
   mergeMarks, adoptIds, sameItem, focusClashes, zoomClashes, focusAlongside,

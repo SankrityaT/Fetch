@@ -525,9 +525,9 @@ preview frame, a contact sheet cell and an exported PNG of one plan are the same
 the same format. What is left for the classic ffmpeg renderer is a sound file and a
 preview still taken off its own path.
 
-**MCP tools** (`mcp/index.js`), 40: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `take_shot`, `pointer`,
+**MCP tools** (`mcp/index.js`), 41: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `take_shot`, `pointer`,
 `list_windows`, `list_displays`, `list_recordings`, `simulator`, `probe`, `transcribe`,
-`list_beats`, `get_edit`, `apply_edit`, `direct`, `review`, `fit_to_length`, `revert_my_edit`,
+`list_beats`, `get_edit`, `apply_edit`, `direct`, `review`, `fit_to_length`, `revert_my_edit`, `versions`,
 `ask`, `propose`, `can_loop`,
 `export`, `rename_recording`,
 `remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`, `delete_recording`,
@@ -827,9 +827,56 @@ the sound is one stereo AAC track at 256 kbps and 48 kHz (silence of that shape 
 with none), and the family is the one the take records, so an iPhone take asked into the
 iPad size is refused by name. Whether the capture would be enlarged is judged at the share
 of the picture the look actually draws it at, and a refusal names the `frame.padding` that
-puts it at its own pixels, the one fix an agent can make without the person's hands. The
-written file is measured again afterwards so nothing is called a store file that is not one. `pointer` gains nothing: the take's target decides the mark, so an
+puts it at its own pixels, the one fix an agent can make without the person's hands, and
+the same refusal names the length when that does not hold either, rather than keeping it for
+a second call. The picture is H.264 High Profile Level 4.0 at a constant 11 Mbps, inside
+the page's 10 to 12, and the take is drawn at exactly the box the gate judged
+(`plan.box`), not where the look's padding would have put it. A drawn phone grows round
+that box, and where it would run off the picture (a share of 0.95 put it past all four
+edges) it is fitted inside the box instead, a smaller take and never a cut shell. The
+glass's measured corner rides with the viewport into the edit and the still alike, so the
+screen is masked at the device's own radius and no crescent of Simulator bezel shows in
+its corners. **The picture is the
+length**: the sound is padded to the edit, never the other way round. The written file is
+measured again afterwards, frames counted off the file, and the result's `seconds` is that
+count, so nothing is called a store file that is not one: a file short of its edit is not
+kept, and one outside the rate band is not called the store file. Measured on the judged
+take, a 28 s edit exported through the real `export` op: before, 23.93 s at 0.46 Mbps
+with `seconds: 28` at the top of the result; now 28.00 s at 11.02 Mbps, the take drawn at
+99, 212, 689 x 1497 of 886 x 1920 on every frame measured, and the plan's export step
+closed by the file. `pointer` gains nothing: the take's target decides the mark, so an
 agent reporting a tap on a device gets a finger without knowing there is a setting.
+
+**Each simulator argument takes one kind of identifier, and says which.** `device` a UDID
+or a name, `app` the absolute path to a built `.app` (installed, then launched by the
+bundle id its own Info.plist declares), `bundle` a bundle id already on the device, `url`
+a link with a scheme, `element` an E or R id. The judged job's one wasted call was a
+bundle id that `direct` had written into `app`, refused only after the person had said yes
+and the device had booted. Now the director sends the brief's app to the argument that
+takes its form, and the bridge reads the form of every identifier before anything is asked
+or spawned: where it is certain (a bundle id is never an absolute path) the value is moved
+and the result says so under `moved`, and where it is not the refusal names the argument it
+belongs in. A device not found that looks like a bundle id or a window id says so.
+
+**A take's sound is on its picture's clock, and the result says where it sits.** A window
+take's sound comes from a second capture that was opened after the picture's, so a
+simulator take started its sound 2.3 s late, and every reader that takes a track from its
+first sample moved it 2.3 s early. The recorder now opens the sound first, queues it rather
+than dropping it while the file is busy, and writes silence into every stretch the capture
+sent nothing, from the first frame to Stop, so a sample's place in the file is its place in
+time. The written position is the sum of what was written, not each buffer's own stamp,
+so a sound clock running slow or fast against the host clock is corrected as it builds, with
+silence when the file falls behind and the head of a buffer let go when it runs ahead:
+generated at 2000 ppm either way, a click stays within 4 ms of its frame where it was 14 ms
+out at 7 s and growing. Takes already on disk have their late start put back by every export,
+transcript, waveform and conversion (a wav from a 2.3 s-lead take had its 3 s click at
+0.7 s). `record_stop` and `probe` carry `sync`: where the file's first sound frame is, where
+its last one ends against the picture, how much was filled with silence and how much was let
+go, in numbers and one sentence, and the recorder's own account on `record_stop`. `in_sync`
+is true only when the end was measured and lands with the picture: the judged take's sound
+ends 1.71 s early because the recorder of the time dropped 20 ms at a time inside the take,
+and no export can put that back, so it says `in_sync: false` and says to record again or
+narrate with voiceover.
 
 **The named job is five calls plus the loop's three.** `ready`, `record_start`, a tap a
 screen, `record_stop`, `export`, and the `direct`, `fit_to_length` and `review` every job
@@ -878,9 +925,53 @@ trail, a long press or a pinch, the locale and device matrix batch runner, and a
 simulator as a member of a group shot,
 capturing the keyboard, reading the project's source code, a fourth capture in one
 picture, a mark that spans two of them, and per-member tilt (each device angled its own
-way is two cameras, and a group that wants two angles wants two pictures). Version
-history is not built either: restoring an earlier version of an item needs the edit
-document to keep its own past, and that is the editor's side of the house.
+way is two cameras, and a group that wants two angles wants two pictures).
+
+**Version history** (`ui/history.js`, `versions`). Session undo dies with the window and
+`revert_my_edit` only knows an agent's own last burst, so neither could answer "what did
+this look like on Tuesday, before the agent re-cut it". Every settled state of a take's or
+a shot's edit is a version in an append-only sidecar beside it
+(`.fetch/<stem>.history.jsonl`), with a stable id (`V12`), who made it (an agent by name,
+or the person) and one line of what changed in the ids the timeline draws. **A restore is
+a new version on top**: nothing is rewound, so everything ahead of it stays and can itself
+be restored, and the id counter only moves forward. The person reaches it from the History
+button beside Undo (Cmd+Y): look at a version on the stage, then Restore or Back to now.
+An agent reaches the same log through `versions`: `list`, `look` (what restoring it would
+change, its edit, and a frame drawn by the export's renderer, with nothing changed) and
+`restore`, whose result names the call that takes it back. Kept: everything from the last
+week, the last of each day for three months, the last of each week after that. The first
+version and the newest are kept always. Every restore and the person's own state just before
+an agent took over are kept whatever their age for the week, then one a day and one a week
+like the rest, and they are the last to go at the cap. The cap is 1,000 versions or 16 MB a
+take: one author's bursts (versions within five minutes) collapse to their last state first,
+then the oldest versions go; the size bound is measured line by line and never thins inside
+the week past the bursts, since a week of corrections is what a history is for. The history
+is a sidecar, so a rename carries it and the Trash takes it with its take, and a line that
+did not reach the disk is not a version: the change rides into the next one, written whole.
+A restore brings back the files a version used where they still are, follows the ones a
+rename moved, and says so where a file is gone or was rewritten in place since (voiceover
+writes one track per take). While the person looks at an old version, anything that reads
+the edit (`get_edit`, the chat, a rename) reads the edit as it stands, not the stage, and a
+look or a restore waits while an agent's change is landing.
+
+**Keyboard, and a brake.** Fetch has a real menu bar with the Mac's own keys (Cmd+1 to 4
+for the four screens, Cmd+F for search, Cmd+Y for history, Cmd+, for Settings). **Esc
+stops an agent that is driving, whatever has focus**: while one of its calls runs, a chat
+turn runs or its take rolls, and for three seconds after, Esc is Fetch's, and pressing it
+cancels the chat turn, stops an agent's take (kept, not discarded), withdraws every "until
+Fetch quits" yes, and refuses every later call with a sentence telling the agent to stop and
+ask, until the person lets it continue. A yes clicked on a dialog after Esc does not act, and
+a take whose start was already on its way is stopped the moment it goes live. **The trade**:
+in that stretch Esc is taken from the app in front, a terminal agent's own interrupt key
+included, and the pill says so ("Esc in any app stops it here"). Between calls, while an
+agent thinks, Esc goes back to the app in front so a terminal's Esc still reaches its agent,
+but the brake stays armed for as long as the agent is connected (until its socket closes or
+five quiet minutes): the pill's Stop, Agent > Stop, the tray and Esc in Fetch's own window
+all stop it then. A message to the in-app chat lets only the chat's own agent go on (its
+shim names itself with `--chat`); a stopped terminal agent waits for Let it continue. Cmd+. and the Stop button on the working pill do the same,
+and an Esc in Fetch's own window is caught ahead of every other handler, which covers the case
+of macOS not handing a bare Esc to a global shortcut (proven through the registered callback,
+never by pressing a key).
 
 ## Strategic principles
 

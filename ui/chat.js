@@ -256,7 +256,7 @@
     const src = contextSrc()
     if (!src) return INTRO
     let doc = null
-    try { doc = window.fetchDoc.get() } catch {}
+    try { doc = (window.fetchHistory && window.fetchHistory.current && window.fetchHistory.current()) || window.fetchDoc.get() } catch {}
     const meta = window.ed && window.ed.meta
     const chips = Assist.suggestions(doc, { hasAudio: meta ? meta.hasAudio !== false : true })
     return `
@@ -785,7 +785,8 @@
     let open = null, job = null
     if (src) {
       let doc = null
-      try { if (window.ed && window.ed.docReady) doc = window.fetchDoc.get() } catch {}
+      // the edit as it stands, not an old version the person is looking at
+      try { if (window.ed && window.ed.docReady) doc = (window.fetchHistory && window.fetchHistory.current && window.fetchHistory.current()) || window.fetchDoc.get() } catch {}
       open = { path: src, dur: window.ed && window.ed.dur, doc }
       job = jobFor(src)
     }

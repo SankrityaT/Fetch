@@ -233,5 +233,12 @@ is('and it is the one instant renderStills is asked for', S.times(), [S.HOLD])
     ['gradient', 'mint', '1:1'])
 }
 
+// A still of a device keeps the glass corner too, both when made and when opened
+{
+  const vp = { x: 0.1, y: 0.1, w: 0.5, h: 0.5, corner: 0.2 }
+  is('a shot opened keeps the glass corner', S.normalize({ src: '/a.png', w: 10, h: 10, viewport: vp }).viewport.corner, 0.2)
+  is('a shot made from a take keeps it', S.fromTake({ viewport: vp }, { src: '/a.png', w: 10, h: 10 }).viewport.corner, 0.2)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

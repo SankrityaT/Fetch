@@ -584,5 +584,29 @@ console.log('the device names in a refusal are devices that can do it')
   ok('it points at the display instead', /record the display/.test(f.fix[0]))
 }
 
+console.log('a preview is the whole edit, at the rate it promises')
+{
+  // The judged file: 24.0 s out of a 28 s edit, at 0.46 Mbps. Every store rule passed it.
+  const judged = { seconds: 24, expect: 28, bps: 464528, codec: 'h264', fps: 30, w: 886, h: 1920 }
+  const c = S.checkClip(judged, 'app-preview-6.9')
+  is('the judged file is not called the store file', c.ok, false)
+  ok('because it is not all of the edit', /runs 24s and the edit it was made from is 28s/.test(c.reason))
+  ok('and because its rate is not the one promised', /0\.465 Mbps/.test(c.reason) && /10 to 12/.test(c.reason))
+  const fixed = S.checkClip({ ...judged, seconds: 28, bps: 11020980 }, 'app-preview-6.9')
+  is('the fixed file, as written and measured, is', fixed.ok, true)
+  is('one frame of slack at 30, and no more', S.checkClip({ seconds: 27.967, expect: 28 }, 'app-preview-6.9').ok, true)
+  is('two frames short is short', S.checkClip({ seconds: 27.93, expect: 28 }, 'app-preview-6.9').ok, false)
+  is('a file with no edit to compare against is judged by the window alone', S.checkClip({ seconds: 24 }, 'app-preview-6.9').ok, true)
+  is('ProRes is not held to the H.264 band', S.checkClip({ seconds: 20, codec: 'prores', container: 'mov', bps: 200e6 }, 'app-preview-6.9').ok, true)
+  is('13 Mbps is over the band', S.checkClip({ seconds: 20, bps: 13e6 }, 'app-preview-6.9').ok, false)
+  // what the encoder is told sits inside the band the checker holds the file to, so the
+  // promise, the setting and the measurement are one number
+  const H = S.VIDEO.h264
+  ok('the encode target is inside Apple\'s 10 to 12', H.bps >= H.band.min && H.bps <= H.band.max)
+  is('and the level is the page\'s', H.level, '4.0')
+  const plan = S.preview({ w: 1320, h: 2868, seconds: 20, fps: 60, family: 'iphone' }, 'app-preview-6.9')
+  ok('the plan says the number the encoder is given', /a constant 11 Mbps inside the page's 10 to 12/.test(plan.steps.join(' ')))
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

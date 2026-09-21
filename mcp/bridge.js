@@ -32,6 +32,9 @@ const PRETTY = {
   cursor: 'Cursor', windsurf: 'Windsurf', 'zed-industries': 'Zed', zed: 'Zed',
 }
 let CLIENT = 'Agent'
+// Fetch's own chat starts this shim with --chat, so the brake can tell its agent from a
+// terminal's of the same name: a message to the chat lets only its own agent go on
+const IN_CHAT = process.argv.includes('--chat')
 
 export function setClient(name) {
   const key = String(name || '').toLowerCase().trim()
@@ -44,7 +47,7 @@ export function setClient(name) {
 // and everything still works, just attributed less precisely.
 function announce() {
   if (!sock) return
-  try { sock.write(JSON.stringify({ id: 'hello', op: 'hello', args: { client: CLIENT } }) + '\n') } catch {}
+  try { sock.write(JSON.stringify({ id: 'hello', op: 'hello', args: { client: CLIENT, ...(IN_CHAT ? { chat: true } : {}) } }) + '\n') } catch {}
 }
 
 let sock = null

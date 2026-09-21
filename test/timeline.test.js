@@ -320,7 +320,7 @@ console.log('the sound an older document makes, byte for byte')
     '[ca0][ca1]concat=n=2:v=0:a=1[cuta];[1:a]atrim=start=0,asetpts=PTS-STARTPTS,adelay=1000|1000,volume=0.40[extraRaw];' +
     '[extraRaw]asplit=2[extraSplit0][extraSplit1];[extraSplit0]atrim=0.000000:5.000000,asetpts=PTS-STARTPTS[extraCut0];' +
     '[extraSplit1]atrim=6.000000:12.000000,asetpts=PTS-STARTPTS[extraCut1];[extraCut0][extraCut1]concat=n=2:v=0:a=1[extra];' +
-    '[cuta]loudnorm=I=-14:TP=-1:LRA=11[base];[base][extra]amix=inputs=2:duration=first:dropout_transition=0,alimiter=limit=0.95[amixed] => [amixed]')
+    '[cuta]loudnorm=I=-14:TP=-1:LRA=11[base];[base][extra]amix=inputs=2:duration=first:dropout_transition=0,alimiter=limit=0.95:latency=1[amixed] => [amixed]')
 
   // and one clip asking for its own level is the only thing that moves the chain
   const lifted = soundOf(N({ v: 2, audio: { loudnorm: false }, clips: [{ id: 'C1', start: 0, end: 5 }, { id: 'C2', start: 5, end: 12, audio: { gain: 6 } }] }, 12))
@@ -401,7 +401,62 @@ async function rendered() {
   }
 }
 
-rendered().then(() => {
+// A take whose sound starts after its picture: a native take recorded before the
+// recorder padded its sound, where the lead was 0.03 s on a display and 0.7 to 2.3 s on
+// a window or a simulator. Every reader that takes the sound as samples from zero put
+// it that far ahead of the picture. Measured on a click 3 s into the picture.
+async function late() {
+  const fs = require('fs'), os = require('os'), path = require('path')
+  const { execFileSync } = require('child_process')
+  console.log('\na take whose sound starts late')
+  const plain = proc.clipAudioParts(proc.audioKeep([[0, 4], [6, 10]], 'mute'))
+  is('a take whose sound starts with its picture keeps the graph it had',
+    plain, proc.clipAudioParts(proc.audioKeep([[0, 4], [6, 10]], 'mute'), '[0:a]', 'ca', 0.0004))
+  is('a late one is put back in its place before it is trimmed',
+    proc.clipAudioParts(proc.audioKeep([[0, 10]], 'mute'), '[0:a]', 'ca', 2.3)[0].startsWith('[0:a]aresample=async=1:first_pts=0,atrim='), true)
+  is('the transcript\'s wav is padded the same way', proc.alignArgs({ audioLead: 2.3 }), ['-af', 'aresample=async=1:first_pts=0'])
+  is('and left alone when there is nothing to pad', proc.alignArgs({ audioLead: 0 }), [])
+  is('a limiter after a mix gives back its lookahead, or the mix is 5 ms late',
+    /alimiter=limit=0\.95(?!:latency=1)/.test(fs.readFileSync(path.join(__dirname, '..', 'processor.js'), 'utf8')), false)
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-late-'))
+  const src = path.join(dir, 'late.mov')
+  try {
+    try {
+      execFileSync(proc.FFMPEG, ['-hide_banner', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=160x120:r=10:d=8',
+        '-itsoffset', '2.3', '-f', 'lavfi', '-i', "aevalsrc='if(between(t,0.7,0.701),1,0)':d=5.7:s=48000",
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', src])
+    } catch (e) { console.log(`  skip ffmpeg could not build the fixture (${String(e.message).split('\n')[0]})`); return }
+    const clicks = f => {
+      const b = execFileSync(proc.FFMPEG, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-i', f, '-map', '0:a:0', '-ac', '1', '-ar', '48000', '-f', 'f32le', '-'], { maxBuffer: 1 << 26 })
+      const t = []; let last = -1e9
+      for (let i = 0; i < b.length / 4; i++) if (Math.abs(b.readFloatLE(i * 4)) > 0.3) { if (i - last > 4800) t.push(i / 48000); last = i }
+      return t
+    }
+    const meta = await proc.probeMeta(src)
+    is('the probe reads the lead', Math.abs(meta.audioLead - 2.3) < 0.05, true)
+    const near = (t, want) => t.length === 1 && Math.abs(t[0] - want) < 0.002
+    const whole = path.join(dir, 'whole.m4a'), cut = path.join(dir, 'cut.m4a')
+    await proc.renderAudio(src, { loudnorm: false }, [[0, 8]], 8, meta, whole, null)
+    is('the export\'s sound has the click at 3 s, where the picture has it', near(clicks(whole), 3), true)
+    await proc.renderAudio(src, { loudnorm: false, cuts: [[1, 2]] }, [[0, 1], [2, 8]], 7, meta, cut, null)
+    is('and at 2 s once a second before it is cut', near(clicks(cut), 2), true)
+    const w = await proc.waveform(src, { buckets: 800 }, null, null)
+    let best = 0; w.peaks.forEach((p, i) => { if (p > w.peaks[best]) best = i })
+    is('the waveform draws it at 3 s too', Math.abs(best / w.peaks.length * w.duration - 3) < 0.05, true)
+    // Converting is an export too: a wav has no edit list, so its first sample is zero
+    for (const format of ['wav', 'mp3', 'm4a']) {
+      const r = await proc.convert(src, { format }, null, null)
+      is(`converting to ${format} keeps the click at 3 s`, near(clicks(r.file), 3) || clicks(r.file).map(x => +x.toFixed(3)), true)
+    }
+    const end = await proc.probeAudioEnd(src)
+    is('the probe reads where the sound ends, on the picture\'s clock', Math.abs(end - 8) < 0.03, true)
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+}
+
+rendered().then(late).then(() => {
   console.log(`\n  ${pass} passed, ${fail} failed`)
   process.exit(fail ? 1 : 0)
 })

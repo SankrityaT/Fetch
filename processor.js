@@ -148,8 +148,74 @@ async function probeMeta(src) {
   // a native take can carry system audio and the mic as two separate tracks
   meta.audioTracks = (out.match(/Stream #\d+:\d+.*?: Audio: /g) || []).length
   meta.cadence = await probeCadence(src)
+  meta.audioLead = meta.hasAudio ? await probeAudioLead(src) : 0
   return meta
 }
+
+// How long after the file's first moment its sound begins, in seconds. A native take
+// recorded before the recorder padded its sound starts it late (0.03 s on a display,
+// 0.7 to 2.3 s on a window or a simulator), and every reader below that takes the
+// sound as samples from zero (atrim then asetpts=PTS-STARTPTS, a wav for the
+// transcript, the waveform's peaks) put it that much ahead of the picture. The first
+// decoded frame's time is the one ffmpeg's graphs use: the edit list applied and the
+// encoder's priming dropped. Cached on the file as it stands, like the cadence.
+const leads = new Map()
+async function probeAudioLead(src) {
+  let key = src
+  try { const st = fs.statSync(src); key = `${src}|${st.mtimeMs}|${st.size}` } catch { return 0 }
+  if (leads.has(key)) return leads.get(key)
+  const out = await new Promise(resolve => {
+    let buf = ''
+    const p = spawn(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-i', src, '-map', '0:a:0', '-frames:a', '1', '-f', 'framecrc', '-'])
+    p.stdout.on('data', d => { buf += d })
+    p.on('close', () => resolve(buf))
+    p.on('error', () => resolve(buf))
+  })
+  const tb = /#tb 0: (\d+)\/(\d+)/.exec(out)
+  const row = out.split('\n').find(l => l && l[0] !== '#')
+  const pts = row ? +row.split(',')[2] : NaN
+  const lead = tb && Number.isFinite(pts) ? Math.max(0, pts * +tb[1] / +tb[2]) : 0
+  if (leads.size > 64) leads.clear()
+  leads.set(key, lead)
+  return lead
+}
+
+// Where a take's sound ends, on the file's clock: its last packet's end, read by a stream
+// copy (no decode, 0.1 s for 38 s of take). Beside the lead it says whether the sound runs
+// the picture's whole length. The judged simulator take's sound ended 1.67 s before its
+// picture, because the recorder of the time dropped 20 ms at a time inside the take; the
+// lead is put back on every export, and that loss cannot be.
+const ends = new Map()
+async function probeAudioEnd(src) {
+  let key = src
+  try { const st = fs.statSync(src); key = `${src}|${st.mtimeMs}|${st.size}` } catch { return null }
+  if (ends.has(key)) return ends.get(key)
+  const end = await new Promise(resolve => {
+    let tb = null, last = null, part = ''
+    const p = spawn(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-i', src, '-map', '0:a:0', '-c', 'copy', '-f', 'framecrc', '-'])
+    p.stdout.on('data', d => {
+      const ls = (part + d).split('\n'); part = ls.pop()
+      for (const l of ls) {
+        if (l[0] === '#') { const m = /#tb 0: (\d+)\/(\d+)/.exec(l); if (m) tb = +m[1] / +m[2]; continue }
+        const f = l.split(','); if (f.length > 3) last = [+f[2], +f[3]]
+      }
+    })
+    const done = () => resolve(tb && last && Number.isFinite(last[0]) ? Math.max(0, (last[0] + (last[1] || 0)) * tb) : null)
+    p.on('close', done)
+    p.on('error', () => resolve(null))
+  })
+  if (ends.size > 64) ends.clear()
+  ends.set(key, end)
+  return end
+}
+
+// Put a late sound back where it was recorded: silence from the file's first moment up
+// to its first sample, and into any hole, so a sample's place in the stream is its
+// place in time. Under a millisecond it is left alone, and the graph with it.
+const LEAD_MIN = 0.001
+const ALIGN = 'aresample=async=1:first_pts=0'
+const aligned = lead => (+lead > LEAD_MIN ? ALIGN + ',' : '')
+const alignArgs = meta => (meta && +meta.audioLead > LEAD_MIN ? ['-af', ALIGN] : [])
 
 // The cadence of a take, cached on the file as it stands: the rate its own frames
 // arrive at while the screen is moving (Timeline.takeFps), which is what decides the
@@ -263,7 +329,10 @@ async function flattenAudio(srcArg, jobId) {
   if (!meta || (meta.audioTracks || 0) < 2) return srcArg
   const dest = srcArg.replace(/\.[^.]+$/, '') + '.mixed.mov'
   await run(FFMPEG, ['-y', '-i', srcArg,
-    '-filter_complex', '[0:a:0][0:a:1]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95[a]',
+    // Each track is put at its own place first: amix lays its inputs from their first
+    // samples, so a system track that began 0.8 s after the mic landed 0.8 s late in the
+    // mix, measured on a click, while each on its own was right
+    '-filter_complex', `[0:a:0]${ALIGN}[s];[0:a:1]${ALIGN}[m];[s][m]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95:latency=1[a]`,
     '-map', '0:v:0', '-map', '[a]',
     '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', dest], null, jobId)
   if (!fs.existsSync(dest)) return srcArg
@@ -289,6 +358,10 @@ async function convert(srcArg, opts, onProgress, jobId) {
       args.push('-vf', `scale=-2:${opts.scale}:flags=lanczos`)
     }
     args.push(...fmt.args(opts && opts.quality))
+    // A late sound is put back in place here too: a wav has no edit list, so a take whose
+    // sound starts 2.3 s in had its 3 s click at 0.7 s, and an mp3 or an mp4 made from it
+    // is read from its first sample by most of what opens it
+    if (meta.hasAudio && !fmt.gif) args.push(...alignArgs(meta))
     if (fmt.video && !meta.hasAudio) args.push('-an')
     args.push(dest)
     await run(FFMPEG, args, timeWatcher(onProgress, meta.duration), jobId)
@@ -339,7 +412,7 @@ async function removeSilence(srcArg, opts, onProgress, jobId) {
     let fc = ''
     keep.forEach(([s, e], i) => {
       fc += `[0:v]trim=${s.toFixed(3)}:${e.toFixed(3)},setpts=PTS-STARTPTS[v${i}];`
-      fc += `[0:a]atrim=${s.toFixed(3)}:${e.toFixed(3)},asetpts=PTS-STARTPTS[a${i}];`
+      fc += `[0:a]${aligned(meta.audioLead)}atrim=${s.toFixed(3)}:${e.toFixed(3)},asetpts=PTS-STARTPTS[a${i}];`
     })
     fc += Array.from({ length: n }, (_, i) => `[v${i}]`).join('') + `concat=n=${n}:v=1:a=0[vout];`
     fc += Array.from({ length: n }, (_, i) => `[a${i}]`).join('') + `concat=n=${n}:v=0:a=1[aout]`
@@ -431,14 +504,16 @@ async function transcribe(srcArg, opts, onProgress, jobId) {
   // Checked up front: otherwise ffmpeg's own "Output file does not contain any
   // stream" is what reaches the person or the agent
   if (!srcArg || !fs.existsSync(srcArg)) throw new Error(`No recording at ${srcArg}. It may have been renamed or deleted.`)
-  if (!(await probeMeta(srcArg)).hasAudio) throw new Error('This take has no audio, so there is nothing to transcribe.')
+  const tmeta = await probeMeta(srcArg)
+  if (!tmeta.hasAudio) throw new Error('This take has no audio, so there is nothing to transcribe.')
   const locale = (opts && opts.locale) || 'en'
   const wav = path.join(os.tmpdir(), `qr-${Date.now()}.wav`)
   const jsonPath = path.join(os.tmpdir(), `qr-tr-${Date.now()}.json`)
   // `head` transcribes only the opening seconds, for a quick path that needs a take's
   // first words (naming it) rather than all of them
   const head = opts && opts.quick && +opts.head > 0 ? ['-t', String(+opts.head)] : []
-  await run(FFMPEG, ['-y', '-fflags', '+genpts', '-i', srcArg, ...head, '-vn', '-ac', '1', '-ar', '16000',
+  // a word's time is its sample's place in this wav, so the wav starts with the picture
+  await run(FFMPEG, ['-y', '-fflags', '+genpts', '-i', srcArg, ...head, ...alignArgs(tmeta), '-vn', '-ac', '1', '-ar', '16000',
     '-c:a', 'pcm_s16le', wav], null, jobId)
   try {
     // first run downloads the model, so progress arrives as stderr chatter
@@ -861,7 +936,7 @@ async function toGif(srcArg, opts, onProgress, jobId) {
 // save folder only ever holds what the person actually made: recordings and
 // exports. Finder hides dot-directories, so the Desktop stays clean.
 const SIDE_DIR = '.fetch'
-const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.fetchshot.json', '.vo.mp3', '.name.json', '.job.json', '.memory.json']
+const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.fetchshot.json', '.history.jsonl', '.vo.mp3', '.name.json', '.job.json', '.memory.json']
 
 const sideStem = p => path.basename(p).replace(/\.[^.]+$/, '')
 function sidecarPath(mediaPath, ext) {
@@ -1270,7 +1345,7 @@ async function waveform(srcArg, opts, onProgress, jobId) {
     const rate = 4000
     const chunks = []
     await new Promise((resolve, reject) => {
-      const p = spawn(FFMPEG, ['-v', 'quiet', '-i', src, '-vn', '-ac', '1', '-ar', String(rate),
+      const p = spawn(FFMPEG, ['-v', 'quiet', '-i', src, ...alignArgs(meta), '-vn', '-ac', '1', '-ar', String(rate),
         '-f', 's16le', '-'])
       register(jobId, p)
       let ended = false, closed = false
@@ -2576,13 +2651,16 @@ const CLIP_XF = 0.02
 // level after, and one is faded into the other. Both sides are the same audio, so it is
 // a ramp of the level and not a mix of two moments, and the piece is the same length to
 // the sample, which is what the pinning in rateAudio exists to hold.
-function clipAudioParts(ak, src = '[0:a]', tag = 'ca') {
+function clipAudioParts(ak, src = '[0:a]', tag = 'ca', lead = 0) {
   const parts = []
   ak.forEach(({ seg, from, ...own }, i) => {
     // a piece shorter than the ramp would end part way through it and never reach its
     // own level, so it switches, as it did before any of this
     const ramp = from && Timeline.outSpan(seg) > 2 * CLIP_XF
-    const head = `${src}atrim=${seg[0].toFixed(6)}:${seg[1].toFixed(6)},` +
+    // atrim cuts on the sound's own times and asetpts then starts the piece at zero, so
+    // a sound that began late is padded to its place first (aligned) or the first piece
+    // would start it early by the lead
+    const head = `${src}${aligned(lead)}atrim=${seg[0].toFixed(6)}:${seg[1].toFixed(6)},` +
       ['asetpts=PTS-STARTPTS', ...rateAudio(seg, { ...own, level: !ramp })].join(',')
     if (!ramp) { parts.push(`${head}[${tag}${i}]`); return }
     const vol = o => (o.mute ? 'volume=0,' : o.gain ? `volume=${o.gain}dB,` : '')
@@ -2751,7 +2829,7 @@ function audioGraph({ hasAudio, denoise, loudnorm, gain, fadeIn = 0, fadeOut = 0
   if (extra.replace || !hasAudio) return { af, extraGraph: chain + (hasAudio && base !== '[0:a]' ? `;${base}anullsink` : ''), extraMap: '[extra]' }
   // duration=first keeps the output the length of the video, not the music
   return { af, extraMap: '[amixed]', extraGraph: chain + `;${base}${af.length ? af.join(',') : 'anull'}[base];` +
-    `[base][extra]amix=inputs=2:duration=first:dropout_transition=0,alimiter=limit=0.95[amixed]` }
+    `[base][extra]amix=inputs=2:duration=first:dropout_transition=0,alimiter=limit=0.95:latency=1[amixed]` }
 }
 
 // What the clips asked of their own sound, ready for audioKeep, or null where none of
@@ -2782,7 +2860,7 @@ async function renderAudio(srcArg, opts, keep, span, meta, out, jobId) {
   const parts = []
   if (meta.hasAudio) {
     const ak = audioKeep(keep, opts.speedAudio, perClip)
-    parts.push(...clipAudioParts(ak))
+    parts.push(...clipAudioParts(ak, undefined, undefined, meta.audioLead))
     parts.push(ak.map((_, i) => `[ca${i}]`).join('') + `concat=n=${ak.length}:v=0:a=1[cuta]`)
   }
   const fadeIn = +opts.fadeIn > 0 ? +opts.fadeIn : 0
@@ -3116,7 +3194,7 @@ async function applyEdit(srcArg, opts, onProgress, jobId) {
         parts.push(`${VSRC}trim=${seg[0].toFixed(3)}:${seg[1].toFixed(3)},${ratePts(seg)}[cv${i}]`)
       })
       const ak = meta.hasAudio ? audioKeep(keep, opts.speedAudio, perClip) : []
-      parts.push(...clipAudioParts(ak))
+      parts.push(...clipAudioParts(ak, undefined, undefined, meta.audioLead))
       parts.push(keep.map((_, i) => `[cv${i}]`).join('') + `concat=n=${keep.length}:v=1:a=0[cutv]`)
       if (meta.hasAudio) parts.push(ak.map((_, i) => `[ca${i}]`).join('') + `concat=n=${ak.length}:v=0:a=1[cuta]`)
       cutGraph = parts.join(';')
@@ -3274,7 +3352,7 @@ async function musicBed(file, music, fmt, dur, hasVoice, jobId) {
   const graph = hasVoice
     ? `[0:a]aformat=sample_rates=48000:channel_layouts=stereo,asplit[v][key];${bed}[m];` +
       `[m][key]sidechaincompress=threshold=0.015:ratio=4:attack=80:release=600:makeup=1[md];` +
-      `[v][md]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]`
+      `[v][md]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95:latency=1[a]`
     : `${bed}[a]`
   const acodec = fmt.ext === 'webm' ? ['-c:a', 'libopus', '-b:a', '128k'] : ['-c:a', 'aac', '-b:a', '192k']
   const tmp = path.join(path.dirname(file), `.${path.parse(file).name}.music.${fmt.ext}`)
@@ -3405,7 +3483,7 @@ module.exports = {
   backdropList, musicList, filmstrip,
   toMp4, convert, removeSilence, enhanceAudio, trim, transcribe, burnCaptions, toGif,
   thumbnail, waveform, clipLevels, applyEdit, listRecordings, importFile, forgetFile,
-  probeMeta, readCues, writeCues, cancel, runningJobs, formatList, FFMPEG, flattenAudio,
+  probeMeta, probeAudioEnd, readCues, writeCues, cancel, runningJobs, formatList, FFMPEG, flattenAudio, alignArgs,
   sidecarOut, sidecarIn, migrateSidecars,
   setTakesRoot, takeDir, deliverablePath, exportDest, renameTake, readNameNote, writeNameNote, takeName,
   speechRegions, buildBeats, buildCues, beatsFromCursor, readCursor, readPointer, pointerTrack, macCursorSpans, cursorPlates, cursorEraseFilters,

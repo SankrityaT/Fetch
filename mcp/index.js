@@ -50,9 +50,8 @@ const INSTRUCTIONS = [
   'Fetch records this Mac\'s screen, captures stills of it, and edits what it took. The work happens in ' +
     'the Fetch app on the person\'s own machine; these tools are its hands.',
   '',
-  'A screenshot is a take of one frame: take_shot captures one, and the tools that style, aim at, draw, ' +
-    'set type on and export a recording take a shot too. A hero is a picture with a line of type on it, ' +
-    'so a still carries type.',
+  'A screenshot is a take of one frame: take_shot captures one, and every tool that styles, aims at, marks ' +
+    'or exports a recording takes a shot too, type included.',
   '',
   'How a job goes, every time:',
   '- See the whole take with contact_sheet before you change it.',
@@ -72,12 +71,13 @@ const INSTRUCTIONS = [
     'is what ask is for, a request with two readings that would touch different parts of the take. A change ' +
     'that is wide or awkward to take back, show with propose before it lands rather than after.',
   '',
-  'Every result carries the state it changed: the plan that is left, how far the edit still is from ' +
-    'what was asked for, a frame of it, and what is wrong with it. Read that rather than calling again ' +
-    'to find out.',
+  'Every result carries the state it changed: the plan that is left, how far the edit is from the brief, ' +
+    'a frame of it, and what is wrong with it. Read that rather than calling again to find out.',
   '',
   'Takes, edits and settings move between turns, under the person\'s own hands as well as yours. Read ' +
     'the current state in this turn instead of trusting what an earlier one said.',
+  '',
+  'Esc is the person stopping you: every call is refused until they let you continue. Stop and ask them.',
   '',
   'Reply in short plain sentences, and never with an em dash.',
 ].join('\n')
@@ -304,6 +304,9 @@ export function build() {
         'hand the ids back, and find_on_screen mints them on any shot of the device.\n' +
         'restore: put the status bar and the appearance back by hand, on the device a recording is of ' +
         'when none is named. It is automatic on record_stop.\n' +
+        'Each argument takes one kind of identifier, checked before the person is asked anything: a value ' +
+        'in the wrong one is moved where that is certain (a bundle id sent as app is launched as bundle, ' +
+        'and the result says so under moved) and refused by name where it is not.\n' +
         'Booting, installing, launching, opening a link and tapping each need the person\'s word, and ' +
         'Fetch asks them for it: do not claim it yourself. Creating, cloning, erasing and deleting a ' +
         'device are refused to everyone, and so is capturing the device framebuffer, which has no ' +
@@ -314,19 +317,25 @@ export function build() {
         action: z.enum(['list', 'ready', 'go', 'tap', 'restore'])
           .describe('What to do. list is free; the rest need a device.'),
         device: z.string().optional()
-          .describe('The device: its UDID, or the name the person gave it, from list. Never the word booted. ' +
-            'tap and restore take the device the recording in hand is of when this is left out.'),
+          .describe('The device: its UDID, or the name the person gave it, from list. Never the word booted, ' +
+            'never a window id and never a bundle id. tap and restore take the device the recording in hand is ' +
+            'of when this is left out.'),
         app: z.string().optional()
-          .describe('ready: Absolute path to a built .app bundle to install on the device.'),
-        bundle: z.string().optional().describe('ready: the bundle id to launch, for example com.me.app.'),
+          .describe('ready: Absolute path to a built .app bundle on this Mac, for example /Users/me/Build/Products/' +
+            'Debug-iphonesimulator/My.app. It is installed and then launched. Not a bundle id: that is bundle.'),
+        bundle: z.string().optional()
+          .describe('ready: the bundle id of an app already on the device, for example com.me.app. It is launched. ' +
+            'Not a path: that is app.'),
         appearance: z.enum(['light', 'dark']).optional()
           .describe('ready: light or dark, put back on restore. Two calls give a light set and a dark set.'),
         status_bar: z.boolean().optional()
           .describe('ready: default true. The person\'s own values are read and written down first, and go back.'),
-        url: z.string().optional().describe('go: the deep link to open on the device.'),
+        url: z.string().optional()
+          .describe('go: the deep link to open on the device, with its scheme, for example myapp://onboarding. ' +
+            'Not a bundle id.'),
         element: z.string().optional()
           .describe('tap: an element id (E12), off the screen the last ready or tap handed back, or from ' +
-            'find_on_screen. This is how a tap is aimed.'),
+            'find_on_screen. This is how a tap is aimed. An id, never the words on the button.'),
         path: z.string().optional()
           .describe('tap: Absolute path to the shot or recording find_on_screen was called on, where that id was ' +
             'minted. Leave it out for an id off the last ready or tap on this device.'),
@@ -631,7 +640,10 @@ export function build() {
           must_hide: z.array(z.string()).optional().describe('Anything on screen that must not ship: an email address, a key, a customer name.'),
           device: z.string().nullable().optional().describe('The device this job films, by name or UDID. Naming it ' +
             'makes this a device job: the plan comes back already laid out and every step carries the call it is.'),
-          app: z.string().nullable().optional().describe('The bundle id of the app on that device, e.g. "com.example.ios".'),
+          app: z.string().nullable().optional().describe('The app this job films: its bundle id if it is already on the ' +
+            'device ("com.example.ios"), or the absolute path to a built .app to install first. The plan sends each ' +
+            'to the argument simulator ready takes it in: a bundle id as bundle, a path as app. A display name is ' +
+            'neither, and the result says so.'),
           size: z.string().nullable().optional().describe('The size the deliverable goes out at, e.g. "app-preview-6.9". ' +
             'It is written into the export step so the call is right the first time, and a size with a length ' +
             'window fills in seconds where the brief did not say.'),
@@ -707,6 +719,39 @@ export function build() {
       }),
     },
     async args => text(await drive('edit.fit', args, { timeoutMs: 120000 })))
+
+  // Every settled state of an edit, kept across sessions with who made it (ui/history.js).
+  // One tool with three actions, because list, look and restore are one capability and
+  // three descriptions would be three chances to drift.
+  server.registerTool(
+    'versions',
+    {
+      description:
+        'The version history of a recording\'s edit, or a shot\'s: every settled state of it across sessions, ' +
+        'who made each one (an agent by name, or the person) and what changed, by the ids the timeline draws. ' +
+        'list names them newest first; the first is the edit as it stands. look shows one without changing ' +
+        'anything: what restoring it would change, its edit, and a frame of it drawn by the export\'s own ' +
+        'renderer. restore brings one back as a new version on top, so nothing ahead of it is lost and ' +
+        'restoring the version before it takes it back; the result names that call. A restore keeps the ' +
+        'recording\'s own facts from now, and a file the old version used that is gone stays as it is now, ' +
+        'said under missing. revert_my_edit is still the call for taking back your own last change; this ' +
+        'is for going back further, or to what the person had before.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording, or to a shot.'),
+        action: z.enum(['list', 'look', 'restore']).optional().describe('Default list.'),
+        version: z.string().optional().describe('look and restore: a version id from list, e.g. "V12".'),
+        limit: z.number().int().min(1).max(200).optional().describe('list: how many, newest first. Default 20.'),
+        at: z.number().optional().describe('look: the moment to draw, in output seconds. Default: where the versions differ.'),
+        step: z.string().optional().describe('restore: a step of the plan this finishes, e.g. "P3".'),
+      }),
+    },
+    async args => {
+      const r = await drive('edit.versions', args, { timeoutMs: 90000 })
+      const out = text(r)
+      const pic = r && r.preview && r.preview.image
+      if (pic) try { out.content.push({ type: 'image', mimeType: 'image/jpeg', data: readFileSync(pic).toString('base64') }) } catch {}
+      return out
+    })
 
   server.registerTool(
     'revert_my_edit',
@@ -885,8 +930,13 @@ export function build() {
         'divided by a whole number, so a 60 frame take halves onto the cap exactly. The sound is one stereo AAC ' +
         'track at 256 kbps and 48 kHz, silence of that shape where the take has none. Whether the capture is ' +
         'enlarged is judged at the share of the picture the look draws it at, so a refusal names the ' +
-        'frame.padding that puts it at its own pixels. The result carries store, ' +
-        'read off the written file, with the poster frame the viewer sees before pressing play.',
+        'frame.padding that puts it at its own pixels. The picture is H.264 High Profile Level 4.0 at a ' +
+        `constant ${Sizes.VIDEO.h264.bps / 1e6} Mbps, inside the page's ${Sizes.VIDEO.h264.band.min / 1e6} to ` +
+        `${Sizes.VIDEO.h264.band.max / 1e6}, and the take is drawn at the box the plan judged. The picture is the length: ` +
+        'the sound is padded to it, never the other way round. The result carries store, read off the written ' +
+        'file: its seconds against the edit\'s, its Mbps, and the poster frame the viewer sees before pressing ' +
+        'play. A file short of the edit is not kept, and one outside the rate band is not called the store file. ' +
+        'seconds at the top is the written file\'s own length.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording, or to a shot.'),
         format: z.enum(['mp4', 'webm', 'gif', 'mov', 'm4a', 'mp3', 'wav', 'png', 'jpg']).optional()
@@ -909,6 +959,9 @@ export function build() {
         family: z.enum(['iphone', 'ipad', 'mac']).optional()
           .describe('What this take came off, where an app preview size is asked for and the recording does not ' +
             'say. A preview in one family\'s size showing another family\'s app is refused by name.'),
+        step: z.string().optional()
+          .describe('A step of the plan this finishes, e.g. "P6". Left out, the plan\'s own export step closes when ' +
+            'the file written is the deliverable.'),
       }),
     },
     async args => text(await drive('edit.export', args, { timeoutMs: 20 * 60 * 1000 })))

@@ -86,6 +86,22 @@ const CRF = { high: 20, balanced: 23, small: 28 }
 const PRESET = { high: 'fast', balanced: 'fast', small: 'veryfast' }
 const TUNE = { high: ['-x264-params', X264_GRAIN], balanced: ['-x264-params', X264_GRAIN] }
 
+// An app preview is the one export whose rate is a number somebody else states. Apple's
+// page says "Target bit rate: 10-12 Mbps" and a rate factor is not a rate: CRF 23 wrote a
+// simulator preview at 0.46 Mbps, because a flat UI needs almost nothing, and an average
+// of 11 wrote 5.7, because an average is a ceiling the encoder need not reach. So the
+// store quality is constant rate with HRD filler, which lands where it is told (10.95
+// on the same picture) and names its level rather than leaving x264 to pick one. The
+// number itself lives in sizes.js beside the line of the page it came from.
+const STORE = require('../sizes').VIDEO.h264
+function storeVideo() {
+  const bps = String(Math.round(STORE.bps))
+  return ['-c:v', 'libx264', '-preset', 'fast',
+    '-b:v', bps, '-minrate', bps, '-maxrate', bps, '-bufsize', bps,
+    '-x264-params', X264_GRAIN + ':nal-hrd=cbr:filler=1',
+    '-profile:v', STORE.profile, '-level:v', STORE.level, '-pix_fmt', 'yuv420p']
+}
+
 // VP9 exactly as the classic renderer wrote a WebM, with its rate factors written out
 // rather than derived (its `crfFor(q) + 8`: VP9's quantiser scale runs wider than x264's,
 // and eight steps up is where the two sit at the same picture). Kept identical on purpose.
@@ -193,6 +209,9 @@ function gifChain(W, H, W4) {
  * format is the container: mp4 and mov take H.264, webm VP9, gif the palette pass.
  */
 function encodeArgs(file, W, H, fps, { quality = 'balanced', W4 = W, codec = 'x264', format = 'mp4' } = {}) {
+  // store is H.264 on x264 whatever else was asked: VideoToolbox has no filler to hold a
+  // floor with, and VP9 and GIF are not app previews
+  const store = quality === 'store' && (format === 'mp4' || format === 'mov')
   const q = CRF[QUALITY_ALIAS[quality] || quality] ? (QUALITY_ALIAS[quality] || quality) : 'balanced'
   const input = ['-hide_banner', '-loglevel', 'error', '-y',
     // the bytes are BT.709 limited range already, and ffmpeg has to be told on the input:
@@ -211,7 +230,7 @@ function encodeArgs(file, W, H, fps, { quality = 'balanced', W4 = W, codec = 'x2
       '-deadline', 'good', '-cpu-used', '4', '-row-mt', '1',
       '-pix_fmt', 'yuv420p', ...tags, '-an', file]
   }
-  const venc = codec === 'vt'
+  const venc = store ? storeVideo() : codec === 'vt'
     ? ['-c:v', 'h264_videotoolbox', '-b:v', String(Math.round(W * H * fps * BPP[q])), '-profile:v', 'high', '-allow_sw', '1']
     : ['-c:v', 'libx264', '-preset', PRESET[q], '-crf', String(CRF[q]), ...(TUNE[q] || []), '-pix_fmt', 'yuv420p']
   return [...input, ...crop, ...venc, ...tags, '-movflags', '+faststart', '-an', file]

@@ -145,9 +145,18 @@ function frameOf(d, o = {}) {
   for (let y = d.body.y0; y <= d.body.y1; y++) {
     for (let x = d.body.x0; x <= d.body.x1; x++) {
       const out = Math.min(x - d.body.x0, d.body.x1 - x, y - d.body.y0, d.body.y1 - y)
-      const inGlass = x >= d.glass.x && x < d.glass.x + d.glass.w && y >= d.glass.y && y < d.glass.y + d.glass.h
+      let inGlass = x >= d.glass.x && x < d.glass.x + d.glass.w && y >= d.glass.y && y < d.glass.y + d.glass.h
+      // The glass's own rounded corners: `corner` is how many pixels of ring the row t
+      // from the top or the bottom still has inside the rectangle, the real capture's.
+      if (inGlass && o.corner) {
+        const t = Math.min(y - d.glass.y, d.glass.y + d.glass.h - 1 - y)
+        const e = Math.min(x - d.glass.x, d.glass.x + d.glass.w - 1 - x)
+        if (t < o.corner.length && e < o.corner[t]) inGlass = false
+      }
       if (inGlass) {
-        const dark = o.app === 'black' || (o.app === 'left' && x < d.glass.x + 40)
+        const dark = o.app === 'black' || (o.app === 'left' && x < d.glass.x + 40) ||
+          // a dark status bar in one corner, touching the ring: 60 by 30 of black app
+          (o.app === 'corner' && x < d.glass.x + 60 && y < d.glass.y + 30)
         put(x, y, dark ? 0 : 120 + ((x * 7 + y * 13) % 90))
       } else put(x, y, out < (o.grey === 0 ? 0 : 8) ? grey : 0)
     }
@@ -226,6 +235,47 @@ for (const key of Object.keys(DEVICE)) {
   ok('and the viewport that comes off it is that rectangle', v.w > v.h)
   is('the same glass turned is the same density', S.density(win, SCREEN, { glass: m }),
     Math.round((m.value.px.w / SCREEN.h) * 100) / 100)
+}
+
+console.log('the glass is round, and how round is read off the pixels')
+{
+  // The ring's inner edge on each row down from the top left corner of the glass, off a
+  // real 794 x 1718 capture of Yolk-ProMax (iPhone 16 Pro Max, iOS 26.5): row 0 still has
+  // 97 pixels of ring inside the rectangle, row 96 has 1, row 97 none. The same curve in
+  // all four corners measured 111.4, 111.4, 110.3 and 111.4 pixels off that capture.
+  const PROFILE = [97, 89, 82, 77, 73, 69, 66, 63, 60, 58, 56, 53, 51, 49, 48, 46, 44, 43, 41, 40, 38, 37,
+    36, 35, 34, 32, 31, 30, 29, 28, 27, 26, 26, 25, 24, 23, 22, 21, 21, 20, 19, 18, 18, 17, 16, 16, 15, 15, 14,
+    14, 13, 12, 12, 11, 11, 11, 10, 10, 9, 9, 8, 8, 8, 7, 7, 7, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 3,
+    2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  const d = DEVICE.proMax
+  const m = S.measureGlass(frameOf(d, { corner: PROFILE }))
+  is('rounding the corners does not move the rectangle', m.ok && m.value.px, d.glass)
+  is('the corner is the smallest circle that hides every pixel of that ring',
+    m.value.corner, { px: 111.4, share: 0.1578 })
+  // Every row of the profile is under the circle: the mask hides all of the bezel.
+  const R = m.value.corner.px
+  ok('no row of ring is left outside the circle', PROFILE.every((dd, t) => {
+    const tp = t + 0.5
+    return tp >= R || R - Math.sqrt(R * R - (R - tp) ** 2) >= dd - 1e-9
+  }))
+  // The guess it replaces: Fetch's phone drew its screen at 0.03 of the width, a fifth
+  // of the glass's own, which is the crescent the judge saw.
+  ok('and it is five times what the drawn phone used to round its screen by', m.value.corner.share > 5 * 0.03)
+  const v = S.viewport(d.win, d.screen, { glass: m })
+  is('the viewport carries it beside the rectangle', v, { x: 0.0554, y: 0.0896, w: 0.8892, h: 0.8929, corner: 0.1578 })
+  is('and a corner handed back as a fraction survives a second read', S.glassViewport(v, d.screen), v)
+
+  // A dark app in one corner runs into the ring and makes that corner look rounder. It
+  // cannot make one look squarer, so the smallest of the four is the glass's.
+  const dark = S.measureGlass(frameOf(d, { corner: PROFILE, app: 'corner' }))
+  is('an app dark into one corner does not round the others', dark.value.corner, { px: 111.4, share: 0.1578 })
+
+  // Square glass, and the fixtures before this round: no corner, and the viewport keeps
+  // exactly the four numbers everything downstream already reads.
+  is('a square screen has no corner to report', S.measureGlass(frameOf(DEVICE.se, { homeButton: true })).value.corner, undefined)
+  is('and its viewport is the plain rectangle', Object.keys(S.viewport(DEVICE.se.win, DEVICE.se.screen,
+    { glass: S.measureGlass(frameOf(DEVICE.se, { homeButton: true })) })), ['x', 'y', 'w', 'h'])
+  is('a corner that is not a share of anything is dropped', Object.keys(S.glassViewport({ ...v, corner: 0.7 }, d.screen)), ['x', 'y', 'w', 'h'])
 }
 
 console.log('where the glass is inside the window, worked out rather than seen')

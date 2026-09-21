@@ -310,7 +310,18 @@ app.whenReady().then(() => {
       id: 'agent:export:' + Date.now(), op: 'export',
       run: () => require('./ui/render-host').exportEdit(src, opts, null, 'agent-export-' + Date.now()),
     }),
+    // whether the person has stopped agents with Esc, for a question whose answer lands
+    // after the stop: a late yes must not act for an agent that was stopped
+    held: () => !!brake.held,
+    // a socket closing is its agent done, so the brake need not stay armed for it
+    clientGone: agentGone,
+    // the recorder's own account of the take that just stopped, and only that one
+    takeSound: () => (lastTakeSound && Date.now() - lastTakeSound.at < 10 * 60e3 ? lastTakeSound.sound : null),
   })
+  brakeAgentOps()
+  // a chat turn ending, however it ends, can end the driving
+  agentChat.onTurnEnd(() => { brake.lastAt = Date.now(); driveChanged() })
+  Menu.setApplicationMenu(appMenu())
 
   // Any status bar Fetch was still holding when it died. Before anything else touches a
   // simulator, so nobody's device is left reading 9:41 because an export crashed. Silent
@@ -609,6 +620,7 @@ function trayMenu() {
       accelerator: HOTKEY_REC, click: () => toRenderer(rec || paused ? 'stop' : 'start') },
     { label: paused ? 'Resume' : 'Pause', enabled: rec || paused,
       accelerator: HOTKEY_PAUSE, click: () => toRenderer('pause') },
+    ...brakeItems(),
   ]
   if (updater.getState().status === 'ready') {
     items.push({ type: 'separator' })
@@ -639,6 +651,208 @@ function setupTray() {
 }
 function toRenderer(action) { if (control && !control.isDestroyed()) control.webContents.send('hotkey', action) }
 
+// ---------- the brake: Esc stops an agent ----------
+// An agent working this Mac has to be stoppable in one key, wherever the person's focus
+// is: in Simulator, in their terminal, in Fetch. So Esc is claimed system wide, but only
+// while an agent is actually at work: a call running, a chat turn, its take rolling, and
+// a few seconds after. The rest of the time it belongs to whatever app is in front, the
+// same bargain the pause chord makes, and a terminal agent's own Esc still reaches it.
+// Command+. is the Mac's own "cancel" and stays in the menu for when Fetch is in front.
+//
+// Between calls an agent is still at work, thinking, so the brake stays armed for the
+// whole stretch an agent is connected: from its first call until its socket closes or
+// it has been quiet for AGENT_IDLE_MS. Armed, the pill, the tray, the menu and Esc in
+// Fetch's own window all stop it; only the system wide Esc waits for the next call.
+//
+// Stopped means held: every call an agent makes after that is refused with a sentence
+// until the person lets it continue, because killing a CLI in the chat stops one agent
+// and an agent in a terminal would simply call again.
+const HOTKEY_BRAKE = 'Escape'
+const MENU_BRAKE = 'Command+.'
+// Esc stays claimed this long after a call, so one pressed as the next call lands is not lost
+const DRIVE_GRACE_MS = 3000
+// and the brake stays armed this long after an agent's last call, if its socket stays open
+const AGENT_IDLE_MS = 5 * 60e3
+// What still answers while held: enough for an agent to learn it was stopped, nothing
+// that touches the machine or the edit.
+const BRAKE_FREE = new Set(['ping', 'hello', 'record.status'])
+const brake = { inflight: 0, lastAt: 0, by: null, held: null, timer: null, on: false, armed: false, global: null,
+  // every connected client that has called, by its socket's ctx: { by, chat, lastAt }
+  clients: new Map() }
+
+const agentTakeLive = () => agentTake && (recState === 'recording' || recState === 'paused')
+const agentDriving = () => !brake.held && (brake.inflight > 0 || agentChat.busy() || agentTakeLive() ||
+  Date.now() - brake.lastAt < DRIVE_GRACE_MS)
+const recentClients = () => [...brake.clients.values()].filter(c => Date.now() - c.lastAt < AGENT_IDLE_MS)
+const agentArmed = () => !brake.held && (agentDriving() || recentClients().length > 0)
+const heldSentence = () => 'The person pressed Esc to stop you, so Fetch did nothing. Stop here and ask ' +
+  'them what they want. Fetch answers again once they let you continue.'
+
+// Every op the bridge answers passes through here. The bridge looks its table up per
+// call (handleLine: ops[op]), so wrapping the entries in place gates the socket, the
+// in-app chat's agent included, without a second path into the bridge.
+function brakeAgentOps() {
+  const ops = agentBridge.ops || {}
+  for (const name of Object.keys(ops)) {
+    const fn = ops[name]
+    if (typeof fn !== 'function' || fn.braked) continue
+    const free = BRAKE_FREE.has(name)
+    const gated = async function (args, ctx) {
+      if (brake.held && !free) throw new Error(heldSentence())
+      if (free || name === 'record.pointer') return fn.call(this, args, ctx)
+      brake.inflight++
+      if (ctx && ctx.client) brake.by = ctx.client
+      if (ctx) brake.clients.set(ctx, { by: ctx.client || 'Agent', chat: ctx.chat === true, lastAt: Date.now() })
+      driveChanged()
+      try { return await fn.call(this, args, ctx) } finally {
+        brake.inflight--; brake.lastAt = Date.now()
+        const c = ctx && brake.clients.get(ctx); if (c) c.lastAt = brake.lastAt
+        driveChanged()
+      }
+    }
+    gated.braked = true
+    ops[name] = gated
+  }
+}
+
+// a client whose socket closed is no longer at work, whatever it last did
+function agentGone(ctx) {
+  if (ctx && brake.clients.delete(ctx)) driveChanged()
+}
+
+function driveChanged() {
+  const on = agentDriving(), armed = agentArmed()
+  clearTimeout(brake.timer)
+  // only the grace and the idle are on a clock; everything else calls back here when it ends
+  if (armed && !brake.inflight && !agentChat.busy() && !agentTakeLive()) {
+    const idle = recentClients().map(c => AGENT_IDLE_MS - (Date.now() - c.lastAt))
+    const wait = on ? DRIVE_GRACE_MS - (Date.now() - brake.lastAt) : Math.max(0, ...idle)
+    brake.timer = setTimeout(driveChanged, Math.max(50, wait + 50))
+  }
+  if (on === brake.on && armed === brake.armed) return
+  brake.armed = armed
+  if (on === brake.on) { paintBrake(); return }
+  brake.on = on
+  if (app.isReady()) {
+    if (on && !globalShortcut.isRegistered(HOTKEY_BRAKE)) brake.global = globalShortcut.register(HOTKEY_BRAKE, () => stopAgent('Esc'))
+    if (!on && globalShortcut.isRegistered(HOTKEY_BRAKE)) globalShortcut.unregister(HOTKEY_BRAKE)
+  }
+  paintBrake()
+}
+
+function stopAgent(how) {
+  if (!agentArmed()) return false
+  const who = brake.by || 'the agent'
+  // Whether anything outside the in-app chat was stopped: a message to the chat lets
+  // the chat's own agent go on, and never a terminal agent the person stopped
+  const outside = recentClients().some(c => !c.chat) || (brake.inflight > 0 && !agentChat.busy())
+  brake.held = { at: Date.now(), by: who, outside }
+  if (agentChat.busy()) agentChat.cancel()
+  // what it recorded so far is kept: Stop, not discard
+  if (agentTakeLive()) toRenderer('stop')
+  hideAgentCursor()
+  // a yes given "until Fetch quits" was given to an agent the person has just stopped
+  if (agentBridge.forgetConsent) agentBridge.forgetConsent()
+  // no by: a person did this
+  activity.record({ op: 'agent.stop', title: `Stopped ${who}`, detail: how, ok: true })
+  driveChanged(); paintBrake()
+  return true
+}
+
+function releaseAgent(onlyChat) {
+  if (!brake.held) return false
+  if (onlyChat && brake.held.outside) return false
+  const who = brake.held.by
+  brake.held = null
+  brake.lastAt = 0
+  activity.record({ op: 'agent.release', title: `Let ${who} continue`, ok: true })
+  driveChanged(); paintBrake()
+  return true
+}
+
+// driving is what the renderer shows the pill and takes Esc for, so it is the armed
+// stretch; esc says whether Esc is claimed system wide right now
+const brakeState = () => ({ driving: brake.armed, held: brake.held, by: brake.by, esc: brake.on && brake.global !== false })
+function paintBrake() {
+  const state = brakeState()
+  if (control && !control.isDestroyed()) control.webContents.send('agent-brake', state)
+  if (tray) tray.setContextMenu(trayMenu())
+  if (app.isReady()) Menu.setApplicationMenu(appMenu())
+}
+
+function brakeItems() {
+  const who = (brake.held && brake.held.by) || brake.by || 'the agent'
+  if (brake.held) return [{ type: 'separator' }, { label: `Let ${who} continue`, click: () => releaseAgent() }]
+  if (!brake.armed) return []
+  // the global Esc is what fires; the menu only says so
+  return [{ type: 'separator' }, { label: `Stop ${who}`, accelerator: HOTKEY_BRAKE, registerAccelerator: false, click: () => stopAgent('menu') }]
+}
+
+ipcMain.on('agent-stop', (e, how) => stopAgent(how || 'Esc'))
+ipcMain.on('agent-release', () => releaseAgent())
+ipcMain.on('agent-brake-get', e => {
+  e.returnValue = brakeState()
+})
+
+// ---------- the menu bar ----------
+// Every shortcut lives here, where macOS people look for them, and nowhere else can
+// claim one without this list showing it. Checked against what already existed: Cmd+Z
+// and Shift+Cmd+Z are the editor's (ui/editor.js), Cmd+J is the chat's (ui/chat.js),
+// Shift+Cmd+R and Shift+Cmd+P are the Record screen's (ui/app.js), and the two Option
+// chords are global. Those show here with registerAccelerator off, so one key never
+// fires twice. The stock View menu is gone with this: its Shift+Cmd+R was a hard reload
+// that threw away an open edit.
+const shortcut = what => () => { if (control && !control.isDestroyed()) control.webContents.send('shortcut', what) }
+function appMenu() {
+  const shown = (label, accelerator, what) => ({ label, accelerator, registerAccelerator: false, click: shortcut(what) })
+  const brakeHeld = !!brake.held, who = (brake.held && brake.held.by) || brake.by || 'the agent'
+  const view = [
+    { label: 'Record', accelerator: 'Command+1', click: shortcut('view:record') },
+    { label: 'Library', accelerator: 'Command+2', click: shortcut('view:library') },
+    { label: 'Edit', accelerator: 'Command+3', click: shortcut('view:editor') },
+    { label: 'Activity', accelerator: 'Command+4', click: shortcut('view:activity') },
+    { type: 'separator' },
+    { label: 'Search Library', accelerator: 'Command+F', click: shortcut('search') },
+    { label: 'Version History', accelerator: 'Command+Y', click: shortcut('history') },
+    shown('Ask Biscuit', 'Command+J', 'chat'),
+    { type: 'separator' },
+    { role: 'togglefullscreen' },
+  ]
+  if (!app.isPackaged) view.push({ type: 'separator' }, { role: 'reload' }, { role: 'toggleDevTools' })
+  return Menu.buildFromTemplate([
+    { role: 'appMenu', submenu: [
+      { role: 'about' },
+      { type: 'separator' },
+      { label: 'Settings…', accelerator: 'Command+,', click: shortcut('settings') },
+      { type: 'separator' },
+      { role: 'services' },
+      { type: 'separator' },
+      { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' },
+      { type: 'separator' },
+      { role: 'quit' },
+    ] },
+    { label: 'File', submenu: [
+      { label: 'Import Video…', accelerator: 'Command+O', click: shortcut('import') },
+      { type: 'separator' },
+      { role: 'close' },
+    ] },
+    { role: 'editMenu' },
+    { label: 'View', submenu: view },
+    { label: 'Record', submenu: [
+      { label: recState === 'idle' ? 'Start Recording' : 'Stop Recording', accelerator: HOTKEY_REC,
+        registerAccelerator: false, click: () => toRenderer(recState === 'idle' ? 'start' : 'stop') },
+      { label: recState === 'paused' ? 'Resume' : 'Pause', accelerator: HOTKEY_PAUSE, registerAccelerator: false,
+        enabled: recState !== 'idle', click: () => toRenderer('pause') },
+    ] },
+    { label: 'Agent', submenu: [
+      { label: brake.armed ? `Stop ${who}` : 'Stop Agent', accelerator: MENU_BRAKE, enabled: brake.armed,
+        click: () => stopAgent('Command+.') },
+      { label: brakeHeld ? `Let ${who} Continue` : 'Let Agent Continue', enabled: brakeHeld, click: () => releaseAgent() },
+    ] },
+    { role: 'windowMenu' },
+  ])
+}
+
 // An agent's take runs in the background: no border around the display, no floating
 // controls, and the Fetch window is neither hidden nor pulled back to the front
 // afterwards. The menu bar icon still turns red, macOS shows its own recording
@@ -657,13 +871,19 @@ ipcMain.on('rec-state', (e, state) => {
   if (!liveNow && globalShortcut.isRegistered(HOTKEY_PAUSE)) globalShortcut.unregister(HOTKEY_PAUSE)
   if (state === 'paused') { camPause(true); cursorPause(true) }
   if (state === 'recording' && recState === 'paused') { camPause(false); cursorPause(false) }
+  const wasLive = recState === 'recording' || recState === 'paused'
   recState = state
   updater.setRecState(state)
   if (tray) { tray.setImage(trayIcon(state === 'recording')); tray.setContextMenu(trayMenu()) }
+  Menu.setApplicationMenu(appMenu())
   const live = state === 'recording' || state === 'paused'
   if (!live) hideAgentCursor()
   const byAgent = agentTake
   if (!live) agentTake = false
+  if (byAgent) { brake.lastAt = Date.now(); driveChanged() }   // an agent's take is it driving
+  // A take whose start was already on its way when Esc landed goes live after the stop.
+  // Stopped agents start nothing, so it is stopped too, and kept.
+  if (byAgent && state === 'recording' && brake.held && !wasLive) toRenderer('stop')
   if (quietTake) {
     if (!live) quietTake = false
     return
@@ -1118,6 +1338,9 @@ function recorderPath() {
 }
 
 let nativeRec = null      // { proc, out, started, resolveStop }
+// What the recorder said about the last take's sound (leadMs, gaps, lostMs per track),
+// for record_stop to say beside what it measured in the file
+let lastTakeSound = null
 
 // v1.0.1 could abandon a take in the temp folder without cleaning it up: on macOS 13
 // and 14 the microphone check ran after the recorder had already started writing.
@@ -1147,6 +1370,7 @@ ipcMain.handle('native-available', () => ({
 }))
 
 ipcMain.handle('native-start', async (e, opts = {}) => {
+  lastTakeSound = null        // a new take is not described by the last one's sound
   const bin = recorderPath()
   if (!bin) return { ok: false, error: 'the recorder helper is not in this build' }
   // one that ended on its own before the renderer knew it had started is not in the way
@@ -1277,13 +1501,15 @@ ipcMain.handle('native-stop', async () => {
     ev = await Promise.race([done, new Promise(r => setTimeout(() => r(null), 20000))])
   }
   nativeRec = null
+  lastTakeSound = { sound: (ev && Array.isArray(ev.sound)) ? ev.sound : null, at: Date.now() }
   if (cursorSamples && cursorSamples.native) stopCursorSampler()
   if (!ev || !fs.existsSync(take.out) || !fs.statSync(take.out).size) {
     // nothing will be committed, so nothing should outlive it into the next take
     if (cursorSamples && cursorSamples.native) cursorSamples = null
     return { ok: false, error: take.error || 'the take was not written', endedAlone: !!take.endedAlone, kind: take.kind }
   }
-  return { ok: true, tmp: take.out, frames: ev.frames, dropped: ev.dropped, stillMs: ev.stillMs || 0, endedAlone: !!take.endedAlone, kind: take.kind }
+  return { ok: true, tmp: take.out, frames: ev.frames, dropped: ev.dropped, stillMs: ev.stillMs || 0, endedAlone: !!take.endedAlone, kind: take.kind,
+    ...(Array.isArray(ev.sound) ? { sound: ev.sound } : {}) }
 })
 
 // Move a finished native take into the save folder, reusing the same naming and
@@ -1653,8 +1879,11 @@ ipcMain.on('chat-send', (e, payload) => {
     chatLog.append(ev)
     try { e.sender.send('chat-event', ev) } catch {}
   }
+  // a person sending a message is them letting the chat's agent go on, and only that one
+  releaseAgent(true)
   try {
     agentChat.send(payload, reply)
+    driveChanged()
   } catch (err) {
     reply({ kind: 'done', ok: false, error: err.message, ms: 0 })
   }
@@ -1724,6 +1953,11 @@ ipcMain.handle('chat-models', (e, installed) => require('./ui/models').catalogue
 // every job that finishes here.
 ipcMain.handle('activity-read', (e, limit) => activity.read(limit || 300))
 ipcMain.handle('activity-clear', () => { activity.clear(); return true })
+// A restore from the history panel, logged beside the edits it undoes. Only what a log
+// line holds is taken, so the renderer cannot write anything else into the file.
+ipcMain.handle('activity-record', (e, x = {}) => activity.record({
+  op: String(x.op || 'edit'), title: String(x.title || x.op || 'edit'), detail: x.detail == null ? null : String(x.detail),
+  by: x.by == null ? null : String(x.by), ok: x.ok !== false }))
 
 // The edit document, and the beats a recording is scrubbed by.
 ipcMain.handle('read-doc', (e, src, dur) => proc.readDoc(src, dur))

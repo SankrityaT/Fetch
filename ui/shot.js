@@ -249,7 +249,7 @@ function normalize(shot, src, size) {
 
   out.crop = Targets.cleanBox(shot.crop) || null
   out.cropAR = Look.CROP_ARS.includes(shot.cropAR) ? shot.cropAR : 'free'
-  out.viewport = Targets.cleanBox(shot.viewport) || null
+  out.viewport = Fetchdoc.cleanViewport(shot.viewport)
   out.captured = cleanCaptured(shot.captured)
   out.device = Fetchdoc.cleanDevice(shot.device)
   // The page's place arriving for the first time crops the chrome off, once; a crop the
@@ -478,7 +478,7 @@ function fromTake(doc, { src = null, w = 0, h = 0, at = 0, id = null } = {}) {
   shot.look = Look.resolve(d.look)
   shot.crop = Targets.cleanBox(d.crop) || null
   shot.cropAR = Look.CROP_ARS.includes(d.cropAR) ? d.cropAR : 'free'
-  shot.viewport = Targets.cleanBox(d.viewport) || null
+  shot.viewport = Fetchdoc.cleanViewport(d.viewport)
   // A crop the edit already carries is the person's, so the chrome rule must not run
   // again and re-apply one they cleared.
   shot.viewportApplied = true

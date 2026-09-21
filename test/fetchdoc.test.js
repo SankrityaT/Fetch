@@ -248,5 +248,17 @@ is('a corrupt array is dropped, not fatal', d.normalize({ clips: 'nope' }, '/a.m
     d.focusClashes([one('lift', 0.05, 0.05, 0.2, 0.2, { id: 'M1' }), one('spotlight', 0.7, 0.7, 0.2, 0.2, { id: 'M2' })]), [])
 }
 
+// The glass's measured corner rides with its rectangle. cleanBox kept the rectangle
+// alone, so the phone shell masked with the window's small radius and the Simulator's
+// own bezel showed as a crescent in every corner.
+{
+  const FDc = require('../ui/fetchdoc')
+  const v = FDc.normalize({ viewport: { x: 0.0554, y: 0.0896, w: 0.8892, h: 0.8929, corner: 0.1563 } }).viewport
+  is('a viewport keeps its glass corner through normalize', v && v.corner, 0.1563)
+  is('a corner out of range is dropped, the rectangle kept',
+    FDc.normalize({ viewport: { x: 0.1, y: 0.1, w: 0.5, h: 0.5, corner: 0.7 } }).viewport, { x: 0.1, y: 0.1, w: 0.5, h: 0.5 })
+  is('a square glass stays four keys', Object.keys(FDc.normalize({ viewport: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 } }).viewport).length, 4)
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

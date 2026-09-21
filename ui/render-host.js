@@ -225,13 +225,16 @@ async function glExport(src, opts, onProgress, jobId, why) {
   const tmp = [video, audio]
   if (out !== dest) tmp.push(out)
   const t0 = Date.now()
+  let written = null
   try {
     const onP = onProgress ? (n, total) => onProgress(n / spec.fps, spec.span, Math.min(97, Math.round(n / total * 100))) : null
     // picture in the window and sound in ffmpeg, at once
     // either failing stops the other, so a fallback to the classic renderer does not run
     // beside a render window still drawing (or an ffmpeg still writing) for nothing
     const [stats, sound] = await Promise.all([
-      renderPicture({ spec, src, out: video, ffmpeg: proc.FFMPEG, quality: opts.quality || 'balanced', sink: opts.sink,
+      // a store file's rate is Apple's number and not a quality name (sinks.js STORE)
+      renderPicture({ spec, src, out: video, ffmpeg: proc.FFMPEG, quality: store ? 'store' : opts.quality || 'balanced',
+        sink: store ? undefined : opts.sink,
         format: fmtId, width: store ? store.w : gifWidth }, onP, jobId),
       gif ? null : proc.renderAudio(src, opts, spec.keep, spec.span, meta, audio, jobId),
     ]).catch(e => { proc.cancel(jobId); throw e })
@@ -240,10 +243,23 @@ async function glExport(src, opts, onProgress, jobId, why) {
       // The store's own audio line: one stereo AAC track at 256 kbps and 48 kHz. A take
       // with no sound gets a silent one of that shape rather than none, because the page
       // lists a track and nothing on it says a file without one is taken.
-      const silent = sound ? [] : ['-f', 'lavfi', '-t', spec.span.toFixed(3), '-i', 'anullsrc=r=48000:cl=stereo']
+      // The picture is the length. This mux used -shortest, and a track 4 s short (a take
+      // whose sound starts late) cut a 28 s edit to 24 s and still reported 28. The sound
+      // is padded with silence to the picture's span and never the other way round.
+      const span = spec.span.toFixed(3)
+      const silent = sound ? [] : ['-f', 'lavfi', '-t', span, '-i', 'anullsrc=r=48000:cl=stereo']
       await proc.run(proc.FFMPEG, ['-y', '-i', video, ...(sound ? ['-i', sound] : silent), '-map', '0:v:0', '-map', '1:a:0',
-        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '256k', '-ar', '48000', '-ac', '2', '-shortest',
-        '-movflags', '+faststart', out], null, jobId)
+        '-c:v', 'copy', '-af', `apad=whole_dur=${span}`, '-c:a', 'aac', '-b:a', '256k', '-ar', '48000', '-ac', '2',
+        '-t', span, '-movflags', '+faststart', out], null, jobId)
+      // Measured, not assumed: a store file that lost picture is refused here rather than
+      // handed back as the preview of an edit it is not all of
+      written = await measurePicture(out)
+      if (written.frames < spec.frames - 1) {
+        try { fs.unlinkSync(out) } catch {}
+        throw new Error(`the preview came out ${(written.frames / spec.fps).toFixed(2)}s of a ${spec.span.toFixed(2)}s edit ` +
+          `(${written.frames} of ${spec.frames} frames), so it was not kept. Nothing was trimmed on purpose: this is a fault ` +
+          'in the export, and the edit is unchanged.')
+      }
     } else {
       await proc.run(proc.FFMPEG, ['-y', '-i', video, ...(sound ? ['-i', sound] : []), '-map', '0:v:0', ...(sound ? ['-map', '1:a:0'] : []),
         '-c:v', 'copy', ...audioCopy(fmtId, sound), ...(vext === 'mp4' ? ['-movflags', '+faststart'] : []), out], null, jobId)
@@ -257,15 +273,33 @@ async function glExport(src, opts, onProgress, jobId, why) {
     const ms = Date.now() - t0
     if (onProgress) onProgress(spec.span, spec.span, 100)
     return {
-      file: dest, duration: +spec.span.toFixed(1), cuts: (opts.cuts || []).filter(c => Array.isArray(c) && c.length === 2).length,
+      // a store file answers with what it holds, read off the file
+      file: dest, duration: +(written ? written.frames / spec.fps : spec.span).toFixed(1), cuts: (opts.cuts || []).filter(c => Array.isArray(c) && c.length === 2).length,
       format: fmt.ext, mb: +(fs.statSync(dest).size / 1e6).toFixed(1),
       engine: 'gl', why,
       // size is what was drawn, which for a GIF is smaller than the plan's own frame
       render: { size: `${spec.W}x${spec.H}`, ...stats, fps: spec.fps, ms, realtime: +(spec.span * 1000 / ms).toFixed(2), pictureFps: stats.fps },
+      ...(written ? { written } : {}),
     }
   } finally {
     for (const f of tmp) { try { fs.unlinkSync(f) } catch {} }
   }
+}
+
+// What a written file's picture actually is: its frames counted by reading every packet
+// (a stream copy into nothing, no decode) and the rate its header states. Only ffmpeg,
+// because that is the one binary the app ships.
+async function measurePicture(file) {
+  const err = await new Promise(resolve => {
+    let buf = ''
+    const p = require('child_process').spawn(proc.FFMPEG, ['-hide_banner', '-i', file, '-map', '0:v:0', '-c', 'copy', '-f', 'null', '-'])
+    p.stderr.on('data', d => { buf = (buf + d).slice(-20000) })
+    p.on('close', () => resolve(buf))
+    p.on('error', () => resolve(buf))
+  })
+  const frames = [...err.matchAll(/frame=\s*(\d+)/g)].map(m => +m[1]).pop() || 0
+  const v = /Stream #\d+:\d+.*?: Video: .*?(\d+) kb\/s/.exec(err)
+  return { frames, kbps: v ? +v[1] : null }
 }
 
 // The plan of a saved edit, drawn the way the export would draw it: the document

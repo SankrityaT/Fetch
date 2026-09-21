@@ -523,3 +523,28 @@ img.biscuit { object-fit:contain; }
 /* Once a setup exists its card has Change and the red Start, so the chip would be a
    second record control a few pixels above the real one. */
 .hero-chips:has(~ .hero-ready:not([hidden])) .hero-chip-go { display:none; }
+
+/* ── the brake ─────────────────────────────────────────────────────────
+   Says an agent is at work and that Esc stops it. Floats, so it takes the float's
+   shadow; bottom left, clear of the toasts' centre line and of the chat on the right.
+   Gold for the key that acts, never red: red is recording and nothing else. */
+.agent-brake {
+  position:fixed; left:var(--s-5); bottom:var(--s-5); z-index:85;
+  display:flex; align-items:center; gap:var(--s-3);
+  padding:6px 6px 6px var(--s-3); border-radius:var(--r-pill);
+  background:var(--ink-2); border:var(--edge-soft); box-shadow:var(--shadow-3), var(--sheen);
+  font-size:var(--t-12); font-weight:500; color:var(--text-0);
+  animation:brakein var(--dur-2) var(--ease-in);
+}
+.agent-brake[hidden] { display:none; }
+.agent-brake-mark { width:22px; height:22px; border-radius:50%; display:grid; place-items:center;
+  background:var(--ink-1); color:var(--fur-1); flex:none; }
+.agent-brake-mark img { width:14px; height:14px; }
+.agent-brake-line { max-width:46ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent-brake-stop { gap:6px; }
+.agent-brake-stop kbd { font-size:var(--t-11); color:var(--fur-1); padding:0 6px; border-radius:var(--r-pill);
+  background:rgba(240,169,60,.13); line-height:18px; }
+/* held is a state, not a warning, so the icon and the words change and the colour stays */
+.agent-brake[data-held="true"] .agent-brake-mark { color:var(--text-1); }
+@keyframes brakein { from { opacity:0; transform:translateY(8px); } }
+@media (prefers-reduced-motion: reduce) { .agent-brake { animation:none; } }

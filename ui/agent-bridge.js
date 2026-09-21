@@ -65,6 +65,9 @@ let endingAt = 0
 // element: 'E129' and use that element's own box. An agent given a box still worked
 // out a centre and a scale by hand; naming the element leaves nothing to work out.
 const foundBy = new Map()      // path -> { at, boxes: Map(id -> box) }
+// Takes record_stop measured at the noise floor, so review does not offer transcribe on
+// a take the agent was just told has nothing to hear.
+const heardSilent = new Set()
 // The same, for a pass Fetch ran for itself rather than for the agent: the lasso's
 // snapping while the person scrubs, and the frame a zoom's aim is read from. E ids are
 // positional per frame (ui/targets.js:143), so putting a background pass into foundBy
@@ -129,6 +132,7 @@ const TITLES = {
   'memory.remember': 'Remembered something',
   'shot.take': 'Took a screenshot',
   'sim.do': 'Worked with a simulator',
+  'edit.versions': 'Read the version history',
 }
 
 // ── a shot is a take of one frame ────────────────────────────────────────
@@ -143,6 +147,15 @@ const isShot = p => typeof p === 'string' && STILL_EXT.test(p)
 // is open the other answers null (ui/editor.js), so the file decides the name rather
 // than the caller.
 const docOf = src => (isShot(src) ? 'window.fetchShot' : 'window.fetchDoc')
+// The edit as it stands. While the person is looking at an old version the stage holds
+// that version, and reading the stage would hand it on as the edit: get_edit wrote it to
+// disk and every export after it read the past. The real edit is held aside
+// (ui/autosave.js), and this reads that.
+const docNow = src => `(window.fetchHistory && window.fetchHistory.current && window.fetchHistory.src() === ${JSON.stringify(src)} ` +
+  `&& window.fetchHistory.current()) || ${docOf(src)}.get()`
+// Who made a change, as the second argument every apply and undo takes, so the version
+// history names the agent rather than "Agent" (ui/autosave.js reads opts.by).
+const byArg = ctx => JSON.stringify({ by: (ctx && ctx.client) || 'Agent' })
 
 // A capture has one moment and it is the first. Shot.HOLD is a clock the compositor is
 // lent so that every arrival in the shared planner has landed by the frame it draws
@@ -160,6 +173,8 @@ const ops = {
   // just "an agent". Unknown to older shims, which simply never call it.
   async hello(args = {}, ctx) {
     if (ctx) ctx.client = String(args.client || '').slice(0, 40) || null
+    // the in-app chat's own agent, so a message to the chat releases it and no other
+    if (ctx) ctx.chat = args.chat === true
     return { ok: true }
   },
 
@@ -257,6 +272,11 @@ const ops = {
       const naming = require('./naming')
       const given = args.name != null ? naming.fit(naming.clean(args.name)) : ''
       await win.webContents.executeJavaScript(`window.__takeName = ${JSON.stringify(given || null)}`)
+      // Esc may have landed during the awaits above; a stopped agent starts nothing
+      if (deps.held && deps.held()) {
+        win.webContents.executeJavaScript('window.__takeName = null').catch(() => {})
+        throw new Error('The person pressed Esc to stop you, so Fetch did nothing.')
+      }
       deps.toRenderer('start')
 
       // The renderer counts down before it captures, so allow for that plus a margin.
@@ -411,6 +431,9 @@ const ops = {
         'Creating, erasing and deleting somebody\'s devices is refused to everyone, and the rest ' +
         'is a command line of their own.')
     }
+    // each identifier in the argument that takes it, before anything is asked or spawned
+    const fixed = simArgs(action, args)
+    args = fixed.args
     const sims = await simModel()
     if (action === 'list') return simList(sims)
 
@@ -422,14 +445,15 @@ const ops = {
     const fallback = (action === 'tap' || action === 'restore') && takeSim ? takeSim.sim.udid : null
     const found = Sim.resolve(sims, args.device != null ? args.device : fallback)
     if (!found.ok) {
-      throw new Error(`${found.reason} simulator with action list says which devices are here.` +
+      throw new Error(`${found.reason}${deviceHint(args.device)} simulator with action list says which devices are here.` +
         (fallback ? '' : ' With a recording of a simulator running, tap and restore take that device by default.'))
     }
     const sim = found.value
-    if (action === 'ready') return await simReady(sim, args, ctx)
-    if (action === 'go') return await simGo(sim, args, ctx)
-    if (action === 'tap') return await simTap(sim, args, ctx)
-    return await simRestore(sim)
+    const out = action === 'ready' ? await simReady(sim, args, ctx)
+      : action === 'go' ? await simGo(sim, args, ctx)
+        : action === 'tap' ? await simTap(sim, args, ctx)
+          : await simRestore(sim)
+    return fixed.moved.length ? { ...out, moved: fixed.moved } : out
   },
 
   // ── one frame ──────────────────────────────────────────────────────────
@@ -521,8 +545,8 @@ const ops = {
     // device's own outline out of the picture, what turns a device point into a place on
     // the frame, and what lets the drawn phone be the only phone in the deliverable.
     const written = { captured: cap, ...(sim ? simOnDoc(sim) : {}) }
-    const shot = await inEditor(file, `${docOf(file)}.apply(${JSON.stringify(written)})`)
-      .catch(() => inEditor(file, `${docOf(file)}.get()`).catch(() => null))
+    const shot = await inEditor(file, `${docOf(file)}.apply(${JSON.stringify(written)}, ${byArg(ctx)})`)
+      .catch(() => inEditor(file, docNow(file)).catch(() => null))
     // The picture, with the capture. This is the one tool that makes the only artefact
     // in the job, and it was the one tool that handed back no image of it, so an agent
     // that cannot see the screen spent a second call looking at its own work.
@@ -554,7 +578,7 @@ const ops = {
       const shot = await shotOf(args.path)
       return { ...summariseShot(shot, args.path), ...memoryState(args.path) }
     }
-    const doc = await inEditor(args.path, 'window.fetchDoc.get()')
+    const doc = await inEditor(args.path, docNow(args.path))
     deps.proc.writeDoc(args.path, doc)
     const out = summarise(doc, args.path)
     // The words themselves only on request: a long transcript is thousands of tokens,
@@ -565,10 +589,10 @@ const ops = {
     return out
   },
 
-  async 'edit.apply'(args = {}) {
+  async 'edit.apply'(args = {}, ctx) {
     if (!args.path) throw new Error('path is required')
     if (!args.doc || typeof args.doc !== 'object') throw new Error('doc is required')
-    if (isShot(args.path)) return await applyToShot(args)
+    if (isShot(args.path)) return await applyToShot(args, ctx)
     const FD = require('./fetchdoc')
     if (args.doc.remove != null && !Array.isArray(args.doc.remove)) throw new Error('remove is a list of ids, e.g. remove: [\'M12\']')
     // marks: { remove: [...] } was taken as nothing and reported as done
@@ -587,7 +611,7 @@ const ops = {
       }
     }
     const prev = ['marks', 'zooms', 'texts', 'remove'].some(k => Array.isArray(args.doc[k]))
-      ? await inEditor(args.path, 'window.fetchDoc.get()') : null
+      ? await inEditor(args.path, docNow(args.path)) : null
     // the edit as it stands is read first: which mark ids exist decides whether a lift
     // is being retimed or made, and the crop decides what a lassoed box now points at
     args = { ...args, doc: withElements(args.path, args.doc, prev) }
@@ -605,7 +629,7 @@ const ops = {
       replaced = s.replaced
       timed = await timeFocus(args.path, prev, args.doc).catch(() => ({ moved: [], absent: [] }))
     }
-    const doc = await inEditor(args.path, `window.fetchDoc.apply(${JSON.stringify(args.doc)})`)
+    const doc = await inEditor(args.path, `window.fetchDoc.apply(${JSON.stringify(args.doc)}, ${byArg(ctx)})`)
     deps.proc.writeDoc(args.path, doc)
     const out = summarise(doc, args.path)
     if (replaced.length) out.replaced = { marks: replaced, why: 'a new lift or spotlight takes the place of one it overlaps' }
@@ -694,7 +718,7 @@ const ops = {
 
   // A look onto a recording's edit: a preset, a patch, fields to reset, or all three.
   // Through the editor like apply_edit, so the person sees it and one Undo takes it back.
-  async 'look.apply'(args = {}) {
+  async 'look.apply'(args = {}, ctx) {
     if (!args.path) throw new Error('path is required')
     const Look = require('./look')
     const patch = { ...(args.look && typeof args.look === 'object' ? args.look : {}) }
@@ -703,8 +727,8 @@ const ops = {
     if (!Object.keys(patch).length) throw new Error('send preset, look or reset')
     // A shot holds the same look an edit holds, whole and unconverted, so a preset
     // saved off a recording lands on a capture unchanged and this is one call, not two.
-    if (isShot(args.path)) return await applyToShot({ ...args, doc: { look: patch } })
-    const doc = await inEditor(args.path, `window.fetchDoc.apply(${JSON.stringify({ look: patch })})`)
+    if (isShot(args.path)) return await applyToShot({ ...args, doc: { look: patch } }, ctx)
+    const doc = await inEditor(args.path, `window.fetchDoc.apply(${JSON.stringify({ look: patch })}, ${byArg(ctx)})`)
     deps.proc.writeDoc(args.path, doc)
     const out = { look: Look.compact(doc.look, looksDir()) }
     const w = lookWarnings(patch, doc, args.path)
@@ -788,7 +812,14 @@ const ops = {
           ? [`apply_look { ${plain ? 'background: { kind: \'video-blur\' }, ' : ''}frame: { padding: ${pad} } } draws the capture at ` +
             `${Math.floor(want.maxShare * 100)}% of the picture, which is its own pixels, and export again`]
           : []
-        throw new Error([want.reason, ...(want.fix || []), ...route].join('\n'))
+        // Everything else that does not hold, in the same answer. The judged job's first
+        // refusal named the upscale and held back the length, which was known, for a
+        // second call: the description promises everything is named before anything is
+        // drawn, and this is where that promise is kept or broken.
+        const len = Sizes.lengthPlan(FD.outDuration(doc), {})
+        const also = !len.ok ? [len.reason, ...(len.fix || [])] : len.needs ? [len.needs] : []
+        throw new Error([want.reason, ...(want.fix || []), ...route,
+          ...also.filter(l => l && l !== want.reason)].join('\n'))
       }
       // Everything that is still somebody's decision, named with the call that makes it.
       // A window out of a longer take is fit_to_length's to choose, on the take's own
@@ -811,6 +842,8 @@ const ops = {
       // happened.
       opts.backdropAspect = want.size.w / want.size.h
       opts.size = { ...want.size }
+      // the take where the gate judged it, not where the look's padding would have put it
+      opts.box = { ...want.box }
       opts.fps = want.fps.out
     }
     const r = await deps.exportDoc(args.path, opts)
@@ -840,13 +873,26 @@ const ops = {
     }
     // The store measures the file, so this does too: read off what was written rather
     // than off the plan that asked for it.
-    const store = want ? await clipVerdict(want, r && r.file) : null
-    return { path: r && r.file, mb, seconds: +FD.outDuration(doc).toFixed(2), ...engine,
+    const store = want ? await clipVerdict(want, r && r.file,
+      { expect: FD.outDuration(doc), kbps: r && r.written && r.written.kbps }) : null
+    // The file's length where it was measured, and the plan's only where nothing was: the
+    // judged preview said 28 at the top and 24 in store, and the top is what gets relayed.
+    const fps = opts.fps || (r && r.render && r.render.fps)
+    const seconds = r && r.written && r.written.frames && fps
+      ? +(r.written.frames / fps).toFixed(2) : +FD.outDuration(doc).toFixed(2)
+    // The deliverable written closes the plan's export step. A store file that is not the
+    // store file has not delivered anything, so that step stays open.
+    const Director = require('./director')
+    let step = args.step || null
+    if (!step && r && r.file && (!store || store.exact)) {
+      try { step = Director.stepFor(Director.read(args.path), 'export') } catch {}
+    }
+    return { path: r && r.file, mb, seconds, ...engine,
       ...(store ? { store } : {}),
       ...(lw.length ? { look_warnings: lw } : {}),
       ...(checked ? { review: checked } : {}),
       ...(loop ? { loop } : {}),
-      ...jobState(args.path, doc, null, meta) }
+      ...jobState(args.path, doc, step, meta) }
   },
 
   // Rename through the same helper the Library uses, so sidecars (transcript, beats,
@@ -1109,7 +1155,7 @@ const ops = {
 
   // A length is a decision about what to keep, so it writes clips. remove_dead_air
   // writes a new file whose edit is empty; this leaves the take alone.
-  async 'edit.fit'(args = {}) {
+  async 'edit.fit'(args = {}, ctx) {
     if (!args.path) throw new Error('path is required')
     if (isShot(args.path)) throw notOnAShot('A length')
     const Fit = require('./fit')
@@ -1149,7 +1195,7 @@ const ops = {
     // them; sending them back here would be the same list twice (principle 6).
     const { clips, spans, ...out } = r
     if (args.apply === false || !clips.length) return { ...out, applied: false }
-    const applied = await ops['edit.apply']({ path: args.path, doc: { clips }, step: args.step })
+    const applied = await ops['edit.apply']({ path: args.path, doc: { clips }, step: args.step }, ctx)
     return { ...out, applied: true, output: applied.output,
       ...(applied.plan ? { plan: applied.plan } : {}), ...(applied.distance ? { distance: applied.distance } : {}),
       ...(applied.hint ? { hint: applied.hint } : {}) }
@@ -1186,13 +1232,13 @@ const ops = {
   // own "Undo Biscuit's change" button, which is why it is safe to hand over: it
   // merges by id, so a zoom they dragged since stays dragged, and it never reaches
   // their own undo history.
-  async 'edit.revert'(args = {}) {
+  async 'edit.revert'(args = {}, ctx) {
     if (!args.path) throw new Error('path is required')
     // One undo stack, keyed by the file, so taking back a change to a shot is the same
     // button the person has and the same call the agent already knew (ui/editor.js).
     const shot = isShot(args.path)
     const before = shot ? await shotOf(args.path) : deps.proc.readDoc(args.path, null)
-    const undone = await inEditor(args.path, `window.fetchUndo ? window.fetchUndo.undo(${JSON.stringify(args.path)}) : false`)
+    const undone = await inEditor(args.path, `window.fetchUndo ? window.fetchUndo.undo(${JSON.stringify(args.path)}, 0, ${byArg(ctx)}) : false`)
     if (!undone) {
       throw new Error(`nothing of yours to take back on this ${shot ? 'shot' : 'take'}. Change the ${shot ? 'shot' : 'edit'} itself with apply_edit ` +
         `(a ${shot ? 'mark' : 'zoom or a mark'} is fixed by re-sending it with its id, and remove: [id] deletes one).`)
@@ -1204,11 +1250,93 @@ const ops = {
         ...(gone.length ? { removed: { ids: gone, why: 'these went back out of the shot; say so in your reply' } } : {}),
         ...jobState(args.path, null, null, null, shotFacts(now)) }
     }
-    const doc = await inEditor(args.path, 'window.fetchDoc.get()')
+    const doc = await inEditor(args.path, docNow(args.path))
     deps.proc.writeDoc(args.path, doc)
     const gone = removedIds(before, doc)
     return { ...summarise(doc, args.path), ...(gone.length ? { removed: { ids: gone, why: 'these went back out of the edit; say so in your reply' } } : {}),
       ...jobState(args.path, doc, null, await takeShape(args.path)) }
+  },
+
+  // ── versions ───────────────────────────────────────────────────────────
+  // The take's history across sessions (ui/history.js), through the editor that keeps
+  // it, so there is one log and one writer. revert_my_edit takes back the agent's own
+  // last burst; this reaches any version anybody made, and what the person had on
+  // Tuesday is as reachable as what the agent did a minute ago. A restore is a new
+  // version on top, never a rewind, so it needs no proposal: restoring the version
+  // before it takes it back, and nothing ahead of it is ever lost.
+  async 'edit.versions'(args = {}, ctx) {
+    if (!args.path) throw new Error('path is required')
+    const action = String(args.action || 'list').trim().toLowerCase()
+    if (!VERSION_DOES.includes(action)) {
+      throw new Error(`versions does ${VERSION_DOES.join(', ')}, and not "${args.action}". list names the versions, ` +
+        'look shows one without changing anything, restore brings one back as a new version.')
+    }
+    const History = require('./history')
+    const shot = isShot(args.path)
+    const rows = await versionRows(args.path)
+    if (action === 'list') {
+      const limit = Math.max(1, Math.min(200, Math.round(+args.limit || 20)))
+      return {
+        versions: rows.slice(0, limit).map(versionSaid),
+        total: rows.length,
+        ...(rows.length > limit ? { older: `${rows.length - limit} older versions are not listed; send limit to see more` } : {}),
+        how: `newest first; ${rows[0].id} is the edit as it stands now. by is who made each one, and the person when ` +
+          'it is "the person". look shows any of them without changing anything, and restore brings one back as a ' +
+          'new version on top, so nothing ahead of it is lost.',
+      }
+    }
+    const n = versionNumber(args.version)
+    const row = rows.find(r => r.n === n)
+    if (!row) {
+      throw new Error(`${args.version == null ? 'version is required, and' : `"${args.version}" is not a version of this ${shot ? 'shot' : 'take'}:`} ` +
+        `versions with action list names them, newest first. ${rows[0].id} is now and ${rows[rows.length - 1].id} is the oldest kept.`)
+    }
+    if (action === 'look') {
+      const version = await inEditor(args.path, `window.fetchHistory.version(${n})`)
+      if (!version) {
+        throw new Error(`${row.id} is listed and cannot be read back from the history file, so there is nothing to show. ` +
+          'versions with action list names the others.')
+      }
+      const current = await inEditor(args.path, docNow(args.path))
+      // what restoring it would put on screen: the edit from then, the recording's own
+      // facts from now, and any file it used that is gone kept as it is now
+      const { doc, missing } = History.forRestore(version, current, fs.existsSync)
+      const diff = History.describe(current, doc)
+      let preview = null
+      try {
+        const p = await ops['edit.preview']({ path: args.path, doc,
+          at: args.at != null ? +args.at : versionMoment(doc, diff.touched) })
+        preview = { image: p.image, at: p.at, why: `this is ${row.id} drawn by the renderer the export uses. Nothing was changed.` }
+      } catch (e) { preview = { error: (e && e.message) || String(e) } }
+      return {
+        version: versionSaid(row),
+        restoring_it_would: History.same(current, doc) ? 'change nothing: the edit already matches it' : diff.line.charAt(0).toLowerCase() + diff.line.slice(1),
+        edit: shot ? summariseShot(doc, args.path) : briefEdit(doc, args.path),
+        ...(missing.length ? { missing: History.missingLine(missing).trim() } : {}),
+        preview,
+        do_next: row.n === rows[0].n ? `${row.id} is the edit as it stands now.`
+          : `versions { action: 'restore', version: '${row.id}' } brings it back as a new version; nothing ahead of it is lost.`,
+      }
+    }
+    const was = rows[0].id
+    const by = (ctx && ctx.client) || 'Agent'
+    const r = await inEditor(args.path, `window.fetchHistory.restore(${n}, ${JSON.stringify({ by })})`)
+    if (!r) {
+      throw new Error(`${row.id} cannot be read back from the history file, so nothing changed. versions with action list ` +
+        'names the others; ask the person which one they meant if none of those is it.')
+    }
+    const now = await inEditor(args.path, docNow(args.path))
+    if (!shot && now) deps.proc.writeDoc(args.path, now)
+    return {
+      restored: row.id,
+      ...(r.row ? { as: r.row.id } : { unchanged: 'the edit already matched it, so no version was written' }),
+      line: r.line,
+      ...(r.missing && r.missing.length ? { missing: History.missingLine(r.missing).trim() } : {}),
+      ...(r.row ? { undo: `versions { action: 'restore', version: '${was}' } puts back the edit as it was before this` } : {}),
+      edit: shot ? summariseShot(now, args.path) : briefEdit(now, args.path),
+      ...(shot ? jobState(args.path, null, args.step, null, shotFacts(now))
+        : jobState(args.path, now, args.step, await takeShape(args.path))),
+    }
   },
 
   // ── the two that wait on the person ────────────────────────────────────
@@ -1225,7 +1353,7 @@ const ops = {
     return Assist.askResult(await putToPane('ask', spec.ask))
   },
 
-  async 'chat.propose'(args = {}) {
+  async 'chat.propose'(args = {}, ctx) {
     if (!args.path) throw new Error('path is required')
     if (!args.doc || typeof args.doc !== 'object') throw new Error('doc is required: the change itself, exactly as apply_edit takes it')
     const Assist = require('./edit-assist')
@@ -1241,7 +1369,7 @@ const ops = {
     // Applied through the call the agent would have made itself, so the plan, the
     // distance, the warnings and the one undo level are the same either way.
     try {
-      return { ...(await ops['edit.apply']({ path: args.path, doc: args.doc, step: args.step })),
+      return { ...(await ops['edit.apply']({ path: args.path, doc: args.doc, step: args.step }, ctx)),
         ...Assist.proposalResult(out) }
     } catch (err) {
       // The card read "Applied." the moment it was clicked, because the click is the
@@ -1292,7 +1420,7 @@ const ops = {
       ...(s.limit != null ? { characters: { used: s.used, limit: s.limit } } : {}) }
   },
 
-  async 'voice.speak'(args = {}) {
+  async 'voice.speak'(args = {}, ctx) {
     if (!args.path) throw new Error('path is required')
     if (isShot(args.path)) throw notOnAShot('A voiceover')
     const voice = require('./voice')
@@ -1322,7 +1450,7 @@ const ops = {
     // Undo takes it back. replace mutes the take's own sound under it.
     const name = path.parse(args.path).name + ' voiceover'
     const applied = await ops['edit.apply']({ path: args.path, step: args.step,
-      doc: { audioTrack: { file, name, volume: 1, offset: args.offset || 0, replace: args.replace !== false } } })
+      doc: { audioTrack: { file, name, volume: 1, offset: args.offset || 0, replace: args.replace !== false } } }, ctx)
     return { ...out, applied: true, audioTrack: applied.audioTrack,
       ...(applied.plan ? { plan: applied.plan } : {}), ...(applied.distance ? { distance: applied.distance } : {}) }
   },
@@ -1383,7 +1511,10 @@ const ops = {
         mb: +(fs.statSync(args.path).size / 1e6).toFixed(2),
         duration: null, fps: null, hasAudio: false }
     }
-    const meta = await deps.proc.probeMeta(args.path)
+    const probed = await deps.proc.probeMeta(args.path)
+    // where the sound sits against the picture, said beside the raw number
+    const sync = soundSync(await withAudioEnd(args.path, probed), null)
+    const meta = sync ? { ...probed, sound_sync: sync } : probed
     if (!args.loudness) return meta
     // Which piece of the take is under the rest, and by how many decibels, in the same
     // unit the -14 LUFS target is in (processor.clipLevels). "This bit is too quiet" is
@@ -1475,7 +1606,7 @@ async function proposedFrame(args) {
     // change, which is worse than no picture.
     const sent = JSON.parse(JSON.stringify(args.doc))
     const prev = ['marks', 'zooms', 'texts', 'remove'].some(k => Array.isArray(sent[k]))
-      ? await inEditor(args.path, 'window.fetchDoc.get()').catch(() => null) : null
+      ? await inEditor(args.path, docNow(args.path)).catch(() => null) : null
     const resolved = withElements(args.path, sent, prev)
     await aimZooms(args.path, resolved, prev).catch(() => null)
     const doc = FD.mergeDoc(deps.proc.readDoc(args.path, meta && meta.duration), resolved)
@@ -1645,10 +1776,18 @@ async function askPerson(message, detail, sessionLabel, still = false, allowLabe
     type: 'question', message, detail, buttons, defaultId: no, cancelId: no, noLink: true,
   }).then(r => (r.response === no ? 'no'
     : buttons[r.response] === sessionLabel ? 'session' : 'once'), () => 'no')
+  let answer
   try {
     const waited = new Promise(res => { timer = setTimeout(() => res('unanswered'), ASK_WAIT_MS) })
-    return await Promise.race([asked, waited])
+    answer = await Promise.race([asked, waited])
   } finally { if (timer) clearTimeout(timer) }
+  // A dialog can be up when the person presses Esc, and a yes clicked after that is not
+  // a yes to an agent they have just stopped (main.js, the brake). Checked here, once,
+  // so every question this bridge asks honours it.
+  if (answer !== 'no' && answer !== 'unanswered' && deps.held && deps.held()) {
+    throw new Error('The person pressed Esc to stop you, so Fetch did nothing. Stop here and ask the person what they want.')
+  }
+  return answer
 }
 
 // ── simulators, as things Fetch knows ────────────────────────────────────
@@ -1666,6 +1805,89 @@ async function askPerson(message, detail, sessionLabel, still = false, allowLabe
 // that never passed the policy.
 
 const SIM_DOES = ['list', 'ready', 'go', 'tap', 'restore']
+
+// ── which kind of identifier an argument is ────────────────────────────────
+// Every simulator argument takes one kind of identifier: device a UDID or a name, app a
+// path to a built .app, bundle a bundle id, url a link with a scheme, element an E or R
+// id. The judged job's one wasted call was a bundle id sent as app, and it was refused
+// only after the person had said yes and the device had booted. So the form of each is
+// read here, before any question and any spawn. Where the form is unambiguous (a bundle
+// id is never an absolute path) the value is moved to the argument that takes it and the
+// result says so; where it is not, the refusal names the argument it belongs in.
+const LOOKS = {
+  bundle: v => /^[A-Za-z0-9-]+(\.[A-Za-z0-9_-]+)+$/.test(v) && !/\.app$/i.test(v),
+  appPath: v => /^(\/|~\/)/.test(v) || /\.app\/?$/i.test(v),
+  udid: v => /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i.test(v),
+  windowId: v => /^\d+$/.test(v),
+  link: v => /^[A-Za-z][A-Za-z0-9+.-]*:/.test(v),
+  element: v => /^[ER]\d+$/i.test(v),
+}
+const said = v => String(v == null ? '' : v).trim()
+
+/** Arguments with each identifier in the argument that takes it, and what was moved. */
+function simArgs(action, raw = {}) {
+  const args = { ...raw }
+  const moved = []
+  if (action === 'ready') {
+    const app = args.app != null ? said(args.app) : null
+    const bundle = args.bundle != null ? said(args.bundle) : null
+    if (app && !LOOKS.appPath(app)) {
+      if (LOOKS.bundle(app) && (!bundle || bundle === app)) {
+        delete args.app; args.bundle = app
+        moved.push(`app takes the path to a built .app and ${app} is a bundle id, so it was launched as bundle`)
+      } else {
+        throw new Error(`app takes the absolute path to a built .app, and "${app}" is not one. ` +
+          (LOOKS.bundle(app) ? 'It looks like a bundle id: send it as bundle. ' : '') +
+          'simulator ready with bundle launches an app already on the device. Nothing was asked and nothing was booted.')
+      }
+    }
+    if (bundle && LOOKS.appPath(bundle)) {
+      if (!args.app) {
+        delete args.bundle; args.app = bundle
+        moved.push(`bundle takes a bundle id and ${bundle} is a path to a .app, so it was installed as app`)
+      } else {
+        throw new Error(`bundle takes a bundle id like com.example.app, and "${bundle}" is a path. The path goes in app, ` +
+          'which installs it and launches it. Nothing was asked and nothing was booted.')
+      }
+    }
+    if (args.app) {
+      const a = said(args.app).replace(/^~(?=\/)/, require('os').homedir()).replace(/\/$/, '')
+      if (!path.isAbsolute(a) || !/\.app$/i.test(a)) {
+        throw new Error(`app takes the absolute path to a built .app, and "${args.app}" is not one. Build it and ` +
+          'send the path to the .app, or send bundle to launch an app already on the device.')
+      }
+      if (!fs.existsSync(a)) {
+        throw new Error(`there is no app bundle at ${a}. Build it first and send the path to the .app, or send ` +
+          'bundle to launch an app already on the device. Nothing was asked and nothing was booted.')
+      }
+      args.app = a
+    }
+  }
+  if (action === 'go') {
+    const url = args.url != null ? said(args.url) : ''
+    if (url && !LOOKS.link(url)) {
+      throw new Error(`url takes a link with a scheme, like myapp://onboarding or https://example.com, and "${url}" has none. ` +
+        (LOOKS.bundle(url) ? 'It looks like a bundle id: simulator ready with bundle launches that app. ' : '') +
+        'Nothing was opened.')
+    }
+  }
+  if (action === 'tap' && args.element != null && !LOOKS.element(said(args.element))) {
+    const e = said(args.element)
+    throw new Error(`element takes an id like E12, off the screen ready or the last tap handed back, and "${e}" is not one. ` +
+      `To aim at words, call find_on_screen with "${e}" on a shot of the device and send the id it hands back.`)
+  }
+  return { args, moved }
+}
+
+// Why a device was not found, when the value was another kind of identifier.
+function deviceHint(v) {
+  const s = said(v)
+  if (!s) return ''
+  if (LOOKS.bundle(s)) return ` "${s}" looks like a bundle id: device takes a UDID or the device's name from list, and the app goes in bundle.`
+  if (LOOKS.appPath(s)) return ` "${s}" is a path to an app: device takes a UDID or the device's name from list, and the path goes in app.`
+  if (LOOKS.windowId(s)) return ` "${s}" looks like a window id from list_windows: device takes the UDID or the device's name.`
+  return ''
+}
 
 // Required at the call, not at the top: ui/simctl.js spawns, and a Mac with no Xcode on
 // it should pay nothing for a feature it cannot use.
@@ -1937,7 +2159,7 @@ async function attachDevices(windows, o = {}) {
 async function simTarget(q) {
   const sims = await simModel()
   const found = Sim.resolve(sims, q)
-  if (!found.ok) throw new Error(`${found.reason} simulator with action list says which devices are here.`)
+  if (!found.ok) throw new Error(`${found.reason}${deviceHint(q)} simulator with action list says which devices are here.`)
   const sim = found.value
   if (!sim.window) {
     throw new Error(`${sim.name} has no window on screen, and Fetch records windows. ` +
@@ -2059,7 +2281,10 @@ async function simAsk(verb, sim, ctx, say) {
 async function simReady(sim, args, ctx) {
   const c = simctl()
   const app = args.app ? String(args.app) : null
-  const bundle = args.bundle ? String(args.bundle) : null
+  // A built app installed and not launched is a device showing its home screen, and the
+  // step this call is was "launch the app". The id is read off the bundle's own
+  // Info.plist rather than asked for, because it is written there and nowhere else.
+  const bundle = args.bundle ? String(args.bundle) : app ? await bundleIdOf(app) : null
   const will = [
     sim.booted ? null : 'boot it',
     sim.window ? null : 'open Simulator in the background, without bringing it to the front',
@@ -2094,7 +2319,6 @@ async function simReady(sim, args, ctx) {
   }
   if (app) {
     simAllowed('install', sim, ['ready'])
-    if (!fs.existsSync(app)) throw new Error(`there is no app bundle at ${app}. Build it first, and send the path to the .app.`)
     const r = await c.install(sim.udid, app)
     if (!r.ok) throw new Error(r.reason)
     changed.push(`installed ${path.basename(app)}`)
@@ -2141,6 +2365,14 @@ async function simReady(sim, args, ctx) {
       'and simulator with action tap taps an element id off screen above, which hands back the next screen ' +
       'the same way.',
   }
+}
+
+// The bundle id a built .app declares. Read only, and null when there is none to read,
+// so an app with no readable plist is still installed and simply not launched.
+async function bundleIdOf(app) {
+  const out = await readQuiet('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', path.join(app, 'Info.plist')])
+  const id = out && out.trim()
+  return id && LOOKS.bundle(id) ? id : null
 }
 
 // The device again once whatever was asked for has settled, waiting for a window where
@@ -2397,10 +2629,88 @@ async function afterTake(r) {
       if (t) level = t.lufs == null ? { floor: true } : { meanDb: t.lufs }
     } catch {}
   }
+  // A take record_stop has just called silent is silent to review too, or review offers
+  // transcribe on the take this result told the agent to narrate over instead.
+  const atFloor = level.floor === true || (typeof level.meanDb === 'number' && level.meanDb <= Opts.SILENT_DB)
+  if (src && atFloor) heardSilent.add(src)
+  let audio = heard && meta ? Opts.takeAudio(heard, meta, level) : null
+  if (audio && audio.track) {
+    const sync = soundSync(await withAudioEnd(src, meta), (r && r.sound) || (deps.takeSound ? deps.takeSound() : null))
+    if (sync) audio = { ...audio, sync }
+  }
   return { ...out,
-    ...(heard && meta ? { audio: Opts.takeAudio(heard, meta, level) } : {}),
+    ...(audio ? { audio } : {}),
     ...(job ? { job: 'the brief you wrote before the take is now the job on it, and the steps that made the ' +
       'take are closed', plan: job.plan } : {}) }
+}
+
+// Where a take's sound sits against its picture, said from two measurements: what the
+// recorder reports about its own capture (leadMs, gaps, lostMs per track, when this
+// build's recorder wrote the file) and where the file's first sound frame really is
+// (processor.js probeAudioLead). The judged simulator take's sound started 2.3 s after
+// its picture and every result called it a track and nothing more, so a narrator would
+// have been 2.3 s early with nothing anywhere saying so. Said in numbers, and only what
+// was measured: a take with no sound, or a header nobody read, gets nothing.
+const LEAD_SAID = 0.001        // processor.js LEAD_MIN: under this the graphs are unchanged
+// How short a sound may end against its picture before it is called drift: two frames,
+// and never under the 50 ms a recorder of the time lost to the stream closing at Stop
+const shortSaid = fps => Math.max(0.05, 2 / (+fps > 0 ? +fps : 30))
+// The header with where its sound ends, read only where a sync is said (a stream copy,
+// no decode). A copy, since probeMeta's answer is shared.
+async function withAudioEnd(src, meta) {
+  if (!meta || !meta.hasAudio || !src || !deps.proc || !deps.proc.probeAudioEnd) return meta
+  const audioEnd = await deps.proc.probeAudioEnd(src).catch(() => null)
+  return audioEnd == null ? meta : { ...meta, audioEnd }
+}
+function soundSync(meta, sound) {
+  if (!meta || !meta.hasAudio) return null
+  const lead = +meta.audioLead
+  // Where the sound ends against where the picture does. A lead is put back on every
+  // export; sound lost inside the file is not, and shows as a track that ends early.
+  const end = meta.audioEnd == null ? NaN : +meta.audioEnd
+  const pic = +meta.duration
+  const short = Number.isFinite(end) && pic > 0 ? pic - end : NaN
+  const drift = short > shortSaid(meta.fps)
+  const tracks = Array.isArray(sound) ? sound.filter(t => t && typeof t === 'object') : []
+  const sum = k => tracks.reduce((a, t) => a + (+t[k] > 0 ? +t[k] : 0), 0)
+  const startMs = Math.max(0, ...tracks.map(t => +t.leadMs || 0))
+  const gaps = sum('gaps'), gapMs = sum('gapMs'), lostMs = sum('lostMs')
+  if (!Number.isFinite(lead) && !tracks.length) return null
+  const said = []
+  if (Number.isFinite(lead) && lead > LEAD_SAID) {
+    said.push(`the sound in this file starts ${lead.toFixed(3)} s after its picture. Every export, transcript and ` +
+      `waveform Fetch makes puts that start back at its own time; a tool that reads the track from its first sample ` +
+      `would hear it ${lead.toFixed(2)} s early`)
+  }
+  if (drift) {
+    said.push(`the sound ends ${short.toFixed(2)} s before the picture does, so sound was lost inside the file while ` +
+      `it was recorded. With the start put back, it drifts ahead of the picture through the take, up to ` +
+      `${short.toFixed(2)} s early by the end, and nothing Fetch writes can put that back. For narration that has to ` +
+      'match the screen, record the take again with this version of Fetch, or write the narration with voiceover')
+  }
+  if (startMs > 0) {
+    said.push(`the sound capture started ${Math.round(startMs)} ms after the first frame, and that stretch is silence ` +
+      'in the file, so the track starts with the picture')
+  }
+  if (gaps > 0) {
+    said.push(`${gaps} stretch${gaps === 1 ? '' : 'es'} (${Math.round(gapMs)} ms) where the capture sent no sound ` +
+      'are silence in place, so what follows stays on the picture\'s clock')
+  }
+  if (lostMs > 0) {
+    said.push(`${Math.round(lostMs)} ms of sound was let go when the file fell behind; silence stands in its place, ` +
+      'so sync holds and that sound is gone')
+  }
+  const measured = Number.isFinite(short)
+  return {
+    // true only when the end was measured and lands with the picture; unmeasured is not in sync
+    in_sync: measured ? !drift : null,
+    ...(Number.isFinite(lead) ? { starts_s: +lead.toFixed(3) } : {}),
+    ...(measured ? { ends_early_s: +Math.max(0, short).toFixed(3) } : {}),
+    ...(tracks.length ? { filled_ms: Math.round(startMs + gapMs), ...(lostMs > 0 ? { lost_ms: Math.round(lostMs) } : {}) } : {}),
+    said: said.length ? said.map(x => x[0].toUpperCase() + x.slice(1)).join('. ') + '.'
+      : measured ? 'the sound starts with the picture and ends with it, measured on this file.'
+        : 'the sound starts with the picture, measured on this file. Where it ends was not measured.',
+  }
 }
 
 // The end of a take of a device: the glass rectangle onto the document, and everything
@@ -2942,6 +3252,63 @@ async function inEditor(path, expr) {
   return win.webContents.executeJavaScript(expr)
 }
 
+// ── versions ───────────────────────────────────────────────────────────────
+const VERSION_DOES = ['list', 'look', 'restore']
+
+// The rows, with the person's unsettled change written as their own version first, so
+// the list is the edit as it stands and a restore never folds their last minute of work
+// into somebody else's name.
+async function versionRows(src) {
+  const ready = `window.fetchHistory && window.fetchHistory.src() === ${JSON.stringify(src)} && window.fetchHistory.rows().length > 0`
+  let ok = await inEditor(src, `!!(${ready})`)
+  // the history opens just after the editor does (ui/autosave.js histOpen)
+  for (let i = 0; !ok && i < 20; i++) {
+    await new Promise(res => setTimeout(res, 150))
+    ok = await inEditor(src, `!!(${ready})`)
+  }
+  if (!ok) {
+    const has = await inEditor(src, '!!window.fetchHistory')
+    throw new Error(has
+      ? 'the version history for this take did not open, so nothing can be listed or restored. get_edit reads the edit as it stands, and revert_my_edit takes back your own last change.'
+      : 'this build of Fetch keeps no version history, so there is nothing to list. revert_my_edit takes back your own last change.')
+  }
+  return await inEditor(src, 'window.fetchHistory.flush(), window.fetchHistory.rows()')
+}
+
+// 'V12', 'v12' and 12 are the same version.
+function versionNumber(v) {
+  const m = String(v == null ? '' : v).trim().match(/^v?(\d+)$/i)
+  return m ? +m[1] : null
+}
+
+// One row as an agent reads it. The person is named as the person, never as null.
+function versionSaid(r) {
+  return {
+    id: r.id, at: new Date(r.at).toISOString(), by: r.by || 'the person', how: r.how, line: r.line,
+    ...(r.of ? { of: r.of } : {}),
+    ...(r.merged ? { merged: r.merged, ...(r.also && r.also.length ? { also: r.also } : {}) } : {}),
+    ...(r.missing && r.missing.length ? { missing: [...new Set(r.missing.map(m => m.what))] } : {}),
+  }
+}
+
+// The moment worth drawing: the middle of the first zoom, mark or text that differs,
+// and early in the take when it is the look or the cut that moved.
+function versionMoment(doc, touched) {
+  for (const k of ['zooms', 'marks', 'texts']) {
+    const t = touched && touched[k]
+    const id = t && [...t.added, ...t.changed][0]
+    const it = id && (doc[k] || []).find(x => x && x.id === id)
+    if (it && +it.end > +it.start) return r2((+it.start + +it.end) / 2)
+  }
+  return Math.min(1, (+doc.dur || 2) / 2)
+}
+
+// The edit as get_edit says it, without the option lists that are the same on every take.
+function briefEdit(doc, src) {
+  const { options, pointer, ...rest } = summarise(doc, src)
+  return rest
+}
+
 // ── a shot, everywhere a take would have been ────────────────────────────
 // Every function below is the shot half of an op above. None of them draws anything:
 // the one that produces a picture hands ui/render-host.js the options bag
@@ -2958,7 +3325,7 @@ const notOnAShot = what => new Error(`${what} is a question about time, and this
 // the disk because the person may be styling it at this moment and the window is where
 // their change is first; the sidecar behind it is 400 ms old at worst (ui/editor.js).
 async function shotOf(src) {
-  const shot = await inEditor(src, `${docOf(src)}.get()`)
+  const shot = await inEditor(src, docNow(src))
   if (shot && shot.kind === 'shot') return shot
   // The window could not open it. The sidecar is the fallback, and with neither the
   // capture is still a capture: an empty document on its own pixels.
@@ -3030,7 +3397,7 @@ function summariseShot(shot, src) {
 const SHOT_HAS_NO = { clips: 'clips', zooms: 'zooms', cues: 'captions',
   beats: 'beats', camera: 'a camera bubble', audio: 'sound', audioTrack: 'a sound track',
   pointer: 'a pointer track', autoZoom: 'auto-zoom' }
-async function applyToShot(args) {
+async function applyToShot(args, ctx) {
   const patch = args.doc
   const refused = Object.keys(SHOT_HAS_NO).filter(k => patch[k] != null)
   if (refused.length) {
@@ -3055,7 +3422,7 @@ async function applyToShot(args) {
     doc = { ...doc, marks: s.marks, remove: [...(doc.remove || []), ...s.replaced] }
     replaced = s.replaced
   }
-  const shot = await inEditor(args.path, `${docOf(args.path)}.apply(${JSON.stringify(doc)})`)
+  const shot = await inEditor(args.path, `${docOf(args.path)}.apply(${JSON.stringify(doc)}, ${byArg(ctx)})`)
   if (deps.proc.writeShot) { try { deps.proc.writeShot(args.path, shot) } catch {} }
 
   const out = summariseShot(shot, args.path)
@@ -3164,12 +3531,15 @@ function storeSize(name, shot) {
  * length, the weight, the rate, the codec, the container and the rectangle all come off
  * the file itself.
  */
-async function clipVerdict(want, file) {
+async function clipVerdict(want, file, made = {}) {
   if (!file || !fs.existsSync(file)) return { preview: want.preset, not_written: 'no file was written to measure' }
   const m = await deps.proc.probeMeta(file).catch(() => ({}))
   const bytes = fs.statSync(file).size
+  // held to the edit it was made from and to the rate the plan promised, as well as to
+  // the store's own rules: a legal 24 s file of a 28 s edit at 0.46 Mbps is not the file
   const got = require('./sizes').checkClip({
     seconds: m.duration, bytes, fps: m.fps, codec: m.vcodec || m.codec,
+    expect: made.expect, bps: made.kbps ? made.kbps * 1000 : undefined,
     container: path.extname(file).replace('.', ''), w: m.width, h: m.height }, want.preset)
   return {
     preview: want.preset, what: want.what,
@@ -3178,6 +3548,7 @@ async function clipVerdict(want, file) {
     seconds: m.duration != null ? +(+m.duration).toFixed(2) : null,
     fps: m.fps != null ? +(+m.fps).toFixed(3) : null,
     mb: +(bytes / 1e6).toFixed(1),
+    ...(made.kbps ? { mbps: +(made.kbps / 1000).toFixed(2) } : {}),
     poster: `the store shows the frame at ${want.poster} s before anybody presses play, so something has to be on screen there`,
     exact: !!got.ok,
     ...(got.ok ? {} : { not_the_store_file: `${got.reason} Say so rather than uploading it.` }),
@@ -3452,7 +3823,7 @@ function briefAndBeats(file, meta) {
   let brief = null, beats = null, silent = false
   try { brief = (require('./director').read(file) || {}).brief || null } catch {}
   try { beats = deps.proc.beatsFor(file, meta && meta.duration) } catch {}
-  try { silent = !!meta && meta.hasAudio === false } catch {}
+  try { silent = (!!meta && meta.hasAudio === false) || heardSilent.has(file) } catch {}
   // the take's own pixels, so the rubric can tell "no shape set" from "the shape asked for"
   return { brief, beats, silent, width: meta && meta.width, height: meta && meta.height }
 }
@@ -3584,7 +3955,9 @@ function lookWarnings(patch, doc, file, ctx) {
     device: !!(doc && doc.device && doc.device.screen),
     // A shot says so, so the fields a capture cannot mean can be named rather than
     // silently doing nothing: frame.chrome clean has no viewport to draw against.
-    still: !!(doc && doc.kind === 'shot'),
+    // Null on a recording, not false: Look.warnings asks `still != null`, and false
+    // called every recording a still frame drawn by the classic renderer.
+    still: doc && doc.kind === 'shot' ? true : null,
     engine: ctx && ctx.engine, format: ctx && ctx.format, marks: doc && doc.marks }))
 }
 
@@ -3681,6 +4054,9 @@ const QUIET = new Set(['ping', 'hello', 'record.status', 'record.pointer'])
 
 function logOp(op, ctx, t0, args, result, error) {
   if (QUIET.has(op)) return
+  // a restore is logged where it happens (ui/autosave.js, edit.restore, under this
+  // agent's name), and a second row for the same act would read as two
+  if (op === 'edit.versions' && result && result.restored && result.as) return
   let detail = null
   if (op === 'record.start' && result) detail = result.path
   else if (op === 'transcribe' && result) detail = `${result.words} words, ${result.cues} cues`
@@ -3821,6 +4197,8 @@ function start(d) {
       }
     })
     sock.on('error', () => {})
+    // an agent whose socket closed is done, so main.js can stop holding the brake for it
+    sock.on('close', () => { try { if (deps.clientGone) deps.clientGone(ctx) } catch {} })
   })
   server.on('error', err => console.error('agent bridge:', err.message))
   server.listen(sp, () => {
@@ -3863,8 +4241,14 @@ module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEnde
   // the store size, and what the written file really is. Both are refusals more often
   // than they are answers, so test/tools.test.js runs them rather than reading them.
   storeSize, sizeVerdict,
+  // which kind of identifier each simulator argument takes, read before anyone is asked
+  simArgs, deviceHint,
+  // where a take's sound sits against its picture, as record_stop and probe say it
+  soundSync,
   // the two rules that are code rather than prose, exercised by test/lasso.test.js
   withElements, aimZooms,
   // the person's answer to a question or a proposal. main.js does not call it: the
   // pane's reply is picked up here. test/tools.test.js does, to answer one for real.
-  settleWait }
+  settleWait,
+  // an Esc from the person takes back every "until Fetch quits" they gave (main.js stopAgent)
+  forgetConsent: () => sessionAllowed.clear() }

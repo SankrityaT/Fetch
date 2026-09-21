@@ -97,7 +97,9 @@ function normalizeBrief(raw, before) {
     // re-deriving on every call: which device, which app on it, and the size the
     // deliverable has to come out at. Written once, they are arguments from then on.
     device: text(b.device, 64),
-    app: text(b.app, 96),
+    // a bundle id or a path to a built .app, and a path can be long: cut short, it is a
+    // path to nothing
+    app: text(b.app, 400),
     size: text(b.size, 40),
   }
 }
@@ -125,7 +127,7 @@ const SHAPES = {
     when: b => !!(b && b.device),
     steps: b => [
       { what: 'boot the device, launch the app on it and dress its status bar',
-        tool: 'simulator', args: { action: 'ready', device: b.device, ...(b.app ? { app: b.app } : {}) } },
+        tool: 'simulator', args: { action: 'ready', device: b.device, ...appArg(b.app) } },
       { what: 'record the device window', tool: 'record_start', args: { simulator: b.device } },
       { what: 'tap through the flow, aiming each tap at what the call before it named',
         tool: 'simulator', args: { action: 'tap', device: b.device } },
@@ -139,6 +141,30 @@ const SHAPES = {
         tool: 'export', args: b.size ? { size: b.size } : {} },
     ],
   },
+}
+
+// The brief says "the app" in whichever form the person gave it, and ready takes two
+// kinds of identifier under two names: a path to a built .app goes in app and is
+// installed, a bundle id goes in bundle and is launched. Writing a bundle id into app
+// was the one wasted call of the judged device job, so the form decides the argument.
+// A display name ("Yolkling") is neither and lands in no argument: a call that guesses
+// an identifier is worse than one that visibly leaves it out (see appNote).
+const APP_PATH = /^(\/|~\/)|\.app\/?$/i
+const BUNDLE_ID = /^[A-Za-z0-9-]+(\.[A-Za-z0-9_-]+)+$/
+function appArg(v) {
+  const s = text(v, 400)
+  if (!s) return {}
+  if (APP_PATH.test(s)) return { app: s }
+  if (BUNDLE_ID.test(s)) return { bundle: s }
+  return {}
+}
+// Said on the result when the brief's app went into no argument, so the agent learns it
+// here rather than from a ready that launched nothing.
+function appNote(brief) {
+  const s = brief && brief.app
+  if (!s || Object.keys(appArg(s)).length) return null
+  return `"${s}" is neither a bundle id (com.example.app) nor a path to a built .app, so the ready step launches ` +
+    'nothing. Send app again as one of those; simulator ready with bundle launches an app already on the device.'
 }
 
 /** Which of the known jobs this brief is, or null when it is an edit like any other. */
@@ -166,7 +192,8 @@ function callOf(o) {
   for (const k of Object.keys(raw).slice(0, MAX_ARGS)) {
     const v = raw[k]
     if (typeof v === 'number' ? Number.isFinite(v) : typeof v === 'boolean') { args[k] = v; continue }
-    const s = text(v, 120)
+    // long enough for a path: a call carrying half of one is a call that fails
+    const s = text(v, 400)
     if (s) args[k] = s
   }
   return { tool, args }
@@ -455,7 +482,19 @@ function direct(src, patch, opts = {}) {
     closed: r.closed,
     opened: r.opened,
     unknown: r.unknown,
+    ...(appNote(job.brief) ? { app_note: appNote(job.brief) } : {}),
   }
+}
+
+/**
+ * The first open step whose call is this tool, for a call that finished that step
+ * without being told its id. export is the deliverable of the device job, and a plan
+ * still reading "4 of 5" after the file is written is the plan lying about the job.
+ */
+function stepFor(job, tool) {
+  if (!job) return null
+  const s = normalize(job).steps.find(x => x.state === 'todo' && x.call && x.call.tool === tool)
+  return s ? s.id : null
 }
 
 // For apply_edit and export, which carry the plan whether or not one exists. A take
@@ -470,6 +509,6 @@ function forEdit(src, facts) {
 module.exports = {
   normalize, normalizeBrief, normalizeSteps, merge, progress, distance, state,
   ratio, tolerance, jobPath, read, write, direct, forEdit,
-  shapeOf, outline, pendingPath, readPending, clearPending, attach,
+  shapeOf, outline, pendingPath, readPending, clearPending, attach, appArg, appNote, stepFor,
   V, EXT, STATES, SHAPES, MAX_STEPS, MAX_NOTES, PENDING_STALE, NO_BRIEF,
 }

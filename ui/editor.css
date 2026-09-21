@@ -781,3 +781,61 @@ video.motion, img.motion { display:block; }
 .stage-frame[data-view="original"] { background:none !important; }
 .stage-frame[data-view="original"] > .bd-fill { display:none; }
 .stage-frame[data-view="original"] > #edStill { border-radius:0 !important; box-shadow:none !important; }
+
+/* ── version history ──────────────────────────────────────────────────────
+   A popover over the stage's right edge, the stage staying in view beside it, since
+   the point of a row is to see that version on the stage. Floats, so it takes the
+   float's shadow and no blur (blur is the chat's and the titlebar's alone). */
+.ed-stage { position:relative; }
+.ed-versions { gap:6px; }
+.ed-versions .ver-count { font-size:var(--t-11); color:var(--text-2); }
+.ed-versions .ver-count:empty { display:none; }
+.ed-versions[aria-pressed="true"] { background:rgba(240,169,60,.14); border-color:var(--fur-1); color:var(--fur-0); }
+.ed-versions[aria-pressed="true"] .ver-count { color:var(--fur-1); }
+@container (max-width:640px) { .ed-versions { width:28px; padding:0; } .ed-versions .ver-count { display:none; } }
+
+.ver-panel { position:absolute; z-index:6; top:calc(var(--s-4) + var(--s-2)); right:calc(var(--s-4) + var(--s-2));
+  bottom:calc(var(--s-4) + 38px + var(--s-3) + var(--s-2)); width:340px; max-width:calc(100% - 2 * var(--s-5));
+  display:flex; flex-direction:column; min-height:0;
+  background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-md);
+  box-shadow:var(--shadow-3), var(--sheen); animation:verin var(--dur-2) var(--ease-in); }
+.ver-panel[hidden] { display:none; }
+.ver-head { display:flex; align-items:center; gap:var(--s-2); padding:var(--s-3) var(--s-2) var(--s-2) var(--s-4); }
+.ver-title { font-size:var(--t-13); font-weight:600; color:var(--text-0); }
+.ver-sub { font-size:var(--t-12); color:var(--text-2); flex:1; }
+.ver-x { width:28px; height:28px; }
+.ver-list { list-style:none; margin:0; padding:0 var(--s-2) var(--s-2); overflow:auto; min-height:0; }
+.ver-day { padding:var(--s-3) var(--s-2) var(--s-1); }
+.ver-row { border-radius:var(--r-sm); }
+.ver-look { all:unset; box-sizing:border-box; width:100%; cursor:pointer;
+  display:grid; grid-template-columns:auto 1fr auto; gap:var(--s-3); align-items:start;
+  padding:var(--s-2) var(--s-2); border-radius:var(--r-sm);
+  transition:background var(--dur-1) var(--ease-in); }
+.ver-look:hover { background:var(--ink-2); }
+.ver-look:active { background:var(--ink-3); }
+.ver-look:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
+/* the one on the stage: an edge and a fill, and its Restore button, not colour alone */
+.ver-row[aria-current="true"] { background:rgba(240,169,60,.1); box-shadow:inset 2px 0 0 var(--fur-1); }
+.ver-row[aria-current="true"] .ver-id { color:var(--fur-1); }
+.ver-id { font-size:var(--t-12); color:var(--text-1); padding-top:1px; min-width:3ch; }
+.ver-body { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.ver-line { font-size:var(--t-12); color:var(--text-0); line-height:1.4; overflow-wrap:anywhere; }
+.ver-meta { display:flex; align-items:center; flex-wrap:wrap; gap:6px; font-size:var(--t-11); color:var(--text-2); letter-spacing:.01em; }
+.ver-mark { width:16px; height:16px; border-radius:50%; display:grid; place-items:center; background:var(--ink-2); flex:none; }
+.ver-mark img, .ver-mark svg { width:11px; height:11px; }
+.ver-dot { width:3px; height:3px; border-radius:50%; background:var(--ink-4); }
+.ver-folded::before { content:"· "; }
+.ver-now { font-size:var(--t-11); }
+.ver-kind { display:inline-flex; align-items:center; gap:3px; color:var(--text-1); }
+.ver-kind svg { width:12px; height:12px; }
+.ver-unseen { font-style:italic; }
+.ver-missing { display:inline-flex; align-items:center; gap:4px; font-size:var(--t-11); color:var(--warn); }
+.ver-act { display:flex; gap:var(--s-2); padding:0 var(--s-2) var(--s-2) calc(var(--s-2) + 3ch + var(--s-3)); }
+.ver-act .btn-primary { gap:6px; }
+.ver-more { display:flex; justify-content:center; padding:var(--s-2); }
+.ver-empty { display:flex; flex-direction:column; align-items:center; gap:var(--s-3); padding:var(--s-6) var(--s-4); text-align:center; }
+.ver-empty .biscuit { width:72px; }
+.ver-empty p { margin:0; font-size:var(--t-12); color:var(--text-1); max-width:32ch; }
+
+@keyframes verin { from { opacity:0; transform:translateY(-6px); } }
+@media (prefers-reduced-motion: reduce) { .ver-panel { animation:none; } }

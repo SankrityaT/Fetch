@@ -799,7 +799,7 @@ async function main() {
       NO_VOICE_ACCOUNT: (src.match(/const NO_VOICE_ACCOUNT = ([\s\S]*?)\n\n/) || [])[1] || '',
       'Director.NO_BRIEF': (dsrc.match(/const NO_BRIEF = (.*)/) || [])[1] || '',
     }
-    for (const op of ['edit.fit', 'edit.revert', 'voice.speak', 'record.pause', 'edit.direct']) {
+    for (const op of ['edit.fit', 'edit.revert', 'voice.speak', 'record.pause', 'edit.direct', 'edit.versions']) {
       const from = src.indexOf(`async '${op}'(`)
       assert.ok(from > 0, `${op} is not in the bridge`)
       const body = src.slice(from, from + src.slice(from).indexOf('\n  },'))
@@ -844,6 +844,197 @@ async function main() {
       const body = src.slice(from, from + src.slice(from).indexOf('\n  },'))
       assert.ok(/withCues\(/.test(body), `${op} reads a document's cues and never fetches them`)
     }
+  })
+
+  // ── this round: identifiers, versions, the preview, the sound ─────────────
+  // The judged device job's one wasted call: direct wrote a bundle id into ready's app,
+  // which takes a path to a built .app, and ready found out after the person said yes
+  // and the device booted. Every simulator argument takes one kind of identifier, and
+  // the form of each is read before anything is asked or spawned.
+  t('a bundle id sent as app is launched as bundle, and the result says it moved', () => {
+    const r = bridge.simArgs('ready', { action: 'ready', device: 'Yolk-ProMax', app: 'com.yolkling.ios' })
+    assert.strictEqual(r.args.bundle, 'com.yolkling.ios')
+    assert.strictEqual(r.args.app, undefined)
+    assert.match(r.moved[0], /app takes the path to a built \.app/)
+    // two different ids in the two places is not a thing Fetch can settle for anyone
+    assert.throws(() => bridge.simArgs('ready', { app: 'com.a.b', bundle: 'com.c.d' }), /send it as bundle.*Nothing was asked/s)
+  })
+
+  t('a built .app sent as bundle is installed as app, and one that is not there is refused before the dialog', () => {
+    const built = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-app-')) + '/Yolkling.app'
+    fs.mkdirSync(built)
+    try {
+      const r = bridge.simArgs('ready', { bundle: built })
+      assert.strictEqual(r.args.app, built)
+      assert.strictEqual(r.args.bundle, undefined)
+      assert.match(r.moved[0], /installed as app/)
+      assert.throws(() => bridge.simArgs('ready', { app: built + '-gone.app' }),
+        /no app bundle at .*send\s+bundle to launch an app already on the device\. Nothing was asked/s)
+      assert.throws(() => bridge.simArgs('ready', { app: 'build/Yolkling.app' }), /absolute path to a built \.app/)
+      assert.throws(() => bridge.simArgs('ready', { app: 'Yolkling' }), /absolute path to a built \.app, and "Yolkling" is not one/)
+    } finally { fs.rmSync(path.dirname(built), { recursive: true, force: true }) }
+  })
+
+  t('the other simulator arguments are read for their kind of identifier too', () => {
+    assert.throws(() => bridge.simArgs('go', { url: 'com.yolkling.ios' }), /url takes a link with a scheme.*ready with bundle launches/s)
+    assert.doesNotThrow(() => bridge.simArgs('go', { url: 'yolkling://onboarding' }))
+    assert.throws(() => bridge.simArgs('tap', { element: 'Sign in with Apple' }), /element takes an id like E12.*find_on_screen/s)
+    assert.doesNotThrow(() => bridge.simArgs('tap', { element: 'e18' }))
+    assert.doesNotThrow(() => bridge.simArgs('tap', { element: 'R2' }))
+    assert.match(bridge.deviceHint('com.yolkling.ios'), /bundle id: device takes a UDID or the device's name/)
+    assert.match(bridge.deviceHint('4312'), /window id from list_windows/)
+    assert.strictEqual(bridge.deviceHint('Yolk-ProMax'), '')
+    // before anything is asked or spawned, in the op itself
+    const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+    const from = src.indexOf("async 'sim.do'(")
+    const body = src.slice(from, from + src.slice(from).indexOf('\n  },'))
+    assert.ok(body.indexOf('simArgs(') > 0 && body.indexOf('simArgs(') < body.indexOf('simModel('),
+      'the identifiers are read after simctl is spawned')
+    const ready = src.slice(src.indexOf('async function simReady('))
+    assert.ok(ready.indexOf('bundleIdOf(') < ready.indexOf('simAsk('), 'a built app is asked about before its id is known')
+  })
+
+  t('each identifier argument says in its description what it takes and what it is not', () => {
+    const chunk = SRC.split("'simulator',")[1]
+    assert.match(chunk, /app: z\.string\(\)[\s\S]{0,260}Not a bundle id: that is bundle/)
+    assert.match(chunk, /bundle: z\.string\(\)[\s\S]{0,200}Not a path: that is app/)
+    assert.match(chunk, /url: z\.string\(\)[\s\S]{0,200}with its scheme/)
+    assert.match(chunk, /element: z\.string\(\)[\s\S]{0,260}never the words on the button/)
+    const direct = SRC.split("'direct',")[1]
+    assert.match(direct, /app: z\.string\(\)[\s\S]{0,400}a bundle id as bundle, a path as app/)
+  })
+
+  // Version history, reachable by an agent: list, look, restore, run against the real
+  // history log (ui/history.js) behind a stand-in editor, the way ui/autosave.js holds it.
+  await (async () => {
+    const vm = require('vm')
+    const History = require('../ui/history')
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-versions-'))
+    const take = path.join(home, 'Onboarding.mov')
+    fs.writeFileSync(take, '')
+    let text = '', clock = 1.79e12
+    const log = History.createLog({ io: { read: () => text, append: x => { text += x }, replace: x => { text = x } }, now: () => clock })
+    const base = { v: 1, src: take, dur: 10, clips: [{ id: 'C1', start: 0, end: 10 }], zooms: [], marks: [], texts: [], look: {} }
+    let live = base
+    log.open(live)
+    clock += 60e3
+    live = { ...live, zooms: [{ id: 'Z1', start: 1, end: 3, scale: 2, x: 0.5, y: 0.5 }], nextId: { Z: 2 } }
+    log.person(live); log.flush()
+    clock += 60e3
+    const before = live
+    live = { ...live, zooms: [...live.zooms, { id: 'Z2', start: 5, end: 7, scale: 1.6, x: 0.3, y: 0.4 }], nextId: { Z: 3 } }
+    log.agent(before, live, 'Claude Code')
+    const restoredBy = []
+    const context = vm.createContext({ window: {
+      fetchDoc: { src: () => take, get: () => live },
+      fetchHistory: {
+        src: () => take, rows: () => log.rows(), flush: () => log.flush(), version: n => log.version(n),
+        restore: (n, o) => { restoredBy.push(o && o.by); const r = log.restore(n, live, { exists: () => true, by: o.by }); if (r) live = r.doc; return r },
+      },
+    }, openInEditor: () => {} })
+    const win = { isDestroyed: () => false, isVisible: () => true, webContents: { send: () => {},
+      executeJavaScript: expr => Promise.resolve(JSON.parse(JSON.stringify(vm.runInContext(expr, context) ?? null))) } }
+    bridge.start({ getWindow: () => win, proc: require('../processor'), isRecording: () => false })
+    try {
+      const list = await bridge.ops['edit.versions']({ path: take }, { client: 'Codex' })
+      t('versions lists every version newest first, with who made it', () => {
+        assert.deepStrictEqual(list.versions.map(v => v.id), ['V3', 'V2', 'V1'])
+        assert.deepStrictEqual(list.versions.map(v => v.by), ['Claude Code', 'the person', 'the person'])
+        assert.match(list.versions[0].line, /Added Z2/)
+        assert.match(list.how, /V3 is the edit as it stands now/)
+      })
+      const look = await bridge.ops['edit.versions']({ path: take, action: 'look', version: 'v2' }, { client: 'Codex' })
+      t('look shows a version and what restoring it would change, and changes nothing', () => {
+        assert.strictEqual(look.version.id, 'V2')
+        assert.match(look.restoring_it_would, /^removed Z2/)
+        assert.deepStrictEqual(look.edit.zooms.map(z => z.id), ['Z1'])
+        assert.ok(look.preview && (look.preview.image || look.preview.error), 'no frame and no word about why')
+        assert.deepStrictEqual(live.zooms.map(z => z.id), ['Z1', 'Z2'], 'looking changed the edit')
+        assert.strictEqual(log.rows().length, 3, 'looking wrote a version')
+      })
+      const back = await bridge.ops['edit.versions']({ path: take, action: 'restore', version: 'V2' }, { client: 'Codex' })
+      t('restore is a new version on top, by the agent, and names the call that takes it back', () => {
+        assert.strictEqual(back.restored, 'V2')
+        assert.strictEqual(back.as, 'V4')
+        assert.deepStrictEqual(restoredBy, ['Codex'])
+        assert.deepStrictEqual(log.rows().map(r => r.id), ['V4', 'V3', 'V2', 'V1'], 'something ahead of it was lost')
+        assert.strictEqual(log.rows()[0].by, 'Codex')
+        assert.match(back.undo, /version: 'V3'/)
+        assert.deepStrictEqual(back.edit.zooms.map(z => z.id), ['Z1'])
+        assert.strictEqual(live.nextId.Z, 3, 'the id counter went backwards, so Z2 could name two zooms')
+      })
+      let refused = null
+      try { await bridge.ops['edit.versions']({ path: take, action: 'look', version: 'V9' }) } catch (e) { refused = e.message }
+      t('a version that is not there is refused with the ones that are', () => {
+        assert.match(refused || '', /"V9" is not a version of this take: versions with action list names them.*V4 is now and V1/s)
+      })
+    } finally { bridge.stop(); fs.rmSync(home, { recursive: true, force: true }) }
+  })()
+
+  t('an agent\'s change is recorded under its own name, not "Agent"', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+    const applies = [...src.matchAll(/\.apply\(\$\{JSON\.stringify\([^`]*`/g)].map(m => m[0])
+    assert.ok(applies.length >= 4, `${applies.length} applies found`)
+    for (const a of applies) assert.ok(/byArg\(ctx\)/.test(a), 'an apply with no author: ' + a)
+    assert.ok(/fetchUndo\.undo\([^`]*byArg\(ctx\)/.test(src), 'revert_my_edit is recorded as nobody in particular')
+    // fit_to_length, an accepted proposal and voiceover apply through edit.apply; without
+    // ctx their versions were credited to "Agent"
+    const calls = src.split("ops['edit.apply'](").slice(1)
+    assert.strictEqual(calls.length, 3)
+    for (const c of calls) assert.ok(/\}\s*\}?,\s*ctx\)/.test(c.slice(0, 260)), 'an edit.apply with no client: ' + c.slice(0, 80))
+    // and while the person looks at an old version, the bridge reads the edit held aside
+    assert.ok(!/inEditor\([^)]*'window\.fetchDoc\.get\(\)'\)/.test(src) && /window\.fetchHistory\.current\(\)/.test(src), 'a read of the stage while peeking')
+  })
+
+  // The app preview, as the file is: its length and its rate are read off what was
+  // written, the take is drawn at the box the gate judged, and one refusal names all.
+  t('export reports the written file and holds it to the edit and the rate', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+    const from = src.indexOf("async 'edit.export'(")
+    const body = src.slice(from, from + src.slice(from).indexOf('\n  },'))
+    assert.ok(/opts\.box = \{ \.\.\.want\.box \}/.test(body), 'the take is not drawn at plan.box')
+    assert.ok(/clipVerdict\(want, r && r\.file,\s*\{ expect: FD\.outDuration\(doc\), kbps:/.test(body), 'store is not held to the edit and the rate')
+    assert.ok(/r\.written\.frames/.test(body), 'seconds is the plan\'s, not the file\'s')
+    assert.ok(/lengthPlan\(/.test(body), 'an upscale refusal holds back the length for a second call')
+    assert.ok(/stepFor\(/.test(body), 'the deliverable does not close the plan')
+    const verdict = src.slice(src.indexOf('async function clipVerdict('))
+    assert.ok(/expect: made\.expect, bps: made\.kbps/.test(verdict.slice(0, 1200)))
+  })
+
+  t('what a take\'s sound says about sync is what was measured', () => {
+    const late = bridge.soundSync({ hasAudio: true, audioLead: 2.303 }, null)
+    assert.strictEqual(late.starts_s, 2.303)
+    assert.match(late.said, /starts 2\.303 s after its picture.*puts that start back at its own time/s)
+    assert.strictEqual(late.in_sync, null, 'a start put back is not sync until the end is measured')
+    // The judged take: its sound starts 2.303 s late and ends 1.71 s early. The start is put
+    // back on every export, and the loss inside the file is not, so it is not in sync.
+    const judged = bridge.soundSync({ hasAudio: true, audioLead: 2.303, duration: 38, fps: 60, audioEnd: 36.286 }, null)
+    assert.strictEqual(judged.in_sync, false, 'sound lost inside the file was called in sync')
+    assert.strictEqual(judged.ends_early_s, 1.714)
+    assert.match(judged.said, /ends 1\.71 s before the picture.*drifts ahead/s)
+    const whole = bridge.soundSync({ hasAudio: true, audioLead: 0, duration: 8.873, fps: 30, audioEnd: 8.873 }, null)
+    assert.strictEqual(whole.in_sync, true)
+    assert.match(whole.said, /starts with the picture and ends with it/)
+    const tail = bridge.soundSync({ hasAudio: true, audioLead: 0, duration: 10, fps: 60, audioEnd: 9.96 }, null)
+    assert.strictEqual(tail.in_sync, true, 'the 40 ms a stream loses at Stop is not drift')
+    const padded = bridge.soundSync({ hasAudio: true, audioLead: 0 },
+      [{ track: 'system', leadMs: 14, gaps: 2, gapMs: 40, lostMs: 0, tailMs: 38 }])
+    assert.strictEqual(padded.filled_ms, 54)
+    assert.match(padded.said, /started 14 ms after the first frame.*2 stretches \(40 ms\)/s)
+    assert.strictEqual(padded.lost_ms, undefined)
+    assert.match(bridge.soundSync({ hasAudio: true, audioLead: 0 }, null).said, /starts with the picture/)
+    assert.strictEqual(bridge.soundSync({ hasAudio: false }, null), null, 'a take with no sound has no sync to report')
+    const lost = bridge.soundSync({ hasAudio: true, audioLead: 0 }, [{ leadMs: 0, lostMs: 120 }])
+    assert.match(lost.said, /120 ms of sound was let go/)
+  })
+
+  t('a silent take stays silent to review, and a late yes does not act for a stopped agent', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+    assert.ok(/heardSilent\.has\(file\)/.test(src), 'review still offers transcribe on a take record_stop called silent')
+    const ask = src.slice(src.indexOf('async function askPerson('))
+    assert.ok(/deps\.held && deps\.held\(\)/.test(ask.slice(0, 2400)), 'a yes after Esc still acts')
+    assert.strictEqual(typeof bridge.forgetConsent, 'function')
+    assert.ok(/still: doc && doc\.kind === 'shot' \? true : null/.test(src), 'a recording is called a still frame')
   })
 
   fs.rmSync(dir, { recursive: true, force: true })

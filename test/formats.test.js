@@ -122,6 +122,31 @@ const rows = []
     try { fs.unlinkSync(file) } catch {}
   }
 
+  console.log('=== an app preview is written at the rate the store states ===')
+  // A flat UI is the hard case: a rate factor spent 0.46 Mbps on one and an average of 11
+  // spent 5.7. The store quality is told a rate and has to land inside 10 to 12 on the
+  // written file, at the preview's own size and a level the page allows.
+  {
+    const file = tmp('store.mp4'), PW = 886, PH = 1920, PW4 = 4 * Math.ceil(PW / 4), PN = 60
+    try {
+      const sink = new Sinks.Nv12PipeSink(p.FFMPEG, Sinks.encodeArgs(file, PW, PH, 30, { W4: PW4, format: 'mp4', quality: 'store' }), PW4 * PH * 3 / 2)
+      for (let n = 0; n < PN; n++) { const b = sink.buffer(); nv12Frame(PW4, PH, n).copy(b); await sink.write(b) }
+      await sink.end()
+      const err = (() => { try { execFileSync(p.FFMPEG, ['-hide_banner', '-i', file]) } catch (e) { return (e.stderr || '').toString() } return '' })()
+      const kbps = +((/Video: .*?(\d+) kb\/s/.exec(err) || [])[1] || 0)
+      const high = /Video: h264 \(High\)/.test(err)
+      const size = /886x1920/.test(err)
+      const bad = !high ? 'not High profile' : !size ? 'not 886x1920' : kbps < 10000 || kbps > 12000 ? `${kbps} kb/s is outside 10 to 12 Mbps` : null
+      rows.push(['store rate on a flat UI', bad ? 'FAIL' : 'OK', `${kbps} kb/s h264 High 886x1920${bad ? ': ' + bad : ''}`])
+    } catch (e) { rows.push(['store rate on a flat UI', 'FAIL', e.message.slice(0, 70)]) }
+    try { fs.unlinkSync(file) } catch {}
+    // and the other qualities are the encoder they were: nothing any golden reads moved
+    const bal = Sinks.encodeArgs('/x.mp4', 64, 48, 30, { quality: 'balanced' }).join(' ')
+    rows.push(['balanced keeps its rate factor', /-crf 23/.test(bal) && !/-b:v/.test(bal) && !/nal-hrd/.test(bal) ? 'OK' : 'FAIL', 'crf 23, no rate'])
+    const sto = Sinks.encodeArgs('/x.mp4', 886, 1920, 30, { quality: 'store', codec: 'vt' }).join(' ')
+    rows.push(['store is x264 even when vt is asked', /libx264/.test(sto) && /-level:v 4\.0/.test(sto) && !/-crf/.test(sto) ? 'OK' : 'FAIL', 'x264, level 4.0, no crf'])
+  }
+
   console.log('=== a GIF plays at the rate it was drawn at ===')
   // GIF's clock is a delay in hundredths of a second, so a rate that does not divide 100
   // cannot be held: at the classic renderer's 12 fps the writer alternates 8 and 9

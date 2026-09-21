@@ -642,6 +642,89 @@ document.addEventListener('keydown', e => {
   if (k === 'p') { e.preventDefault(); hotkey('pause') }
 })
 
+// ── the menu bar's shortcuts ─────────────────────────────────────────────
+// main.js owns every accelerator (appMenu) and sends the intent here, so a key and the
+// menu item it stands for take one path.
+const SHORTCUT_VIEWS = { 'view:record': 'record', 'view:library': 'library', 'view:editor': 'editor', 'view:activity': 'activity' }
+function focusLibrarySearch() {
+  show('library')
+  // the bar is drawn by the refresh show() starts, so it may not exist for a frame or two
+  let tries = 0
+  const go = () => {
+    const q = $('libQuery')
+    if (q) { q.focus(); q.select(); return }
+    if (++tries < 30) requestAnimationFrame(go)
+    else toast('Nothing to search yet. Record or import something first.')
+  }
+  go()
+}
+function onShortcut(what) {
+  const view = SHORTCUT_VIEWS[what]
+  if (view) {
+    const tab = document.querySelector(`#nav [data-view="${view}"]`)
+    if (tab && tab.disabled) return toast('Open something from the Library to edit it.')
+    return show(view)
+  }
+  if (what === 'search') return focusLibrarySearch()
+  if (what === 'chat') return window.toggleChat && window.toggleChat()
+  if (what === 'settings') return show('settings')
+  if (what === 'import') return doImport()
+  if (what === 'history') {
+    if (window.fetchVersionsPanel && window.fetchVersionsPanel.toggle()) return
+    toast('Open something from the Library to see its versions.')
+  }
+}
+ipcRenderer.on('shortcut', (e, what) => onShortcut(what))
+
+// ── the brake ────────────────────────────────────────────────────────────
+// While an agent is at work a pill says so and says Esc stops it: a key nobody knows
+// about is not a safety. main.js claims Esc system wide while a call runs; the capture
+// listener here is the same key in this window for the whole time an agent is connected.
+const AGENT_MARK = { 'claude code': 'claude', claude: 'claude', codex: 'codex', cursor: 'cursor', windsurf: 'windsurf', zed: 'zed' }
+const agentMark = by => {
+  const f = AGENT_MARK[String(by || '').toLowerCase()]
+  return f ? `<img src="./assets/agents/${f}.svg" alt="" onerror="this.remove()">` : ico('sparkle', 'icon-sm')
+}
+let brakeState = { driving: false, held: null, by: null, esc: true }
+function paintBrake(s) {
+  brakeState = s || brakeState
+  let pill = $('agentBrake')
+  if (!brakeState.driving && !brakeState.held) { if (pill) pill.hidden = true; return }
+  if (!pill) {
+    pill = el('div', 'agent-brake')
+    pill.id = 'agentBrake'
+    pill.setAttribute('role', 'status')
+    pill.addEventListener('click', e => {
+      const b = e.target.closest('[data-brake]'); if (!b) return
+      ipcRenderer.send(b.dataset.brake === 'stop' ? 'agent-stop' : 'agent-release', 'button')
+    })
+    document.body.appendChild(pill)
+  }
+  const s2 = brakeState, who = escHtml((s2.held && s2.held.by) || s2.by || 'Your agent')
+  pill.hidden = false
+  pill.dataset.held = String(!!s2.held)
+  pill.innerHTML = s2.held
+    ? `<span class="agent-brake-mark">${ico('pause-fill', 'icon-sm')}</span>` +
+      `<span class="agent-brake-line">Stopped ${who}. It can do nothing in Fetch until you say so.</span>` +
+      `<button class="btn btn-sm" data-brake="release">Let it continue</button>`
+    : `<span class="agent-brake-mark">${agentMark(s2.by)}</span>` +
+      // While Esc is claimed system wide it is taken from the app in front too, a
+      // terminal's own interrupt included, so the pill says so rather than surprising anyone
+      `<span class="agent-brake-line">${who} is working${s2.esc ? '. Esc in any app stops it here' : ''}</span>` +
+      `<button class="btn btn-sm agent-brake-stop" data-brake="stop" aria-keyshortcuts="Escape">` +
+      `${ico('stop-fill', 'icon-sm')}Stop<kbd class="mono">esc</kbd></button>`
+}
+ipcRenderer.on('agent-brake', (e, s) => paintBrake(s))
+// after this script has run to its end, since the pill leans on helpers declared below
+setTimeout(() => { try { paintBrake(ipcRenderer.sendSync('agent-brake-get')) } catch {} })
+// Capture phase, ahead of every Escape handler in the window, and on purpose in a text
+// field too: with an agent at work, Esc means stop before it means anything else.
+window.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || e.repeat || !brakeState.driving) return
+  e.preventDefault(); e.stopImmediatePropagation()
+  ipcRenderer.send('agent-stop', 'Esc')
+}, true)
+
 // ── jobs ─────────────────────────────────────────────────────────────────
 let jobSeq = 0
 const jobs = new Map()
@@ -679,7 +762,9 @@ const trash = paths => ipcRenderer.invoke('trash-items', paths).catch(() => 0)
 // Support files live in a hidden folder beside the media, so the save folder only
 // holds recordings and exports. Mirrors sidecarPath() in processor.js.
 const SIDE_DIR = '.fetch'
-const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3', '.name.json']
+const SIDE_EXT = ['.png', '.srt', '.txt', '.cursor.json', '.pointer.json', '.cam.json', '.cam.mov', '.words.json', '.fetchdoc.json', '.vo.mp3', '.name.json',
+  // an edit's past goes where the take goes: renamed with it, trashed with it (ui/history.js)
+  '.history.jsonl']
 const sidecarPath = (media, ext) =>
   path.join(path.dirname(media), SIDE_DIR, path.basename(media).replace(/\.[^.]+$/, '') + ext)
 const sidecarIn = (media, ext) => {

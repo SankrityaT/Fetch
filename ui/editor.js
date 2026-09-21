@@ -71,6 +71,11 @@ const EDITOR_HTML = `
       </div>
       <div id="cropBox" hidden><i class="h nw"></i><i class="h ne"></i><i class="h sw"></i><i class="h se"></i></div>
     </div>
+    <aside class="ver-panel" id="verPanel" aria-label="Version history" hidden>
+      <header class="ver-head"><span class="ver-title">History</span><span class="ver-sub" id="verCount"></span>
+        <button class="pc ver-x" data-ver-close aria-label="Close history">${ico('x', 'icon-sm')}</button></header>
+      <ol class="ver-list" id="verList"></ol>
+    </aside>
     <div class="ed-transport">
       <button class="pc" id="edBack" data-tip="Back 5s">${ico('skip-back', 'icon-sm')}</button>
       <button class="pc main" id="edPlay">${ico('play-fill', 'icon')}</button>
@@ -88,6 +93,8 @@ const EDITOR_HTML = `
       <span class="chip chip-static mono" id="edSize" hidden>0 x 0</span>
       <button class="pc" id="edUndo" data-tip="Undo (⌘Z)" aria-label="Undo" disabled>${ico('arrow-counter-clockwise', 'icon-sm')}</button>
       <button class="pc" id="edRedo" data-tip="Redo (⇧⌘Z)" aria-label="Redo" disabled>${ico('arrow-clockwise', 'icon-sm')}</button>
+      <button class="btn btn-sm btn-ghost ed-versions" id="edVersions" aria-pressed="false" aria-controls="verPanel"
+        data-tip="Every version of this edit, and who made it (⌘Y)">${ico('clock', 'icon-sm')}<span class="ed-lbl">History</span><span class="ver-count mono"></span></button>
       <button class="btn btn-sm btn-ghost ed-undo-agent" id="edUndoAgent" hidden
         data-tip="Put the edit back how it was before Biscuit changed it">${ico('arrow-counter-clockwise', 'icon-sm')}<span class="ed-lbl">Undo Biscuit's change</span></button>
       <button class="pc ed-lasso" id="edLasso" aria-pressed="false" aria-label="Lasso an area for Biscuit"
@@ -494,6 +501,7 @@ function wireAssist() {
   if ($('edUndoAgent')) $('edUndoAgent').onclick = () => undoAgentEdit()
   if ($('edUndo')) $('edUndo').onclick = () => historyStep(-1)
   if ($('edRedo')) $('edRedo').onclick = () => historyStep(1)
+  wireVersions()
   paintAskState(); paintAgentUndo()
 }
 
@@ -522,7 +530,7 @@ async function undoAgentEdit(src, level) {
   await ipcRenderer.invoke(docWrite(), src, now).catch(() => {})
   flashAgentChange(EditAssist.changedIds(was, now))
   paintAgentUndo()
-  window.dispatchEvent(new CustomEvent('fetch:agent-edit', { detail: { src, undo: true } }))
+  window.dispatchEvent(new CustomEvent('fetch:agent-edit', { detail: { src, undo: true, by: null } }))
   toast(escHtml(EditAssist.undoSummary(was, now)) + (kept.length ? ', and kept your own edits since' : ''), 'ok', 5200)
   return true
 }
@@ -809,6 +817,8 @@ function historyPush(json) {
 }
 
 function historyStep(dir) {
+  // Cmd+Z while an old version is on screen means leave it, never edit it
+  if (versionPeeking()) { window.fetchHistory.back(); return }
   const h = edHistory
   if (!liveDoc() || h.src !== ed.src) return
   // settle anything still in flight first, so undo never skips the latest change
@@ -847,12 +857,147 @@ function startDocAutosave(src) {
     let cur
     try { cur = JSON.stringify(liveDoc().get()) } catch { return }
     if (cur === docSaveLast) return
+    if (versionPeeking()) return               // looking at an old version is not saving it
     if (pointerHeld) return                    // mid-drag: one step when it lands
     docSaveLast = cur
     historyPush(cur)
     ipcRenderer.invoke(docWrite(), src, JSON.parse(cur)).catch(() => {})
   }, 400)
 }
+
+// ── version history ─────────────────────────────────────────────────────
+// Undo above dies with the window. The edit's past across sessions is kept by
+// ui/history.js and fed by ui/autosave.js (window.fetchHistory); this is only the part
+// a person sees: every version, who made it, what changed, a row to look at and a
+// Restore on the one being looked at. A restore is a new version on top, so nothing
+// ahead of it is lost, and the panel says so.
+const versionPeeking = () => !!(window.fetchHistory && window.fetchHistory.peeking())
+const vers = { open: false, shown: 100 }
+const VER_PAGE = 100
+const verDay = at => {
+  const d = new Date(at), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1)
+  if (d.toDateString() === now.toDateString()) return 'Today'
+  if (d.toDateString() === y.toDateString()) return 'Yesterday'
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+}
+const verClock = at => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+
+// Who, in the activity log's words: an agent's name on its own vendor mark (the brake's
+// artwork, ui/app.js), "You" for the person, and for an edit made where nobody watched,
+// no name at all, since crediting anyone would be a guess.
+function verWho(r) {
+  if (r.how === 'outside') return `<span class="ver-unseen">Not seen being made</span>`
+  if (!r.by) return `<span>You</span>`
+  return `<span class="ver-mark">${agentMark(r.by)}</span><span>${escHtml(r.by)}</span>`
+}
+
+function versionRow(r, head, at) {
+  const looking = at === r.id
+  const also = r.also && r.also.length ? ` with ${escHtml(r.also.join(', '))}` : ''
+  const folded = r.merged ? `<span class="ver-folded">and ${r.merged} more${also}</span>` : ''
+  const gone = r.missing && r.missing.length
+    ? `<span class="ver-missing">${ico('warning-circle', 'icon-sm')}Some files it used are gone</span>` : ''
+  // the row names what kind of version it is in words, not only in the line
+  const kind = r.how === 'restore' ? `<span class="ver-kind">${ico('arrow-counter-clockwise', 'icon-sm')}Restore</span>`
+    : r.how === 'undo' ? `<span class="ver-kind">${ico('arrow-counter-clockwise', 'icon-sm')}Undo</span>` : ''
+  return `<li class="ver-row" data-n="${r.n}" data-how="${escHtml(r.how)}" aria-current="${looking}">
+    <button class="ver-look" data-look="${r.n}" aria-label="${head ? `${r.id}, the edit as it is now` : `Look at ${r.id}`}">
+      <span class="ver-id mono">${r.id}</span>
+      <span class="ver-body">
+        <span class="ver-line">${escHtml(r.line)}</span>
+        <span class="ver-meta">${kind}${verWho(r)}<span class="ver-dot" aria-hidden="true"></span><span class="mono">${verClock(r.at)}</span>${folded}</span>
+        ${gone}
+      </span>
+      ${head ? '<span class="chip chip-static ver-now">Now</span>' : ''}
+    </button>
+    ${looking && !head ? `<div class="ver-act"><button class="btn btn-sm btn-primary" data-restore="${r.n}">${ico('arrow-counter-clockwise', 'icon-sm')}Restore ${r.id}</button>
+      <button class="btn btn-sm btn-ghost" data-back>Back to now</button></div>` : ''}
+  </li>`
+}
+
+function paintVersions() {
+  const H = window.fetchHistory
+  const rows = H ? H.rows() : []
+  const btn = $('edVersions')
+  if (btn) {
+    btn.setAttribute('aria-pressed', String(vers.open))
+    const c = btn.querySelector('.ver-count'); if (c) c.textContent = rows.length > 1 ? `V${rows[0].n}` : ''
+  }
+  const panel = $('verPanel'), list = $('verList')
+  if (!panel || !list) return
+  panel.hidden = !vers.open
+  if (!vers.open) return
+  if (!rows.length) {
+    list.innerHTML = `<li class="ver-empty"><img class="biscuit" src="./assets/mascot/curious.png" alt="">
+      <p>No versions yet. Every change to this edit, yours or an agent's, lands here.</p>
+      <button class="btn btn-sm" data-ver-close>Close</button></li>`
+    $('verCount').textContent = ''
+    return
+  }
+  const at = H.peekingAt()
+  let html = '', day = null
+  rows.slice(0, vers.shown).forEach((r, i) => {
+    const d = verDay(r.at)
+    if (d !== day) { html += `<li class="ver-day caps">${d}</li>`; day = d }
+    html += versionRow(r, i === 0, at)
+  })
+  if (rows.length > vers.shown) html += `<li class="ver-more"><button class="btn btn-sm btn-ghost" data-older>Show older</button></li>`
+  list.innerHTML = html
+  $('verCount').textContent = `${rows.length} version${rows.length === 1 ? '' : 's'}`
+}
+
+function toggleVersions(on = !vers.open) {
+  if (!ed.src || !$('verPanel')) return false
+  vers.open = on
+  if (on) vers.shown = VER_PAGE
+  if (!on && versionPeeking()) window.fetchHistory.back()
+  paintVersions()
+  if (on) { const first = $('verList').querySelector('.ver-look'); if (first) first.focus() }
+  return true
+}
+
+function lookAtVersion(n) {
+  const H = window.fetchHistory
+  if (!H) return
+  const top = H.rows()[0]
+  // the top row is the edit as it is: looking at it is going back to now
+  if (top && top.n === n) { if (H.peeking()) H.back(); paintVersions(); return }
+  const r = H.peek(n)
+  if (r && r.ok === false) toast(escHtml(r.why), 'bad')
+  if (ed.sel) selectObj(null)
+  paintVersions()
+}
+
+function wireVersions() {
+  const btn = $('edVersions'), panel = $('verPanel')
+  if (btn) btn.onclick = () => toggleVersions()
+  if (panel) panel.addEventListener('click', async e => {
+    const H = window.fetchHistory
+    const restore = e.target.closest('[data-restore]')
+    if (restore && H) { await H.restore(+restore.dataset.restore); return paintVersions() }
+    if (e.target.closest('[data-back]') && H) { H.back(); return paintVersions() }
+    if (e.target.closest('[data-older]')) { vers.shown += VER_PAGE; return paintVersions() }
+    const look = e.target.closest('[data-look]')
+    if (look) return lookAtVersion(+look.dataset.look)
+    if (e.target.closest('[data-ver-close]')) toggleVersions(false)
+  })
+  // replaced, not stacked: the history repaints the one panel there is
+  if (window.fetchHistory) window.fetchHistory.onchange = paintVersions
+  paintVersions()
+}
+// the history is opened for a take after the editor has drawn it (ui/autosave.js)
+window.addEventListener('fetch:editor-ready', () => setTimeout(paintVersions, 0))
+
+// Esc in the panel steps back one level: off the version being looked at, then shut.
+// The brake in ui/app.js takes Esc first whenever an agent is at work.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || !vers.open || e.defaultPrevented) return
+  if (versionPeeking()) { window.fetchHistory.back(); paintVersions() } else toggleVersions(false)
+})
+
+// The menu's Cmd+Y (main.js, through ui/app.js). A name of its own, since
+// window.fetchHistory is the history itself and belongs to ui/autosave.js.
+window.fetchVersionsPanel = { toggle: () => toggleVersions() }
 
 document.addEventListener('keydown', e => {
   if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'z') return
@@ -1370,6 +1515,8 @@ function wireEditor() {
     src: () => (!ed.shot && ed.docReady && ed.src) || null,
     load: doc => docToEd(doc),
   }
+  // the autosave above holds still while a version is looked at, so looking is safe
+  if (window.fetchHistory) window.fetchHistory.editorHonoursPeek = true
 
   // The shot as a document, and the same three questions asked of it: what is it, put
   // this on it, what is open. ui/shot.js is the canonical shape; `ed` is the working
@@ -1424,7 +1571,11 @@ function wireEditor() {
 
   // A shot has one format worth offering and no length, quality or resolution to pick,
   // so the button is the export: one click from the stage to the file.
-  $('doExport').onclick = () => (ed.shot ? exportShot() : exportModal())
+  $('doExport').onclick = () => {
+    // an export of the version being looked at would be a file of an edit nobody chose
+    if (versionPeeking()) return toast('Restore this version or go back to now before exporting.')
+    return ed.shot ? exportShot() : exportModal()
+  }
 
   document.querySelectorAll('.ed .slider').forEach(s => {
     const paint = () => s.style.setProperty('--fill', ((s.value - s.min) / (s.max - s.min) * 100) + '%')
@@ -1671,7 +1822,9 @@ window.editorFollowRename = moves => {
     if (v) { const t = v.currentTime; v.src = url; v.currentTime = t }
   }
   if (ed.docReady && liveDoc()) {
-    ipcRenderer.invoke(docWrite(), next, liveDoc().get()).catch(() => {})
+    // the edit as it stands: while an old version is on the stage, the real one is held aside
+    const held = versionPeeking() && window.fetchHistory.current ? window.fetchHistory.current() : null
+    ipcRenderer.invoke(docWrite(), next, held || liveDoc().get()).catch(() => {})
     startDocAutosave(next)
   }
 }

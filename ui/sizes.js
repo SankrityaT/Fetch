@@ -66,8 +66,14 @@ const px = s => `${s.w} x ${s.h}`
  *   codecs      "You can provide app previews in H.264 and ProRes 422 (HQ only)".
  *   containers  "Supported extensions .mov, .m4v, .mp4" for H.264, ".mov" for ProRes.
  *   rate        "Target bit rate 10-12 Mbps" for H.264 and "VBR ~220 Mbps" for ProRes.
- *               Only ever used to weigh a file before it is written. The H.264 figure is
- *               the top of Apple's own range, so the estimate errs heavy.
+ *               Used to weigh a file before it is written. The H.264 figure is the top
+ *               of Apple's own range, so the estimate errs heavy.
+ *   h264        What the encoder is actually told, so the promise and the file are one
+ *               number. 11 Mbps is the middle of the page's range, held constant with
+ *               filler (sinks.js), because a screen take asked for 11 in the average
+ *               wrote 5.7 and asked for a quality wrote 0.46: a flat UI needs almost
+ *               nothing, and an average is a ceiling the encoder need not reach.
+ *               Re-read on 2026-09-21 off the same page, "Target bit rate: 10-12 Mbps".
  *   profile     "Progressive, up to High Profile Level 4.0". level4() below is what
  *               makes that line arithmetic rather than a slogan.
  *   poster      "Default poster frame setting 5 Seconds".
@@ -80,6 +86,7 @@ const VIDEO = {
   codecs: ['h264', 'prores422hq'],
   containers: { h264: ['mov', 'm4v', 'mp4'], prores422hq: ['mov'] },
   rate: { h264: 12e6, prores422hq: 220e6 },
+  h264: { bps: 11e6, band: { min: 10e6, max: 12e6 }, profile: 'high', level: '4.0' },
   poster: 5,
   audio: { channels: 2, rates: [44100, 48000] },
 }
@@ -695,7 +702,7 @@ function preview (take = {}, target = null, opts = {}) {
   if (fps.every && fps.every > 1) steps.push(`write ${fps.out} frames a second, one frame in ${fps.every} of the take's ${fps.take}, none of them invented`)
   else steps.push(`write ${fps.unknown ? 'at most ' + VIDEO.fps.max : fps.out} frames a second`)
   steps.push(`encode ${saidCodec(codec)} into .${container}` +
-    (codec === 'h264' ? ', progressive, up to High Profile Level 4.0, 10 to 12 Mbps' : ', progressive, no external references'))
+    (codec === 'h264' ? `, progressive, High Profile Level ${VIDEO.h264.level}, a constant ${VIDEO.h264.bps / 1e6} Mbps inside the page's 10 to 12` : ', progressive, no external references'))
 
   // Room is a layout decision and not a fault, up to the point where the picture is more
   // backdrop than app, which is where somebody should be told what they are shipping.
@@ -788,6 +795,23 @@ function checkClip (clip, target) {
   if (Number.isFinite(secs)) {
     if (secs < p.seconds.min) bad.push(`it runs ${r3(secs)}s and an app preview has to be at least ${p.seconds.min}s`)
     if (secs > p.seconds.max) bad.push(`it runs ${r3(secs)}s and an app preview has to be ${p.seconds.max}s or under`)
+  }
+  // The edit's own length, where the caller knows it. A legal 24 s file cut from a 28 s
+  // edit passes every store rule and has lost the end of somebody's demo, so the store's
+  // window is not the only length a file is held to. Within one frame at the cap.
+  const expect = +(clip && clip.expect)
+  if (Number.isFinite(secs) && expect > 0 && Math.abs(secs - expect) > 1 / p.fps.max + 0.005) {
+    bad.push(`it runs ${r3(secs)}s and the edit it was made from is ${r3(expect)}s`)
+  }
+  // The picture's own rate against the band the page states. Nothing at upload refuses a
+  // thin file, but a plan that says 10 to 12 Mbps and a file at 0.46 is a sentence that
+  // is not true, so a file outside the band is not called the store file.
+  const bps = +(clip && clip.bps)
+  if (bps > 0 && codecOf(clip.codec || 'h264') === 'h264') {
+    const { min, max } = VIDEO.h264.band
+    if (bps < min * 0.98 || bps > max * 1.02) {
+      bad.push(`its picture is ${r3(bps / 1e6)} Mbps and an H.264 preview targets ${min / 1e6} to ${max / 1e6}`)
+    }
   }
   const bytes = +(clip && clip.bytes)
   if (Number.isFinite(bytes) && bytes > p.bytes) {

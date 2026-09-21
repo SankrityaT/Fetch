@@ -68,6 +68,8 @@ const ALLOWED = [
   'get_look_schema', 'list_looks', 'apply_look', 'save_look',
   // the job: plan it, hit the length, check the result, take back what was wrong
   'direct', 'fit_to_length', 'review', 'revert_my_edit',
+  // every version of an edit across sessions, and any one of them back on top
+  'versions',
   // whether a clip wraps with no visible jump, for a demo that autoplays on a page
   'can_loop',
   // put the fork to the person instead of guessing, and show a wide change before it lands
@@ -121,7 +123,8 @@ const setSession = (engine, id) => {
 function mcpConfigPath() {
   const p = path.join(os.tmpdir(), 'fetch-mcp-chat.json')
   fs.writeFileSync(p, JSON.stringify({
-    mcpServers: { fetch: { command: connect.nodeBin(), args: [connect.shimPath()] } },
+    // --chat: this shim is the chat's, so a message here releases only this agent
+    mcpServers: { fetch: { command: connect.nodeBin(), args: [connect.shimPath(), '--chat'] } },
   }))
   return p
 }
@@ -171,7 +174,7 @@ function splitAttachments(list = []) {
 // config lists: without this the pane loaded their mail and calendar servers as well.
 // -c parses its value as TOML, and JSON.stringify writes a valid TOML basic string.
 const codexServers = () =>
-  `mcp_servers={fetch={command=${JSON.stringify(connect.nodeBin())},args=[${JSON.stringify(connect.shimPath())}]}}`
+  `mcp_servers={fetch={command=${JSON.stringify(connect.nodeBin())},args=[${JSON.stringify(connect.shimPath())},"--chat"]}}`
 
 function argsFor(engine, prompt, model, effort, images = [], take = null) {
   if (engine === 'codex') {

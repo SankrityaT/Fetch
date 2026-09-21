@@ -219,6 +219,18 @@ function insideView(crop, v) {
   return crop.x >= v.x - VIEW_EPS && crop.y >= v.y - VIEW_EPS &&
     crop.x + crop.w <= v.x + v.w + VIEW_EPS && crop.y + crop.h <= v.y + v.h + VIEW_EPS
 }
+// How round the drawn screen has to be for the capture's own glass, as a share of the
+// screen's short side, or 0. The glass is a rounded rectangle and a crop to its box keeps
+// a crescent of Simulator bezel in each corner, which inside Fetch's phone is a second
+// bezel peeking out (.context/survey/st-taste.md, section 5). The corner is measured off
+// the pixels with the rectangle (ui/simulator.js cornerOf). Only where the crop is the
+// glass: a crop inside it has app in its corners, and one round it kept the bezel whole.
+function glassCorner(cap = {}) {
+  const v = cap.viewport, c = cap.crop
+  const k = v && Number.isFinite(+v.corner) && +v.corner > 0 && +v.corner < 0.5 ? +v.corner : 0
+  if (!k || !cap.screen || !c) return 0
+  return ['x', 'y', 'w', 'h'].every(n => Math.abs(+c[n] - +v[n]) <= VIEW_EPS) ? k : 0
+}
 function ownChrome(cap = {}) {
   const crop = cap.crop && cap.crop.w > 0 && cap.crop.h > 0 ? cap.crop : null
   if (cap.screen) return !insideView(crop || WHOLE, cap.viewport)
@@ -306,9 +318,29 @@ function devicePlan(D = {}, chrome, g, corner, end, bg = {}, cap = {}) {
   const own = ownChrome(cap)
   const text = barText(D.title, cap.captured)
   const bez = bezel(kind, text.address, own)
+  const glass = own ? 0 : glassCorner(cap)
+  // An exact place for the take, from a store plan: the screen is that box and the shell
+  // grows round it, rather than the box being shrunk to make room for a shell.
+  // A shell that would run off the picture is not drawn round the box: at a 0.95 share
+  // the phone was cut by all four edges. Then the layout below fits it inside the box,
+  // and a smaller take is only ever a smaller upscale than the one judged.
+  const at = cap.at
+  if (at) {
+    const s = shellAt(kind, at.w, at.w / at.h, at.x + at.w / 2, at.y + at.h / 2, corner, bez, glass)
+    const dx = at.x - s.screen.x, dy = at.y - s.screen.y
+    const move = r => (r ? { ...r, x: r.x + dx, y: r.y + dy } : r)
+    const extent = move(s.extent)
+    const fits = extent.x >= 0 && extent.y >= 0 && extent.x + extent.w <= g.outW && extent.y + extent.h <= g.outH
+    if (fits) {
+      return { ...s, box: move(s.box), foot: move(s.foot), extent,
+        slit: s.slit ? { ...s.slit, y: s.slit.y + dy } : null,
+        screen: { ...s.screen, x: at.x, y: at.y, w: at.w, h: at.h },
+        ...shellTone(D, end, bg), ...text, own }
+    }
+  }
   // the largest screen of the take's own shape that leaves room for the shell round it
   const sw = Math.min(g.vidW / (1 + 2 * d.side), g.vidH / (1 / a + bez.bar + bez.foot + base))
-  return { ...shellAt(kind, sw, a, g.ox + g.vidW / 2, g.oy + g.vidH / 2, corner, bez),
+  return { ...shellAt(kind, sw, a, g.ox + g.vidW / 2, g.oy + g.vidH / 2, corner, bez, glass),
     ...shellTone(D, end, bg), ...text, own }
 }
 
@@ -318,18 +350,25 @@ function devicePlan(D = {}, chrome, g, corner, end, bg = {}, cap = {}) {
  * the layout and one capture standing beside another in a group are the same shape
  * solved from a different width rather than two shapes that have to be kept in step.
  */
-function shellAt(kind, sw, a, cx, cy, corner, bez = bezel(kind, false, false)) {
+function shellAt(kind, sw, a, cx, cy, corner, bez = bezel(kind, false, false), glass = 0) {
   const d = DEVICES[kind]
   const base = d.base || 0
   const sh = sw / a
   const bar = bez.bar
+  // The glass's own corner, where the capture is a device's glass: the mask is that
+  // round or the Simulator's bezel shows in the corners. Then the shell is cut concentric
+  // with it, so the bezel is as thick round the corner as along the side. Zero on every
+  // other take, which leaves both radii exactly as they were.
+  const gr = glass > 0 ? glass * Math.min(sw, sh) : 0
+  const sr = Math.max(corner, sw * d.sr, gr)
   const boxW = sw * (1 + 2 * d.side), boxH = sh + sw * (bar + bez.foot)
-  const box = { x: Math.round(cx - boxW / 2), y: Math.round(cy - (boxH + sw * base) / 2), w: Math.round(boxW), h: Math.round(boxH), r: sw * d.r }
+  const box = { x: Math.round(cx - boxW / 2), y: Math.round(cy - (boxH + sw * base) / 2), w: Math.round(boxW), h: Math.round(boxH),
+    r: gr ? Math.max(sw * d.r, sr + sw * d.side) : sw * d.r }
   const screen = {
     x: Math.round(box.x + sw * d.side), y: Math.round(box.y + sw * bar),
     w: 2 * Math.round(sw / 2), h: 2 * Math.round(sh / 2),
     // never tighter than the window's own rounded corner, or its black corner shows
-    r: Math.max(corner, sw * d.sr),
+    r: sr,
   }
   const foot = base ? {
     x: box.x - sw * d.over, y: box.y + box.h, w: box.w + 2 * sw * d.over, h: sw * base,
@@ -719,6 +758,21 @@ function typeRoom(g, room, inset, band) {
     radius: Math.max(6, Math.round(g.radius * k)), blur: Math.max(4, Math.round(g.blur * k)) }
 }
 
+// A store plan's box, checked before anything is drawn at it: whole pixels inside the
+// store's exact pair, and the take's own shape to within the plan's flooring. A box of
+// another shape would stretch the app, which is worse than drawing it where the look
+// would have, so that is null and the layout decides as it always has.
+function storeBox(opts, cw, ch) {
+  const s = opts.size, b = opts.box
+  if (!s || !b) return null
+  const W = Math.round(+s.w), H = Math.round(+s.h)
+  const x = Math.round(+b.x), y = Math.round(+b.y), w = Math.round(+b.w), h = Math.round(+b.h)
+  if (![W, H, x, y, w, h].every(Number.isFinite) || !(W > 0 && H > 0 && w > 0 && h > 0)) return null
+  if (x < 0 || y < 0 || x + w > W || y + h > H) return null
+  if (!(cw > 0 && ch > 0) || Math.abs(w / h - cw / ch) * h > 1.5) return null
+  return { x, y, w, h, size: { w: W, h: H } }
+}
+
 // ── the plan ────────────────────────────────────────────────────────────
 /**
  * The fixed part of a render.
@@ -815,10 +869,26 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     }
   }
 
+  // The take where a store plan put it. ui/sizes.js preview() judges the upscale at
+  // plan.box and says "draw it at 689 x 1497"; the layout's own padding put it
+  // somewhere near, and a drawn phone then shrank it again, so the file was not the
+  // picture that was judged. With the box handed over, the output is the store's exact
+  // pair and the take is that box, and a shell grows round it. Not under a headline:
+  // the type has taken room the plan never knew about, and a smaller take is only ever
+  // a smaller upscale.
+  const at = framed && !gl && !still ? storeBox(opts, cw, ch) : null
+  if (at) {
+    g = { ...g, outW: at.size.w, outH: at.size.h, vidW: at.w, vidH: at.h, ox: at.x, oy: at.y,
+      radius: Math.max(6, Math.round(num(opts.radius, Math.min(at.w, at.h) * 0.035))),
+      blur: Math.max(4, Math.round(at.h * 0.035)) }
+  }
+
   // never tighter than the window's own rounded corner, or its black corner shows
   const gut = framed && ctx.gutter ? ctx.gutter : null
   const corner = gut && gut.corner ? Math.ceil(gut.corner * g.vidW * 1.45) + 2 : 0
-  const radius = framed ? Math.max(g.radius, corner) : 0
+  // and never squarer than the device's glass, where the crop is that glass
+  const glass = framed ? glassCorner({ viewport: opts.viewport, crop: opts.crop, screen: opts.screen }) : 0
+  const radius = framed ? Math.max(g.radius, corner, glass * Math.min(g.vidW, g.vidH)) : 0
 
   // The window's own margin trimmed off inside the frame, covered to the frame's shape,
   // as the classic export does after its zoom: fractions of what the zoom shows.
@@ -908,7 +978,8 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   // take's black corner never shows; frame.radius belongs to a take with no device
   const device = framed && !gl
     ? devicePlan(L('device'), L('frame').chrome, g, corner, end0, bg,
-      { viewport: opts.viewport, captured: opts.captured, crop: opts.crop, screen: opts.screen })
+      { viewport: opts.viewport, captured: opts.captured, crop: opts.crop, screen: opts.screen,
+        ...(at ? { at: { x: at.x, y: at.y, w: at.w, h: at.h } } : {}) })
     : null
   // A group has no one device and no one screen: each member carries its own, and what
   // stands in for the take everywhere else (the grade's reach, the caption band, a title

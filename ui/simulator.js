@@ -340,10 +340,63 @@ function measureGlass(frame) {
   if (!(px.w > f.w / 4 && px.h > f.h / 8)) {
     return { ok: false, reason: 'what was measured is too small to be a device screen, so nothing is reported rather than a rectangle nothing is on.' }
   }
+  const corner = cornerOf(row, x0, x1, px)
   return { ok: true, value: {
     capture: { w: f.w, h: f.h }, px, agree,
     rect: { x: r4(px.x / f.w), y: r4(px.y / f.h), w: r4(px.w / f.w), h: r4(px.h / f.h) },
+    ...(corner ? { corner } : {}),
   } }
+}
+
+// How far into the glass a corner may reach before it is not a corner: a quarter of the
+// short side. The ProMax's measured 0.158, so this is room, not a guess at a device.
+const CORNER_MAX = 0.25
+
+/**
+ * How round the glass is, read off the same ring the rectangle was.
+ *
+ * The screen is a rounded rectangle and the rectangle measured above is its bounding
+ * box, so each corner of that box holds a crescent of the Simulator's own bezel. A crop
+ * to the box keeps the crescents, and inside Fetch's phone they read as a second bezel
+ * peeking out (.context/survey/st-taste.md, section 5). No radius per device type: the
+ * art changes with Xcode, and the ring is right here in the pixels.
+ *
+ * Walking down from each corner, the ring's inner edge sits d pixels in from the glass's
+ * side on the row t pixels from its top. The circle that hides that bezel pixel passes
+ * through (d, t + 0.5) from the corner, which is R = d + t' + sqrt(2 d t'). The largest
+ * over a corner's rows is the smallest circle that hides every one of them: Apple's
+ * corner is a continuous curve with a long tail, and a circle fitted to its middle
+ * leaves one pixel of ring along that tail. A corner whose rows never come back to the
+ * side is an app dark to its own edge, not glass, and is left out; of the rest the
+ * smallest is taken, since an app can only push a corner inward, never out.
+ *
+ * Returns { px, share } with share the radius over the glass's short side, which is the
+ * same number whatever size the glass is drawn at and whichever way up, or null.
+ */
+function cornerOf(row, x0, x1, px) {
+  const reach = Math.floor(Math.min(px.w, px.h) * CORNER_MAX)
+  const each = []
+  for (const top of [true, false]) {
+    for (const left of [true, false]) {
+      let R = 0, closed = false
+      for (let t = 0; t < reach; t++) {
+        const e = ringEdge(row(top ? px.y + t : px.y + px.h - 1 - t), x0, x1, left)
+        if (e == null) break
+        const d = left ? e - px.x : px.x + px.w - 1 - e
+        if (d <= 0) { closed = true; break }
+        const tp = t + 0.5
+        R = Math.max(R, d + tp + Math.sqrt(2 * d * tp))
+      }
+      if (closed) each.push(R)
+    }
+  }
+  if (!each.length) return null
+  const R = Math.min(...each)
+  // A square screen (an iPhone SE's) closes on its first row: no corner to hide.
+  if (!(R >= 1)) return null
+  // Rounded up, never down: a radius a hundredth short leaves the last ring pixel out.
+  const up = Math.ceil(R * 100) / 100
+  return { px: up, share: Math.ceil(up / Math.min(px.w, px.h) * 1e4) / 1e4 }
 }
 
 // A measured glass, handed in as measureGlass returned it or as plain fractions, as the
@@ -361,7 +414,12 @@ function glassViewport(glass, screen, o = {}) {
   if (pts && m.px) {
     if (Math.abs((m.px.w / m.px.h) / (pts.w / pts.h) - 1) > glassTol(m.px)) return null
   }
-  return { x: r4(rect.x), y: r4(rect.y), w: r4(rect.w), h: r4(rect.h) }
+  // The corner rides on the rectangle it was measured with, so the crop that takes the
+  // glass also knows how round it is (ui/compositor/plan.js, glassCorner). Only when
+  // there is one: a square glass keeps the plain four numbers everything else expects.
+  const c = num(m.corner && typeof m.corner === 'object' ? m.corner.share : m.corner)
+  return { x: r4(rect.x), y: r4(rect.y), w: r4(rect.w), h: r4(rect.h),
+    ...(c > 0 && c < 0.5 ? { corner: r4(c) } : {}) }
 }
 
 /**

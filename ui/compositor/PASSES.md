@@ -141,6 +141,12 @@ the page inside or the ground outside, it cannot be within the edge floor of bot
 the contract pass 9 measures per pixel is met here by construction and the two decode
 paths cannot land on opposite sides of a threshold. That is why `spec.edge` is null
 under a device: a second line inside the screen would be a line drawn on a line.
+A phone round a device's own glass (the crop is the measured viewport, to `VIEW_EPS`)
+masks the take at the glass's measured corner (`viewport.corner`, a share of the glass's
+short side, from `ui/simulator.js cornerOf`), and cuts the shell concentric with it, so no
+crescent of the Simulator's bezel shows inside Fetch's. The corner rides the viewport
+through `ui/fetchdoc.js cleanViewport` into the edit and the still alike; a viewport
+without one, and every golden, draws exactly as before.
 Every shape is generic by construction and by intent. Nothing is traced, nothing carries
 a wordmark, a window's three dots are the shell's own tone and never one desktop's three
 colours, a laptop is a slab and a shallow foot with no keyboard and no hinge, and a
@@ -257,12 +263,17 @@ Sources and sinks (M0 decided, M2 measured):
   mux that re-encodes: the store's audio line is one stereo AAC track at 256 kbps and 48
   kHz, where the graph writes 192, and a take with no sound gets silence of that shape
   (`anullsrc`) rather than no track. It changes no picture, so no golden reads it.
-- Size: an app preview is drawn at the preset's own pair, composed at its ratio with a
-  1920 long edge and scaled once to the pair (`render-host.glExport`), and at the plan's
-  rate, one source frame in n. The take sits where the look's layout puts it, inside the
-  padding, not at `ui/sizes.js`'s `box`: the upscale check is made at the share that
-  padding leaves (`agent-bridge.js drawnShare`), so the plan and the file judge the same
-  picture.
+- Size: an app preview is drawn at the preset's own pair and at the plan's rate, one
+  source frame in n. With the store plan's `box` handed over (`opts.box`, set by
+  `agent-bridge.js` export), `plan.js storeBox` makes the canvas exactly the pair and the
+  take exactly the box, so the density drawn is the density `ui/sizes.js` judged. A box
+  of another shape, off the picture, or under a headline is ignored and the layout
+  decides. A drawn device grows round the box (`devicePlan`, `cap.at`) only where its
+  whole extent stays on the picture; where it would not (a 0.95 share reached past all
+  four edges) the shell is fitted inside the box by the layout path instead, a smaller
+  take and never a cut phone. The picture is encoded x264 High at Level 4.0 and a
+  constant 11 Mbps (`sinks.encodeArgs` quality `store`), and the sound is padded to the
+  span, never the picture cut to the sound.
 - A capture: no decode at all. A screenshot is a take of one frame, so a shot is a
   `Plan.prepare` off a picture's own header, drawn once by `renderShot` at 1x, 2x or 3x
   and written by the same `sinks.writeStill` a preview frame goes through. There is no

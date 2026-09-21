@@ -160,5 +160,93 @@ is('and turns it into a capture and a track',
 is('a sound stream that will not open does not take the picture with it',
   /catch \{[\s\S]{0,160}no system audio for this window/.test(rec), true)
 
-console.log(`\n${pass} passed, ${fail} failed`)
-if (fail) process.exit(1)
+// ── sound on the picture's clock ─────────────────────────────────────────
+// A simulator take's sound started 2.3 s after its picture. The file was honest about
+// it through an edit list, and every ffmpeg graph that trims the track or decodes it to
+// a wav put the first sample at zero, so the export, the transcript and the waveform
+// all had the sound 2.3 s early. The writer also dropped audio while a still window
+// held its interleave, and AAC packs what is left, so every take drifted early by
+// 20 ms at a time. These pin the fix in the source, then measure it in a written file.
+console.log('\nsound on the picture\'s clock')
+is('a window take opens its sound before its picture',
+  rec.indexOf('if let sf = soundFilter { await openSoundStream(sf) }') < rec.indexOf('stream = try await openStream(filter)'), true)
+is('sound that arrives while the writer is full waits rather than being dropped',
+  /default:\s*queueSound\(sb, at: shifted/.test(rec) && !/sysAudioIn, a\.isReadyForMoreMediaData else \{ return \}/.test(rec), true)
+is('a hole before a sample is filled with silence before the sample goes in',
+  /fillSilence\(input, fmt, from: next, to: t\)/.test(rec), true)
+is('and the sound runs to Stop', /soundTail\[k\] = fillSilence\(input, fmt, from: next, to: end\)/.test(rec), true)
+is('what it took is reported on stopped', /"sound": soundReport\(\)/.test(rec), true)
+// Reset to each buffer's own stamp, the written position forgot every correction, so a
+// sound clock 2000 ppm off the host clock was 116 ms out by a minute with gaps 0.
+is('the written position is the sum of what was written, not the last stamp',
+  /soundNext\[key\] = CMTimeAdd\(next, soundLength\(piece, fmt\)\)/.test(rec) && !/soundNext\[key\] = CMTimeAdd\(t, soundLength/.test(rec), true)
+is('and a file ahead of its sound lets the head of a buffer go', /headCut\(sb, fmt, seconds: over/.test(rec), true)
+
+async function measured() {
+  const { execFileSync, spawn, spawnSync } = require('child_process')
+  const os = require('os')
+  const FF = fs.existsSync(path.join(__dirname, '..', 'vendor', 'ffmpeg')) ? path.join(__dirname, '..', 'vendor', 'ffmpeg') : '/opt/homebrew/bin/ffmpeg'
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-sync-'))
+  const bin = path.join(dir, 'Recorder'), out = path.join(dir, 'take.mov')
+  try {
+    try { execFileSync('swiftc', ['-Onone', path.join(__dirname, '..', 'Recorder.swift'), '-o', bin], { stdio: 'ignore' }) }
+    catch { console.log('  skip swiftc is not here to build the recorder'); return }
+    // a generated take: a white frame and a click together at 3 s and 7 s, the sound
+    // starting 2.3 s late and stalling for a second in the middle. Nothing is played.
+    // Stop counted from the first frame, not from the spawn: on a loaded Mac the recorder
+    // took seconds to start, and a take stopped by the spawn's clock lost its 7 s flash
+    const take = (spec, ms) => new Promise(resolve => {
+      const p = spawn(bin, ['--out', out, '--system-audio', '--fps', '30', '--test-source', spec])
+      let buf = '', timer = null
+      p.stdout.on('data', d => {
+        buf += d
+        if (!timer && /firstFrame/.test(buf)) timer = setTimeout(() => p.stdin.write('stop\n'), ms)
+      })
+      setTimeout(() => { if (!timer) timer = setTimeout(() => p.stdin.write('stop\n'), 0) }, ms + 20000)
+      p.on('close', () => resolve(buf.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l) } catch { return {} } }).find(e => e.event === 'stopped')))
+    })
+    const stopped = await take('lead=2.3,gap=4.5-5.5', 9000)
+    const flashes = () => {
+      const r = spawnSync(FF, ['-hide_banner', '-nostdin', '-i', out, '-map', '0:v:0', '-vf', 'signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-', '-f', 'null', '-'], { encoding: 'utf8', maxBuffer: 1 << 26 })
+      const t = []; let pts = null
+      for (const l of r.stdout.split('\n')) {
+        let m = /pts_time:([\d.]+)/.exec(l); if (m) pts = +m[1]
+        m = /YAVG=([\d.]+)/.exec(l); if (m && +m[1] > 128) t.push(pts)
+      }
+      return t
+    }
+    // samples from zero, the way a trim graph, a wav and the waveform read a track
+    const clicks = () => {
+      const b = execFileSync(FF, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-i', out, '-map', '0:a:0', '-ac', '1', '-ar', '48000', '-f', 'f32le', '-'], { maxBuffer: 1 << 26 })
+      const t = []; let last = -1e9
+      for (let i = 0; i < b.length / 4; i++) if (Math.abs(b.readFloatLE(i * 4)) > 0.3) { if (i - last > 4800) t.push(i / 48000); last = i }
+      return t
+    }
+    const v = flashes(), a = clicks()
+    const sound = stopped && stopped.sound && stopped.sound[0]
+    is('the generated take has both flashes', v.map(x => +x.toFixed(3)), [3, 7])
+    is('and a click with each', a.length, 2)
+    const off = v.map((x, i) => Math.round(((a[i] ?? 99) - x) * 1000))
+    is('the click lands on its frame, to the millisecond, before and after a stall', off.every(o => Math.abs(o) <= 1), true)
+    if (!off.every(o => Math.abs(o) <= 1)) console.log(`       offsets ${off.join(', ')} ms`)
+    is('the recorder says what it padded', [sound && Math.round(sound.leadMs / 100), sound && sound.gaps], [23, 1])
+    const lens = spawnSync(FF, ['-hide_banner', '-i', out], { encoding: 'utf8' }).stderr
+    is('and the sound starts with the picture', /Audio: aac/.test(lens) && execFileSync(FF, ['-hide_banner', '-loglevel', 'error', '-i', out, '-map', '0:a:0', '-frames:a', '1', '-f', 'framecrc', '-']).toString().split('\n').find(l => l && l[0] !== '#').split(',')[2].trim(), '0')
+    // A sound clock that runs slow, then fast, against the host clock. Uncorrected the
+    // click at 9 s is 18 ms out and growing; corrected it stays inside the 5 ms slack.
+    for (const ppm of [2000, -2000]) {
+      const ev = await take(`drift=${ppm},flash=3:9`, 10000)
+      const fv = flashes(), fa = clicks()
+      const o = fv.map((x, i) => Math.round(((fa[i] ?? 99) - x) * 1000))
+      is(`a sound clock ${ppm > 0 ? 'slow' : 'fast'} by ${Math.abs(ppm)} ppm stays on the picture`, fv.length === 2 && o.every(x => Math.abs(x) <= 6), true)
+      if (!o.every(x => Math.abs(x) <= 6)) console.log(`       offsets ${o.join(', ')} ms, flashes ${fv.join(', ')}`)
+      const s0 = ev && ev.sound && ev.sound[0]
+      is(`and says how it kept it there (${ppm > 0 ? 'filled' : 'trimmed'})`, !!s0 && (ppm > 0 ? s0.gapMs > 0 : s0.trimMs > 0), true)
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+}
+
+measured().catch(e => { fail++; console.log('  FAIL the measured take: ' + e.message) }).finally(() => {
+  console.log(`\n${pass} passed, ${fail} failed`)
+  if (fail) process.exit(1)
+})

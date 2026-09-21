@@ -257,7 +257,7 @@ t('the device job lays its own plan out, and every step is a call with its argum
   assert.deepStrictEqual(r.plan.steps.map(s => s.call.tool),
     ['simulator', 'record_start', 'simulator', 'record_stop', 'fit_to_length', 'export'])
   assert.deepStrictEqual(r.plan.next.call,
-    { tool: 'simulator', args: { action: 'ready', device: 'Yolk-ProMax', app: 'com.yolkling.ios' } })
+    { tool: 'simulator', args: { action: 'ready', device: 'Yolk-ProMax', bundle: 'com.yolkling.ios' } })
   // the two calls the judge spent on argument shapes: the size enum and the length
   const by = Object.fromEntries(r.plan.steps.map(s => [s.call.tool, s.call.args]))
   // with a take under the job, the calls that need one name it
@@ -314,6 +314,39 @@ t('a step keeps its call across a re-plan that sends the same words back as line
   assert.strictEqual(r.plan.steps[0].call.tool, 'simulator')
 })
 
+// The judged device job's one wasted call: the brief's app was a bundle id, P1 sent it
+// as ready's app, which is a path to a built .app, and ready refused it only after
+// booting the device. The form of the identifier decides the argument.
+t('the brief\'s app goes into the argument ready takes that kind of identifier in', () => {
+  const ready = app => D.outline(D.normalizeBrief({ device: 'Yolk-ProMax', app }))[0].args
+  assert.deepStrictEqual(ready('com.yolkling.ios'), { action: 'ready', device: 'Yolk-ProMax', bundle: 'com.yolkling.ios' })
+  const built = '/Users/me/Library/Developer/Xcode/DerivedData/Yolkling-bqzhgdwkfpxrmtaeyuvcnjlsoi/Build/Products/Debug-iphonesimulator/Yolkling.app'
+  assert.deepStrictEqual(ready(built), { action: 'ready', device: 'Yolk-ProMax', app: built },
+    'a path to a built .app is installed, and carried whole, not cut at 120 characters')
+  assert.deepStrictEqual(ready('build/Yolkling.app/'), { action: 'ready', device: 'Yolk-ProMax', app: 'build/Yolkling.app/' })
+  assert.deepStrictEqual(ready('Yolkling'), { action: 'ready', device: 'Yolk-ProMax' },
+    'a display name is no identifier ready takes, so it is not sent as one')
+  assert.deepStrictEqual(ready(null), { action: 'ready', device: 'Yolk-ProMax' })
+})
+
+t('a brief app that is neither kind is said on the result, not discovered from ready', () => {
+  const src = take('AppName')
+  const r = D.direct(src, { brief: { device: 'Yolk-ProMax', app: 'Yolkling' } }, { now: NOW })
+  assert.match(r.app_note, /neither a bundle id .* nor a path to a built \.app/)
+  assert.match(r.app_note, /simulator ready with bundle/)
+  const ok = D.direct(src, { brief: { app: 'com.yolkling.ios' } }, { now: NOW + 1 })
+  assert.strictEqual(ok.app_note, undefined)
+})
+
+t('export finds its own step, so the deliverable closes the plan', () => {
+  const src = take('Deliver')
+  const r = D.direct(src, { brief: { device: 'Yolk-ProMax', size: 'app-preview-6.9' } }, { now: NOW })
+  assert.strictEqual(D.stepFor(D.read(src), 'export'), r.plan.steps.find(s => s.call.tool === 'export').id)
+  D.direct(src, { done: D.stepFor(D.read(src), 'export') }, { now: NOW + 1 })
+  assert.strictEqual(D.stepFor(D.read(src), 'export'), null, 'a closed step is not found twice')
+  assert.strictEqual(D.stepFor(null, 'export'), null)
+})
+
 // ── a job that exists before the take does ──────────────────────────────────
 
 console.log('\na job that exists before the take does')
@@ -328,7 +361,8 @@ t('a job can be directed with no take under it, and it waits in the folder it wa
   // a second call before the take exists refines the same waiting job
   const more = D.direct(null, { brief: { app: 'com.yolkling.ios' } }, { dir: home, now: NOW + 1 })
   assert.strictEqual(more.brief.device, 'Yolk-ProMax')
-  assert.strictEqual(more.plan.next.call.args.app, 'com.yolkling.ios')
+  assert.strictEqual(more.plan.next.call.args.bundle, 'com.yolkling.ios')
+  assert.strictEqual(more.plan.next.call.args.app, undefined, 'a bundle id is never sent as a path')
   assert.throws(() => D.direct(null, { brief: { device: 'x' } }, { now: NOW }), /folder to wait in/)
   fs.rmSync(home, { recursive: true, force: true })
 })
