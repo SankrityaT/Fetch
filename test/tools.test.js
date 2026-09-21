@@ -251,19 +251,31 @@ async function main() {
     assert.ok(/'udid:' \+ sim.udid/.test(SIM_SRC),
       'one yes to Simulator is a yes to every device on the Mac: the session key is not the device')
     const stop = SIM_SRC.slice(SIM_SRC.indexOf("async 'record.stop'"), SIM_SRC.indexOf("async 'record.pointer'"))
-    assert.ok(/simAfterTake\(/.test(stop) && /simUndress\(/.test(stop),
+    assert.ok(/afterTake\(/.test(stop) && /simUndress\(/.test(stop),
       'a take of a device can end without the status bar going back')
+    // Every way out of a stop goes through the one function that says what the file has
+    // and puts the device back, and that one goes through the device's own.
+    const after = SIM_SRC.slice(SIM_SRC.indexOf('async function afterTake('))
+    const body = after.slice(0, after.indexOf('\n}\n'))
+    assert.ok(/simAfterTake\(/.test(body), 'the end of a take no longer runs the device\'s own ending')
+    assert.ok(/Opts\.takeAudio\(/.test(body),
+      'the end of a take does not read the written file, so an agent learns a take is silent from transcribe')
     assert.ok(typeof require('../ui/record-policy').simDecide === 'function',
       'ui/record-policy.js answers no simDecide, so nothing is checked before a spawn')
   })
 
   t('a tap lands where the element was, on the device measured on this Mac', () => {
-    // The one piece of arithmetic between an id from find_on_screen and a touch, run
-    // rather than read, on the window this Mac really reports for an iPhone 16 Pro Max:
-    // 396 x 856 points of window over a 1320 x 2868 screen at scale 3.
+    // The one piece of arithmetic between an id and a touch, run rather than read, on the
+    // window this Mac really reports for an iPhone 16 Pro Max: 397 x 859 points of window
+    // over a 1320 x 2868 screen at scale 3, with the glass measured off a capture of it
+    // (.context/survey/st-t0.md). Measured, because the fit that used to stand in for it
+    // is what sent a tap 80 points above the button near the top of the screen.
     const Sim = require('../ui/simulator')
     const screen = { w: 1320, h: 2868, scale: 3, points: { w: 440, h: 956 } }
-    const viewport = Sim.viewport({ w: 396, h: 856 }, screen)
+    const win = { w: 397, h: 859 }
+    const glass = { capture: { w: 794, h: 1718 }, px: { x: 44, y: 154, w: 706, h: 1534 },
+      rect: { x: 44 / 794, y: 154 / 1718, w: 706 / 794, h: 1534 / 1718 }, agree: 0.995 }
+    const viewport = Sim.viewport(win, screen, { glass })
     const sim = { name: 'Round-Shots-16PM', screen, viewport }
     const mid = bridge.devicePoint(sim, viewport.x + viewport.w / 2, viewport.y + viewport.h / 2)
     assert.ok(Math.abs(mid.x - 220) < 0.5 && Math.abs(mid.y - 478) < 0.5,
@@ -276,6 +288,101 @@ async function main() {
     // A box on the Mac's part of the window is not tapped at the edge of the glass: a
     // touch a whole element away from what was asked for is worse than a refusal.
     assert.throws(() => bridge.devicePoint(sim, -0.2, 0.5), /off a 440 by 956 point screen/)
+
+    // The judged miss, in numbers. Fetch's own arithmetic put the Close button at
+    // (165, 571) and the tap did nothing; the glass measured off the pixels puts the same
+    // place on the frame 27 points higher, which is the judgement's "27 points on a 60
+    // point target" and why the alert stayed up.
+    const fit = Sim.viewport(win, screen)
+    const fx = fit.x + (165 / 440) * fit.w, fy = fit.y + (571 / 956) * fit.h
+    const was = bridge.devicePoint({ ...sim, viewport: fit }, fx, fy)
+    const now = bridge.devicePoint(sim, fx, fy)
+    assert.ok(Math.abs(was.y - 571) < 0.5, `the fit aimed at ${was.y}, not the 571 the judge saw`)
+    assert.ok(Math.abs((was.y - now.y) - 27) < 1.5, `the measurement moved the aim ${(was.y - now.y).toFixed(1)} points, not 27`)
+    // and the density the store gate reads: 0.53 of the device's own pixels, not 0.60.
+    assert.strictEqual(Sim.density(win, screen, { glass }), 0.53)
+    // Nothing is aimed with the arithmetic any more: with no measurement there is no
+    // rectangle, and a tap says so rather than landing somewhere nobody pointed.
+    const bare = Sim.simulators({ devices: [], runtimes: {}, windows: [] })
+    assert.deepStrictEqual(bare, [], 'the model answered something for no devices at all')
+  })
+
+  t('nothing in the bridge aims at a rectangle nobody measured', () => {
+    // The fault that made the rest of the round not matter: the glass was worked out
+    // from the window's shape, which is 12 percent out on a phone with a notch and 19
+    // percent out on one with a home button. Every rectangle now comes off a capture.
+    assert.ok(/Sim\.measureGlass\(/.test(SIM_SRC), 'the bridge measures no capture, so no viewport is ever real')
+    assert.ok(!/scaleOf/.test(SIM_SRC), 'the model is still handed a display scale, which a measured glass replaced')
+    assert.ok(/glassOf/.test(SIM_SRC), 'the model is no longer handed what a capture measured')
+    // and the three calls that rely on a rectangle take the measurement themselves
+    for (const fn of ['simReady', 'simTap']) {
+      const from = SIM_SRC.indexOf(`async function ${fn}(`)
+      assert.ok(from > 0, `${fn} is gone from the bridge`)
+      const body = SIM_SRC.slice(from, from + SIM_SRC.slice(from).indexOf('\n}\n'))
+      assert.ok(/simMeasured\(|readGlass\(/.test(body), `${fn} relies on a rectangle it never measures`)
+    }
+    const start = SIM_SRC.slice(SIM_SRC.indexOf("async 'record.start'"), SIM_SRC.indexOf("async 'record.stop'"))
+    assert.ok(/simMeasured\(sim\)/.test(start), 'a take of a device starts without measuring the glass it crops to')
+    // A flow is many of the same question, so the session answer is the one under the
+    // person's hand. Nine dialogs for one job is an agent that cannot be left alone.
+    const tap = SIM_SRC.slice(SIM_SRC.indexOf('async function simTap('))
+    const tapBody = tap.slice(0, tap.indexOf('\n}\n'))
+    assert.ok(/sessionFirst: true/.test(tapBody),
+      'the tap dialog still offers "this one" first, so a ten tap flow asks ten times')
+    // idb takes whole points and refuses a float, so every tap aimed at an element failed
+    assert.ok(/x: Math\.round\(aimed\.x\), y: Math\.round\(aimed\.y\)/.test(tapBody),
+      'a tap is sent in fractional points, which the one touch tool on the judged Mac refuses')
+    // and the capture that aims it comes after the person's yes, not before
+    assert.ok(tapBody.indexOf("simAsk('tap'") < tapBody.indexOf('simMeasured('),
+      'a tap measures the window, which is a capture, before the person has said yes to it')
+  })
+
+  t('a simulator take is recorded with its sound, and the result says what landed', () => {
+    // The judged fault: record_start returned hasAudio false while three descriptions
+    // promised a track. Both halves are checked here, the decision by running it.
+    const Opts = require('../ui/recorder-opts')
+    assert.strictEqual(Opts.audioFor({}, { simulator: true }).systemAudio, true, 'a simulator take is silent again')
+    assert.strictEqual(Opts.audioFor({}, {}).systemAudio, false, 'every other take turned its sound on')
+    assert.strictEqual(Opts.audioFor({}, { simulator: true }).mic, false, 'the room is in a take nobody asked for')
+    // and the sentences are the constant rather than a fourth copy of the claim
+    const rec = String(server._registeredTools.record_start.description || '')
+    assert.ok(rec.includes(Opts.SIM_AUDIO_SAID), 'record_start no longer says what the default actually does')
+    assert.strictEqual(String(server._registeredTools.record_start.inputSchema.shape.system_audio.description || ''),
+      Opts.SYS_AUDIO_ARG_SAID, 'the system_audio argument and the default disagree again')
+    for (const [where, src] of [['mcp/index.js', SRC], ['ui/agent-bridge.js', SIM_SRC]]) {
+      assert.ok(!/the take has an audio track/.test(src),
+        `${where} promises a track in prose instead of reading ui/recorder-opts.js`)
+    }
+    assert.ok(SIM_SRC.includes('Opts.SIM_LIST_SAID') && SIM_SRC.includes('Opts.READY_NEXT_SAID'),
+      'the simulator list and ready still type the claim out by hand')
+  })
+
+  t('export can write the app preview the named job is for', () => {
+    // "export cannot make an app preview at all" was where the job ended. The refusal is
+    // gone, the plan is what draws it, and the file is measured after it is written.
+    assert.ok(!/will not hand you a file and call it one/.test(SIM_SRC),
+      'export still refuses every store size on a recording')
+    const from = SIM_SRC.indexOf("async 'edit.export'")
+    const body = SIM_SRC.slice(from, from + SIM_SRC.slice(from).indexOf('\n  },'))
+    assert.ok(/Sizes\.preview\(/.test(body), 'export plans no preview, so nothing decides its shape before it is drawn')
+    assert.ok(/clipVerdict\(/.test(body), 'export never measures the file it wrote, and the store measures the file')
+    // The pair of integers, through the geometry that actually draws it. A preview one
+    // pixel out is rejected on upload, so this is arithmetic rather than a promise.
+    const Layout = require('../ui/compositor/layout')
+    const Sizes = require('../ui/sizes')
+    for (const p of Sizes.list().filter(x => x.kind === 'video')) {
+      for (const g of [Layout.plainGeometry(1000, 2000, { outAspect: p.w / p.h }),
+        Layout.backdropGeometry(1000, 2000, { outAspect: p.w / p.h, outWidth: 1920 })]) {
+        const k = Math.min(1, p.w / g.outW)
+        const drawn = { w: Layout.even(g.outW * k), h: Layout.even(g.outH * k) }
+        assert.deepStrictEqual(drawn, { w: p.w, h: p.h },
+          `${p.id} would be drawn ${drawn.w}x${drawn.h} and the store measures ${p.w}x${p.h}`)
+      }
+    }
+    // and the renderer is told the pair rather than a resolution
+    const host = fs.readFileSync(path.join(__dirname, '..', 'ui', 'render-host.js'), 'utf8')
+    assert.ok(/opts\.size/.test(host), 'the export host knows nothing about an exact size')
+    assert.ok(/\+opts\.fps > 0/.test(host), 'the export host cannot be told the frame rate the store caps')
   })
 
   t('a store size is refused before it is drawn, and the file is measured after', () => {
@@ -302,11 +409,60 @@ async function main() {
       'a file the store would reject comes back with nothing said about it')
   })
 
-  t('the named scenario is five calls', () => {
+  t('what the round\'s review found stays fixed, read where it lives', () => {
+    const body = fn => {
+      const from = SIM_SRC.indexOf(fn)
+      assert.ok(from > 0, `${fn} is gone from the bridge`)
+      return SIM_SRC.slice(from, from + SIM_SRC.slice(from).indexOf('\n}\n'))
+    }
+    // A dark screen measured as the glass, or one that could not be measured, used to
+    // replace a good rectangle for the same window size and refuse every tap after it.
+    const rg = body('async function readGlass(')
+    assert.ok(/Sim\.glassViewport\(glass, screen\)/.test(rg), 'a rectangle of the wrong shape is kept as the glass')
+    assert.ok(/glass \|\| \(had && had\.glass\)/.test(rg), 'a failed measurement throws away the last one that passed')
+    // The screen handed back is only ever off a capture this call made.
+    assert.ok(/held\.at >= \(\+o\.since \|\| 0\)/.test(body('async function simScreen(')),
+      'a failed capture hands back the last screen\'s ids as the new one')
+    for (const fn of ['async function simTap(', 'async function simGo(', 'async function simReady(']) {
+      assert.ok(/simScreen\([^)]*since/.test(body(fn)), `${fn} names a screen without saying which capture it must be off`)
+    }
+    // An id with no path falls back to the device's screen only while that is the newest pass.
+    assert.ok(/seenHere === lastFoundOn/.test(body('async function simPoint(')),
+      'a tap by id with no path resolves against a frame an agent has since stopped reading')
+    // record_stop writes the newest rectangle that passed, and says what it wrote.
+    const stop = body('async function simAfterTake(')
+    assert.ok(/simOnDoc\(sim\)/.test(stop) && !/simOnDoc\(held\.sim\)/.test(stop), 'the take keeps record_start\'s measurement only')
+    assert.ok(/wrote = sim\.viewport/.test(stop), 'record_stop says the crop happens where nothing was measured')
+    assert.ok(/sim\.note \|\| Sim\.glassNote\(sim\)/.test(body('function simFacts(')), 'a device with no rectangle does not say why')
+    // Export reads the family the take records and the take's cadence.
+    const ex = SIM_SRC.slice(SIM_SRC.indexOf("async 'edit.export'"))
+    const exBody = ex.slice(0, ex.indexOf('\n  },'))
+    assert.ok(/args\.family \|\| \(dev && dev\.family\)/.test(exBody), 'an iPhone take is drawn into an iPad preview')
+    assert.ok(/fps: meta\.cadence \|\| meta\.fps/.test(exBody), 'a preview is timed off the header\'s average')
+    assert.ok(/share: drawnShare\(doc\)/.test(exBody), 'the upscale is judged at a share the look never draws')
+    // Sound nobody asked for by name never takes the whole Mac's output.
+    assert.ok(/sysNativeOnly/.test(body('async function applySetup(')), 'a default simulator take can fall back to loopback')
+    const appSrc = fs.readFileSync(path.join(__dirname, '..', 'ui', 'app.js'), 'utf8')
+    assert.ok(/setup\.sys && !window\.__sysNativeOnly/.test(appSrc), 'the browser capture still records the whole Mac for it')
+    // The person is told a take has sound, and a yes to a silent take is not a yes to one with it.
+    const ask = body('async function enforceAccess(')
+    assert.ok(/', with sound'/.test(ask) && /'\|sound:'/.test(ask), 'the approval never mentions sound')
+    // A track at the floor is measured, so it is said.
+    assert.ok(/clipLevels\(src, null\)/.test(body('async function afterTake(')), 'the level is never measured, so a silent track reads as fine')
+    // A scratch capture is a temp file, not a folder in the Library then the Trash.
+    const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+    assert.ok(/opts\.scratch === true && by === 'agent'/.test(main) && /scratch: true, kind/.test(main),
+      'every measurement still writes a shot folder into the person\'s Library')
+  })
+
+  t('the named job is five calls, plus the brief, the length and the review', () => {
     // "Boot an iPhone, open my app, tap through the onboarding and record it": ready,
-    // record_start, tap, record_stop, export. Each one is a tool here, and the two that
-    // take a capture take the device by name rather than a window id nobody has yet.
-    for (const name of ['simulator', 'record_start', 'record_stop', 'export', 'find_on_screen']) {
+    // record_start, a tap a screen, record_stop, export. That is the five, and the loop
+    // this product is built on adds direct, fit_to_length and review to every job there
+    // is. Judged, it took nineteen, six of them on faults and five of them spent finding
+    // out what the call before had just changed.
+    for (const name of ['simulator', 'record_start', 'record_stop', 'export', 'find_on_screen',
+      'direct', 'fit_to_length', 'review']) {
       assert.ok(registered.includes(name), name + ' is not registered')
     }
     for (const name of ['record_start', 'take_shot']) {
@@ -332,7 +488,44 @@ async function main() {
     for (const p of Sizes.list()) {
       assert.ok(/^\d+$/.test(String(p.w)) && /^\d+$/.test(String(p.h)), `${p.id} is not a pair of integers`)
     }
+
+    // The plan a brief naming a device gets back carries the call every step is, and
+    // every one of those calls has to be a tool this server registers: a step naming a
+    // tool that does not exist is a call an agent cannot make.
+    const Director = require('../ui/director')
+    const steps = Director.outline({ device: 'Yolk-ProMax', app: 'com.yolkling.ios', seconds: 28, size: 'app-preview-6.9' })
+    assert.ok(steps.length >= 5, `${steps.length} steps for a device job`)
+    for (const step of steps) {
+      assert.ok(registered.includes(step.tool), `a device job's plan says to call ${step.tool}, which is not registered`)
+      assert.ok(step.what && step.what.length > 8, `${step.tool} is a step with nothing said about it`)
+    }
+    assert.ok(steps.some(x => x.tool === 'export' && x.args.size === 'app-preview-6.9'),
+      'the export step does not carry the size the brief asked for, so the enum is guessed at again')
   })
+
+  // Which device to boot and how many seconds the deliverable runs are decided before
+  // record_start. The judged run wrote its brief after the fact, which is how a 202
+  // second take was recorded for a deliverable that refuses anything over 30. Run rather
+  // than read: the op itself, against a temporary folder of its own.
+  await (async () => {
+    const Director = require('../ui/director')
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-job-'))
+    const was = os.tmpdir
+    os.tmpdir = () => home
+    let out = null
+    try {
+      out = await bridge.ops['edit.direct']({ brief: { what: 'the onboarding of my app', device: 'Yolk-ProMax', size: 'app-preview-6.9' } })
+    } finally { os.tmpdir = was }
+    t('a job that films a device is directed before there is anything to direct', () => {
+      assert.strictEqual(out.waiting, true, 'a job with no take under it was not held anywhere')
+      assert.strictEqual(out.brief.seconds, 30, 'a size with a length window left the length nobody\'s call')
+      assert.ok((out.plan.steps || []).some(x => x.call && x.call.tool === 'record_start'),
+        'the device job came back without the call that records it')
+      const pend = Director.readPending(home)
+      assert.ok(pend && pend.brief.device === 'Yolk-ProMax', 'nothing is waiting for the take to exist')
+    })
+    fs.rmSync(home, { recursive: true, force: true })
+  })()
 
   // ── a shot is a take of one frame ────────────────────────────────────────
   // The whole of this round on the tool surface is one new tool and a set of old ones

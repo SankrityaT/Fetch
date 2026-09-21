@@ -253,7 +253,16 @@ Sources and sinks (M0 decided, M2 measured):
   still for up to seventeen. At `balanced` and `small` nothing carries it at any tuning,
   and they keep the encoder they had.
 - Sound: ffmpeg in the main process at the same time (`processor.renderAudio`), then a
-  stream-copy mux and the music bed.
+  stream-copy mux and the music bed. An app preview (`opts.size`, a store pair) is the one
+  mux that re-encodes: the store's audio line is one stereo AAC track at 256 kbps and 48
+  kHz, where the graph writes 192, and a take with no sound gets silence of that shape
+  (`anullsrc`) rather than no track. It changes no picture, so no golden reads it.
+- Size: an app preview is drawn at the preset's own pair, composed at its ratio with a
+  1920 long edge and scaled once to the pair (`render-host.glExport`), and at the plan's
+  rate, one source frame in n. The take sits where the look's layout puts it, inside the
+  padding, not at `ui/sizes.js`'s `box`: the upscale check is made at the share that
+  padding leaves (`agent-bridge.js drawnShare`), so the plan and the file judge the same
+  picture.
 - A capture: no decode at all. A screenshot is a take of one frame, so a shot is a
   `Plan.prepare` off a picture's own header, drawn once by `renderShot` at 1x, 2x or 3x
   and written by the same `sinks.writeStill` a preview frame goes through. There is no

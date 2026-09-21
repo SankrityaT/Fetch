@@ -114,17 +114,131 @@ console.log('the screen, which only the profile knows')
   is('and a second pass over the same map reads nothing again', seen.length, 2)
 }
 
-console.log('where the glass is inside the window')
+// ── the glass, read off a capture ────────────────────────────────────────
+//
+// Every frame below is drawn to a geometry measured off a real booted device on this
+// Mac (.context/survey/st-t0.md): a floating toolbar, a band of clear pixels, then the
+// device, and inside the device a grey bezel, a black ring and the app. The pixel
+// numbers are the ones the real captures gave, so a change that moves an edge by one
+// pixel shows up here as the device it would have missed.
+const DEVICE = {
+  // iPhone 16 Pro Max, window 397 x 859 points, capture 794 x 1718
+  proMax: { cap: { w: 794, h: 1718 }, toolbar: 104, body: { x0: 10, x1: 782, y0: 127, y1: 1715 },
+    glass: { x: 44, y: 154, w: 706, h: 1534 }, screen: { w: 1320, h: 2868, scale: 3 }, win: { w: 397, h: 859 } },
+  // iPhone SE 3rd generation, window 399 x 852: a home button below the glass, so the
+  // window's own shape is nothing like the screen's
+  se: { cap: { w: 798, h: 1704 }, toolbar: 104, body: { x0: 11, x1: 785, y0: 126, y1: 1701 },
+    glass: { x: 66, y: 321, w: 666, h: 1185 }, screen: { w: 750, h: 1334, scale: 2 }, win: { w: 399, h: 852 } },
+  // iPhone 17 Pro, window 390 x 840
+  pro17: { cap: { w: 780, h: 1680 }, toolbar: 104, body: { x0: 10, x1: 768, y0: 125, y1: 1678 },
+    glass: { x: 47, y: 155, w: 687, h: 1494 }, screen: { w: 1206, h: 2622, scale: 3 }, win: { w: 390, h: 840 } },
+}
+
+// A capture of a Simulator window, drawn from one of those. `app` decides what the glass
+// holds: an app is lit by default, and `black` is the one thing that can hide the ring.
+function frameOf(d, o = {}) {
+  const { w, h } = d.cap
+  const data = new Uint8Array(w * h * 4)
+  const put = (x, y, v) => { const p = (y * w + x) * 4; data[p] = data[p + 1] = data[p + 2] = v; data[p + 3] = 255 }
+  const grey = o.grey == null ? 44 : o.grey
+  for (let y = 0; y < (o.toolbar === false ? 0 : d.toolbar); y++) for (let x = 40; x < w - 40; x++) put(x, y, 30)
+  for (let y = d.body.y0; y <= d.body.y1; y++) {
+    for (let x = d.body.x0; x <= d.body.x1; x++) {
+      const out = Math.min(x - d.body.x0, d.body.x1 - x, y - d.body.y0, d.body.y1 - y)
+      const inGlass = x >= d.glass.x && x < d.glass.x + d.glass.w && y >= d.glass.y && y < d.glass.y + d.glass.h
+      if (inGlass) {
+        const dark = o.app === 'black' || (o.app === 'left' && x < d.glass.x + 40)
+        put(x, y, dark ? 0 : 120 + ((x * 7 + y * 13) % 90))
+      } else put(x, y, out < (o.grey === 0 ? 0 : 8) ? grey : 0)
+    }
+  }
+  // A home button, which is lit and below the glass: the one thing under a device that
+  // an edge walk coming up from the bottom finds before it finds the screen.
+  if (o.homeButton) {
+    const cx = (d.body.x0 + d.body.x1) >> 1, cy = d.glass.y + d.glass.h + 78
+    for (let y = cy - 40; y <= cy + 40; y++) for (let x = cx - 40; x <= cx + 40; x++) {
+      if ((x - cx) ** 2 + (y - cy) ** 2 <= 40 * 40 && y <= d.body.y1) put(x, y, 90)
+    }
+  }
+  return { width: w, height: h, data }
+}
+
+console.log('the glass, measured off the pixels')
+for (const key of Object.keys(DEVICE)) {
+  const d = DEVICE[key]
+  const m = S.measureGlass(frameOf(d, { homeButton: key === 'se' }))
+  is(`${key}: the rectangle is the one measured on the real device`, m.ok && m.value.px, d.glass)
+  ok(`${key}: and nearly every scan line agreed`, m.value.agree > 0.6)
+  is(`${key}: which way up it is comes off the glass, not the window`, S.glassOrient(m, d.screen), 'portrait')
+  const v = S.viewport(d.win, d.screen, { glass: m })
+  is(`${key}: the viewport is the measurement, in fractions of the frame`, v, {
+    x: Math.round(d.glass.x / d.cap.w * 1e4) / 1e4, y: Math.round(d.glass.y / d.cap.h * 1e4) / 1e4,
+    w: Math.round(d.glass.w / d.cap.w * 1e4) / 1e4, h: Math.round(d.glass.h / d.cap.h * 1e4) / 1e4,
+  })
+  is(`${key}: and the density is the glass over the device's own pixels`, S.density(d.win, d.screen, { glass: m }),
+    Math.round(d.glass.w / d.screen.w * 100) / 100)
+}
 {
-  // the measured case: no macOS title bar and no drawn bezel inside the frame, so the
-  // screen is nearly the whole window and the residual is real
+  // The fit, on the same three windows, against what the pixels say. This is the whole
+  // reason the measurement exists: on two of the three the window's shape hides the
+  // error, and on the third it is a number over 1, which is a store gate letting an
+  // upscale through rather than refusing it.
+  is('fitted, a phone with a notch reads 0.60 where the glass says 0.53',
+    S.density(DEVICE.proMax.win, DEVICE.proMax.screen, { backingScale: 2 }), 0.6)
+  is('fitted, an iPhone 17 Pro reads 0.64 where the glass says 0.57',
+    S.density(DEVICE.pro17.win, DEVICE.pro17.screen, { backingScale: 2 }), 0.64)
+  is('and a home button window is refused outright, because its shape gives it away',
+    S.viewport(DEVICE.se.win, DEVICE.se.screen), null)
+  const notch = S.viewport(DEVICE.proMax.win, DEVICE.proMax.screen)
+  ok('a notched window passes the shape check while the fit is 12 percent out',
+    Math.abs((DEVICE.proMax.win.w / DEVICE.proMax.win.h) / (440 / 956) - 1) < 0.005 && notch.w > 0.99)
+}
+{
+  const d = DEVICE.proMax
+  is('an app painted black to its own edge hides the ring, and nothing is reported',
+    S.measureGlass(frameOf(d, { app: 'black' })).ok, false)
+  ok('and says what that looks like',
+    /ring was found|did not agree/.test(S.measureGlass(frameOf(d, { app: 'black' })).reason))
+  const half = S.measureGlass(frameOf(d, { app: 'left' }))
+  ok('an app black down one side measures a narrower rectangle', half.ok && half.value.px.w < d.glass.w)
+  is('which is the wrong shape for the screen, so no viewport comes off it',
+    S.viewport(d.win, d.screen, { glass: half }), null)
+  // Simulator can be told to draw no device around the screen. Then the window is the
+  // glass, there is no ring, and this refuses rather than guessing that it is.
+  const bare = { ...d, body: { x0: d.glass.x, x1: d.glass.x + d.glass.w - 1, y0: d.glass.y, y1: d.glass.y + d.glass.h - 1 } }
+  is('a device with its bezels hidden has no ring to find', S.measureGlass(frameOf(bare)).ok, false)
+  is('nothing is not a frame', S.measureGlass(null).ok, false)
+  is('and neither is a frame with no pixels behind it', S.measureGlass({ width: 10, height: 10, data: new Uint8Array(8) }).ok, false)
+}
+{
+  // The device on its side. No simctl verb turns a simulator and Fetch presses no key,
+  // so this one is the real portrait geometry transposed rather than a capture: what it
+  // pins is that the glass decides the orientation, where the window only guesses.
+  const d = DEVICE.proMax
+  const land = { cap: { w: d.cap.h, h: 920 }, toolbar: 104,
+    body: { x0: 127, x1: 1715, y0: 136, y1: 908 },
+    glass: { x: 154, y: 170, w: d.glass.h, h: d.glass.w } }
+  const win = { w: 859, h: 460 }
+  const m = S.measureGlass(frameOf(land))
+  is('the glass is the wide rectangle', m.ok && m.value.px.w > m.value.px.h, true)
+  is('so the device is on its side, and nothing had to read the window', S.glassOrient(m, SCREEN), 'landscape')
+  const v = S.viewport(win, SCREEN, { glass: m })
+  ok('and the viewport that comes off it is that rectangle', v.w > v.h)
+  is('the same glass turned is the same density', S.density(win, SCREEN, { glass: m }),
+    Math.round((m.value.px.w / SCREEN.h) * 100) / 100)
+}
+
+console.log('where the glass is inside the window, worked out rather than seen')
+{
+  // Kept because a caller that genuinely knows its chrome can still ask, and because the
+  // shape check below is the half of the error that is visible without pixels. Nothing
+  // aims with any of it: see simulators().
   const v = S.viewport({ w: 396, h: 856 }, SCREEN)
   is('the screen fills the window it was fitted to', [v.y, v.h], [0, 1])
   is('and is centred in what is left across', [v.x, v.w], [0.0026, 0.9949])
   near('which is 2 points of window, not zero', v.x * 396 * 2, 396 - 856 * (440 / 956), 0.1)
   is('a window at pixel accurate is the screen exactly', S.viewport({ w: 660, h: 1434 }, SCREEN), { x: 0, y: 0, w: 1, h: 1 })
-  is('a window wider than the device letterboxes across, never down', S.viewport({ w: 600, h: 856 }, SCREEN),
-    { x: 0.1717, y: 0, w: 0.6566, h: 1 })
+  is('a window nothing like the screen\'s shape is refused, not letterboxed', S.viewport({ w: 600, h: 856 }, SCREEN), null)
 }
 {
   // an Xcode that puts a title bar inside the frame, or a drawn device bezel: the fit
@@ -132,7 +246,7 @@ console.log('where the glass is inside the window')
   const v = S.viewport({ w: 400, h: 880 }, SCREEN, { chrome: { top: 28 } })
   is('the top inset is off the top', v.y, 0.0318)
   near('and the screen is the rest of the height', v.h * 880, 852, 0.5)
-  is('chrome wider than the window has no screen in it', S.viewport({ w: 100, h: 200 }, SCREEN, { chrome: { left: 60, right: 60 } }), null)
+  is('chrome wider than the window has no screen in it', S.viewport({ w: 120, h: 260 }, SCREEN, { chrome: { left: 70, right: 70 } }), null)
   is('a window of no size is null, not an infinity', S.viewport({ w: 0, h: 856 }, SCREEN), null)
   is('a screen nobody read is null too', S.viewport({ w: 396, h: 856 }, null), null)
   is('a screen with no scale is read as points', S.viewport({ w: 440, h: 956 }, { w: 440, h: 956 }), { x: 0, y: 0, w: 1, h: 1 })
@@ -140,7 +254,9 @@ console.log('where the glass is inside the window')
 
 console.log('density, which decides whether a store shot is an upscale')
 {
-  is('the measured window is well under its own pixels', S.density({ w: 396, h: 856 }, SCREEN, { backingScale: 2 }), 0.6)
+  is('measured, the glass over the device\'s own pixels and no display scale at all',
+    S.density(DEVICE.proMax.win, DEVICE.proMax.screen, { glass: { px: { w: 706, h: 1534 } } }), 0.53)
+  is('the fitted window is well under its own pixels', S.density({ w: 396, h: 856 }, SCREEN, { backingScale: 2 }), 0.6)
   is('pixel accurate is exactly 1', S.density({ w: 660, h: 1434 }, SCREEN, { backingScale: 2 }), 1)
   is('a 1x display halves it', S.density({ w: 660, h: 1434 }, SCREEN, { backingScale: 1 }), 0.5)
   is('and a window larger than the device is over 1', S.density({ w: 880, h: 1912 }, SCREEN, { backingScale: 2 }), 1.33)
@@ -154,9 +270,14 @@ const WINDOWS = [
   { id: 41, app: 'Simulator', title: 'Round-Shots-16PM', width: 396, height: 856 },
   { id: 7, app: 'Safari', title: 'Round-Shots-16PM', width: 1200, height: 800 },
 ]
-const model = () => S.simulators({
-  devices: DEVICES, runtimes: RUNTIMES, windows: WINDOWS, backingScale: 2,
+// What the caller hands back: a capture of that window, measured. Nothing here spawns
+// or captures, which is the whole reason it is injected.
+const MEASURED = S.measureGlass(frameOf(DEVICE.proMax))
+const model = (o = {}) => S.simulators({
+  devices: DEVICES, runtimes: RUNTIMES, windows: WINDOWS,
+  glassOf: w => (String(w.id) === '41' ? MEASURED : null),
   profiles: { 'com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro-Max': S.parseProfile(PROFILE_16PM) },
+  ...o,
 })
 {
   const sims = model()
@@ -167,8 +288,8 @@ const model = () => S.simulators({
   is('and which iOS', one.runtime, 'iOS 26.5')
   is('the window title is the device name, which is the whole join', one.window.id, 41)
   is('the window carries its size in points', [one.window.w, one.window.h], [396, 856])
-  is('the screen rectangle came out with it', one.viewport, { x: 0.0026, y: 0, w: 0.9949, h: 1 })
-  is('so did the density', one.density, 0.6)
+  is('the screen rectangle came out with it, off the pixels', one.viewport, { x: 0.0554, y: 0.0896, w: 0.8892, h: 0.8929 })
+  is('so did the density', one.density, 0.53)
   is('a window belonging to another app is never a device window', sims.filter(s => s.window && s.window.id === 7).length, 0)
   const shut = sims.find(s => s.name === 'FairSplit-Loop')
   is('a shut device of the same model has no window', shut.window, null)
@@ -177,6 +298,19 @@ const model = () => S.simulators({
   const watch = sims.find(s => s.family === 'Apple Watch')
   is('a watch is a watch, not a phone', watch.deviceType, 'Apple Watch Series 11 (46mm)')
   is('a device type with no profile read has no screen', watch.screen, null)
+}
+{
+  // Nothing measured. The arithmetic would have answered 0.60 and a rectangle that is
+  // the whole window, which aims a tap at the top of the screen about 80 points above
+  // what it was asked for and leaves the Mac's own toolbar inside the crop. So there is
+  // no rectangle, and the record says what would measure one.
+  const one = model({ glassOf: null })[0]
+  is('no capture, no rectangle', one.viewport, null)
+  is('and no density either', one.density, null)
+  ok('the record says what a rectangle would take', /capture of the window is what measures it/.test(one.note || ''))
+  const wrong = model({ glassOf: () => S.measureGlass(frameOf(DEVICE.proMax, { app: 'left' })) })[0]
+  is('a measurement of the wrong shape is thrown away rather than used', wrong.viewport, null)
+  ok('and says so', /not the shape of its screen/.test(wrong.note || ''))
 }
 {
   // the person renamed nothing and Simulator shows the runtime after the name
@@ -224,10 +358,10 @@ console.log('a point on the glass')
   const one = model()[0]
   const mid = S.pointToFrame(one, 220, 478)
   near('the middle of the screen is the middle of the frame, across', mid.x, 0.5)
-  near('and down', mid.y, 0.5)
+  near('and low of the middle down it, because the toolbar is above the glass', mid.y, 0.536)
   const tl = S.pointToFrame(one, 0, 0)
-  is('the top left of the glass is inside the frame, not at its corner', [tl.x, tl.y], [0.0026, 0])
-  near('and the bottom right lands on the far edge', S.pointToFrame(one, 440, 956).x, 0.9975)
+  is('the top left of the glass is well inside the frame, not at its corner', [tl.x, tl.y], [0.0554, 0.0896])
+  near('and the bottom right lands on the glass, not on the window', S.pointToFrame(one, 440, 956).x, 0.9446)
   is('no viewport, no point', S.pointToFrame({ screen: SCREEN }, 10, 10), null)
   is('a point that is not a number is null, not a NaN', S.pointToFrame(one, 'x', 10), null)
 }
@@ -261,6 +395,41 @@ console.log('the density is the display the window is on')
   is('no scale factor, no density', S.density(win, SCREEN, {}), null)
   is('a 1x display halves it', S.density(win, SCREEN, { backingScale: 1 }),
     S.density(win, SCREEN, { backingScale: 2 }) / 2)
+}
+
+
+console.log('a measured glass is held to its own rounding, not a fixed number')
+{
+  // The ProMax's own glass, 706 x 1534 in a 794 x 1718 capture, box-resized to the window
+  // sizes a person actually has: 0.95 of the default, and the default on a 1x display.
+  // Each edge is found to the pixel, so the aspect is out by up to a pixel a side, and a
+  // fixed 0.15 percent turned a third of those correct rectangles down.
+  const glassAt = (w) => {
+    const k = w / 794
+    const px = { x: Math.round(44 * k), y: Math.round(154 * k), w: Math.round(706 * k) + 1, h: Math.round(1534 * k) }
+    const cap = { w, h: Math.round(1718 * k) }
+    return { px, capture: cap, rect: { x: px.x / cap.w, y: px.y / cap.h, w: px.w / cap.w, h: px.h / cap.h } }
+  }
+  let refused = 0
+  for (let w = 318; w <= 786; w += 8) if (!S.glassViewport(glassAt(w), SCREEN)) refused++
+  is('a pixel of rounding is never refused, at any window size from 318 to 786', refused, 0)
+  ok('754 px, 0.95 of the default window, is taken', S.glassViewport(glassAt(754), SCREEN))
+  ok('405 px, the default window on a 1x display, is taken', S.glassViewport(glassAt(405), SCREEN))
+  // A dark strip down one edge moves that edge in by six pixels, which is a rectangle
+  // of the wrong shape, and still refused.
+  const dark = { px: { x: 50, y: 154, w: 700, h: 1534 }, capture: { w: 794, h: 1718 },
+    rect: { x: 50 / 794, y: 154 / 1718, w: 700 / 794, h: 1534 / 1718 } }
+  is('six pixels of dark app at the edge is still refused', S.glassViewport(dark, SCREEN), null)
+  is('and has no density either, rather than one off the wrong rectangle',
+    S.density({ w: 397, h: 859 }, SCREEN, { glass: dark }), null)
+  const splash = { px: { x: 300, y: 700, w: 200, h: 300 }, capture: { w: 794, h: 1718 },
+    rect: { x: 300 / 794, y: 700 / 1718, w: 200 / 794, h: 300 / 1718 } }
+  is('a dark splash measured as a small box has no density', S.density({ w: 397, h: 859 }, SCREEN, { glass: splash }), null)
+  const sims = S.simulators({ devices: DEVICES, runtimes: {}, profiles: { 'com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro-Max': SCREEN },
+    windows: [{ id: 7, app: 'Simulator', title: 'Round-Shots-16PM', width: 397, height: 859 }], glassOf: () => splash })
+  const hit = sims.find(x => x.name === 'Round-Shots-16PM')
+  is('a device whose measurement was turned down reports no viewport', hit.viewport, null)
+  is('and no density to put on the document', hit.density, null)
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`)

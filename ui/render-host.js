@@ -162,11 +162,22 @@ async function classic(src, opts, onProgress, jobId, why) {
 async function exportEdit(src, opts = {}, onProgress, jobId) {
   let pick
   try { pick = pickEngine(src, opts) } catch (e) { pick = { engine: 'classic', why: ['could not read the take: ' + e.message] } }
+  // An exact size is the compositor's alone: the classic renderer scales to 720 or 1080
+  // and knows nothing about a pair of integers, so falling back to it would write a file
+  // of the wrong shape and call it a store deliverable. Refused in words instead, with
+  // what kept it off the compositor, since that is the thing to fix.
+  const store = opts.size && +opts.size.w > 0 && +opts.size.h > 0
+  if (store && pick.engine !== 'gl') {
+    throw new Error(`an exact ${Math.round(+opts.size.w)} by ${Math.round(+opts.size.h)} file is drawn by the ` +
+      `compositor and this export cannot use it: ${pick.why.join(', ')}. Export it without size, or fix what ` +
+      'is named here and ask again.')
+  }
   if (pick.engine !== 'gl') return classic(src, opts, onProgress, jobId, pick.why)
   try {
     return await glExport(src, opts, onProgress, jobId, pick.why)
   } catch (e) {
     if (e && e.cancelled) throw e
+    if (store) throw e
     console.warn('[render] compositor failed, using the classic renderer:', e && e.message)
     return classic(src, opts, onProgress, jobId, [...pick.why, 'the compositor failed: ' + (e && e.message)])
   }
@@ -190,7 +201,15 @@ async function glExport(src, opts, onProgress, jobId, why) {
   const gifWidth = !gif ? null
     : +opts.gifWidth > 0 ? Math.max(120, +opts.gifWidth)
       : (opts.scale === 1080 || opts.scale === 720) ? null : 640
-  const spec = await planFor(src, opts, meta, jobId, gif ? { fps: gifFps } : null)
+  // A store deliverable is a pair of integers, not a shape, and a file one pixel out is
+  // rejected on upload. The plan is already composed at the preset's own ratio
+  // (opts.backdropAspect, from ui/sizes.js preview), so the frame is drawn at that pair
+  // exactly, and its rate is the plan's rather than the take's: the compositor keeps one
+  // source frame in n and invents none.
+  const store = opts.size && +opts.size.w > 0 && +opts.size.h > 0
+    ? { w: Math.round(+opts.size.w), h: Math.round(+opts.size.h) } : null
+  const rate = gif ? { fps: gifFps } : (+opts.fps > 0 ? { fps: +opts.fps } : null)
+  const spec = await planFor(src, opts, meta, jobId, rate)
   if (spec.span < 0.2) throw new Error('trim range is too short')
 
   // As applyEdit: a take folder's deliverable is encoded beside itself and swapped in
@@ -213,11 +232,19 @@ async function glExport(src, opts, onProgress, jobId, why) {
     // beside a render window still drawing (or an ffmpeg still writing) for nothing
     const [stats, sound] = await Promise.all([
       renderPicture({ spec, src, out: video, ffmpeg: proc.FFMPEG, quality: opts.quality || 'balanced', sink: opts.sink,
-        format: fmtId, width: gifWidth }, onP, jobId),
+        format: fmtId, width: store ? store.w : gifWidth }, onP, jobId),
       gif ? null : proc.renderAudio(src, opts, spec.keep, spec.span, meta, audio, jobId),
     ]).catch(e => { proc.cancel(jobId); throw e })
     if (gif) moveInto(video, out)
-    else {
+    else if (store) {
+      // The store's own audio line: one stereo AAC track at 256 kbps and 48 kHz. A take
+      // with no sound gets a silent one of that shape rather than none, because the page
+      // lists a track and nothing on it says a file without one is taken.
+      const silent = sound ? [] : ['-f', 'lavfi', '-t', spec.span.toFixed(3), '-i', 'anullsrc=r=48000:cl=stereo']
+      await proc.run(proc.FFMPEG, ['-y', '-i', video, ...(sound ? ['-i', sound] : silent), '-map', '0:v:0', '-map', '1:a:0',
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '256k', '-ar', '48000', '-ac', '2', '-shortest',
+        '-movflags', '+faststart', out], null, jobId)
+    } else {
       await proc.run(proc.FFMPEG, ['-y', '-i', video, ...(sound ? ['-i', sound] : []), '-map', '0:v:0', ...(sound ? ['-map', '1:a:0'] : []),
         '-c:v', 'copy', ...audioCopy(fmtId, sound), ...(vext === 'mp4' ? ['-movflags', '+faststart'] : []), out], null, jobId)
     }

@@ -67,6 +67,31 @@ is('a missing folder is refused', /saveDir/.test(throws(() => p.checkSettingsPat
 is('null folder means ~/Movies/Fetch', p.checkSettingsPatch({ saveDir: null }), { saveDir: null })
 is('a good patch passes through', p.checkSettingsPatch({ camera: false, countdown: 0 }), { camera: false, countdown: 0 })
 
+// ---- the system's own grant, which is the only one a take needs ----
+// One grant covers the picture and the sound both: ScreenCaptureKit's audio is part of
+// screen capture, which is why macOS 15 names that pane Screen and System Audio
+// Recording. So a simulator take having system audio on by default asks the person for
+// nothing they were not already asked. A second check added here would be a second
+// dialog an unattended agent cannot answer, which is the fault this function exists for.
+console.log('\nthe system\'s own grant')
+is('a granted Mac records', p.screenAccess('granted').allow, true)
+is('a denied one is refused', p.screenAccess('denied').allow, false)
+is('and so is a restricted one', p.screenAccess('restricted').allow, false)
+// The state a fresh Mac ships in. An agent cannot answer the system's own prompt, so
+// for an agent it is a refusal rather than a dialog nobody is there to press.
+is('not determined is a refusal for an agent', p.screenAccess('not-determined').allow, false)
+is('the refusal names the pane', /Privacy and Security, Screen Recording/.test(p.screenAccess('denied').reason), true)
+is('and says to restart', /restart Fetch/.test(p.screenAccess('denied').reason), true)
+is('no em dashes in it', /\u2014/.test(p.screenAccess('not-determined').reason), false)
+// A person is never refused on the reading: their own prompt comes from the helper, and
+// refusing them here deleted the first run and named a switch that did not exist yet.
+for (const s of ['denied', 'restricted', 'not-determined', 'unknown']) {
+  is(`a person goes through on ${s}`, p.screenAccess(s, 'human').allow, true)
+}
+// A state nobody could read is not grounds to refuse a capture that would have worked.
+is('an unreadable state is not a refusal', p.screenAccess('unknown').allow, true)
+is('and neither is nothing at all', p.screenAccess(undefined).allow, true)
+
 // ---- a simulator is a window, plus the machine inside it ----
 // Every simulator on the Mac is the same application, so the app rule cannot tell the
 // device with a real account on it from a throwaway. The lever is the UDID.

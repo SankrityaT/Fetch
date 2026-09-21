@@ -411,6 +411,14 @@ function warnings(look, ctx = {}) {
     out.push(`frame.chrome ${L.frame.chrome}: this take does not record where the page sits in the browser window, so its tabs and toolbar stay. Crop them off with crop instead.` +
       (L.frame.chrome === 'clean' ? ' Fetch draws no browser frame here either: round a real one it would be two browsers.' : ''))
   }
+  // A device take whose glass was never measured is the simulator's version of the same
+  // silence: the crop cannot happen, so the Simulator's own toolbar and bezel stay in the
+  // picture and a drawn phone over them comes out as a plain frame rather than a phone.
+  if (!stillNoChrome && CROPS_CHROME.has(L.frame.chrome) && ctx.device && ctx.viewport === false) {
+    out.push(`frame.chrome ${L.frame.chrome}: the device screen rectangle for this take was never measured, so the ` +
+      'Simulator\'s toolbar and the outline round the screen stay. Record or capture the window again to measure it, ' +
+      'or crop them off with crop. A phone drawn over it is a plain frame, not a phone, so the picture has one device in it.')
+  }
   return out
 }
 

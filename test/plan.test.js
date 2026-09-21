@@ -415,50 +415,85 @@ console.log('the drawn device, and the tilt')
 
 console.log('a phone inside a phone')
 {
-  // A device's own window, at the numbers it measured on this Mac
-  // (.context/survey/sim-m0.md): a 792 x 1712 take of a 396 x 856 point window whose
-  // screen is 440 x 956 points. 856 * 440 / 956 is 394 points of glass across a 396
-  // point window, so the screen is the window to within a point either side and the
-  // crop that takes the device's own outline off takes nothing off the top at all.
-  // That is the case the old rule got wrong: it counted only what a crop removed from
-  // the top, so a picture that is now nothing but the screen still read as a picture
-  // with chrome in it, and the phone shell round it came out a plain frame.
-  const meta = { width: 792, height: 1712, duration: 10, fps: 30 }
-  const WIN = { kind: 'window', app: 'Simulator', title: 'Round-Shots-16PM' }
-  const glass = { x: 0.0025, y: 0, w: 0.995, h: 1 }
+  // The judge's own export: a simulator take in Fetch's phone shell came out as two
+  // bezels, two notches and a Mac toolbar (.context/survey/sim-taste.md section 5).
+  // The numbers are the ones measured off the pixels in .context/survey/st-t0.md, on
+  // the device that export came from: a 794 x 1718 capture of a Simulator window whose
+  // glass runs x 44 to 750 and y 154 to 1688, round a 1320 x 2868 screen at 3.
+  //
+  // A Simulator window is not nearly the glass, which is what the round before this
+  // believed: 154 px of floating toolbar, gap and drawn bezel stand above the screen
+  // and 44 px stand beside it. Nor does the window's shape give that away, since it is
+  // within half a percent of the device's own aspect.
+  const meta = { width: 794, height: 1718, duration: 10, fps: 30 }
+  const WIN = { kind: 'window', app: 'Simulator', title: 'Yolk-ProMax' }
+  const SCREEN = { w: 1320, h: 2868, scale: 3 }
+  const glass = { x: 44 / 794, y: 154 / 1718, w: 706 / 794, h: 1534 / 1718 }
   const of = (look, extra = {}) => Plan.prepare({ backdrop: 'dusk', inset: 0.08, ...extra, look }, meta)
   const dev = (kind, extra) => of({ device: { kind } }, extra).device
   // the four thicknesses a shell is judged by, in pixels of the finished frame
   const sides = d => ({ top: d.screen.y - d.box.y, side: d.screen.x - d.box.x,
     foot: d.box.y + d.box.h - d.screen.y - d.screen.h })
 
-  const cut = dev('phone', { captured: WIN, viewport: glass, crop: glass })
-  is('a capture cropped to the device\'s screen has no chrome left in it', cut.own, false)
-  is('so the shell round it is a phone and not a frame', !!cut.slit, true)
-  const c = sides(cut)
+  // A recording says nothing about what it was a capture of, which is why the round
+  // before this drew the full phone here and the judge got the second bezel. What a
+  // take of a device does carry is the device's own framebuffer, and that plus the
+  // measured screen rectangle settles it both ways.
+  const cut = of({ device: { kind: 'phone' } }, { screen: SCREEN, viewport: glass, crop: { ...glass } })
+  is('a take cropped to the device\'s screen has no chrome left in it', cut.device.own, false)
+  is('so the shell round it is a phone and not a frame', !!cut.device.slit, true)
+  is('and the pixels drawn are the glass and nothing round it',
+    [cut.crop.x, cut.crop.y, cut.crop.w, cut.crop.h], [44, 154, 706, 1534])
+  const c = sides(cut.device)
   is('a phone\'s bezel and foot are a pair, and both stand off its sides',
     [Math.abs(c.top - c.foot) <= 1, c.top > c.side + 2], [true, true])
 
-  // Asked for anyway, over a capture that kept the device it was of. Fetch draws the
-  // shell rather than refusing it silently, and draws it as a plain frame: one
-  // thickness on all four sides and no speaker slit, because the slit is the stroke
-  // that says phone and the picture already has a phone in it.
-  const kept = dev('phone', { captured: WIN, viewport: glass })
-  is('a phone asked for over a capture that kept its own device is still drawn', !!kept.box, true)
-  is('but it wears no speaker slit, since the picture already has a phone in it', kept.slit, null)
+  // Nothing cropped: the Simulator's toolbar and its own drawn bezel are still in the
+  // picture, so Fetch's phone would be the second one in it.
+  const kept = dev('phone', { screen: SCREEN, viewport: glass })
+  is('a take that kept the device\'s own window keeps its own chrome', kept.own, true)
+  is('so the phone asked for over it is still drawn', !!kept.box, true)
+  is('but wears no speaker slit, since the picture already has a phone in it', kept.slit, null)
   const k = sides(kept)
   is('and it is a plain frame: one thickness on all four sides',
     [Math.abs(k.top - k.side) <= 1, Math.abs(k.foot - k.side) <= 1], [true, true])
   is('which is thinner than the bezel a phone of its own gets', k.top < c.top, true)
 
-  // The rule is the viewport, not the edge a crop happened to come off. A crop tighter
-  // than the screen is inside it, so it is screen too; a crop that keeps what stands
-  // round the screen is not.
-  is('a crop tighter than the screen carries no chrome either',
-    dev('phone', { captured: WIN, viewport: glass, crop: { x: 0.1, y: 0.2, w: 0.6, h: 0.5 } }).own, false)
-  is('and a crop that keeps what stands round it does',
-    dev('phone', { captured: WIN, viewport: glass, crop: { x: 0, y: 0, w: 1, h: 1 } }).own, true)
-  is('as does no crop at all where the screen\'s place is unknown', dev('phone', { captured: WIN }).own, true)
+  // No measurement is not permission to guess. A rectangle nobody measured is never
+  // written onto the document (ui/simulator.js), so what reaches here is no rectangle
+  // at all, and a picture that may still be a whole Simulator window gets the frame,
+  // never the phone.
+  is('a device take whose glass was never measured keeps its own device',
+    dev('phone', { screen: SCREEN }).own, true)
+  is('and so does one cropped by hand to something wider than the glass',
+    dev('phone', { screen: SCREEN, viewport: glass, crop: { x: 0, y: 0.09, w: 1, h: 0.8 } }).own, true)
+  is('while a crop tighter than the glass is glass too',
+    dev('phone', { screen: SCREEN, viewport: glass, crop: { x: 0.1, y: 0.2, w: 0.5, h: 0.4 } }).own, false)
+
+  // The same, on the one device measured whose window is nothing like the shape of its
+  // screen: an iPhone SE, 798 x 1704 of window round 666 x 1185 of glass at x 66 y 321.
+  // A rule that compared the window's shape with the screen's would pass the two
+  // notched phones and catch only this one, which is why the crop is what is asked.
+  const se = { width: 798, height: 1704, duration: 10, fps: 30 }
+  const seGlass = { x: 66 / 798, y: 321 / 1704, w: 666 / 798, h: 1185 / 1704 }
+  const seOf = extra => Plan.prepare({ backdrop: 'dusk', inset: 0.08, screen: { w: 750, h: 1334, scale: 2 },
+    look: { device: { kind: 'phone' } }, ...extra }, se).device
+  is('a home button phone cropped to its glass is a phone', [seOf({ viewport: seGlass, crop: { ...seGlass } }).own,
+    !!seOf({ viewport: seGlass, crop: { ...seGlass } }).slit], [false, true])
+  is('and one that kept its window is a plain frame', seOf({ viewport: seGlass }).own, true)
+
+  // A shot of a simulator says both things about itself, and answers the same.
+  is('a capture of a device says the same as a recording of one',
+    dev('phone', { screen: SCREEN, captured: WIN, viewport: glass, crop: { ...glass } }).own, false)
+  is('and the same the other way', dev('phone', { screen: SCREEN, captured: WIN, viewport: glass }).own, true)
+
+  // frame.chrome clean crops the real frame off and draws Fetch's own in its place.
+  // Which frame is what the capture was of: a browser's bar over a handset's glass is
+  // the same doubling as a phone round a phone.
+  is('clean over a device\'s own screen draws the phone',
+    of({ frame: { chrome: 'clean' } }, { screen: SCREEN, viewport: glass, crop: { ...glass } }).device.kind, 'phone')
+  is('and over a browser page still draws the browser',
+    of({ frame: { chrome: 'clean' } }, { viewport: { x: 0, y: 0.12, w: 1, h: 0.88 } }).device.kind, 'browser')
 
   // Nothing above changes the answer for the shells that already had one. A window
   // capture with no viewport is the case the plain bezel was written for.
@@ -467,11 +502,14 @@ console.log('a phone inside a phone')
   is('and its top is still the same bezel as its sides', Math.abs(sides(win).top - sides(win).side) <= 1, true)
   const region = dev('phone', { captured: { kind: 'region' } })
   is('a region capture never had chrome, so a phone is a phone', [region.own, !!region.slit], [false, true])
+  const page = { x: 0, y: 0.12, w: 1, h: 0.88 }
+  is('a browser page cropped to itself is bare', dev('browser', { captured: WIN, viewport: page, crop: page }).own, false)
+  is('and one that kept its tabs is not', dev('browser', { captured: WIN, viewport: page }).own, true)
 
   // A member of a group answers the same question about its own capture, so a device
   // standing beside a window is drawn from the same rule as one on its own.
   const two = [{ src: '/tmp/a.png', w: 3420, h: 1780, scale: 2, device: 'window' },
-    { src: '/tmp/b.png', w: 792, h: 1712, scale: 2, device: 'phone', captured: WIN, viewport: glass, crop: glass }]
+    { src: '/tmp/b.png', w: 794, h: 1718, scale: 2, device: 'phone', captured: WIN, viewport: glass, crop: glass }]
   const set = Plan.prepare({ backdrop: 'dusk', inset: 0.08, backdropAspect: 16 / 9,
     group: { members: two }, look: { device: {} } }, { width: 3420, height: 1780, duration: 10, fps: 30 })
   is('a group member cropped to its screen is a phone too', !!set.group[1].device.slit, true)

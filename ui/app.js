@@ -235,7 +235,11 @@ window.screenBlocked = screenBlocked
 
 async function buildStream() {
   let screenStream
-  const wantSys = setup.sys
+  // An agent's simulator take whose sound was only the default never comes here with
+  // it: this path's system audio is the whole Mac's output (main.js answers 'loopback'),
+  // so the person's call and music would land in a take nobody asked sound for.
+  // ui/recorder-opts.js carries the rule; an agent that asked in so many words keeps it.
+  const wantSys = setup.sys && !window.__sysNativeOnly
   try {
     // `video: true` left everything to Chromium: 30fps and whatever bitrate it felt
     // like, which for a Retina screen worked out at about 0.02 bits per pixel.
@@ -362,6 +366,7 @@ async function nameTake(file, given) {
 // person's own aside). Once the take is over, named or failed, it goes back.
 function restorePersonSetup() {
   window.__takeName = null        // an agent's name was for its own take only
+  window.__sysNativeOnly = false  // and so was the rule on where its default sound may come from
   const was = window.__personSetup
   if (!was) return
   window.__personSetup = null

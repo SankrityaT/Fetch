@@ -447,5 +447,71 @@ console.log('a hold the person already slowed')
   ok('and reach is a number it can actually arrive at', Math.abs(r.now - reach) <= r.tolerance)
 }
 
+{
+// ── a length on a take with no voice ─────────────────────────────────────────
+// A device take is often silent: nobody narrates an onboarding flow. Its spine is the
+// taps. These lived in test/director.test.js for a round because that round did not own
+// this file; nothing about them is director shaped.
+
+console.log('a length on a take with nobody talking')
+
+const assert = require('assert')
+// Each one is a handful of asserts, counted as one check, as it was where it came from.
+const t = (name, fn) => { try { fn(); ok(name, true) } catch (e) { ok(`${name}: ${e.message}`, false) } }
+// The judged take: 202 s of silent onboarding, four taps on the track, and a
+// deliverable that will not take anything over 30 s.
+const silent = (taps, dur = 202.3) => ({
+  dur, clips: [{ start: 0, end: dur }],
+  pointer: taps.map(at => ({ t: at, x: 0.5, y: 0.8, click: true })),
+})
+
+t('a silent device take is fit on its taps, in one call, with no transcript anywhere', () => {
+  const r = F.fit(silent([6, 61.4, 118.9, 171.2]), { seconds: 28 })
+  assert.strictEqual(r.spine, 'taps')
+  assert.strictEqual(r.hit, true)
+  assert.ok(Math.abs(r.now - 28) <= r.tolerance)
+  assert.ok(r.why.includes('waits between taps'), r.why)
+})
+
+t('every tap and the screen answering it survives the cut', () => {
+  const taps = [6, 61.4, 118.9, 171.2]
+  const r = F.fit(silent(taps), { seconds: 28 })
+  const kept = t0 => r.clips.some(c => c.start <= t0 && c.end >= t0)
+  for (const at of taps) {
+    assert.ok(kept(at), `the tap at ${at} went`)
+    assert.ok(kept(at + 0.9), `the screen answering the tap at ${at} went`)
+  }
+})
+
+t('a take with a voice on it is still cut on the voice, and the taps only protect themselves', () => {
+  const doc = { ...silent([5]), cues: [[0, 0]] }
+  doc.cues = [{ start: 1, end: 4 }, { start: 8, end: 30 }]
+  const r = F.fit(doc, { seconds: 20 })
+  assert.strictEqual(r.spine, 'speech')
+  assert.ok(r.why.includes('pause') || !r.why.includes('taps'), r.why)
+})
+
+t('a take with neither a voice nor a tap still says so, and says it the old way', () => {
+  const r = F.fit({ dur: 202.3, clips: [{ start: 0, end: 202.3 }] }, { seconds: 28 })
+  assert.strictEqual(r.spine, null)
+  assert.strictEqual(r.why, 'No transcript, so there is nothing to choose from. Transcribe this take first.')
+})
+
+t('a silent take asked for longer is told to record more, never to transcribe silence', () => {
+  const r = F.fit(silent([2, 8], 12), { seconds: 30 })
+  assert.ok(r.why.includes('record more of the flow'), r.why)
+  assert.ok(!r.why.includes('transcribe'), 'transcribing silence returns silence')
+})
+
+t('the tap runs are the press and the screen answering it, merged when two taps overlap', () => {
+  assert.deepStrictEqual(F.tapRuns(silent([10]), { dur: 60 }), [[9.65, 11.2]])
+  assert.deepStrictEqual(F.tapRuns(silent([10, 10.6]), { dur: 60 }), [[9.65, 11.8]])
+  assert.deepStrictEqual(F.tapRuns(silent([0.1]), { dur: 60 }), [[0, 1.3]], 'a tap at the head is not cut back past zero')
+  assert.deepStrictEqual(F.tapRuns(silent([59.8]), { dur: 60 }), [[59.45, 60]], 'and not past the end either')
+  assert.deepStrictEqual(F.tapRuns({ pointer: [{ t: 3, x: 0, y: 0 }] }, { dur: 60 }), [], 'a point with no press is not a tap')
+})
+
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

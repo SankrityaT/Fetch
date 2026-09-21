@@ -319,6 +319,18 @@ async function main() {
     is('a tool that fails is not Fetch failing', failed.fault, 'tap-failed')
     has('and says so', failed.reason, /Record the person tapping instead/)
   }
+  {
+    // The judged tap: an element's middle is almost never whole, and idb refused 218.6.
+    const fs = fakeFs({ 'bin:/opt/bin/idb': true })
+    const spawn = fakeSpawn(() => ({ code: 0 }))
+    const path0 = process.env.PATH
+    process.env.PATH = '/opt/bin'
+    const r = await S.make({ spawn, fs, stashPath: STASH }).tap(UD, 218.6, 864.4)
+    process.env.PATH = path0
+    const argv = spawn.calls[0] && spawn.calls[0].args
+    is('a fractional point goes to the tool as whole points', argv && argv.slice(-2), ['219', '864'])
+    is('and the result reports the point that was sent', [r.value.x, r.value.y], [219, 864])
+  }
 
   // ---- the refusals that are permanent ----
   {

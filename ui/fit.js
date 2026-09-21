@@ -16,6 +16,11 @@
 // seconds, taken by actually subtracting the span and summing what is left, which is
 // what keeps it honest once a clip can carry a rate.
 //
+// All three read the transcript, and a device take has none: an app's onboarding makes
+// no sound. That take's spine is its touch track instead, a tap being a moment somebody
+// meant, and the second cut runs off the taps where there is no voice to run off. See
+// "a take with nobody talking on it".
+//
 // A target above the take's own length is the other direction, and it has one answer:
 // spend longer on the moments the video is already dwelling on. Not the take, not the
 // speech, not a move while it travels. See "the moments worth dwelling on" below, which
@@ -128,6 +133,31 @@ function deadSpans(speech, o = {}) {
     if (end - start >= MIN_CUT) out.push({ start: r3(start), end: r3(end), why: 'dead' })
   }
   return merge(out).map(s => ({ ...s, why: 'dead' }))
+}
+
+// ── a take with nobody talking on it ────────────────────────────────────────
+// An app's onboarding makes no sound, so a device take has no transcript, no captions
+// and no beats, and every pass above this line reads nothing. Asked for a length, fit
+// used to hand the whole two hundred seconds straight back with "transcribe this take
+// first", which on a silent take buys nothing: transcribing silence returns silence.
+//
+// What did happen on that take is on the touch track. A tap is a moment somebody meant,
+// and the seconds around it are the press and the screen answering it. Those runs are
+// the take's spine, exactly the way speech runs are a narrated take's, and everything
+// between two taps is the same dead air a pause is. `deadSpans` takes them unchanged.
+//
+// The window is short on the way in and long on the way out because a tap's meaning is
+// what it caused, not the finger landing. 0.35 s is the disc rising (ui/pointer.js);
+// 1.2 s is a screen pushing, settling and being read.
+const TAP = { before: 0.35, after: 1.2 }
+
+function tapRuns(doc = {}, o = {}) {
+  const src = Array.isArray(o.taps) ? o.taps : Array.isArray(doc.pointer) ? doc.pointer : []
+  const dur = num(o.dur)
+  const runs = src
+    .filter(p => p && (p.click || p.tap) && Number.isFinite(+p.t) && +p.t >= 0)
+    .map(p => ({ start: Math.max(0, +p.t - TAP.before), end: dur > 0 ? Math.min(+p.t + TAP.after, dur) : +p.t + TAP.after }))
+  return merge(runs).map(s => [r3(s.start), r3(s.end)])
 }
 
 // ── clips and spans ─────────────────────────────────────────────────────────
@@ -475,6 +505,13 @@ function line(res) {
   }
   if (st) {
     if (!st.heard) {
+      // A device take is silent on purpose, so telling it to transcribe is an errand
+      // that comes back empty. The honest answer there is more of the flow.
+      if (st.taps) {
+        return `This edit is ${s(res.was)} and ${s(res.target)} is not in it. Nobody is talking on this take, ` +
+          `so the only moments in it are the taps and holding one longer than the finger held it reads as a ` +
+          `stall: record more of the flow, or ask for ${s(res.was)} or less.`
+      }
       return `This edit is ${s(res.was)} and ${s(res.target)} is not in it. Nothing here says where the ` +
         `talking is, and slowing a voice is the one thing this must not do: transcribe this take, ` +
         `or ask for ${s(res.was)} or less.`
@@ -489,7 +526,11 @@ function line(res) {
   if (res.short) return `This edit is ${s(res.was)}, already under ${s(res.target)}, and slowing was turned off. Nothing was changed.`
   const took = []
   if (res.cut.fillers.count) took.push(`${res.cut.fillers.count} filler${res.cut.fillers.count === 1 ? '' : 's'}`)
-  if (res.cut.dead.count) took.push(`${res.cut.dead.count} pause${res.cut.dead.count === 1 ? '' : 's'}`)
+  // On a take with no voice the same span is not a pause, it is the wait between two
+  // taps, and calling it a pause would have the sentence describe a take nobody made.
+  if (res.cut.dead.count) took.push(res.spine === 'taps'
+    ? `${res.cut.dead.count} wait${res.cut.dead.count === 1 ? '' : 's'} between taps`
+    : `${res.cut.dead.count} pause${res.cut.dead.count === 1 ? '' : 's'}`)
   if (res.cut.beats.length) took.push(`${res.cut.beats.length} beat${res.cut.beats.length === 1 ? '' : 's'}`)
   const what = took.length ? took.join(', ') : 'nothing'
   const floor = res.held_back
@@ -528,6 +569,14 @@ function fit(doc = {}, o = {}) {
   const W = readWords(o.words)
   const speech = (o.speech && o.speech.length) ? o.speech
     : (doc.cues || []).filter(c => c && num(c.end) > num(c.start)).map(c => [num(c.start), num(c.end)])
+  // The taps stand in only where there is no voice at all. A take with both is a
+  // narrated one and its own words say which seconds matter; a take with neither is
+  // the sentence at the bottom of this function.
+  const taps = (speech.length || W.length) ? [] : tapRuns(doc, { ...o, dur })
+  // What the pause pass measures against. The stretch pass is deliberately not given
+  // the taps: dwelling is about holding a moment for a viewer who is listening, and
+  // the gaps between taps are the part of a device take with nothing in them.
+  const timed = speech.length ? speech : taps
 
   const spans = []
   const at = () => outLength(subtract(clips0, spans))
@@ -553,7 +602,9 @@ function fit(doc = {}, o = {}) {
 
   // The cards and the emphasis marks, which the two cheap passes carve their candidate
   // cuts around rather than through.
-  const blocked = drawnSpans(doc)
+  // A tap is work drawn on screen the same way a card is, and a cut through one leaves
+  // half a disc, so the cheap passes carve around the taps as well.
+  const blocked = merge([...drawnSpans(doc), ...taps.map(([a, b]) => ({ start: a, end: b }))])
 
   // 1. The fillers. Cheapest cut in the product: the sentence is unchanged. All of them
   // go once the pass runs at all, because half the ums left in is worse than either end
@@ -576,7 +627,7 @@ function fit(doc = {}, o = {}) {
   // than taken, because the ask was a length and not a scrub.
   const wantDead = o.deadAir != null ? !!o.deadAir : true
   if (wantDead && room()) {
-    const dead = deadSpans(speech, { dur, minSilence: o.minSilence, pad: o.padding != null ? o.padding : o.pad })
+    const dead = deadSpans(timed, { dur, minSilence: o.minSilence, pad: o.padding != null ? o.padding : o.pad })
       .flatMap(s => clearOf(s, blocked))
       .sort((a, b) => (b.end - b.start) - (a.end - a.start))
     for (const s of dead) {
@@ -653,7 +704,7 @@ function fit(doc = {}, o = {}) {
     const rate = most > 0 && target <= reach + tol
       ? Math.max(SLOW_MIN, r3(most / (most + (target - was)))) : null
     if (rate) clips = slowInside(clips, moments, rate)
-    stretch = { rate, seconds: 0, reach, floor: SLOW_MIN, heard, moments }
+    stretch = { rate, seconds: 0, reach, floor: SLOW_MIN, heard, taps: taps.length > 0, moments }
   }
 
   const now = outLength(clips)
@@ -669,7 +720,7 @@ function fit(doc = {}, o = {}) {
     cues: (doc.cues || []).filter(c => c && gone(c)).length,
   }
 
-  if (!W.length && !speech.length && !(doc.beats || []).length) {
+  if (!W.length && !speech.length && !taps.length && !(doc.beats || []).length) {
     why = 'No transcript, so there is nothing to choose from. Transcribe this take first.'
   }
 
@@ -686,6 +737,10 @@ function fit(doc = {}, o = {}) {
   const res = {
     target, tolerance: r3(tol),
     was: r3(was), now: r3(now),
+    // Which evidence said where the seconds worth keeping are. The caller needs it:
+    // "3 waits between taps went" and "3 pauses went" are two different takes, and an
+    // agent that reads `taps` here knows transcribe is not the missing call.
+    spine: speech.length ? 'speech' : taps.length ? 'taps' : null,
     short: stillShort,
     // A cut the floor refused means the edit is sitting on the floor rather than on
     // the number, and calling that a hit is how an agent ships an empty video. Four and
@@ -712,4 +767,4 @@ function fit(doc = {}, o = {}) {
  */
 const cutFillers = (doc = {}, o = {}) => fit(doc, { ...o, seconds: null, fillers: true, deadAir: false, beats: false })
 
-module.exports = { FILLERS, SLOW_MIN, fillerSpans, deadSpans, dwellSpans, rankBeats, fit, cutFillers, subtract, slowInside, outLength, merge }
+module.exports = { FILLERS, SLOW_MIN, TAP, fillerSpans, deadSpans, tapRuns, dwellSpans, rankBeats, fit, cutFillers, subtract, slowInside, outLength, merge }

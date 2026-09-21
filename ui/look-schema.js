@@ -92,9 +92,10 @@ const FIELDS = [
     doc: 'Strength of the soft shadow under the framed take.',
     when: { 'background.kind': '!none' } }),
   f('frame.chrome', 'enum', 'remove', { options: ['keep', 'remove', 'clean'], label: 'Capture chrome',
-    doc: 'A browser take\'s tabs and toolbar, or the outline a device\'s own window draws round its screen. remove crops ' +
-      'to the content where Fetch knows its place (an agent reported its pointer with viewport, or the take is a ' +
-      'simulator\'s); keep leaves it; clean crops the same way and draws a frame of Fetch\'s own round it.',
+    doc: 'A browser take\'s tabs and toolbar, or the Simulator\'s toolbar and the outline its window draws round the ' +
+      'device screen. remove crops to the content where its place was measured (an agent reported a viewport, or a ' +
+      'simulator take\'s screen rectangle was read off a frame); keep leaves it; clean crops the same way and draws ' +
+      'Fetch\'s own in its place, the phone over a device screen and the browser over a page.',
     classicOptions: ['clean'] }),
   f('frame.scale', 'number', 1, { min: 0.5, max: 1.2, step: 0.01, unit: 'x', label: 'Scale', doc: 'Size of the framed take.', undrawn: true, advanced: true }),
   f('frame.offsetX', 'number', 0, { min: -0.5, max: 0.5, step: 0.01, unit: '%', label: 'Offset X', doc: 'Moves the framed take across.', undrawn: true, advanced: true }),
@@ -105,10 +106,11 @@ const FIELDS = [
 
   // ── device ──
   f('device.kind', 'enum', 'none', { options: ['none', 'browser', 'window', 'laptop', 'phone'], label: 'Device',
-    doc: 'A drawn frame round the take: generic shapes, never a real product. frame.chrome clean draws the browser one on its own. ' +
+    doc: 'A drawn frame round the take: generic shapes, never a real product. frame.chrome clean draws one on its own. ' +
       'A shot of several captures draws one frame each, the capture\'s own or this. Round a capture that already has chrome in it ' +
-      'the frame wears a plain bezel, so the picture has one title bar and not two. A phone over a capture that kept its own ' +
-      'device is that bezel with no speaker slit either: crop to the screen to draw the phone in full.',
+      'the frame wears a plain bezel, so the picture has one title bar and not two. A phone over a simulator take is that ' +
+      'bezel with no slit until frame.chrome remove crops it to the device screen, and for good where that rectangle was ' +
+      'never measured.',
     classic: false }),
   f('device.title', 'string', '', { label: 'Address or title',
     doc: 'What the bar says. Anything shaped like a host is drawn as a browser\'s address, anything else as a centred title. ' +

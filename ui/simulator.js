@@ -17,6 +17,15 @@
 //   4. The device screen's rectangle inside the window, as fractions, plus the density
 //      that rectangle achieves against the device's own pixels.
 //
+// The fourth one is read off a capture of the window, not worked out from the other
+// three. Fitting the screen's aspect inside the window is out by 12 percent on a phone
+// with a notch and 19 percent on one with a home button, because Simulator's chrome is a
+// 52 point toolbar and an 11 point clear gap at any window scale plus a bezel drawn at
+// the scale, so the glass is a different fraction of every window and moves again when
+// the person resizes it. measureGlass reads the rectangle off the pixels instead and
+// lands on the device's own aspect to better than 0.05 percent. Where nothing has been
+// measured there is no rectangle: see simulators().
+//
 // Pure. No spawning, no filesystem, no Electron: the caller hands in stdout and the
 // window list, which is what makes every number below testable under node. The one
 // filesystem shape that leaks in is profilePath(), and even that is a string.
@@ -190,23 +199,219 @@ const inset = c => ({
   bottom: num(c && c.bottom) || 0, left: num(c && c.left) || 0,
 })
 
+// ── the glass, read off the pixels ───────────────────────────────────────
+
+// A pixel is clear where nothing of the window is there at all: Simulator's toolbar
+// floats over a transparent gap, and that gap is what separates the toolbar from the
+// device in a capture.
+const CLEAR_A = 8
+// The bezel's inner ring reads 0 on all three channels. 12 leaves room for the encoder
+// without taking in anything an app would call a dark grey.
+const DARK = 12
+// How many dark pixels in a row make a ring. The art's outer edge is one or two dark
+// pixels under the highlight, and the inner ring measured 13 to 15 points on every
+// device here, so 3 tells them apart at any capture scale.
+const RING = 3
+// How far a fitted rectangle's shape may sit from the screen's before it is refused.
+const FIT_TOL = 0.015
+// A measured rectangle is held to a tenth of that: the three captures here agreed with
+// the device's own aspect to better than 0.05 percent, so anything past this is the
+// measurement having found something other than the glass.
+const GLASS_TOL = 0.0015
+// Plus what whole pixels cannot help. An edge is found to the pixel, so each side can be
+// one out, and on a 360 pixel wide glass that alone is half a percent: a fixed 0.15
+// percent turned a correct rectangle down on a third of window sizes and on most 1x
+// displays, which refused every tap on them. Two pixels a side is the rounding with room.
+const glassTol = px => GLASS_TOL + (px && px.w > 0 && px.h > 0 ? 2 / px.w + 2 / px.h : 0)
+
+// RGBA bytes, the shape an ImageData or a raw frame already has.
+function frameOf(frame) {
+  const w = num(frame && (frame.width != null ? frame.width : frame.w))
+  const h = num(frame && (frame.height != null ? frame.height : frame.h))
+  const data = frame && frame.data
+  if (!(w > 0 && h > 0) || !data || data.length < w * h * 4) return null
+  return { w, h, data }
+}
+
+// clear, dark or lit, which is all this measurement reads. Colour never comes into it:
+// the app can be any colour it likes and the ring is still the ring.
+function classify(f) {
+  const cls = new Uint8Array(f.w * f.h)
+  for (let i = 0, p = 0; i < cls.length; i++, p += 4) {
+    if (f.data[p + 3] <= CLEAR_A) continue
+    const m = Math.max(f.data[p], f.data[p + 1], f.data[p + 2])
+    cls[i] = m <= DARK ? 1 : 2
+  }
+  return cls
+}
+
+// Walk in from one end of a scan line: past the clear, past the bezel's grey, and stop
+// at the first lit pixel that follows a run of dark. That run is the ring the glass sits
+// inside, which is why this cannot be fooled by the grey band outside it.
+function ringEdge(at, lo, hi, forward) {
+  let run = 0
+  for (let i = forward ? lo : hi; forward ? i <= hi : i >= lo; forward ? i++ : i--) {
+    const c = at(i)
+    if (c === 1) { run++; continue }
+    if (c === 2 && run >= RING) return i
+    run = 0
+  }
+  return null
+}
+
+// The value most scan lines agreed on, with how many of them did. A mode rather than an
+// extreme in either direction: a dark app pushes a candidate inward and a home button
+// below the glass pushes one outward, and only the mode survives both.
+function agreed(vals) {
+  const count = new Map()
+  for (const v of vals) count.set(v, (count.get(v) || 0) + 1)
+  let best = null, n = 0
+  for (const [v, c] of count) if (c > n || (c === n && v < best)) { best = v; n = c }
+  return vals.length ? { at: best, agree: r4(n / vals.length) } : { at: null, agree: 0 }
+}
+
+/**
+ * Where the device screen actually is inside a captured Simulator window, in the capture's
+ * own pixels.
+ *
+ * The rectangle cannot be derived. Simulator's chrome is a 52 point toolbar and an 11
+ * point gap whatever the window scale, plus a bezel drawn at the window scale, so the
+ * glass is a different fraction of the window on every device and moves again whenever
+ * the person resizes it. It can be read, though, because a capture of that window has
+ * the whole structure in it: a toolbar band, a band of fully clear pixels, then the
+ * device, and inside the device a grey bezel, a black ring and the app.
+ *
+ * So: take the tallest run of rows that hold any window at all as the device, and from
+ * each side of it find the first lit pixel after a run of dark. Measured against three
+ * booted devices this lands on the device's own aspect to better than 0.05 percent.
+ *
+ * Returns {ok, value:{capture, px, rect, agree}} or {ok:false, reason}. Pixels, not
+ * fractions, because density wants them and a fraction has already lost them.
+ */
+function measureGlass(frame) {
+  const f = frameOf(frame)
+  if (!f) return { ok: false, reason: 'that is not a frame: measuring the glass wants a capture of the Simulator window as RGBA bytes with its own width and height.' }
+  const cls = classify(f)
+  const row = y => x => cls[y * f.w + x]
+  const col = x => y => cls[y * f.w + x]
+
+  // Bands of rows that hold any window at all. The toolbar is one and the device is
+  // another, and the clear gap between them is what makes them two.
+  const bands = []
+  for (let y = 0; y < f.h; y++) {
+    let any = false
+    for (let x = 0; x < f.w && !any; x++) if (cls[y * f.w + x]) any = true
+    if (any) { if (bands.length && bands[bands.length - 1].y1 === y - 1) bands[bands.length - 1].y1 = y; else bands.push({ y0: y, y1: y }) }
+  }
+  if (!bands.length) return { ok: false, reason: 'the capture is empty: every pixel of it is transparent.' }
+  const body = bands.reduce((a, b) => (b.y1 - b.y0 > a.y1 - a.y0 ? b : a))
+  let x0 = f.w, x1 = -1
+  for (let y = body.y0; y <= body.y1; y++) {
+    for (let x = 0; x < x0; x++) if (cls[y * f.w + x]) { x0 = x; break }
+    for (let x = f.w - 1; x > x1; x--) if (cls[y * f.w + x]) { x1 = x; break }
+  }
+  if (x1 < x0) return { ok: false, reason: 'no device was found in the capture: the window has no opaque body in it.' }
+
+  // The middle half of each axis. The corners are rounded and the bezel's buttons stick
+  // out of the sides, and neither has anything to say about where the glass is.
+  const lefts = [], rights = [], tops = [], bottoms = []
+  for (let y = body.y0 + ((body.y1 - body.y0) >> 2); y < body.y1 - ((body.y1 - body.y0) >> 2); y++) {
+    const at = row(y)
+    const l = ringEdge(at, x0, x1, true), r = ringEdge(at, x0, x1, false)
+    if (l != null && r != null && r > l) { lefts.push(l); rights.push(r) }
+  }
+  for (let x = x0 + ((x1 - x0) >> 2); x < x1 - ((x1 - x0) >> 2); x++) {
+    const at = col(x)
+    const t = ringEdge(at, body.y0, body.y1, true), b = ringEdge(at, body.y0, body.y1, false)
+    if (t != null && b != null && b > t) { tops.push(t); bottoms.push(b) }
+  }
+  const L = agreed(lefts), R = agreed(rights), T = agreed(tops), B = agreed(bottoms)
+  if (L.at == null || R.at == null || T.at == null || B.at == null) {
+    return { ok: false, reason: 'no ring was found around a screen in this capture. A window with its bezels hidden has none to find, and a frame captured while the device was still booting is all one colour.' }
+  }
+  const agree = Math.min(L.agree, R.agree, T.agree, B.agree)
+  // A quarter of the scan lines is a long way short of a majority and still means the
+  // edge was seen on hundreds of rows. Below it the app is painting over the ring and
+  // the number that would come back is the app's own dark edge, not the glass.
+  if (agree < 0.25) {
+    return { ok: false, reason: `the edges of the screen did not agree across the capture (${Math.round(agree * 100)} percent), which is what an app painted black to its own edge looks like. Shoot again on a screen with something on it.` }
+  }
+  const px = { x: L.at, y: T.at, w: R.at - L.at + 1, h: B.at - T.at + 1 }
+  if (!(px.w > f.w / 4 && px.h > f.h / 8)) {
+    return { ok: false, reason: 'what was measured is too small to be a device screen, so nothing is reported rather than a rectangle nothing is on.' }
+  }
+  return { ok: true, value: {
+    capture: { w: f.w, h: f.h }, px, agree,
+    rect: { x: r4(px.x / f.w), y: r4(px.y / f.h), w: r4(px.w / f.w), h: r4(px.h / f.h) },
+  } }
+}
+
+// A measured glass, handed in as measureGlass returned it or as plain fractions, as the
+// fractions of the frame everything downstream reads. Checked against the device's own
+// aspect first: a rectangle of the wrong shape is a measurement that found something
+// other than the screen, and a tap aimed through it lands as wrongly as the fit does.
+function glassViewport(glass, screen, o = {}) {
+  const m = glass && glass.value ? glass.value : glass
+  const rect = m && (m.rect || (num(m.w) > 0 && num(m.x) != null ? m : null))
+  if (!rect || !(num(rect.w) > 0 && num(rect.h) > 0)) return null
+  const pts = glassPoints(screen, o.orientation || glassOrient(m, screen) || 'portrait')
+  // Only a measurement that kept its pixels can be checked for shape. Fractions on their
+  // own have the capture's aspect folded into them and cannot be told apart from a
+  // rectangle of the wrong size.
+  if (pts && m.px) {
+    if (Math.abs((m.px.w / m.px.h) / (pts.w / pts.h) - 1) > glassTol(m.px)) return null
+  }
+  return { x: r4(rect.x), y: r4(rect.y), w: r4(rect.w), h: r4(rect.h) }
+}
+
+/**
+ * Which way up the device is, off the measured glass rather than off the window.
+ *
+ * The window is only evidence: an iPhone SE's window is a portrait window whose shape is
+ * nothing like its screen's, because the home button is in it. The glass is the screen,
+ * so its shape says which way up the device is outright, and says nothing where the two
+ * orientations are too close to tell apart.
+ */
+function glassOrient(glass, screen) {
+  const m = glass && glass.value ? glass.value : glass
+  const pts = pointsOf(screen)
+  if (!m || !m.px || !pts) return null
+  const a = m.px.w / m.px.h
+  const p = Math.abs(a / (pts.w / pts.h) - 1), l = Math.abs(a / (pts.h / pts.w) - 1)
+  if (Math.min(p, l) > glassTol(m.px)) return null
+  return p <= l ? 'portrait' : 'landscape'
+}
+
 /**
  * Where the device screen sits inside the Simulator window, as fractions {x, y, w, h}
  * of the recorded frame: exactly the object ui/pointer.js viewportBox() returns for a
  * browser page, so ui/fetchdoc.js chromeCrop() crops to it with no new plumbing.
  *
- * Measured on this Mac at Xcode 26: the window's own frame carries no macOS title bar
- * and Simulator draws no bezel inside it, so the screen is almost the whole window but
- * not quite (396 x 856 points of window for a 440 x 956 point screen). That residual is
- * why this fits the screen's aspect inside the window rather than assuming 1.0. Where a
- * title bar or a drawn bezel is inside the frame, the caller passes it as `chrome` in
- * window points and the fit happens in what is left; the leftover after that is split
- * evenly, the same rule viewportBox uses for a side border.
+ * Hand in a measured glass (`o.glass`, from measureGlass on a capture of this window)
+ * and that is what comes back. That is the only number anything aims with, because the
+ * arithmetic below cannot be trusted and this file no longer pretends otherwise.
+ *
+ * What the arithmetic is, and why it is an estimate. It fits the screen's aspect inside
+ * the window and assumes the leftover is nothing. On a stock Xcode 26 Simulator the
+ * leftover is a 52 point floating toolbar, an 11 point clear gap and a drawn bezel, and
+ * three devices measured on this Mac put the glass at 0.80 to 0.89 of the window, not at
+ * 1.0. The window's own shape does not give the error away either: on an iPhone 16 Pro
+ * Max the window's aspect is within 0.42 percent of the screen's while the fit is out by
+ * 12 percent, so the aspect guard below catches an iPhone SE and misses a phone with a
+ * notch. Where a caller genuinely knows the chrome it passes `chrome` in window points
+ * and the fit happens in what is left; the leftover after that is split evenly, the same
+ * rule viewportBox uses for a side border.
  */
 function viewport(win, screen, o = {}) {
   const ow = num(win && win.w), oh = num(win && win.h)
   const pts = glassPoints(screen, o.orientation || orientOf(win, screen))
   if (!(ow > 0 && oh > 0) || !pts) return null
+  if (o.glass) return glassViewport(o.glass, screen, o)
+  // A fit whose shape is nothing like the screen's is wrong by an amount anyone can see,
+  // and returning it puts a tap on the Mac's part of the window. It is not a sound guard
+  // (see above), it is the half of the error that is detectable without pixels.
+  const fitted = Math.abs((ow / oh) / (pts.w / pts.h) - 1)
+  if (fitted > FIT_TOL) return null
   const c = inset(o.chrome)
   const bw = ow - c.left - c.right, bh = oh - c.top - c.bottom
   if (!(bw > 0 && bh > 0)) return null
@@ -255,11 +460,28 @@ function glassPoints(screen, orientation) {
 /**
  * Captured pixels of the device screen per pixel the device actually has. Under 1 the
  * window is scaled down and a store sized export would be an upscale, which is the
- * refusal piece 6 owns. Measured from the screen rectangle rather than the whole window,
- * because the chrome's pixels are not the device's; at Pixel Accurate, where the answer
- * matters, the two agree exactly.
+ * refusal piece 6 owns.
+ *
+ * A measured glass answers this outright, and better than anything else can: the
+ * rectangle is already in the capture's own pixels and the framebuffer is in the
+ * device's, so the ratio is the two numbers and the display's backing scale never enters
+ * it. Measured here at 0.53, 0.57 and 0.89 on three devices where the arithmetic said
+ * 0.60, 0.64 and 1.06. The last pair is the one that matters: the fit said an iPhone SE
+ * window was a sixth over the device's own pixels when it was a ninth under, and a store
+ * size gate reading that number lets an upscale through.
  */
 function density(win, screen, o = {}) {
+  const m = o.glass && o.glass.value ? o.glass.value : o.glass
+  const orient = o.orientation || (m ? glassOrient(m, screen) : null) || orientOf(win, screen)
+  if (m && m.px && m.px.w > 0) {
+    // Only off a rectangle that passed for the screen. A dark app painted to its edge
+    // measures as something smaller, and its width over the framebuffer's is a density
+    // nobody's window has: 0.15 off a dark splash.
+    const pts = glassPoints(screen, orient)
+    if (pts && Math.abs((m.px.w / m.px.h) / (pts.w / pts.h) - 1) > glassTol(m.px)) return null
+    const px = orient === 'landscape' ? num(screen && screen.h) : num(screen && screen.w)
+    return px > 0 ? r2(m.px.w / px) : null
+  }
   const v = o.viewport || viewport(win, screen, o)
   // The display the window is actually on, not the Mac's main one: a Simulator window
   // dragged onto a 1x screen beside a Retina main display reads 2 here and is 1, so a
@@ -267,10 +489,9 @@ function density(win, screen, o = {}) {
   // than a guess where the caller could not resolve the display, and then there is no
   // density to report either: a number nobody measured is worse than no number.
   const scale = num(o.backingScale)
-  const orientation = o.orientation || orientOf(win, screen)
   // A device on its side shows its long edge across, so the pixels the window is
   // measured against are the framebuffer's other axis.
-  const sw = orientation === 'landscape' ? num(screen && screen.h) : num(screen && screen.w)
+  const sw = orient === 'landscape' ? num(screen && screen.h) : num(screen && screen.w)
   if (!v || !(scale > 0) || !(sw > 0) || !(num(win && win.w) > 0)) return null
   return r2((v.w * win.w * scale) / sw)
 }
@@ -279,7 +500,13 @@ function density(win, screen, o = {}) {
 function densityNote(sim) {
   const d = sim && sim.density
   if (!(d > 0) || d >= 1) return null
-  return `this window is at ${d.toFixed(2)} of the device's own pixels; set Window, Pixel Accurate in the Simulator before a store shot`
+  return `this window is at ${d.toFixed(2)} of the device's own pixels, measured off the screen inside it; set Window, Pixel Accurate in the Simulator before a store shot`
+}
+
+/** And the sentence for a window nothing has measured yet. */
+function glassNote(sim) {
+  if (!sim || !sim.window || !sim.screen || sim.viewport) return null
+  return `nothing has measured where ${sim.name}'s screen sits inside its window yet, so there is no rectangle to aim a tap through or crop to. A capture of the window is what measures it.`
 }
 
 // Simulator windows only. Every other window on the Mac belongs to somebody else.
@@ -299,13 +526,13 @@ function simulators(inp = {}) {
   const types = { ...deviceTypesFromRuntimes(runtimes), ...parseDeviceTypes(inp.deviceTypes) }
   const profiles = inp.profiles || {}
   const windows = (inp.windows || []).filter(isSimWindow)
-  // No default: see density(). A caller that cannot say which display the window is on
-  // gets no density rather than one measured against a scale factor nobody checked.
-  // scaleOf answers per window, because two Simulator windows can be on two displays.
-  const backingScale = num(inp.backingScale)
-  const scaleOf = typeof inp.scaleOf === 'function'
-    ? (w => { try { return num(inp.scaleOf(w)) } catch { return null } })
-    : (() => backingScale)
+  // A capture of this window, already measured. Injected, so this file still spawns
+  // nothing and captures nothing: the caller takes the frame and hands back what
+  // measureGlass made of it, or nothing. This replaced a backing scale: a measured glass
+  // is in the capture's own pixels, so which display the window sits on stops mattering.
+  const glassOf = typeof inp.glassOf === 'function'
+    ? (w => { try { const g = inp.glassOf(w); return g && g.ok === false ? null : (g || null) } catch { return null } })
+    : (() => null)
 
   const out = devices.map(d => {
     const type = types[d.deviceTypeId] || null
@@ -351,15 +578,26 @@ function simulators(inp = {}) {
       ...(num(w.x) != null ? { x: num(w.x) } : {}), ...(num(w.y) != null ? { y: num(w.y) } : {}),
       title: String(w.title || '') }
     if (sim.screen) {
-      sim.orientation = orientOf(sim.window, sim.screen)
+      // Measured first, and the measurement decides which way up the device is: the
+      // glass is the screen, where the window is a shape with a toolbar and a home
+      // button in it.
+      const m = glassOf(sim.window)
+      sim.orientation = (m && glassOrient(m, sim.screen)) || orientOf(sim.window, sim.screen)
       sim.glass = glassPoints(sim.screen, sim.orientation)
       // Carried on the screen as well, because the screen is what travels onto the
       // document and out to the touch disc, and a disc sized off the portrait width on a
       // device lying on its side comes out several times too small.
       if (sim.orientation === 'landscape') sim.screen = { ...sim.screen, orientation: 'landscape' }
-      sim.viewport = viewport(sim.window, sim.screen, { ...inp, orientation: sim.orientation })
-      sim.density = density(sim.window, sim.screen,
-        { ...inp, viewport: sim.viewport, backingScale: scaleOf(sim.window), orientation: sim.orientation })
+      // Nothing is aimed with the arithmetic. Fitting the screen's aspect inside the
+      // window puts the glass 12 percent too wide on a phone with a notch and 19 percent
+      // too wide on one with a home button, which sends a tap near the top of the screen
+      // about 80 points above what it was aimed at and leaves a crop with the Mac's own
+      // toolbar still in it. Where there is no capture to measure there is no rectangle,
+      // and the tools downstream already say so in words rather than missing quietly.
+      sim.viewport = m ? viewport(sim.window, sim.screen, { glass: m, orientation: sim.orientation }) : null
+      sim.density = sim.viewport ? density(sim.window, sim.screen, { glass: m, orientation: sim.orientation }) : null
+      if (m && !sim.viewport) sim.note = `a capture of ${sim.name}'s window was measured and what came back was not the shape of its screen, so Fetch reports no rectangle rather than a wrong one`
+      else if (!m) sim.note = sim.note || glassNote(sim)
     }
   }
 
@@ -409,6 +647,7 @@ function pointToFrame(sim, x, y) {
 module.exports = {
   parseDevices, parseRuntimes, parseDeviceTypes, deviceTypesFromRuntimes,
   parseProfile, profilePath, readProfiles,
-  viewport, density, densityNote, pointToFrame, orientOf, glassPoints,
+  measureGlass, glassOrient, glassViewport, viewport, density, densityNote, glassNote,
+  pointToFrame, orientOf, glassPoints,
   simulators, resolve, claim, titleSegments,
 }

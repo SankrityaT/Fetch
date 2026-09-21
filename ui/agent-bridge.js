@@ -34,6 +34,9 @@ const Shot = require('./shot')
 // costs nothing to hold here (ui/simulator.js). ui/simctl.js, which spawns, is required
 // at the call so a Mac with no Xcode pays for it only when an agent asks.
 const Sim = require('./simulator')
+// What a take listens to, and what its result may say it heard. Pure, and it carries the
+// reason and the measurements as well as the rule (ui/recorder-opts.js).
+const Opts = require('./recorder-opts')
 
 let app, ipcMain
 try { ({ app, ipcMain } = require('electron')) } catch {}
@@ -49,6 +52,9 @@ let deps = {}                  // { getWindow, toRenderer, proc, isRecording }
 // "did not start" timer that was never cleared on start, so any agent take longer
 // than 30 seconds reported an error to the agent while it was still recording.
 let pendingTake = null         // { phase: 'starting'|'recording'|'stopping', resolve, reject, timer }
+// What audioFor() decided for the take in hand. Held because record_start can only say
+// what was wired and record_stop is the one that can read the written file.
+let takeHeard = null
 // A take that ended on its own (the window closed) with nobody waiting on it. The
 // agent that started it learns its path from the record_stop it sends next.
 let endedTake = null
@@ -180,12 +186,12 @@ const ops = {
     if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
 
     // A simulator is named by device and recorded as the window it sits in. That is the
-    // whole of it: the take then has an audio track, which the framebuffer capture simctl
-    // offers does not have at all, and every transcript-spine feature Fetch has reads
-    // that track. What lands on it is what the window is playing, which is the honest
-    // claim: the guest app's own sound through the speakers was never measured at a
-    // level here, because measuring it means making a sound on somebody's Mac.
-    // Nothing is brought to the front to do it.
+    // whole of it: the take can then have an audio track, which the framebuffer capture
+    // simctl offers cannot, and every transcript-spine feature Fetch has reads that
+    // track. Can, and now does: system audio was off by default on every path, so what
+    // an agent actually got was the silent file this sentence said it would not be
+    // (ui/recorder-opts.js). What lands on it is what the window is playing, which is the
+    // honest claim. Nothing is brought to the front to do it.
     let sim = args.simulator != null ? await simTarget(args.simulator) : null
     if (sim) args = { ...args, window: String(sim.window.id) }
 
@@ -204,7 +210,10 @@ const ops = {
     // Access check before anything starts. This is the enforcement point: the rule
     // lives here rather than in the MCP tool description, because a description is
     // prose and prose is a suggestion.
-    await enforceAccess({ ...args, kind: 'take', sim }, ctx)
+    // What the take will listen to is decided before the person is asked, so the
+    // question can say it: a yes to a picture of a phone is not a yes to its sound.
+    const heardPlan = Opts.audioFor(args, { simulator: !!sim, prefs: deps.getPrefs ? deps.getPrefs() : null })
+    await enforceAccess({ ...args, kind: 'take', sim, sound: heardPlan }, ctx)
 
     // macOS sends no frames for the part of a window another covers, so a take of a
     // covered window is a frozen picture. Say so before recording anything, with the
@@ -213,6 +222,14 @@ const ops = {
       const hold = occludedTake(await deps.windowCovered(args.window).catch(() => null))
       if (hold) return hold
     }
+
+    // Where the glass sits inside that window, measured off one capture of it before a
+    // frame of the take is recorded. Everything this take is worth downstream is that
+    // one rectangle: where a tap lands, where the disc is drawn, and what the crop keeps.
+    // The person has just approved a recording of this window, so a still of it to
+    // measure is inside that yes rather than a second question.
+    const measuredAt = Date.now()
+    if (sim) sim = await simMeasured(sim)
 
     // The house status bar, after the last thing that can refuse and before a frame is
     // captured, so nothing is left dressed for a take that never started. Put back on
@@ -226,7 +243,12 @@ const ops = {
     takeSim = sim ? { sim, bar } : null
 
     try {
-      await applySetup(win, args)
+      // A simulator take gets system audio. The sound is the only thing recording the
+      // window buys over capturing the device's framebuffer, and it was off by default,
+      // so the take an agent actually got was the silent file three descriptions said it
+      // would not be (ui/recorder-opts.js carries the rule and its measurements).
+      takeHeard = heardPlan
+      await applySetup(win, args, takeHeard)
       // In the background unless the person asked to watch (a person-only setting).
       const quiet = !(deps.getPrefs && deps.getPrefs().agentTakesVisible)
       if (deps.setQuiet) deps.setQuiet(quiet, true)
@@ -250,18 +272,26 @@ const ops = {
         }
       })
 
+      // What was wired, on the result. What actually landed is record_stop's to say, off
+      // the written file, because at this moment there is no file to read.
+      const audio = Opts.startedAudio(takeHeard)
       // say which window was picked, so an agent that meant another can stop and name it
       if (sim && started && typeof started === 'object') {
-        return { ...started, simulator: simFacts(sim, bar) }
+        // What is on the glass, off the picture that measured it, so the first tap of the
+        // take is the next call rather than a shot and a search.
+        const screen = await simScreen(sim, { since: measuredAt })
+        return { ...started, audio, simulator: simFacts(sim, bar), ...(screen ? { screen } : {}) }
       }
       return front && started && typeof started === 'object'
-        ? { ...started, recording: { window: String(front.id), app: front.app, title: front.title || '', chosen: 'the app in front' } }
-        : started
+        ? { ...started, audio, recording: { window: String(front.id), app: front.app, title: front.title || '', chosen: 'the app in front' } }
+        : (started && typeof started === 'object' ? { ...started, audio } : started)
     } catch (e) {
       // Nothing is left dressed for a take that never started, which is what the comment
       // above the dressing has always claimed and what this makes true.
       const held = takeSim
       takeSim = null
+      // and no take carries what was decided for one that never happened
+      takeHeard = null
       if (held) await simUndress(held.sim.udid)
       throw e
     }
@@ -270,7 +300,7 @@ const ops = {
   async 'record.stop'() {
     if (!deps.isRecording() && endedTake && Date.now() - endedTake.at < 30 * 60e3) {
       const { at, ...r } = endedTake; endedTake = null
-      return await simAfterTake(r)
+      return await afterTake(r)
     }
     const ending = !deps.isRecording() && endingAt && Date.now() - endingAt < 2 * 60e3
     if (!deps.isRecording() && !ending) throw new Error('not recording')
@@ -291,7 +321,7 @@ const ops = {
     // back. Both happen whatever the take did, which is what "every override is restored,
     // including on the failure path" means in code rather than in a promise.
     try {
-      return await simAfterTake(await done)
+      return await afterTake(await done)
     } catch (e) {
       // A take that never finished saving still dressed a device, and leaving it dressed
       // is the one failure the person sees on their own machine for days.
@@ -418,7 +448,7 @@ const ops = {
     // A simulator is a window, always. A region of the device screen is judged as a
     // display, sees whatever is under it, and gives frozen pixels where something covers
     // it, so the device is named and the glass is cropped to in the picture instead.
-    const sim = args.simulator != null ? await simTarget(args.simulator) : null
+    let sim = args.simulator != null ? await simTarget(args.simulator) : null
     if (sim) target = { windowId: String(sim.window.id) }
     else if (args.window != null) target = { windowId: String(args.window) }
     else if (region) target = { region, ...(args.display != null ? { displayId: String(args.display) } : {}) }
@@ -457,6 +487,11 @@ const ops = {
         cursor: args.cursor === true })
     } finally { if (sim && !worn) await simUndress(sim.udid) }
     if (!got || !got.ok) throw new Error(`Fetch took no screenshot: ${(got && got.error) || 'the capture failed'}`)
+
+    // The picture this call just took is also what measures where the glass sits inside
+    // the window, so the rectangle the crop and the next tap need costs nothing more
+    // here. Measured before the rename, because a rename moves the file.
+    if (sim) sim = await simMeasured(sim, got.original)
 
     // Named from what it captured, the way a take is named from the app in front. A
     // still has no transcript, so this is the only name it will ever get by itself,
@@ -712,28 +747,72 @@ const ops = {
       // a recording nobody has edited has no clips yet; export all of it
       doc.clips = [{ id: 'C1', start: 0, end: (meta && meta.duration) || doc.dur }]
     }
-    // An exact size on a recording, said plainly rather than written wrong. The picture
-    // is drawn at the take's own shape or at 720 or 1080 tall, so a preview the store
-    // measures to the pixel is not something this can write, and a file one pixel out is
-    // rejected on upload. The other two rules it is judged by are worth the call anyway.
+    // An app preview: the deliverable's rectangle, its length, its frame rate, its codec
+    // and its container, all decided before a frame is drawn (ui/sizes.js preview). Every
+    // one of them is a rule the store measures the file against, and the named job ends
+    // here, so this used to be the refusal that ended it: "Fetch draws a video at the
+    // take's own shape or at 720 or 1080 tall".
+    const Sizes = require('./sizes')
+    let want = null
     if (args.size != null) {
-      const Sizes = require('./sizes')
       const got = Sizes.resolve(args.size)
       if (!got.ok) throw new Error(got.reason)
       const p = got.preset
-      const clip = p.kind === 'video' ? Sizes.checkClip({ seconds: FD.outDuration(doc), codec: 'h264' }, p.id) : null
-      throw new Error(`${p.id} is ${p.w} by ${p.h} exactly and Fetch draws a video at the take's own shape ` +
-        `or at 720 or 1080 tall, so it will not hand you a file and call it one. ` +
-        (p.kind === 'still' ? 'That size is a screenshot: take_shot the device and export that instead. '
-          : 'Export this at 1080 and tell the person it is not the store size. ') +
-        ((clip && !clip.ok ? `While you are here: ${(clip.problems || []).join(', ')}.` : '')))
+      if (p.kind !== 'video') {
+        throw new Error(`${p.id} is ${p.what.toLowerCase()} and this is a recording. ` +
+          'take_shot the device and export that at this size, or ask for an app preview size.')
+      }
+      // The crop is the device glass in the capture's own pixels, which is the part of
+      // the frame that is the app: the same rectangle a still is fitted from.
+      const c = doc.crop && +doc.crop.w > 0 && +doc.crop.h > 0
+        ? { w: Math.round((meta.width || 0) * +doc.crop.w), h: Math.round((meta.height || 0) * +doc.crop.h) } : null
+      // The family the take already records, where the agent did not say one: an iPhone
+      // take asked into an iPad size is refused by name, as the description promises,
+      // rather than drawn small in the middle of it. The rate is the take's cadence, not
+      // the header's average, which reads 14 on a take that sat still half the time
+      // (processor.js probeCadence says why).
+      const dev = doc.device || null
+      want = Sizes.preview({ w: meta.width, h: meta.height, seconds: FD.outDuration(doc),
+        fps: meta.cadence || meta.fps,
+        hasAudio: !!meta.hasAudio, family: args.family || (dev && dev.family) || null, codec: 'h264', container: 'mp4' },
+      p.id, { crop: c, share: drawnShare(doc),
+        device: dev && dev.screen ? { w: +dev.screen.w, h: +dev.screen.h } : null })
+      if (!want.ok) {
+        // The layout route, said as the call that takes it. The take is drawn inside the
+        // look's padding, so more padding is the capture at a smaller share of the
+        // picture, and that is the one fix an agent can make without the person's hands.
+        const pad = want.maxShare > 0 && want.maxShare < 1 ? Math.ceil(((1 - want.maxShare) / 2) * 100) / 100 : null
+        // A plain look has no padding to give: the take fills the picture whatever it says.
+        const plain = drawnShare(doc) >= 1
+        const route = pad != null && pad <= 0.22
+          ? [`apply_look { ${plain ? 'background: { kind: \'video-blur\' }, ' : ''}frame: { padding: ${pad} } } draws the capture at ` +
+            `${Math.floor(want.maxShare * 100)}% of the picture, which is its own pixels, and export again`]
+          : []
+        throw new Error([want.reason, ...(want.fix || []), ...route].join('\n'))
+      }
+      // Everything that is still somebody's decision, named with the call that makes it.
+      // A window out of a longer take is fit_to_length's to choose, on the take's own
+      // spine, and never a number picked here.
+      if (!want.ready) throw new Error([...want.needs, ...want.steps].join('\n'))
     }
 
     const opts = FD.toExportOpts(doc, {
-      format: args.format || 'mp4',
+      format: want ? want.container : (args.format || 'mp4'),
       quality: args.quality || 'balanced',
-      scale: args.resolution ? +args.resolution : undefined,
+      // resolution and an exact size are two answers to one question, and the store's is
+      // the one that gets the file rejected for being one pixel out.
+      scale: want ? undefined : (args.resolution ? +args.resolution : undefined),
     })
+    if (want) {
+      // A pair of integers, not a shape. The picture is composed at the preset's own
+      // ratio and drawn at its own pair, because a file one pixel out is rejected on
+      // upload, and the rate is the take's own divided by a whole number: a dropped
+      // frame is the take sampled less often, where an invented one is motion that never
+      // happened.
+      opts.backdropAspect = want.size.w / want.size.h
+      opts.size = { ...want.size }
+      opts.fps = want.fps.out
+    }
     const r = await deps.exportDoc(args.path, opts)
     const mb = r && r.file && require('fs').existsSync(r.file)
       ? +(require('fs').statSync(r.file).size / 1e6).toFixed(1) : null
@@ -759,7 +838,11 @@ const ops = {
     if ((require('./look').resolve(doc.look).motion || {}).loop) {
       try { loop = await loopCheckOf(args.path, doc, meta) } catch {}
     }
+    // The store measures the file, so this does too: read off what was written rather
+    // than off the plan that asked for it.
+    const store = want ? await clipVerdict(want, r && r.file) : null
     return { path: r && r.file, mb, seconds: +FD.outDuration(doc).toFixed(2), ...engine,
+      ...(store ? { store } : {}),
       ...(lw.length ? { look_warnings: lw } : {}),
       ...(checked ? { review: checked } : {}),
       ...(loop ? { loop } : {}),
@@ -966,8 +1049,17 @@ const ops = {
   // has to survive the undo of the edit it produced, and closing a step is not an
   // undo level.
   async 'edit.direct'(args = {}) {
-    if (!args.path) throw new Error('path is required')
     const Director = require('./director')
+    const patch = { brief: briefWithSize(args.brief), plan: args.plan, done: args.done, open: args.open, drop: args.drop, note: args.note }
+    // A job that films a device is decided before there is anything to direct: which
+    // device to boot and how many seconds the deliverable runs are settled before
+    // record_start, and the judged run wrote its brief after the fact, which is how a
+    // 202 second take was recorded for a 30 second deliverable. It waits in userData and
+    // record_stop moves it onto the take it turned out to be about.
+    if (!args.path) {
+      const dir = app ? app.getPath('userData') : require('os').tmpdir()
+      return Director.direct(null, patch, { dir })
+    }
     // The job sidecar sits beside whatever it is a job about, and a screenshot is a job
     // like any other: a brief, steps, and the distance to both. Only the facts it is
     // measured on differ, and a still's are its shape alone.
@@ -975,7 +1067,6 @@ const ops = {
       ? shotFacts(await shotOf(args.path))
       : editFacts(withCues(args.path, deps.proc.readDoc(args.path,
         (await deps.proc.probeMeta(args.path).catch(() => ({}))).duration)))
-    const patch = { brief: args.brief, plan: args.plan, done: args.done, open: args.open, drop: args.drop, note: args.note }
     if (Object.values(patch).every(v => v === undefined)) {
       const job = Director.read(args.path)
       if (!job) throw new Error(Director.NO_BRIEF)
@@ -1033,10 +1124,22 @@ const ops = {
     if (!(doc.beats || []).length) {
       try { doc.beats = deps.proc.beatsFor(args.path, meta && meta.duration) || [] } catch { doc.beats = [] }
     }
+    // The taps are on a sidecar beside the take rather than on the document, exactly as
+    // the beats are worked out rather than stored, so a device take's spine would have
+    // been empty here for the same reason the beats were.
+    if (!(doc.pointer || []).length) {
+      try { doc.pointer = pointerTrack(args.path, doc) } catch { doc.pointer = [] }
+    }
     // A length is chosen from what was said, so with nothing said this is a wasted
     // turn: it would hand back the edit it was given and a sentence nobody reads.
-    if (!(w && w.words && w.words.length) && !(doc.cues || []).length && !(doc.beats || []).length) {
-      throw new Error('No transcript, so there is nothing to choose from. Call transcribe on this take, then fit_to_length again.')
+    // A take of a device has nobody talking on it and is still full of decisions: a tap
+    // is a moment somebody meant, and ui/fit.js keeps the seconds around each one. So the
+    // gate asks for a spine of either kind. It used to ask for speech alone, and
+    // transcribing silence returns silence, so a 202 second take and a 30 second
+    // deliverable had no sequence of calls between them.
+    if (!(w && w.words && w.words.length) && !(doc.cues || []).length && !(doc.beats || []).length
+        && !(doc.pointer || []).some(p => p && p.click)) {
+      throw new Error('No transcript and no taps, so there is nothing to choose from. Call transcribe on this take, then fit_to_length again.')
     }
     const r = Fit.fit(doc, {
       seconds: args.seconds, keep: args.keep, extra: args.fillers,
@@ -1473,17 +1576,26 @@ async function enforceAccess(args, ctx) {
   if (verdict.needsApproval) {
     // Keyed on the device for a simulator, never on the app: one yes to Simulator would
     // otherwise be a yes to every device on the Mac, and they are not the same machine.
+    // And on what it hears: a yes to a silent take is not a yes to one with sound.
+    const heard = !still && args.sound ? args.sound : null
+    const sound = heard && (heard.systemAudio || heard.mic)
+      ? (heard.systemAudio && heard.mic ? 'sys+mic' : heard.systemAudio ? 'sys' : 'mic') : null
     const key = (still ? 'shot|' : 'take|') +
-      (sim ? 'udid:' + sim.udid : args.window != null ? 'app:' + (app || '') : 'display')
+      (sim ? 'udid:' + sim.udid : args.window != null ? 'app:' + (app || '') : 'display') +
+      (sound ? '|sound:' + sound : '')
     if (sessionAllowed.has(key)) return
     const who = (ctx && ctx.client) || 'An agent'
     const what = sim ? `the ${sim.name} simulator`
       : args.window != null ? `a ${app || 'window'} window` : 'your whole screen'
+    const heardSaid = !sound ? ''
+      : ' ' + [heard.systemAudio ? `Its sound is recorded too: the ${sim ? 'device\'s' : 'window\'s'} own, any ` +
+        'background process with no window, and any app you open while it records.' : '',
+      heard.mic ? 'Your microphone is recorded too.' : ''].filter(Boolean).join(' ')
     const answer = await askPerson(
-      `${who} wants to ${still ? 'take a screenshot of' : 'record'} ${what}.`,
+      `${who} wants to ${still ? 'take a screenshot of' : 'record'} ${what}${sound ? ', with sound' : ''}.`,
       (args.window != null
         ? 'Only that window is captured, in the background, even while you work in front of it.'
-        : 'Apps on your never-record list are left out of the frame.') +
+        : 'Apps on your never-record list are left out of the frame.') + heardSaid +
       (still
         ? ' One frame is written, now. Nothing keeps running afterwards.'
         : ' The menu bar icon turns red while it records.'),
@@ -1518,16 +1630,21 @@ const sessionAllowed = new Set()
 // answer that arrives after the deadline lands on a promise nobody holds: this call
 // already refused and will not capture anything on the strength of a late yes.
 const ASK_WAIT_MS = 60000
-async function askPerson(message, detail, sessionLabel, still = false, allowLabel = null) {
+async function askPerson(message, detail, sessionLabel, still = false, allowLabel = null, sessionFirst = false) {
   const { dialog } = require('electron')
   // Driving somebody's device is not recording it, so the button says which it is.
-  const buttons = [allowLabel || (still ? 'Allow this shot' : 'Allow this take'),
-    ...(sessionLabel ? [sessionLabel] : []), 'Don\'t allow']
+  const once = allowLabel || (still ? 'Allow this shot' : 'Allow this take')
+  // A flow is many of the same question. Ten taps put ten dialogs on somebody's screen
+  // unless they happened to press the second button the first time, so where the answer
+  // is one of a run the session answer is the one under their hand.
+  const both = sessionLabel ? (sessionFirst ? [sessionLabel, once] : [once, sessionLabel]) : [once]
+  const buttons = [...both, 'Don\'t allow']
   const no = buttons.length - 1
   let timer = null
   const asked = dialog.showMessageBox({
     type: 'question', message, detail, buttons, defaultId: no, cancelId: no, noLink: true,
-  }).then(r => (r.response === 0 ? 'once' : (sessionLabel && r.response === 1) ? 'session' : 'no'), () => 'no')
+  }).then(r => (r.response === no ? 'no'
+    : buttons[r.response] === sessionLabel ? 'session' : 'once'), () => 'no')
   try {
     const waited = new Promise(res => { timer = setTimeout(() => res('unanswered'), ASK_WAIT_MS) })
     return await Promise.race([asked, waited])
@@ -1608,27 +1725,177 @@ async function simModel(windows, o = {}) {
   const devices = Sim.parseDevices(dev.value)
   const profiles = await simProfiles([...new Set(devices.map(d => d.deviceTypeId))], typeMap)
   const wins = windows || (deps.listWindows ? await deps.listWindows().catch(() => []) : [])
+  // Where the glass sits inside each window is handed in from what a capture measured,
+  // never worked out from the window's shape: ui/simulator.js has the numbers and the
+  // reason. Nothing here captures anything, so a list stays a list.
   return Sim.simulators({ devices, runtimes, deviceTypes: types.ok ? types.value : null,
-    profiles, windows: wins, scaleOf: displayScale })
+    profiles, windows: wins, glassOf })
+}
+
+// ── where the glass is, read off pixels ──────────────────────────────────
+//
+// The rectangle a tap is aimed through, a capture is cropped to and the drawn phone
+// stands in cannot be derived. Simulator's toolbar is 52 points tall whatever the window
+// scale, so the screen is a different fraction of the window on every device and moves
+// again the moment somebody drags a corner: fitting the screen's aspect inside the
+// window put the rectangle 12 percent out on a phone with a notch and 19 percent out on
+// one with a home button, which sent a tap 80 points above the button it was aimed at
+// and left the Mac's own toolbar inside a crop that promised to remove it.
+//
+// So it is measured off a capture of the window (ui/simulator.js measureGlass) and kept
+// against that window's own size. Fractions of the window are what is kept, so moving
+// the window changes nothing and resizing it changes everything: a resized window has a
+// new key and no measurement until the next capture, which is the refusal in words
+// rather than a stale rectangle.
+//
+// This replaced the display's backing scale. A measured glass is already in the
+// capture's own pixels, so which display the window sits on stops coming into it.
+const glassSeen = new Map()    // `${window id}|${w}x${h}` -> what measureGlass returned
+const GLASS_KEEP = 16
+
+const glassKey = w => (w && w.id != null
+  ? `${w.id}|${Math.round(+w.w || +w.width || 0)}x${Math.round(+w.h || +w.height || 0)}` : null)
+
+function glassOf(win) {
+  const k = glassKey(win)
+  const hit = k ? glassSeen.get(k) : null
+  return hit && hit.glass ? hit.glass : null
 }
 
 /**
- * The scale factor of the display a window is on, or null where it cannot be told.
+ * Measure one Simulator window off a capture of it, and keep what came back.
  *
- * Not the primary display's: with the Simulator window on a 1x external screen beside a
- * Retina main one, the primary reads 2 where the window is really 1, so a density of 0.3
- * is reported as 0.6 and a store export that should be refused ships an upscale. The
- * window list carries the window's own origin for exactly this (WindowList.swift), and
- * with no origin there is no answer: null, and no density, rather than a guess.
+ * file is a capture this call already had (take_shot's own, which costs nothing extra);
+ * with none, one is taken. Returns { glass, file } or null. Never throws: a measurement
+ * that fails leaves the device with no rectangle, which every tool downstream already
+ * says out loud rather than working around.
  */
-function displayScale(win) {
-  const x = +(win && win.x), y = +(win && win.y)
-  const w = +(win && win.w) || 0, h = +(win && win.h) || 0
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+async function readGlass(win, file, screen) {
+  const k = glassKey(win)
+  if (!k) return null
+  let shot = file ? { file, scratch: false } : null
+  if (!shot) shot = await scratchShot(win)
+  if (!shot) return null
+  let glass = null
   try {
-    const d = require('electron').screen.getDisplayMatching({ x, y, width: Math.max(1, w), height: Math.max(1, h) })
-    return (d && d.scaleFactor) || null
+    const img = require('electron').nativeImage.createFromPath(shot.file)
+    const size = img.getSize()
+    // toBitmap is BGRA and measureGlass reads the largest of the three colour channels,
+    // so which way round they are never comes into it.
+    const m = Sim.measureGlass({ width: size.width, height: size.height, data: img.toBitmap() })
+    glass = m && m.ok ? m.value : null
+    if (!glass && m) glassWhyNot.set(k, m.reason)
+    // A rectangle that is not the screen's shape is a dark app read as the glass, and it
+    // is turned down here rather than kept, the same test the viewport is held to.
+    if (glass && screen && !Sim.glassViewport(glass, screen)) {
+      glassWhyNot.set(k, 'what was measured is not the shape of the device screen, which is what an app dark to its own edge looks like.')
+      glass = null
+    }
+  } catch { /* no Electron, or a file that is not a picture: no rectangle, and no guess */ }
+  // The frame is kept while it is the newest one for this window, because the ids
+  // find_on_screen minted on it have to resolve until the next capture replaces it.
+  // The rectangle is not: one screen that cannot be read (dark mode, a splash, a black
+  // hero) says nothing about where the glass is, and the window has not moved, so the
+  // last one that passed stands until a new window size makes a new key.
+  const had = glassSeen.get(k)
+  if (had && had.file && had.file !== shot.file) dropScratch(had.file)
+  const kept = glass || (had && had.glass) || null
+  glassSeen.set(k, { glass: kept, file: shot.scratch ? shot.file : null, at: Date.now() })
+  while (glassSeen.size > GLASS_KEEP) {
+    const oldest = glassSeen.keys().next().value
+    const gone = glassSeen.get(oldest)
+    if (gone && gone.file) dropScratch(gone.file)
+    glassSeen.delete(oldest)
+  }
+  // captured says a picture was taken now, whatever it measured: what is on screen is
+  // named off this frame and no older one.
+  return { glass: kept, fresh: !!glass, file: shot.file, captured: true }
+}
+
+// Why the last measurement of a window found nothing, so a refusal can say it.
+const glassWhyNot = new Map()
+
+/**
+ * One capture of a window, for Fetch to measure and read rather than for anybody to
+ * look at. It never lands in the person's library: main.js writes a scratch capture to
+ * a temporary file. A build whose capture path has no scratch in it yet writes a take
+ * folder, and that folder goes to the trash here rather than leaving a measurement in
+ * somebody's Library.
+ */
+async function scratchShot(win) {
+  if (!deps.takeShot || !win || win.id == null) return null
+  let got = null
+  try { got = await deps.takeShot({ windowId: String(win.id), by: 'agent', approved: true, scratch: true }) }
+  catch { return null }
+  if (!got || !got.ok || !got.original) return null
+  if (got.scratch) return { file: got.original, scratch: true }
+  // No scratch in this build's capture path: the frame is moved out and the folder the
+  // capture made goes to the trash, so a measurement never sits in the person's Library
+  // looking like a picture they asked for. Recoverable, and only ever the folder this
+  // call just made.
+  try {
+    const to = path.join(require('os').tmpdir(), `fetch-glass-${process.pid}-${Date.now().toString(36)}.png`)
+    fs.copyFileSync(got.original, to)
+    const take = deps.proc && deps.proc.takeDir ? deps.proc.takeDir(got.original) : null
+    if (take && /^shot-\d+$/.test(path.basename(take))) {
+      require('electron').shell.trashItem(take).catch(() => {})
+    }
+    return { file: to, scratch: true }
+  } catch { return { file: got.original, scratch: false } }
+}
+
+function dropScratch(file) {
+  try { if (file && file.startsWith(require('os').tmpdir())) fs.unlinkSync(file) } catch {}
+}
+
+// The newest capture of each device's window, by UDID, so a tap can name an element
+// without being handed the path the id was minted on.
+const simSeen = new Map()
+
+/**
+ * What is on the glass, named, off the same capture that measured it.
+ *
+ * Five of the nineteen calls in the judged job were a take_shot and a find_on_screen
+ * after something that had just changed what is on screen. The picture is already paid
+ * for here, so naming what is on it costs one pass over a file this call already has,
+ * and the ids are the ones a tap takes: the next call is the tap rather than a look.
+ */
+async function simScreen(sim, o = {}) {
+  const k = glassKey(sim && sim.window)
+  const held = k ? glassSeen.get(k) : null
+  // Only a frame this call took. A capture that failed leaves the last one in place, and
+  // naming that as the new screen hands back ids for a screen that has gone.
+  if (!held || !(held.at >= (+o.since || 0))) return null
+  const file = held.file || null
+  if (!file || !deps.proc || !deps.proc.findOnScreen) return null
+  try {
+    // No crop: a tap is aimed through the glass rectangle and that arithmetic starts in
+    // the whole frame, so the boxes have to be measured there too.
+    const r = await deps.proc.findOnScreen(file, 0, { limit: Math.max(1, Math.min(24, +o.limit || 12)) })
+    noteFound(file, 0, r.elements, r.all, { aspect: r.width > 0 && r.height > 0 ? r.width / r.height : 0 })
+    simSeen.set(sim.udid, file)
+    return {
+      path: file, found: r.found,
+      elements: r.elements.map(e => ({ id: e.id, text: e.text, kind: e.kind, box: e.box, confidence: e.confidence })),
+      how: 'these ids are what simulator tap takes as element. They are minted on this picture, so the next ' +
+        'call that changes the screen mints new ones.',
+    }
   } catch { return null }
+}
+
+/**
+ * The device again, with its window measured. Called where a rectangle is about to be
+ * relied on: before a take of the device, after ready has put its window up, and before
+ * a tap is aimed. The model is re-read rather than patched, because the viewport, the
+ * density and which way up the device is all come off the same measurement.
+ */
+async function simMeasured(sim, file) {
+  if (!sim || !sim.window) return sim
+  const m = await readGlass(sim.window, file, sim.screen)
+  if (!m || !m.glass) return sim
+  const sims = await simModel().catch(() => null)
+  const hit = sims && sims.find(s => s.udid === sim.udid)
+  return hit || sim
 }
 
 /**
@@ -1701,10 +1968,10 @@ function simList(sims) {
       ...(s.availabilityError ? { unavailable: s.availabilityError } : {}),
     })),
     how: 'record_start and take_shot take simulator where they take window, and record the device ' +
-      'where it sits: nothing is brought to the front, and the take has an audio track where a capture ' +
-      'of the device framebuffer has none at all. ' +
-      'density is captured pixels per pixel the device has; under 1 a store sized export would be ' +
-      'an upscale and is refused.',
+      `where it sits: nothing is brought to the front, and ${Opts.SIM_LIST_SAID}. ` +
+      'viewport and density are measured off a picture of the window and are missing until something ' +
+      'takes one: ready measures it, and so does a take or a shot of the device. density is captured ' +
+      'pixels per pixel the device has; under 1 a store sized export would be an upscale and is refused.',
   }
 }
 
@@ -1716,6 +1983,8 @@ function simFacts(sim, bar) {
     ...(sim.screen ? { screen: `${sim.screen.w}x${sim.screen.h}`, scale: sim.screen.scale, points: sim.glass || sim.screen.points } : {}),
     ...(sim.orientation === 'landscape' ? { orientation: 'landscape, so the points a tap is aimed in are the long edge across' } : {}),
     ...(sim.viewport ? { viewport: sim.viewport } : {}),
+    // Why there is none, where there is none: the descriptions promise the result says so.
+    ...(!sim.viewport && sim.window && (sim.note || Sim.glassNote(sim)) ? { note: sim.note || Sim.glassNote(sim) } : {}),
     ...(sim.density != null ? { density: sim.density } : {}),
     ...(Sim.densityNote(sim) ? { density_note: Sim.densityNote(sim) } : {}),
     ...(bar && bar.said ? { status_bar: `Fetch set ${bar.said}, and puts back ${bar.restores} when this is over` } : {}),
@@ -1770,7 +2039,7 @@ async function simAsk(verb, sim, ctx, say) {
   if (sessionAllowed.has(key)) return true
   const who = (ctx && ctx.client) || 'An agent'
   const answer = await askPerson(`${who} ${say.wants} ${sim.name}.`, say.detail,
-    say.session ? `${say.session} until Fetch quits` : null, false, say.allow)
+    say.session ? `${say.session} until Fetch quits` : null, false, say.allow, !!say.sessionFirst)
   if (answer === 'unanswered') {
     throw new Error(`Fetch refused: driving somebody's device needs their word, and nobody was at the ` +
       'Mac to give it. Ask them in the chat and try again.')
@@ -1798,6 +2067,7 @@ async function simReady(sim, args, ctx) {
     bundle ? `launch ${bundle}` : null,
     args.status_bar === false ? null : 'set the status bar to 9:41 with full bars and a charged battery, and put your own back afterwards',
     args.appearance ? `switch it to ${String(args.appearance).toLowerCase()}` : null,
+    'take one picture of its window, to measure where the screen sits inside it',
   ].filter(Boolean)
   await simAsk('ready', sim, ctx, {
     wants: 'wants to get a simulator ready to record:',
@@ -1853,14 +2123,23 @@ async function simReady(sim, args, ctx) {
 
   // Simulator takes a moment to put the window up, and a device with no window is a
   // device Fetch cannot record, so this is worth waiting for rather than reporting.
-  const now = await simSettled(sim.udid, sim.window ? 0 : 25000)
+  const settled = await simSettled(sim.udid, sim.window ? 0 : 25000)
+  // One picture of the window, which answers two questions at once: where the glass sits
+  // inside the frame, and what is on it. Both were calls an agent had to make for itself,
+  // and the first of them is the number every tap and every crop is wrong without.
+  const since = Date.now()
+  const now = await simMeasured(settled || sim)
+  const screen = await simScreen(now, { since })
+  if (screen) changed.push('measured where the screen sits inside the window, and named what is on it')
   return {
     ...simFacts(now || sim, bar),
     changed,
+    ...(screen ? { screen } : {}),
     restore: 'record_stop puts the status bar back on its own. simulator with action restore does it by hand, ' +
       'and so does the next launch if Fetch dies mid take.',
-    do_next: `record_start { simulator: '${sim.udid}' } records that window, with sound, ` +
-      'find_on_screen on a shot of it names what is on the glass, and simulator with action tap taps the id it hands back.',
+    do_next: `record_start { simulator: '${sim.udid}' } ${Opts.READY_NEXT_SAID}, ` +
+      'and simulator with action tap taps an element id off screen above, which hands back the next screen ' +
+      'the same way.',
   }
 }
 
@@ -1885,14 +2164,24 @@ async function simGo(sim, args, ctx) {
   const url = String(args.url || '').trim()
   if (!url) throw new Error('go needs url: the deep link to open on the device, for example myapp://onboarding.')
   await simAsk('openurl', sim, ctx, {
-    wants: 'wants to open a link on', detail: `The link is ${url}. It opens on the device, not on your Mac.`,
+    wants: 'wants to open a link on', detail: `The link is ${url}. It opens on the device, not on your Mac. ` +
+      'Fetch takes one picture of the window afterwards, to see where it landed.',
     allow: 'Open it', session: `Allow links on ${sim.name}`,
   })
   simAllowed('openurl', sim, ['openurl'])
   const r = await simctl().openurl(sim.udid, url)
   if (!r.ok) throw new Error(r.reason)
+  // Where it landed, read rather than asked about. A link changes the screen, and the
+  // call that changed it is the one already holding a picture of it.
+  await new Promise(res => setTimeout(res, SCREEN_SETTLE_MS))
+  const since = Date.now()
+  await readGlass(sim.window, null, sim.screen)
+  const screen = await simScreen(sim, { since })
   return { udid: sim.udid, device: sim.name, opened: url,
-    do_next: 'take_shot with simulator to see where it landed, then find_on_screen to name what is on it.' }
+    ...(screen ? { screen } : {}),
+    do_next: screen
+      ? 'simulator with action tap takes an element id off screen above.'
+      : 'take_shot with simulator to see where it landed, then find_on_screen to name what is on it.' }
 }
 
 /**
@@ -1904,12 +2193,25 @@ async function simGo(sim, args, ctx) {
  * aimed, the same way a hand aimed zoom does.
  */
 async function simTap(sim, args, ctx) {
-  const pt = await simPoint(sim, args)
+  // The person's yes first, because aiming this tap takes a picture of their screen and
+  // a capture belongs inside the yes rather than in front of it.
   await simAsk('tap', sim, ctx, {
     wants: 'wants to send a tap to', detail: 'The touch goes into the device\'s own input path. It never moves this ' +
-      'Mac\'s mouse and never presses its keyboard.',
-    allow: 'Allow this tap', session: `Allow taps on ${sim.name}`,
+      'Mac\'s mouse and never presses its keyboard. Fetch takes a picture of that window to aim by and ' +
+      'another afterwards, to see what the tap did.',
+    allow: 'Allow this tap', session: `Allow taps on ${sim.name}`, sessionFirst: true,
   })
+  // Aimed through a measured rectangle or not at all. Where nothing has measured this
+  // window yet, one picture of it measures it here: a tap is the call that most needs
+  // the number, and the fit it used to fall back on put the finger 80 points above the
+  // button near the top of the screen.
+  if (!sim.viewport) sim = await simMeasured(sim)
+  const aimed = await simPoint(sim, args)
+  // A whole number of points, because both tools that send a touch take integers and one
+  // refuses a float outright ("invalid int value: '218.6'"), which killed every tap aimed
+  // at an element, since an element's middle is almost never whole. Rounded here, once,
+  // so the touch that is sent and the disc that is drawn are the same number.
+  const pt = { ...aimed, x: Math.round(aimed.x), y: Math.round(aimed.y) }
   simAllowed('tap', sim, ['tap'])
   const r = await simctl().tap(sim.udid, pt.x, pt.y)
   if (!r.ok) throw new Error(r.reason)
@@ -1923,33 +2225,65 @@ async function simTap(sim, args, ctx) {
     try { drawn = deps.pointer({ x: f.x, y: f.y, click: true }) }
     catch (e) { note = `the tap was sent and nothing drew it: ${e.message}` }
   }
+  // What the tap did, off one picture taken after the screen settles. This is the
+  // take_shot and the find_on_screen an agent used to spend per tap, and the ids on it
+  // are what the next tap takes.
+  await new Promise(res => setTimeout(res, SCREEN_SETTLE_MS))
+  const since = Date.now()
+  await readGlass(sim.window, null, sim.screen)
+  const screen = await simScreen(sim, { since })
   return {
     udid: sim.udid, device: sim.name,
     tapped: { x: pt.x, y: pt.y, units: 'device points' }, aimed: pt.aimed, by: r.value.by,
     ...(drawn ? { drawn: { x: drawn.x, y: drawn.y, at: drawn.at, points: drawn.points } } : {}),
     ...(note ? { note } : {}),
-    do_next: 'find_on_screen again before the next tap: the screen has moved and the ids are minted per pass.',
+    ...(screen ? { screen } : {}),
+    do_next: screen
+      ? 'the next tap takes an element id off screen above. The ids are minted on that picture, so use the ' +
+        'newest ones and never an id from an earlier call.'
+      : 'take_shot the device and call find_on_screen on it before the next tap: the screen has moved and the ' +
+        'ids are minted per pass.',
   }
 }
+
+// How long a screen is given to answer a tap before it is read. A press, a transition
+// and a settle: the same 1.2 s ui/fit.js keeps after a tap for the same reason.
+const SCREEN_SETTLE_MS = 1200
 
 // Where on the glass, in the device's own points. Everything in between is the take's:
 // the element's box is measured in the frame the edit works in, so the crop goes back on
 // before the viewport comes off.
 async function simPoint(sim, args) {
   if (!sim.screen || !sim.viewport) {
+    const why = glassWhyNot.get(glassKey(sim.window))
     throw new Error(`Fetch cannot tell where ${sim.name}'s own screen sits inside its window, so there is ` +
-      'nowhere for a tap to land. simulator with action list says what is known about the device, and ' +
-      'ready opens its window.')
+      'nowhere for a tap to land. That rectangle is measured off a picture of the window, never worked out ' +
+      `from its shape.${why ? ' The last measurement found nothing: ' + why : ''} ` +
+      'take_shot with simulator measures it, simulator with action ready measures it, and simulator with ' +
+      'action list says what is known about the device.')
   }
   const pts = sim.glass || sim.screen.points
   if (args.element != null) {
-    if (!args.path) {
-      throw new Error('a tap on an element needs path as well: the shot or recording find_on_screen was ' +
-        'called on, which is where that id was minted.')
+    // The picture the id was minted on. ready and the tap before this one each hand back
+    // the screen they left behind, so the common case is an id off the last call and no
+    // path to carry.
+    const seenHere = simSeen.get(sim.udid) || null
+    const on = args.path || (seenHere && seenHere === lastFoundOn ? seenHere : null)
+    if (!on && seenHere) {
+      throw new Error('a tap on an element needs path here: find_on_screen has named another picture since ' +
+        `${sim.name}'s last screen, and ids restart at E1 on every pass, so ${String(args.element).toUpperCase()} ` +
+        'without a path could be a different thing. Send the path the id was minted on.')
     }
+    if (!on) {
+      throw new Error('a tap on an element needs path as well: the shot or recording find_on_screen was ' +
+        'called on, which is where that id was minted. simulator with action ready hands back the screen ' +
+        'and the ids on it, and so does every tap.')
+    }
+    args = { ...args, path: on }
     const seen = foundBy.get(args.path) || null, mine = foundFor.get(args.path) || null
     const box = resolveElement(args.path, seen, mine, null, { element: args.element }).box
-    const crop = await cropOfTake(args.path)
+    // A scratch frame has no document and no crop: its boxes are the whole frame already.
+    const crop = simSeen.get(sim.udid) === args.path ? null : await cropOfTake(args.path)
     const fx = crop ? crop.x + crop.w * (box.x + box.w / 2) : box.x + box.w / 2
     const fy = crop ? crop.y + crop.h * (box.y + box.h / 2) : box.y + box.h / 2
     return { ...devicePoint(sim, fx, fy), aimed: `the middle of ${String(args.element).toUpperCase()}` }
@@ -2024,34 +2358,94 @@ async function simUndress(udid) {
   return back
 }
 
+/**
+ * The end of any take an agent started: what the file actually has, said here.
+ *
+ * record_start could only report what was wired, because at that moment there was no
+ * file. This is the one place that knows, and an agent should not have to learn that a
+ * take is silent from transcribe refusing it. A job directed before the take existed is
+ * also moved onto it here, since this is where the take starts existing.
+ */
+async function afterTake(r) {
+  const heard = takeHeard
+  takeHeard = null
+  // Probed once and handed down, since simAfterTake wants the same header.
+  let meta = null
+  const src = r && r.path ? follow(r.path) : null
+  try {
+    if (src && fs.existsSync(src)) meta = await deps.proc.probeMeta(src).catch(() => null)
+  } catch {}
+  const out = await simAfterTake(r, meta)
+  // A brief written before record_start was waiting for this file to exist.
+  let job = null
+  try {
+    if (src && fs.existsSync(src)) {
+      job = require('./director').attach(src, app ? app.getPath('userData') : require('os').tmpdir())
+    }
+  } catch {}
+  // A take the person started has no plan of its own to judge against, so it keeps the
+  // shape it always had.
+  // How loud the track is, measured once, because a track at the floor and a wired
+  // sound that failed both come back from transcribe as no speech: the judged take was
+  // -91 dB with a track on it. Bounded, since this is a stop and not an export.
+  let level = {}
+  if (heard && meta && meta.hasAudio && deps.proc && deps.proc.clipLevels) {
+    try {
+      const lv = await Promise.race([deps.proc.clipLevels(src, null),
+        new Promise(res => setTimeout(() => res(null), 15000))])
+      const t = lv && lv.take
+      if (t) level = t.lufs == null ? { floor: true } : { meanDb: t.lufs }
+    } catch {}
+  }
+  return { ...out,
+    ...(heard && meta ? { audio: Opts.takeAudio(heard, meta, level) } : {}),
+    ...(job ? { job: 'the brief you wrote before the take is now the job on it, and the steps that made the ' +
+      'take are closed', plan: job.plan } : {}) }
+}
+
 // The end of a take of a device: the glass rectangle onto the document, and everything
 // Fetch changed put back. Both happen whatever the take did.
-async function simAfterTake(r) {
+async function simAfterTake(r, known) {
   const held = takeSim
   takeSim = null
   if (!held) return r
   const back = await simUndress(held.sim.udid)
+  // The newest rectangle that passed for this window, not the one record_start happened
+  // to get: a take started on a dark launch screen measures nothing, and the taps after
+  // it that did measure are what the crop and the disc should stand on. Same window at
+  // the same size only, since a resized window is a different rectangle.
+  let sim = held.sim
+  try {
+    const sims = await simModel()
+    const hit = sims.find(x => x.udid === sim.udid)
+    if (hit && hit.viewport && glassKey(hit.window) === glassKey(sim.window)) sim = hit
+  } catch {}
   let wrote = null
   try {
     // through follow(), because a take is renamed from what was said shortly after it
     // lands and the path this call is holding may already have moved
     const src = r && r.path ? follow(r.path) : null
     if (src && fs.existsSync(src)) {
-      const meta = await deps.proc.probeMeta(src).catch(() => ({}))
+      const meta = known || await deps.proc.probeMeta(src).catch(() => ({}))
       const doc = deps.proc.readDoc(src, meta && meta.duration)
       // A finger, not an arrow, without anybody setting anything: the look decides the
       // mark and the take's target decides the look. Inert until ui/look-schema.js
       // carries cursor.style, because Look.merge keeps only what the schema names.
       const look = { ...(doc.look || {}), cursor: { ...((doc.look || {}).cursor || {}), style: 'touch' } }
-      const out = deps.proc.writeDoc(src, { ...doc, look, ...simOnDoc(held.sim) })
-      wrote = 'the device screen rectangle is on the edit, so the look crops to the glass and the ' +
-        'drawn phone is the only phone in the picture'
+      const out = deps.proc.writeDoc(src, { ...doc, look, ...simOnDoc(sim) })
+      // Said by what was written. A take with nothing measured has no rectangle on it,
+      // and saying the crop removes the Mac window there is the sentence the judge caught.
+      wrote = sim.viewport
+        ? 'the device screen rectangle is on the edit, so the look crops to the glass and the ' +
+          'drawn phone is the only phone in the picture'
+        : 'no device screen rectangle was measured for this take, so the edit has none: the Simulator\'s ' +
+          'toolbar and outline stay in the picture and a drawn phone is a plain frame. crop can take them off by hand'
       if (out && out.look && out.look.cursor && out.look.cursor.style === 'touch') {
         wrote += ', and the pointer track draws a finger rather than an arrow'
       }
     }
   } catch (e) { wrote = `the device could not be written onto the edit: ${(e && e.message) || e}` }
-  return { ...r, simulator: { ...simFacts(held.sim, held.bar),
+  return { ...r, simulator: { ...simFacts(sim, held.bar),
     ...(back ? { restored: back } : {}), ...(wrote ? { document: wrote } : {}) } }
 }
 
@@ -2208,8 +2602,14 @@ function noteFound(path, at, elements, all, { agent = true, aspect = 0 } = {}) {
   // the frame's own shape, kept so apply_edit judges a lift by the same ruler the search
   // did: a type-sized padding is square on the screen and not in fractions of the frame
   ;(agent ? foundBy : foundFor).set(path, { at, boxes, all: list, aspect })
+  // Which picture the agent last had ids minted on. Ids restart at E1 on every pass, so
+  // a tap with no path may only fall back to the device's newest screen while that
+  // screen is also the newest pass: after a find_on_screen on anything else, E5 is that
+  // other picture's E5.
+  if (agent) lastFoundOn = path
   return notes
 }
+let lastFoundOn = null
 
 /** An area the person drew, given the next id for this recording and kept. */
 function noteRegion(path, region) {
@@ -2758,6 +3158,43 @@ function storeSize(name, shot) {
   return { preset, size: fit.size, fit, ...(slow.warnings.length ? { slow: slow.warnings } : {}) }
 }
 
+/**
+ * An app preview, measured after it is written. Same rule as a still's sizeVerdict: the
+ * plan is what Fetch meant to draw and the store is only ever shown the file, so the
+ * length, the weight, the rate, the codec, the container and the rectangle all come off
+ * the file itself.
+ */
+async function clipVerdict(want, file) {
+  if (!file || !fs.existsSync(file)) return { preview: want.preset, not_written: 'no file was written to measure' }
+  const m = await deps.proc.probeMeta(file).catch(() => ({}))
+  const bytes = fs.statSync(file).size
+  const got = require('./sizes').checkClip({
+    seconds: m.duration, bytes, fps: m.fps, codec: m.vcodec || m.codec,
+    container: path.extname(file).replace('.', ''), w: m.width, h: m.height }, want.preset)
+  return {
+    preview: want.preset, what: want.what,
+    store_size: `${want.size.w}x${want.size.h}`,
+    drawn: m.width && m.height ? `${m.width}x${m.height}` : null,
+    seconds: m.duration != null ? +(+m.duration).toFixed(2) : null,
+    fps: m.fps != null ? +(+m.fps).toFixed(3) : null,
+    mb: +(bytes / 1e6).toFixed(1),
+    poster: `the store shows the frame at ${want.poster} s before anybody presses play, so something has to be on screen there`,
+    exact: !!got.ok,
+    ...(got.ok ? {} : { not_the_store_file: `${got.reason} Say so rather than uploading it.` }),
+    ...(want.warnings && want.warnings.length ? { warnings: want.warnings } : {}),
+  }
+}
+
+// How much of the picture the take is drawn across, which is what an upscale has to be
+// judged by: a framed look sits the take inside its padding on every side
+// (ui/compositor/layout.js backdropGeometry, the same clamp), and a plain one fills it.
+function drawnShare(doc) {
+  const o = require('./fetchdoc').toExportOpts(doc, {})
+  if (!o.backdrop) return 1
+  const inset = Math.min(0.22, Math.max(0.02, o.inset != null ? +o.inset : 0.08))
+  return Math.round((1 - inset * 2) * 1000) / 1000
+}
+
 // Said after the file exists, off the file's own pixels rather than off the plan: the
 // store measures the file, so this reports what the store will see.
 function sizeVerdict(want, drawn) {
@@ -2960,6 +3397,23 @@ function memoryState(file) {
 
 // `facts` is passed where the caller has already worked them out, which is how a shot
 // is measured on its shape alone rather than on a length it does not have.
+/**
+ * A brief whose size has a length window and no seconds of its own takes the window's
+ * numbers. A store refuses a preview by its length, so a job aimed at one has a length
+ * from the first call rather than from the export that refuses it, and the store's own
+ * numbers live in one table (ui/sizes.js) rather than in the director.
+ */
+function briefWithSize(brief) {
+  const b = typeof brief === 'string' ? { what: brief } : brief
+  if (!b || typeof b !== 'object' || !b.size || b.seconds != null) return brief
+  const got = require('./sizes').resolve(b.size)
+  const win = got.ok && got.preset.kind === 'video' ? got.preset.seconds : null
+  if (!win || !(win.max > 0)) return brief
+  // The top of the window, because a preview is judged on what it shows and the longest
+  // legal one shows the most. fit_to_length can be asked for less.
+  return { ...b, seconds: win.max }
+}
+
 function jobState(file, doc, step, meta, given) {
   const Director = require('./director')
   try {
@@ -3123,6 +3577,11 @@ function lookWarnings(patch, doc, file, ctx) {
   // so the engine that will draw this output is passed where it is known (the export
   // knows both). Nothing given, the compositor answers, which is what draws the stage.
   return out.concat(Look.warnings(L, { viewport: !!(doc && doc.viewport), browser, images,
+    // A take of a simulator, which has a screen rectangle to crop to where one was
+    // measured and nothing to crop to where one was not. Without this the crop that
+    // cannot happen happens silently, and the drawn phone comes out as a plain frame
+    // with the Simulator's own toolbar still inside it.
+    device: !!(doc && doc.device && doc.device.screen),
     // A shot says so, so the fields a capture cannot mean can be named rather than
     // silently doing nothing: frame.chrome clean has no viewport to draw against.
     still: !!(doc && doc.kind === 'shot'),
@@ -3131,16 +3590,20 @@ function lookWarnings(patch, doc, file, ctx) {
 
 // Point the renderer's setup at what was asked for, reusing the same state the UI
 // drives. Anything unspecified keeps the user's saved preference.
-async function applySetup(win, args) {
+async function applySetup(win, args, heard) {
   const wanted = {
     display: args.display != null ? String(args.display) : null,
     window: args.window != null ? String(args.window) : null,
-    // Off unless the agent asks. These used to fall back to the person's own defaults,
-    // so an agent recording a browser window in the background turned on their camera
-    // and microphone without anyone asking for either.
-    mic: args.mic === true,
-    systemAudio: args.system_audio === true,
-    camera: args.camera === true,
+    // What a take listens to is ui/recorder-opts.js's call, with the reason and the
+    // measurements written beside it. These used to fall back to the person's own
+    // defaults, so an agent recording a browser window in the background turned on their
+    // camera and microphone without anyone asking for either.
+    mic: heard.mic,
+    systemAudio: heard.systemAudio,
+    camera: heard.camera,
+    // Sound nobody asked for by name rides only on Fetch's own recorder, which leaves
+    // other apps out; the browser capture's system audio is everything the Mac plays.
+    sysNativeOnly: !!(heard.systemAudio && heard.asked === 'default'),
   }
   // The take borrows the person's setup card. What it held is kept aside and put back
   // when the take ends (restorePersonSetup in app.js), or their next take would aim at
@@ -3149,6 +3612,7 @@ async function applySetup(win, args) {
     const w = ${JSON.stringify(wanted)}
     if (!window.__personSetup) window.__personSetup = { mode: setup.mode, source: setup.source,
       window: setup.window, mic: setup.mic, sys: setup.sys, cam: setup.cam }
+    window.__sysNativeOnly = !!w.sysNativeOnly
     try {
       if (w.mic !== null) setup.mic = w.mic
       if (w.systemAudio !== null) setup.sys = w.systemAudio

@@ -158,6 +158,12 @@ function decide(req = {}, policy = {}) {
 // Never a request. CGRequestScreenCaptureAccess would put that dialog on the person's
 // screen on an agent's behalf, which is their call and not the agent's.
 //
+// This one grant covers the sound as well as the picture. ScreenCaptureKit's audio is
+// part of screen capture, which is why macOS 15 names the pane Screen and System Audio
+// Recording, so a take that may be recorded may record what it is recording. Nothing
+// else needs asking for and nothing else should be added here: the microphone is the
+// separate grant, and the microphone is off unless somebody asks for it.
+//
 // @param {string} status  systemPreferences.getMediaAccessStatus('screen')
 // @param {'agent'|'human'} by
 const PRIVACY_PANE = 'System Settings, Privacy and Security, Screen Recording'

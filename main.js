@@ -1424,7 +1424,14 @@ async function takeShot(opts = {}) {
       error: `Fetch refused to capture: ${verdict.unanswered}` }
   }
 
-  const { stem, dir, file } = newShotPath('png')
+  // A scratch capture is a measurement, not a picture anybody asked for: it goes to a
+  // temporary file, is never named and never lands in the person's library.
+  // ui/agent-bridge.js measures where a device's screen sits inside its window off one,
+  // on every ready, tap and take, and a take folder per measurement went to the Trash.
+  const scratch = opts.scratch === true && by === 'agent' && kind === 'window'
+  const { stem, dir, file } = scratch
+    ? { stem: null, dir: null, file: path.join(os.tmpdir(), `fetch-glass-${process.pid}-${Date.now().toString(36)}.png`) }
+    : newShotPath('png')
   // Who asked goes to the helper, because the two callers want opposite things from a
   // Mac that has never been asked: an agent wants a refusal it can report, a person
   // wants the system's own prompt. The helper is the only process that can raise it.
@@ -1464,9 +1471,10 @@ async function takeShot(opts = {}) {
   if (!got || !got.ok) {
     // Nothing was written, so the folder it would have gone in should not outlive it
     // in the library as an empty shot.
-    try { fs.rmSync(path.join(resolvedSaveDir(), stem), { recursive: true, force: true }) } catch {}
+    if (!scratch) { try { fs.rmSync(path.join(resolvedSaveDir(), stem), { recursive: true, force: true }) } catch {} }
     return { ok: false, error: (got && got.error) || 'the shot was not written', kind }
   }
+  if (scratch) return { ...got, ok: true, original: file, scratch: true, kind }
   return { ...got, ok: true, ...nameShot(file, stem, got, kind, by), dir }
 }
 ipcMain.handle('take-shot', (e, opts = {}) => takeShot(opts))

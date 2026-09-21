@@ -125,6 +125,12 @@ console.log('warnings and the engine that will draw them')
   is('and so does clean, which would otherwise draw two browsers',
     L.warnings(clean, { browser: true, viewport: false }).some(w => /chrome clean/.test(w) && /two browsers/.test(w)), true)
   is('with the page\'s place known it says nothing about it', L.warnings(clean, { browser: true, viewport: true }).some(w => /two browsers/.test(w)), false)
+  // The device's version: a take of a simulator whose glass nothing measured keeps the
+  // Simulator's toolbar and outline, and the drawn phone stands down to a plain frame.
+  is('a device take with no measured glass says the toolbar stays',
+    L.warnings(L.defaults(), { device: true, viewport: false }).some(w => /never measured/.test(w) && /plain frame/.test(w)), true)
+  is('and one that was measured says nothing about it',
+    L.warnings(L.defaults(), { device: true, viewport: true }).some(w => /never measured/.test(w)), false)
   const img = L.merge(L.defaults(), { background: { kind: 'image', image: 'img:nope.jpg' } }).look
   is('an image nobody has is named', L.warnings(img, { images: ['img:meadow.jpg'] }).some(w => /img:nope\.jpg/.test(w)), true)
   is('an image in the list is not', L.warnings(img, { images: ['img:nope.jpg'] }).some(w => /img:nope/.test(w)), false)
@@ -161,7 +167,9 @@ console.log('the inspector and the agent docs')
   // three keys fields, and [gif] becoming [classic] on every field the classic renderer
   // leaves out, which is a longer word on a lot of lines and a truer one. Again at the
   // simulator round: cursor.style, which is what tells a finger from an arrow.
-  is('the agent docs fit a token budget', doc.length < 12000, true)
+  // 12,800 rather than 12,000: the schema docs reached 11,857 with the device fields, and
+  // 143 characters is not room for the next field, only a reason to cut prose to fit it.
+  is('the agent docs fit a token budget', doc.length < 12800, true)
   is('no em dashes in the agent docs', /\u2014/.test(doc), false)
   is('when hides a field that does not apply', L.visible(S.BY_PATH.get('background.color'), L.defaults()), false)
   is('the advanced fields are a handful, so one disclosure holds them',

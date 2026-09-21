@@ -188,25 +188,42 @@ const SHELL = {
 // does the same work, so a capture with its top gone has no chrome left to collide with.
 //
 // And where the content's own rectangle inside the capture is known, that settles it
-// outright, which is the case a device screen brings. A simulator's window is very
-// nearly the screen: measured here the viewport starts at the window's own top edge, so
-// the crop that takes the device's outline off takes nothing off the top, and the rule
-// above alone called a picture that is now only the screen a picture with chrome in it.
-// A crop that lands inside the viewport has the content and nothing round it, wherever
-// the edges it removed happened to be, so the shell drawn round it is the only shell.
+// outright. A crop that lands inside that rectangle has the content and nothing round
+// it, wherever the edges it removed happened to be, so the shell drawn round it is the
+// only shell.
+//
+// A take of a device's own window is the case those three got wrong between them, and
+// the judge saw it as two bezels, two notches and a Mac toolbar in a picture whose whole
+// promise was one phone (.context/survey/sim-taste.md). It carries `screen`, the
+// device's own framebuffer, which is the one thing that says the capture is a machine
+// inside a window: a floating toolbar, a transparent gap, a drawn bezel, and then the
+// glass (.context/survey/st-t0.md). A recording says no `captured` at all, so the first
+// fact was silent on it and the phone came out with its slit on. Nothing in the
+// capture's shape gives it away either: on two of the three devices measured, the whole
+// window is within a percent of the screen's own aspect, so a rule that compared the two
+// would pass exactly where it is needed.
+//
+// So for those, the crop against the measured rectangle is the whole of it, in both
+// directions. Inside it, the picture is the glass and Fetch's phone is the only phone.
+// Not inside it, or no rectangle measured at all, and the device's own body is still in
+// the picture: a missing measurement is not permission to guess, since the guess costs a
+// second bezel where the truth costs a plain frame.
 //
 // Same question ui/review.js asks before it names double-chrome, and the same answer, so
 // the picture and the judge of the picture cannot disagree about what is in it.
 const CHROME_OF = { window: true, display: true, region: false }
 const VIEW_EPS = 0.002   // the tolerance ui/fetchdoc.js chromeCrop matches a crop on
+const WHOLE = { x: 0, y: 0, w: 1, h: 1 }
 function insideView(crop, v) {
   if (!v || !(v.w > 0) || !(v.h > 0)) return false
   return crop.x >= v.x - VIEW_EPS && crop.y >= v.y - VIEW_EPS &&
     crop.x + crop.w <= v.x + v.w + VIEW_EPS && crop.y + crop.h <= v.y + v.h + VIEW_EPS
 }
-function ownChrome(captured, crop, viewport) {
-  if (crop && crop.w > 0 && crop.h > 0 && (crop.y > 0.01 || insideView(crop, viewport))) return false
-  return !!(captured && CHROME_OF[captured.kind])
+function ownChrome(cap = {}) {
+  const crop = cap.crop && cap.crop.w > 0 && cap.crop.h > 0 ? cap.crop : null
+  if (cap.screen) return !insideView(crop || WHOLE, cap.viewport)
+  if (crop && (crop.y > 0.01 || insideView(crop, cap.viewport))) return false
+  return !!(cap.captured && CHROME_OF[cap.captured.kind])
 }
 
 // What the bar says, and in which of its two voices.
@@ -265,23 +282,28 @@ function bezel(kind, address, own) {
 /**
  * Where a drawn device sits, in output pixels, or null when the look asks for none.
  *   D       the look's device section
- *   chrome  the look's frame.chrome: clean draws the browser frame on its own, which
- *           is the whole of that setting's third option (the crop that removes the
- *           real chrome is the document's, ui/fetchdoc.js chromeCrop). It only draws
- *           where that crop could happen: with no viewport the take still carries its
- *           own tabs and toolbar, and a drawn browser round them is two browsers.
- *           Look.warnings says so in the same case.
+ *   chrome  the look's frame.chrome: clean draws Fetch's own frame in place of the one
+ *           it cropped off, which is the whole of that setting's third option (the crop
+ *           itself is the document's, ui/fetchdoc.js chromeCrop). It only draws where
+ *           that crop could happen: with no viewport the take still carries its own
+ *           tabs and toolbar, and a drawn browser round them is two browsers.
+ *           Look.warnings says so in the same case. Which frame is what the capture was
+ *           of: a phone where the crop took a device's own window off a device's own
+ *           screen, since a bar with a title in it over a handset's glass is the same
+ *           doubling the other way round, and a browser everywhere else.
  *   g       the layout's geometry, gut the take's corner floor, end the ground's own end
  *   bg      the ground, for the shell's own tone
- *   cap     { viewport, captured, crop }: what the capture was of and what is left of it
+ *   cap     { viewport, captured, crop, screen }: what the capture was of, what is left
+ *           of it, and the device's own framebuffer where it was a capture of a machine
  */
 function devicePlan(D = {}, chrome, g, corner, end, bg = {}, cap = {}) {
-  const kind = DEVICES[D.kind] ? D.kind : (chrome === 'clean' && cap.viewport ? 'browser' : null)
+  const kind = DEVICES[D.kind] ? D.kind
+    : chrome === 'clean' && cap.viewport ? (cap.screen ? 'phone' : 'browser') : null
   if (!kind) return null
   const d = DEVICES[kind]
   const a = g.vidW / g.vidH
   const base = d.base || 0
-  const own = ownChrome(cap.captured, cap.crop, cap.viewport)
+  const own = ownChrome(cap)
   const text = barText(D.title, cap.captured)
   const bez = bezel(kind, text.address, own)
   // the largest screen of the take's own shape that leaves room for the shell round it
@@ -408,13 +430,15 @@ function groupLayout(list, gap, align) {
  * The group as the caller states it, in this module's own words, or null where there is
  * nothing to arrange. A group of one is a take, and goes down the path a take goes down.
  *   opts.group  { gap, align, members } or just the members
- * A member is { src, w, h, scale, ppi, mm, device, title, captured, crop, viewport }: its
- * file, its captured pixels, what is known about how big the thing really is, what it was
- * a capture of, and the frame it wears. The frame is the member's own, because a handset
- * and a browser window in one picture is the case this exists for; where a member does not
- * name one it wears the look's. So is the chrome question: each member answers it about
- * its own capture, viewport and all, which is the only way a handset with no title bar can
- * stand beside a window that has one and both be drawn right.
+ * A member is { src, w, h, scale, ppi, mm, device, title, captured, crop, viewport,
+ * screen }: its file, its captured pixels, what is known about how big the thing really
+ * is, what it was a capture of, and the frame it wears. The frame is the member's own,
+ * because a handset and a browser window in one picture is the case this exists for;
+ * where a member does not name one it wears the look's. So is the chrome question: each
+ * member answers it about its own capture, viewport and all, through the one rule, which
+ * is the only way a handset with no title bar can stand beside a window that has one and
+ * both be drawn right. No member carries `screen` today, since a simulator in a group is
+ * not built; it is read here so that the day one does, it answers as a take of one does.
  */
 function groupSpec(raw, D = {}, radius = 0) {
   const members = (Array.isArray(raw) ? raw : (raw && raw.members) || []).filter(Boolean).slice(0, GROUP_MAX)
@@ -426,7 +450,7 @@ function groupSpec(raw, D = {}, radius = 0) {
     const cw = c ? 2 * Math.floor(w * c.w / 2) : w & ~1, chh = c ? 2 * Math.floor(h * c.h / 2) : h & ~1
     const asked = m.device === undefined || m.device === null ? D.kind : m.device
     const kind = DEVICES[asked] ? asked : null
-    const own = ownChrome(m.captured, c, m.viewport)
+    const own = ownChrome({ captured: m.captured, crop: c, viewport: m.viewport, screen: m.screen })
     const text = barText(m.title == null ? D.title : m.title, m.captured)
     const q = { src: m.src || null, w, h, scale: m.scale, ppi: m.ppi, mm: m.mm, kind,
       ...text, own, bez: kind ? bezel(kind, text.address, own) : null,
@@ -884,7 +908,7 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   // take's black corner never shows; frame.radius belongs to a take with no device
   const device = framed && !gl
     ? devicePlan(L('device'), L('frame').chrome, g, corner, end0, bg,
-      { viewport: opts.viewport, captured: opts.captured, crop: opts.crop })
+      { viewport: opts.viewport, captured: opts.captured, crop: opts.crop, screen: opts.screen })
     : null
   // A group has no one device and no one screen: each member carries its own, and what
   // stands in for the take everywhere else (the grade's reach, the caption band, a title

@@ -43,8 +43,19 @@ t('a brief is written and reads back whole', () => {
     what: 'the import and export of a project',
     seconds: 60, aspect: '16:9', where: 'landing page', audience: 'people who have never seen it',
     must_keep: ['the import step', 'the export step'], must_hide: ['the API key'],
+    device: null, app: null, size: null,
   })
   assert.deepStrictEqual(D.read(src).brief, r.brief)
+})
+
+// "brief wants an object" cost a call in the judged run, and a refusal that teaches an
+// argument shape is the cheapest call in the product to delete.
+t('a brief sent as one line is a brief, not a refusal', () => {
+  const src = take('OneLine')
+  const r = D.direct(src, { brief: 'a 30 second preview of the onboarding' }, { now: NOW })
+  assert.strictEqual(r.brief.what, 'a 30 second preview of the onboarding')
+  assert.strictEqual(D.direct(src, { brief: { seconds: 30 } }, { now: NOW + 1 }).brief.what,
+    'a 30 second preview of the onboarding')
 })
 
 // what a picture is for. A still has no length, so on a shot this is nearly the whole
@@ -223,6 +234,159 @@ t('junk in the patch does not become a step or a brief', () => {
   assert.strictEqual(r.job.brief.seconds, null)
   assert.strictEqual(r.job.brief.aspect, '42')
   assert.strictEqual(D.distance(r.job, { aspect: '16:9' }).aspect, null, 'a shape that parses to nothing is not a demand')
+})
+
+// ── a job whose shape is already known ──────────────────────────────────────
+// The named device job was judged at nineteen calls against the five it was sold as,
+// and the calls that were not a bug were an agent rediscovering a path that never
+// changes. These pin the path.
+
+console.log('\na job whose shape is already known')
+
+t('a brief that names a device is a device job, and anything else is an edit', () => {
+  assert.strictEqual(D.shapeOf(D.normalizeBrief({ device: 'Yolk-ProMax' })), 'device')
+  assert.strictEqual(D.shapeOf(D.normalizeBrief({ seconds: 60, where: 'landing page' })), null)
+  assert.deepStrictEqual(D.outline(D.normalizeBrief({ seconds: 60 })), [])
+})
+
+t('the device job lays its own plan out, and every step is a call with its arguments', () => {
+  const src = take('Device')
+  const r = D.direct(src, {
+    brief: { what: 'the onboarding', device: 'Yolk-ProMax', app: 'com.yolkling.ios', seconds: 28, size: 'app-preview-6.9' },
+  }, { now: NOW })
+  assert.deepStrictEqual(r.plan.steps.map(s => s.call.tool),
+    ['simulator', 'record_start', 'simulator', 'record_stop', 'fit_to_length', 'export'])
+  assert.deepStrictEqual(r.plan.next.call,
+    { tool: 'simulator', args: { action: 'ready', device: 'Yolk-ProMax', app: 'com.yolkling.ios' } })
+  // the two calls the judge spent on argument shapes: the size enum and the length
+  const by = Object.fromEntries(r.plan.steps.map(s => [s.call.tool, s.call.args]))
+  // with a take under the job, the calls that need one name it
+  assert.deepStrictEqual(by.export, { path: src, size: 'app-preview-6.9' })
+  assert.deepStrictEqual(by.fit_to_length, { path: src, seconds: 28 })
+  assert.deepStrictEqual(by.record_start, { simulator: 'Yolk-ProMax' })
+  assert.strictEqual(r.plan.line, '0 of 6')
+})
+
+t('with no length asked there is nothing to fit, so the step is not there to be closed', () => {
+  const src = take('NoLength')
+  const r = D.direct(src, { brief: { device: 'Yolk-SE' } }, { now: NOW })
+  assert.deepStrictEqual(r.plan.steps.map(s => s.call.tool),
+    ['simulator', 'record_start', 'simulator', 'record_stop', 'export'])
+  assert.deepStrictEqual(r.plan.steps[4].call.args, { path: src }, 'a size nobody named is not guessed at')
+})
+
+t('a size named on a later call reaches the export step, and nothing already closed reopens', () => {
+  const src = take('LateSize')
+  D.direct(src, { brief: { device: 'Yolk-ProMax' } }, { now: NOW })
+  const closed = D.direct(src, { done: ['P1', 'P2'] }, { now: NOW + 1 })
+  assert.strictEqual(closed.plan.line, '2 of 5')
+  const r = D.direct(src, { brief: { size: 'app-preview-6.9', seconds: 28 } }, { now: NOW + 2 })
+  const ex = r.plan.steps.find(s => s.call.tool === 'export')
+  assert.deepStrictEqual(ex.call.args, { path: src, size: 'app-preview-6.9' })
+  assert.deepStrictEqual(r.plan.steps.filter(s => s.state === 'done').map(s => s.id), ['P1', 'P2'])
+  assert.ok(r.plan.steps.some(s => s.call.tool === 'fit_to_length'), 'the length arrived, so the step did')
+})
+
+t('a plan the agent wrote is never overruled by the shape', () => {
+  const src = take('Mine')
+  D.direct(src, { plan: ['cut to the three moments', 'export'] }, { now: NOW })
+  const r = D.direct(src, { brief: { device: 'Yolk-ProMax' } }, { now: NOW + 1 })
+  assert.deepStrictEqual(r.plan.steps.map(s => s.what), ['cut to the three moments', 'export'])
+  assert.ok(!r.plan.steps.some(s => s.call))
+})
+
+t('reading a shaped job back does not touch it, so a plan is not dirtied by being looked at', () => {
+  const src = take('Stable')
+  D.direct(src, { brief: { device: 'Yolk-ProMax', seconds: 28, size: 'app-preview-6.9' } }, { now: NOW })
+  const once = fs.readFileSync(D.jobPath(src), 'utf8')
+  const again = D.direct(src, {}, { now: NOW + 5000 })
+  assert.strictEqual(fs.readFileSync(D.jobPath(src), 'utf8'), once)
+  assert.strictEqual(again.plan.next.call.tool, 'simulator')
+  assert.deepStrictEqual(D.normalize(JSON.parse(once)), JSON.parse(once), 'normalize is still a fixed point')
+})
+
+t('a step keeps its call across a re-plan that sends the same words back as lines', () => {
+  const src = take('Relines')
+  const first = D.direct(src, { brief: { device: 'Yolk-ProMax' } }, { now: NOW })
+  const words = first.plan.steps.map(s => s.what)
+  const r = D.direct(src, { plan: words }, { now: NOW + 1 })
+  assert.deepStrictEqual(r.plan.steps.map(s => s.id), first.plan.steps.map(s => s.id))
+  assert.strictEqual(r.plan.steps[0].call.tool, 'simulator')
+})
+
+// ── a job that exists before the take does ──────────────────────────────────
+
+console.log('\na job that exists before the take does')
+
+t('a job can be directed with no take under it, and it waits in the folder it was given', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-pending-'))
+  const r = D.direct(null, { brief: { device: 'Yolk-ProMax', seconds: 28, size: 'app-preview-6.9' } }, { dir: home, now: NOW })
+  assert.strictEqual(r.waiting, true)
+  assert.strictEqual(r.file, D.pendingPath(home))
+  assert.ok(fs.existsSync(r.file))
+  assert.strictEqual(r.plan.next.call.args.device, 'Yolk-ProMax')
+  // a second call before the take exists refines the same waiting job
+  const more = D.direct(null, { brief: { app: 'com.yolkling.ios' } }, { dir: home, now: NOW + 1 })
+  assert.strictEqual(more.brief.device, 'Yolk-ProMax')
+  assert.strictEqual(more.plan.next.call.args.app, 'com.yolkling.ios')
+  assert.throws(() => D.direct(null, { brief: { device: 'x' } }, { now: NOW }), /folder to wait in/)
+  fs.rmSync(home, { recursive: true, force: true })
+})
+
+t('record_stop moves the waiting job onto the take, and it is not left to catch the next one', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-pending-'))
+  const src = take('Attach')
+  D.direct(null, { brief: { device: 'Yolk-ProMax', seconds: 28 } }, { dir: home, now: NOW })
+  const r = D.attach(src, home, NOW + 1)
+  assert.strictEqual(r.brief.device, 'Yolk-ProMax')
+  assert.strictEqual(D.read(src).brief.seconds, 28)
+  assert.strictEqual(D.readPending(home, NOW + 2), null, 'the waiting job is taken, not copied')
+  assert.strictEqual(D.attach(take('Attach2'), home, NOW + 3), null)
+  fs.rmSync(home, { recursive: true, force: true })
+})
+
+t('once the take exists, the steps that made it are closed and next is the length, with the take named', () => {
+  // Nothing in simulator, record_start or record_stop takes a step, so left open the
+  // plan's next call stayed 'simulator ready' for the rest of the job.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-pending-'))
+  const src = take('Closes')
+  D.direct(null, { brief: { device: 'Yolk-ProMax', seconds: 28, size: 'app-preview-6.9' } }, { dir: home, now: NOW })
+  const r = D.attach(src, home, NOW + 1)
+  assert.deepStrictEqual(r.plan.steps.filter(s => s.state === 'done').map(s => s.id), ['P1', 'P2', 'P3', 'P4'])
+  assert.strictEqual(r.plan.next.call.tool, 'fit_to_length')
+  assert.deepStrictEqual(r.plan.next.call.args, { path: src, seconds: 28 })
+  const later = D.forEdit(src, null)
+  assert.strictEqual(later.plan.next.id, 'P5', 'and stays there when the plan is read back')
+  fs.rmSync(home, { recursive: true, force: true })
+})
+
+t('a take that already has a job keeps it, and the waiting job is still cleared away', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-pending-'))
+  const src = take('Keeps')
+  D.direct(null, { brief: { device: 'Yolk-SE', seconds: 10 } }, { dir: home, now: NOW })
+  D.direct(src, { brief: { seconds: 60, aspect: '16:9' } }, { now: NOW + 1 })
+  assert.strictEqual(D.attach(src, home, NOW + 2), null)
+  assert.strictEqual(D.read(src).brief.seconds, 60)
+  assert.strictEqual(D.readPending(home, NOW + 3), null)
+  fs.rmSync(home, { recursive: true, force: true })
+})
+
+t('a job nobody attached within the day is not this take\'s job', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-pending-'))
+  D.direct(null, { brief: { device: 'Yolk-ProMax' } }, { dir: home, now: NOW })
+  assert.ok(D.readPending(home, NOW + D.PENDING_STALE))
+  assert.strictEqual(D.readPending(home, NOW + D.PENDING_STALE + 1), null)
+  assert.strictEqual(D.attach(take('Stale'), home, NOW + D.PENDING_STALE + 1), null)
+  fs.rmSync(home, { recursive: true, force: true })
+})
+
+t('the length the brief asks for is measured on every call, not discovered at export', () => {
+  const src = take('Far')
+  D.direct(src, { brief: { device: 'Yolk-ProMax', seconds: 28, size: 'app-preview-6.9' } }, { now: NOW })
+  const s = D.forEdit(src, { seconds: 202.3 })
+  assert.strictEqual(s.distance.ok, false)
+  assert.ok(s.distance.line.startsWith('202.3 s against 28 asked, 174.3 s over'))
+  assert.strictEqual(s.plan.next.call.tool, 'simulator')
 })
 
 fs.rmSync(dir, { recursive: true, force: true })

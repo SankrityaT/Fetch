@@ -75,9 +75,14 @@ const BATTERY_STATE = { 0: 'discharging', 1: 'charging', 2: 'charged' }
 // argv is per tool because each one spells a tap differently. A name that is not in
 // here is not guessed at: an invented command line against somebody's binary is worse
 // than saying there is nothing to drive.
+// Whole points, because both take integers and idb refuses a float outright ("invalid
+// int value: '218.6'"), which killed every tap aimed at an element. The bridge rounds
+// first; this is the second guard, so the one argv Fetch composes is never the one that
+// fails.
+const whole = n => String(Math.round(Number(n)))
 const TAP_TOOLS = {
-  axe: { args: (udid, x, y) => ['tap', '-x', String(x), '-y', String(y), '--udid', udid] },
-  idb: { args: (udid, x, y) => ['ui', 'tap', '--udid', udid, String(x), String(y)] },
+  axe: { args: (udid, x, y) => ['tap', '-x', whole(x), '-y', whole(y), '--udid', udid] },
+  idb: { args: (udid, x, y) => ['ui', 'tap', '--udid', udid, whole(x), whole(y)] },
 }
 
 const NO_TAP = 'nothing on this Mac can send a touch to a simulator. simctl has no tap. ' +
@@ -622,7 +627,7 @@ function make(deps = {}) {
       return fail('tap-failed', `${tool.name} could not send that touch, and Fetch did not write it, so there is ` +
         `nothing here to fix: ${detail(r.err) || `it exited ${r.code}`}. Record the person tapping instead.`)
     }
-    return ok({ udid, x: Number(x), y: Number(y), by: tool.name })
+    return ok({ udid, x: Math.round(Number(x)), y: Math.round(Number(y)), by: tool.name })
   }
 
   return {

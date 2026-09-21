@@ -24,6 +24,11 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const simctl = require('../ui/simctl')
 const Sizes = require('../ui/sizes')
+// What a take listens to, said in the file that decides it. Three descriptions here and
+// in ui/agent-bridge.js promised a simulator take an audio track while the default was
+// off, and an agent found out from transcribe that the file was silent. A description
+// that reads the constant cannot promise what the default does not wire.
+const RecOpts = require('../ui/recorder-opts')
 const HOUSE_BAR_SAID = simctl.describeBar(simctl.HOUSE_BAR)
 const SIZE_LIST = Sizes.list().map(p => `${p.id} (${p.w}x${p.h}, ${p.kind})`).join(', ')
 
@@ -105,13 +110,14 @@ export function build() {
         'only when the person asked for the whole screen. If the window is mostly covered by other windows, ' +
         'nothing is recorded and this returns status "occluded" with what covers it, the ' +
         'display it is on and the crop that shows just that window. ' +
-        'With simulator, the device is resolved to its window and recorded there. The take has an audio ' +
-        'track, which is what keeps the transcript, the beats and the captions on a device demo, where a ' +
-        'capture of the device framebuffer has no audio track at all. Fetch records the Mac window, so ' +
-        'what lands is what that window is playing: do not promise the person more than that. ' +
-        'The status bar is set to 9:41 for the take and put back on record_stop, and the device screen ' +
+        'With simulator, the device is resolved to its window and recorded there. ' +
+        RecOpts.SIM_AUDIO_SAID + ' ' +
+        'The status bar is set to 9:41 for the take and put back on record_stop. Where the device screen ' +
+        'sits inside that window is measured off one picture of it before the take starts, and that ' +
         'rectangle goes onto the edit, so the look crops the Mac window off and the drawn phone is the ' +
-        'only phone in the picture.',
+        'only phone in the picture. Measured and not worked out: a window has a toolbar and a bezel in ' +
+        'it, so where nothing could be measured there is no rectangle, the result says so, and the ' +
+        'picture keeps the whole window rather than a crop aimed at a guess.',
       inputSchema: z.object({
         display: z.string().optional()
           .describe('Display id to record the whole of. Only when the person asked for the whole screen.'),
@@ -127,7 +133,7 @@ export function build() {
         allow_covered: z.boolean().optional()
           .describe('Record a window even when other windows cover it. Its covered part will not update.'),
         mic: z.boolean().optional().describe('Include the microphone. Default off.'),
-        system_audio: z.boolean().optional().describe('Include audio playing on the Mac. Default off.'),
+        system_audio: z.boolean().optional().describe(RecOpts.SYS_AUDIO_ARG_SAID),
         camera: z.boolean().optional().describe('Record the camera bubble. Default off; only when the person asked for their face.'),
         name: z.string().optional()
           .describe('Name for the take, e.g. "Linear · Issue Triage". Used as given and never replaced. ' +
@@ -153,7 +159,11 @@ export function build() {
         'returns its path with stopped_early set. If a recorded window showed nothing new for ' +
         'several seconds (usually because another window covered it), note says so. A take given ' +
         'no name may be renamed shortly after, from what was said; the path returned here keeps ' +
-        'working with every tool, and list_recordings shows the new one.',
+        'working with every tool, and list_recordings shows the new one. ' +
+        'audio on the result is read off the written file rather than off what was asked for, so a take ' +
+        'that came out silent says so here instead of leaving transcribe to break the news. A device take ' +
+        'also puts back everything Fetch changed on the device and writes the device screen rectangle onto ' +
+        'the edit, and a brief directed before the take existed becomes the job on it.',
       inputSchema: z.object({}),
     },
     async () => text(await drive('record.stop', {}, { timeoutMs: 3 * 60 * 1000 })))
@@ -236,9 +246,10 @@ export function build() {
         'List the windows currently open on screen, with the id record_start and take_shot take. ' +
         'Use this to record or capture one application window rather than a whole display, for ' +
         'example a browser a test driver just opened. A simulator window carries device: which ' +
-        'device is inside it, its own screen, where the glass sits in the window, and density, so ' +
-        'there is nothing to match on the app name for. The simulator tool lists the devices ' +
-        'themselves, including the ones with no window up yet.',
+        'device is inside it and its own screen, so there is nothing to match on the app name for. ' +
+        'Where the glass sits inside that window and density come with it once something has taken a ' +
+        'picture of the window to measure them, and this call takes none. The simulator tool lists the ' +
+        'devices themselves, including the ones with no window up yet, and its ready measures one.',
       inputSchema: z.object({
         app: z.string().optional()
           .describe('Only return windows whose application or title contains this, case insensitive.'),
@@ -270,20 +281,27 @@ export function build() {
       description:
         'The iOS simulators on this Mac, and the few things Fetch does to one. Recording a simulator ' +
         'is record_start with simulator, and a screenshot of one is take_shot with simulator: the ' +
-        'window is captured where it sits, with an audio track on it, and nothing is ever brought to ' +
-        'the front.\n' +
-        'list: every device, its state, its own screen in pixels and points, its window if one is on ' +
-        'screen, and density, the captured pixels per pixel the device really has. Under 1 the window ' +
-        'is scaled down and an exact store size is refused, which the note beside it says how to fix.\n' +
+        'window is captured where it sits and nothing is ever brought to the front. A take of it ' +
+        'carries that window\'s own sound by default, where a capture of the device framebuffer has ' +
+        'no audio track at all.\n' +
+        'list: every device, its state, its own screen in pixels and points, and its window if one is ' +
+        'on screen. Where a picture of that window has been taken it also carries the screen rectangle ' +
+        'inside it and density, the captured pixels per pixel the device really has: under 1 the window ' +
+        'is scaled down and an exact store size is refused, which the note beside it says how to fix. ' +
+        'Both are measurements, so a device nothing has captured yet has neither, and list takes no ' +
+        'picture of its own.\n' +
         `ready: boot a device, open its window in the background, install an app, launch it, set ` +
-        `the status bar (${HOUSE_BAR_SAID}), and switch the appearance. The result names every one ` +
-        'of those in words, and record_stop puts back the status bar and the appearance, as does the ' +
-        'next launch of Fetch if it died mid take.\n' +
+        `the status bar (${HOUSE_BAR_SAID}), switch the appearance, and take one picture of the window ` +
+        'to measure where the screen sits inside it. The result names every one of those in words and ' +
+        'comes back with the elements on the glass and the ids a tap takes, so the next call is the ' +
+        'tap. record_stop puts back the status bar and the appearance, as does the next launch of ' +
+        'Fetch if it died mid take.\n' +
         'go: open a deep link on the device. It lands on the same screen every time, where a run of ' +
         'taps does not, so prefer it for getting somewhere.\n' +
-        'tap: send one touch and report it onto the take in the same call, so the video draws a finger ' +
-        'where it landed and nothing is aimed twice. Aim it with find_on_screen and send the id it ' +
-        'handed back, never a coordinate read off a picture.\n' +
+        'tap: send one touch, report it onto the take in the same call so the video draws a finger ' +
+        'where it landed, then read the screen it left behind and hand back the new ids. Aim it with ' +
+        'an element id, never a coordinate read off a picture: ready and the tap before this one both ' +
+        'hand the ids back, and find_on_screen mints them on any shot of the device.\n' +
         'restore: put the status bar and the appearance back by hand, on the device a recording is of ' +
         'when none is named. It is automatic on record_stop.\n' +
         'Booting, installing, launching, opening a link and tapping each need the person\'s word, and ' +
@@ -307,9 +325,11 @@ export function build() {
           .describe('ready: default true. The person\'s own values are read and written down first, and go back.'),
         url: z.string().optional().describe('go: the deep link to open on the device.'),
         element: z.string().optional()
-          .describe('tap: an element id from find_on_screen (E12). This is how a tap is aimed.'),
+          .describe('tap: an element id (E12), off the screen the last ready or tap handed back, or from ' +
+            'find_on_screen. This is how a tap is aimed.'),
         path: z.string().optional()
-          .describe('tap: Absolute path to the shot or recording find_on_screen was called on, where that id was minted.'),
+          .describe('tap: Absolute path to the shot or recording find_on_screen was called on, where that id was ' +
+            'minted. Leave it out for an id off the last ready or tap on this device.'),
         x: z.number().optional()
           .describe('tap: across, in the device\'s own points, for when nothing on screen can be named. ' +
             'Reported back as hand aimed, the same way a hand aimed zoom is.'),
@@ -335,8 +355,11 @@ export function build() {
         'look at it, review to check it, and export to write the finished PNG. ' +
         'The result carries a picture of what was captured, so there is nothing to call to see it. ' +
         'With simulator, the device is resolved to its window, the status bar is set to 9:41 for the one ' +
-        'frame and put straight back, and the device screen rectangle goes onto the shot, so the picture ' +
-        'is the glass and not a Mac window with a phone drawn round a phone. ' +
+        'frame and put straight back, and the capture is measured to find where the device screen sits ' +
+        'inside the window. That rectangle goes onto the shot, so the picture is the glass and not a Mac ' +
+        'window with a phone drawn round a phone, and it is what the next tap is aimed through. Measured ' +
+        'off this very picture, so where an app painted black to its own edge leaves nothing to measure ' +
+        'the result says so and the whole window is kept rather than a guess cropped to. ' +
         'With neither window nor display, Fetch captures the window of the app in front (never Fetch ' +
         'itself, never the terminal you run in), and the result names it. The person\'s own pointer is ' +
         'left out unless you ask for it, the window\'s own drop shadow is never in the file (Fetch draws ' +
@@ -585,9 +608,13 @@ export function build() {
         'you send is merged, and a step whose words you leave alone keeps its id and its state. ' +
         'A shot is a job like any other and takes the same call; its distance is measured on its shape ' +
         'alone, since one frame has no length, and brief.what is then the field that says what the ' +
-        'picture is for. review reads it, so a picture with no brief is a picture nothing can judge.',
+        'picture is for. review reads it, so a picture with no brief is a picture nothing can judge. ' +
+        'A brief naming a device gets the whole device job back already laid out, with the call every ' +
+        'step is: the tool\'s own name and the arguments the brief has answered.',
       inputSchema: z.object({
-        path: z.string().describe('Absolute path to the recording, or to a shot.'),
+        path: z.string().optional().describe('Absolute path to the recording, or to a shot. Leave it out to ' +
+          'direct a job before the take exists, which is how a job that films a device starts: record_stop ' +
+          'puts the brief onto the take it turns out to be about.'),
         brief: z.object({
           what: z.string().nullable().optional()
             .describe('What the thing is, in the person\'s own words: "a help centre hero of the library", ' +
@@ -602,6 +629,12 @@ export function build() {
           audience: z.string().nullable().optional().describe('Who watches it, if the person said.'),
           must_keep: z.array(z.string()).optional().describe('Moments or phrases that have to survive the cut.'),
           must_hide: z.array(z.string()).optional().describe('Anything on screen that must not ship: an email address, a key, a customer name.'),
+          device: z.string().nullable().optional().describe('The device this job films, by name or UDID. Naming it ' +
+            'makes this a device job: the plan comes back already laid out and every step carries the call it is.'),
+          app: z.string().nullable().optional().describe('The bundle id of the app on that device, e.g. "com.example.ios".'),
+          size: z.string().nullable().optional().describe('The size the deliverable goes out at, e.g. "app-preview-6.9". ' +
+            'It is written into the export step so the call is right the first time, and a size with a length ' +
+            'window fills in seconds where the brief did not say.'),
         }).optional().describe('What was asked for. Merged with what is there; null on a field clears it.'),
         plan: z.array(z.string()).optional()
           .describe('The steps, in order, one short line each, up to twelve, e.g. ["cut to the three moments that matter", ' +
@@ -845,7 +878,15 @@ export function build() {
         'size names an exact store size instead, and the result says whether the file really is that pair ' +
         'of numbers. A capture the size would have to enlarge is refused before anything is drawn, because ' +
         'a soft store asset is worse than none, and the refusal names the device to shoot on instead. ' +
-        'A video format on a shot is refused by name.',
+        'A video format on a shot is refused by name.\n' +
+        'AN APP PREVIEW: size on a recording writes the store\'s own video. The rectangle, the length, the ' +
+        'frame rate, the codec and the weight are all decided before a frame is drawn and named in one list ' +
+        'where any of them does not hold. Frames are dropped and never invented: the rate is the take\'s own ' +
+        'divided by a whole number, so a 60 frame take halves onto the cap exactly. The sound is one stereo AAC ' +
+        'track at 256 kbps and 48 kHz, silence of that shape where the take has none. Whether the capture is ' +
+        'enlarged is judged at the share of the picture the look draws it at, so a refusal names the ' +
+        'frame.padding that puts it at its own pixels. The result carries store, ' +
+        'read off the written file, with the poster frame the viewer sees before pressing play.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording, or to a shot.'),
         format: z.enum(['mp4', 'webm', 'gif', 'mov', 'm4a', 'mp3', 'wav', 'png', 'jpg']).optional()
@@ -857,10 +898,17 @@ export function build() {
             'the older names for high and small and still work.'),
         resolution: z.enum(['720', '1080']).optional().describe('Omit to keep the original size.'),
         size: z.string().optional()
-          .describe(`A store size by name, on a shot: ${SIZE_LIST}. ` +
-            'Exact integers, never an aspect, because a file one pixel out is rejected. A capture that ' +
-            'cannot fill it is refused with the two ways to fix it, rather than enlarged. This is a size, ' +
-            'not a look: apply_look takes the preset that styles a picture.'),
+          .describe(`A store size by name: ${SIZE_LIST}. On a shot, a still size. On a recording, an app ` +
+            'preview, which is also 15 to 30 seconds long, 30 frames a second or under, H.264, and 500 MB ' +
+            'or under: everything that does not hold is named before anything is drawn, and the file is ' +
+            'measured again after it is written, because the store measures the file. A take longer than ' +
+            '30 seconds is cut to length with fit_to_length first, on its own spine, rather than from a ' +
+            'number picked here. Exact integers, never an aspect, because a file one pixel out is ' +
+            'rejected. A capture that cannot fill it is refused with the ways to fix it, rather than ' +
+            'enlarged. This is a size, not a look: apply_look takes the preset that styles a picture.'),
+        family: z.enum(['iphone', 'ipad', 'mac']).optional()
+          .describe('What this take came off, where an app preview size is asked for and the recording does not ' +
+            'say. A preview in one family\'s size showing another family\'s app is refused by name.'),
       }),
     },
     async args => text(await drive('edit.export', args, { timeoutMs: 20 * 60 * 1000 })))

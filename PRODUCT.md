@@ -26,14 +26,22 @@ timings, so the timeline is named from what was said and an agent can find a mom
 its words. Competitors that record a simulator or a cloud browser have no audio to build
 this from: a framebuffer capture is a file with no audio track at all, so beats,
 captions, `fit_to_length` and finding the moment by its words are all dead on it. Fetch
-records the window instead, so a simulator take has an audio track and the spine
-survives. Every link of that was measured on this Mac bar one: a simulated app is its own
+records the window instead, and **system audio is on by default for a simulator take**,
+so the take has a track and the spine survives. That default is the sentence's other half:
+with it off, recording the window was the framebuffer capture's silent file with a boot in
+front of it, and three tool descriptions said otherwise. Every link of that was measured on this Mac bar one: a simulated app is its own
 host audio process, it is not in the exclusion list a window take builds, and a process of
 exactly that shape was captured and transcribed word for word. The last link, a guest app's
 own sound through the speakers at a level, is not measured, because measuring it means
 making a sound on somebody's Mac and that refusal outranks the measurement. So the claim to
 make is that Fetch records the window and keeps the sound of it, not that the device's own
-audio has been watched landing. Every surface should lean on the part that is true.
+audio has been watched landing. Every surface should lean on the part that is true, and say
+the scope as it is: the exclusion is a list of apps with windows taken when the take starts,
+so a process with no window (a second booted simulator is one) and an app opened mid take are
+in the file too. The person's approval says **with sound**, and a yes to a silent take is not
+a yes to one with it. The default rides only on Fetch's own recorder; where the Mac falls back
+to the browser capture, whose system audio is everything the Mac plays, a take whose sound
+was only the default is recorded silent and the result says why.
 
 ## Users
 
@@ -663,16 +671,28 @@ burned into its corner and its source second returned beside it. It exists becau
 work in this product is motion, an ease that lands and settles, a dissolve, the travel blur
 under a zoom, and every bit of that is invisible in a single frame and obvious in a row of
 them. `direct` is the target and the plan: a brief (`what`, `seconds`, `aspect`, `where`,
-`audience`, `must_keep`, `must_hide`) and up to twelve steps `P1..Pn`, kept in `.fetch/<stem>.job.json`
+`audience`, `must_keep`, `must_hide`, `device`, `app`, `size`) and up to twelve steps `P1..Pn`, kept in `.fetch/<stem>.job.json`
 beside the take and deliberately not in the edit, because the job is about the work and has to
-survive the undo of the edit it produced. `what` is what the thing is in the person's own words, and on a still it is nearly the whole
+survive the undo of the edit it produced. A brief naming a `device` is a job whose shape is
+already known, so the plan comes back laid out with the call every step is, the tool's own name
+and the arguments the brief has answered, which is how `export 1080p` stops being refused for an
+enum nobody was shown. That job is also directed **before** there is anything to direct, since
+which device to boot and how long the deliverable runs are decided before `record_start`: with no
+`path` the job waits in `userData` and `record_stop` moves it onto the take it turned out to be
+about. A `size` with a length window fills in `seconds` from `ui/sizes.js`, so a job aimed at a
+store preview has its length from the first call rather than from the export that refuses it. `what` is what the thing is in the person's own words, and on a still it is nearly the whole
 brief, since one frame has no length for the rest of it to measure. It was accepted by the
 schema and thrown away on write for a round, which left the picture rubric building its own
 `find_on_screen` fixes with no query in them, so the loop it opened could not be closed by
 any call the agent made.
 `fit_to_length` hits a number from the transcript:
 the fillers first, since nobody can hear a cut "um", then the longest pauses, then whole beats
-ranked by speech density, and never half a beat. All three passes cut around the work rather
+ranked by speech density, and never half a beat. **A take with nobody talking on it is fit on
+its taps instead.** An app's onboarding makes no sound, so transcribing it returns silence and
+the tool used to send an agent to `transcribe` and back for ever; a tap is a moment somebody
+meant, and the 0.35 s before it and the 1.2 s after are the press and the screen answering, so
+those runs are that take's spine exactly as speech runs are a narrated one's. The cheap cuts may
+not go through a tap either: a cut through one leaves half a disc. All three passes cut around the work rather
 than through it: a title card over the head silence and a closing URL card over the tail
 silence used to be taken whole by the pause pass and reported afterwards under `orphans`, which
 is exactly the damage a checker is supposed to prevent. It writes `clips` on the edit rather than a
@@ -757,27 +777,72 @@ A Simulator window was a window with a name that happened to match; it is now a 
 with a machine inside it. `ui/simulator.js` joins the three reads the command line
 already answers to the window list and to the device type's own `profile.plist`, which is
 the only place the native framebuffer size exists, and hands back one record a device:
-which device, its screen in pixels and points, the rectangle the glass occupies inside
-the window, and `density`, the captured pixels per pixel the device really has. Measured
-on this Mac: a default window for a 1320 x 2868 phone is 396 x 856 points, a viewport of
-`{0.0026, 0, 0.9949, 1}` and a density of **0.60**, so a store sized export from it would
-be a 1.67x upscale and is refused by name. `list_windows` carries that block on any
+which device, its screen in pixels and points, and, where anything has captured its
+window and the measurement passed, the rectangle the glass occupies inside that window and
+`density`, the captured pixels per pixel the device really has. A measurement that came back
+the wrong shape reports neither: a density off a dark splash read 0.15. `list_windows` carries that block on any
 simulator window, so nothing has to match on an app name.
+
+**That rectangle is measured and never worked out.** Fitting the screen's aspect inside
+the window assumes the window is the glass, and it is not: Simulator's floating toolbar
+is 52 points tall whatever the window scale, with a clear gap and a drawn bezel under it,
+so the glass is a different fraction of every window and moves again the moment somebody
+drags a corner. Measured against three booted devices on this Mac, the fit was 12 percent
+out on a phone with a notch and 19 percent out on one with a home button, which sent a tap
+aimed 60 points down the screen nearly 90 points above the glass and left the Mac's own
+toolbar inside a crop that promised to remove it. `measureGlass` reads the rectangle off a
+capture of the window instead, by the structure every one of those captures has: a clear
+band under the toolbar, then the device, then the black ring the screen sits inside. The
+1320 x 2868 phone measures a viewport of `{0.0554, 0.0896, 0.8892, 0.8929}` and a density
+of **0.53**, not the 0.60 the arithmetic claimed. The measurement is kept against the
+window's own size, so moving the window changes nothing and resizing it throws it away.
+A later read that fails, or finds a rectangle that is not the screen's shape (a dark app
+painted to its edge, a splash, the boot logo), never replaces one that passed for the same
+size, and `record_stop` writes the newest rectangle that passed during the take rather than
+only the one `record_start` got. The shape test is held to the measurement's own rounding,
+two pixels a side, since a fixed 0.15 percent turned a correct rectangle down on a third of
+window sizes and on most 1x displays. The captures it is read off are scratch files in the
+temporary folder, never a shot in the person's library. **A device nothing has measured has
+no rectangle at all**: `list` says so in words,
+a tap refuses rather than landing somewhere nobody pointed, and the look keeps the whole
+window rather than cropping to a guess.
 
 **The surface is one tool and four extensions.** `simulator` takes an action: `list`,
 `ready` (boot, open the window in the background, install, launch, set the status bar,
-switch the appearance, and name every one of those in words), `go` (a deep link, which
-lands on the same screen every time where a run of taps does not), `tap`, and `restore`.
-`record_start` and `take_shot` take `simulator` where they take `window`, and write the
-device screen rectangle onto the document, which is what makes the crop, the drawn phone
-and the touch mark's coordinates fall out for free. `export` takes `size`, a pair of
-integers from one table (`ui/sizes.js`), never an aspect, because a store file one pixel
-out is rejected: a capture the size would have to enlarge is refused before anything is
-drawn, with the device to shoot on instead, and the result is read back off the written
-file's own header so nothing is called a store file that is not one. `pointer` gains nothing: the take's target decides the mark, so an
-agent reporting a tap on a device gets a finger without knowing there is a setting. The
-whole named job is five calls: ready, `record_start`, tap for each step, `record_stop`,
-`export`.
+switch the appearance, measure the glass, and name every one of those in words), `go` (a
+deep link, which lands on the same screen every time where a run of taps does not), `tap`,
+and `restore`. `record_start` and `take_shot` take `simulator` where they take `window`,
+measure the glass off a capture of it, and write that rectangle onto the document, which
+is what makes the crop, the drawn phone and the touch mark's coordinates fall out for
+free. **A simulator take carries the device's sound by default**, which is the whole
+reason Fetch records the window rather than the device's framebuffer, and `record_stop`
+reads the written file and says whether a track actually landed, and whether it sits at the
+noise floor, rather than leaving `transcribe` to break the news. `export` takes `size`, a pair of integers from one table
+(`ui/sizes.js`), never an aspect, because a store file one pixel out is rejected: on a
+shot a still size, and on a recording an **app preview**, which is also 15 to 30 seconds,
+30 frames a second or under, H.264, and 500 MB or under. Everything that does not hold is
+named before a frame is drawn, frames are dropped and never invented (60 halves onto the
+cap exactly, and the rate is read off the take's cadence rather than the header's average),
+the sound is one stereo AAC track at 256 kbps and 48 kHz (silence of that shape on a take
+with none), and the family is the one the take records, so an iPhone take asked into the
+iPad size is refused by name. Whether the capture would be enlarged is judged at the share
+of the picture the look actually draws it at, and a refusal names the `frame.padding` that
+puts it at its own pixels, the one fix an agent can make without the person's hands. The
+written file is measured again afterwards so nothing is called a store file that is not one. `pointer` gains nothing: the take's target decides the mark, so an
+agent reporting a tap on a device gets a finger without knowing there is a setting.
+
+**The named job is five calls plus the loop's three.** `ready`, `record_start`, a tap a
+screen, `record_stop`, `export`, and the `direct`, `fit_to_length` and `review` every job
+in this product takes. On a stock Simulator window at its default size the glass is about
+0.53 of the device's own pixels, so an app preview is an enlargement and `export` refuses
+it with the `apply_look` padding that fixes it: one call more, or none where the person set
+Pixel Accurate first. Judged against a real device it took nineteen, so the calls that
+were only there to find things out have been given to the calls that already knew: `ready`
+and every `tap` hand back the elements on the glass and the ids the next tap takes, a
+brief can be directed before the take exists and lands on it at `record_stop`, which closes
+the steps that made the take and names the take in the calls after them, a plan for
+a device job carries the call each step is, and `fit_to_length` cuts a take with nobody
+talking on it on its taps instead of refusing it for having no transcript.
 
 **A tap aims at a box, never at a coordinate**, which is the rule the rest of the product
 already enforces and the one place pixels beat a tree: `find_on_screen` works on canvas,
@@ -785,7 +850,10 @@ on games and on custom drawn UI where a label does not exist. The element's box 
 back through the edit's crop and the glass rectangle into the device's own points, and
 the same call reports the touch onto the pointer track, so an injected tap and the mark
 drawn for it are one number rather than two that agree by habit. A point sent by hand is
-taken where nothing on screen can be named, and comes back marked hand aimed.
+taken where nothing on screen can be named, and comes back marked hand aimed. An id sent
+with no `path` is read off the device's newest screen only while that screen is also the
+newest `find_on_screen` pass, since ids restart at E1 on every pass, and a screen is only
+handed back from a capture the same call made.
 
 **What it refuses, permanently.** The device framebuffer capture, which writes pixels
 that never passed the never-record check and makes a file with no audio track. A region
