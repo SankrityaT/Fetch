@@ -42,7 +42,9 @@
 /* ── segmented control ───────────────────────────────────────────────── */
 .seg { display:inline-flex; padding:3px; gap:2px; background:var(--ink-1); border:var(--edge); border-radius:var(--r-pill); }
 .seg button {
-  display:inline-flex; align-items:center; gap:6px;
+  /* centred both ways: a segment stretched to fill its row (the inspector's .lk-seg) left
+     its label hard against the left edge of a wide pill */
+  display:inline-flex; align-items:center; justify-content:center; gap:6px;
   height:28px; padding:0 var(--s-3); border:0; border-radius:var(--r-pill);
   font:600 var(--t-12)/1 var(--font-ui); color:var(--text-1); background:transparent; cursor:pointer;
   transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in);

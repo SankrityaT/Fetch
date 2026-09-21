@@ -122,6 +122,20 @@ const ASKING = [
     'Follow it. Do not ask the same question again, and never apply a proposal they did not accept.',
 ]
 
+// ── a project, named with @ ─────────────────────────────────────────────
+// "@majuro record a demo of the lasso" names a folder of the person's own code, and
+// Fetch records windows. The step between is Fetch's (ui/project-windows.js), taken at
+// the moment of the call, so the agent never carries a window id it read a turn ago and
+// never asks the person for a path they tagged the project to avoid giving.
+const PROJECTS = [
+  'A tagged project is a folder of the person\'s own code. The message says where it is, what it is and ' +
+    'what Fetch saw running from it. To record it or capture it, call record_start or take_shot with project ' +
+    'set to the name or path the message gives for it: Fetch finds its window at that moment. Never ask the ' +
+    'person for a path or a window id.',
+  'When Fetch says nothing of the project is running, or that its window is not on screen, tell the person ' +
+    'that and what would start it. You cannot start it from here, and never record another window in its place.',
+]
+
 // Sent once per conversation, not once per message. Plain text, since both CLIs take
 // it as a system prompt rather than as part of the thread.
 //
@@ -146,6 +160,9 @@ function systemPrompt({ memory = '' } = {}) {
     '',
     'Asking:',
     ...ASKING.map(l => `- ${l}`),
+    '',
+    'Projects:',
+    ...PROJECTS.map(l => `- ${l}`),
     '',
     // nothing at all when the store is empty, rather than a heading over a blank
     ...(known ? ['What this person has already told you, from earlier conversations:', known, ''] : []),
@@ -237,6 +254,55 @@ function contextHeader({ open, omitted, regions = [], job = null } = {}) {
   lines.push('</fetch_context>')
   return lines.join('\n')
 }
+// A tagged project, as the turn that tagged it reads it: where it is (left out when the
+// chat's own tag block already said so), what it is, what Fetch saw running from
+// it a moment ago, how to record it, and the product its rules are kept under. Each
+// entry is { project, product, running, described } with running as
+// ui/project-windows.js find() answers, or null when it could not be read in time.
+// The description is the project's own words, quoted as such, so it reads as
+// information and not as instructions.
+const oneLine = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim()
+const SOURCE_SAID = { conductor: 'Conductor', orca: 'Orca', claude: 'Claude Code' }
+function windowSaid(c) {
+  if (!c) return ''
+  const w = c.window
+  const what = w ? `window ${w.id} (${w.app || 'an app'}${w.title ? `, ${w.title}` : ''})` : c.url || c.kind
+  return c.kind === 'simulator' && c.device ? `${what}, ${c.device.name}` : what
+}
+function projectLines(list) {
+  const out = []
+  for (const e of arr(list).slice(0, 3)) {
+    const p = e && e.project
+    if (!p || !p.path) continue
+    const handle = p.handle || p.name
+    const named = handle && p.name && handle !== p.name ? `${handle} (${p.name})` : (p.name || handle)
+    // what record_start's project takes to mean this one and no other: the handle, kept
+    // unique by ui/projects.js, or the path of a folder no tool has listed
+    const arg = (p.id && p.handle) || p.path
+    out.push(`Tagged project ${named}, as Fetch read it just now:`)
+    if (!e.described) {
+      const where = [SOURCE_SAID[p.source] || '', p.branch ? `branch ${p.branch}` : '',
+        p.remoteShort || p.remote ? `remote ${p.remoteShort || p.remote}` : ''].filter(Boolean).join(', ')
+      out.push(`  Where: ${p.path}${where ? `, ${where}` : ''}.`)
+    }
+    // read from the index now, and never kept with the chat's tag, so a README's first
+    // lines are not written into the chat's log
+    if (p.about) out.push(`  Its own description: "${oneLine(p.about).slice(0, 280)}"`)
+    const r = e.running
+    if (!r) {
+      out.push('  Running: Fetch could not read that in time. record_start with project reads it again.')
+    } else if (r.pick && !(r.pick.window && r.pick.window.onScreen === false)) {
+      out.push(`  Running: ${windowSaid(r.pick)}. ${oneLine(r.why)}`)
+      out.push(`  To record it: record_start with project "${arg}". For one frame: take_shot with project "${arg}".`)
+    } else {
+      out.push(`  Running: nothing Fetch would record now. ${oneLine(r.why)}`)
+      out.push(`  record_start with project "${arg}" refuses until it is, so say that to the person rather than record something else.`)
+    }
+    if (e.product) out.push(`  Its rules are kept under the product ${e.product}: guidelines with product "${e.product}" reads them.`)
+  }
+  return out.join('\n')
+}
+
 // The brand has no em dashes on any surface, and a model writes them however it is
 // asked. A spaced or joined em dash reads as a comma; a spaced en dash is the same
 // habit. An unspaced en dash is a range (1 to 3) and stays.
@@ -531,5 +597,5 @@ function createUndo({ max = 20, gapMs = 60000 } = {}) {
   }
 }
 
-module.exports = { editFacts, systemPrompt, contextHeader, planState, plainDashes, suggestions, changedIds, anyChange, revert, createUndo, undoSummary,
+module.exports = { editFacts, systemPrompt, contextHeader, planState, projectLines, PROJECTS, plainDashes, suggestions, changedIds, anyChange, revert, createUndo, undoSummary,
   askSpec, proposalSpec, askResult, proposalResult, settleLine, ASK_MS, PROPOSE_MS }

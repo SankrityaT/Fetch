@@ -187,5 +187,138 @@ t('a question, a proposal and how each was settled all survive a restart', () =>
   assert.strictEqual(r[4].how, 'discard')
 })
 
+// ── @ a project ──────────────────────────────────────────────────────────
+// The picker's logic is pure and sits above the DOM in ui/chat.js, so it runs here.
+const Mention = require('../ui/chat.js')
+const HOUR = 3600e3, now = Date.now()
+const recs = [
+  { name: 'lasso-demo', path: '/r/lasso-demo.mov', mtime: now - 3 * HOUR },
+  { name: 'onboarding', path: '/r/onboarding.mov', mtime: now - 50 * HOUR },
+]
+const projects = [
+  { source: 'conductor', name: 'majuro', repo: 'rec', path: '/u/conductor/workspaces/rec/majuro/',
+    branch: 'SankrityaT/mac-screen-recorder', about: 'Fetch is a Mac capture tool.\n\nIt records.', at: now - 1 * HOUR },
+  { source: 'claude', name: 'majuro', path: '/u/conductor/workspaces/rec/majuro', lastUsed: now - 0.5 * HOUR },
+  { source: 'orca', name: 'lagos', path: '/u/orca/workspaces/lagos', branch: 'main', at: now - 10 * HOUR },
+  { source: 'claude', name: 'site', path: '/u/code/site', mtime: now - 100 * HOUR },
+  { source: 'claude', path: '/u/code/no-name', mtime: now - 200 * HOUR },
+  { source: 'conductor', name: 'nowhere' },
+]
+
+t('one folder seen by two tools is one project, named by the one that knows most', () => {
+  const ps = Mention.normProjects(projects)
+  const m = ps.filter(p => p.path === '/u/conductor/workspaces/rec/majuro')
+  assert.strictEqual(m.length, 1)
+  assert.strictEqual(m[0].source, 'conductor')
+  assert.strictEqual(m[0].branch, 'SankrityaT/mac-screen-recorder')
+  assert.strictEqual(m[0].at, now - 0.5 * HOUR, 'the latest use by either tool')
+  assert.strictEqual(m[0].about, 'Fetch is a Mac capture tool. It records.', 'one line, for a one-line row')
+  assert.ok(!ps.some(p => p.name === 'nowhere'), 'no path, nothing to point at')
+  assert.strictEqual(ps.find(p => p.path === '/u/code/no-name').name, 'no-name')
+  assert.deepStrictEqual(Mention.normProjects({ projects }).length, ps.length, 'a wrapped list reads the same')
+  assert.deepStrictEqual(Mention.normProjects(null), [])
+})
+
+t('@ alone lists projects and recordings together, the most recent first', () => {
+  const items = Mention.mentionItems(recs, projects, '', 8)
+  assert.deepStrictEqual(items.map(x => x.name), ['majuro', 'lasso-demo', 'lagos', 'onboarding', 'site', 'no-name'])
+  assert.deepStrictEqual(items.map(x => x.kind).slice(0, 3), ['project', 'recording', 'project'])
+})
+
+t('typing narrows it: the start of a name, then anywhere in it, then repo or branch', () => {
+  assert.deepStrictEqual(Mention.mentionItems(recs, projects, 'la', 8).map(x => x.name), ['lasso-demo', 'lagos'])
+  assert.deepStrictEqual(Mention.mentionItems(recs, projects, 'MAJ', 8).map(x => x.name), ['majuro'])
+  // a branch finds its workspace even when the name does not say it
+  assert.deepStrictEqual(Mention.mentionItems(recs, projects, 'mac-screen', 8).map(x => x.name), ['majuro'])
+  assert.deepStrictEqual(Mention.mentionItems(recs, projects, 'rec', 8).map(x => x.name), ['majuro'])
+  assert.deepStrictEqual(Mention.mentionItems(recs, projects, 'zzz', 8), [])
+  assert.strictEqual(Mention.mentionItems(recs, projects, '', 3).length, 3)
+})
+
+t('no project index, and the picker is the recordings it always was', () => {
+  const items = Mention.mentionItems(recs, undefined, '', 8)
+  assert.deepStrictEqual(items.map(x => x.name), ['lasso-demo', 'onboarding'])
+})
+
+t('a recording tag is still name and path, exactly as before', () => {
+  const r = Mention.mentionItems(recs, projects, 'onb', 8)[0]
+  assert.deepStrictEqual(Mention.tagFor(r), { name: 'onboarding', path: '/r/onboarding.mov' })
+})
+
+t('a tagged project tells the agent where it is and to record it by project', () => {
+  const p = Mention.mentionItems(recs, projects, 'majuro', 8)[0]
+  const tag = Mention.tagFor(p)
+  // the tag is written to chat.jsonl, so it keeps what the chip draws and nothing of
+  // another tool's data: no description, no remote
+  assert.deepStrictEqual(Object.keys(tag).sort(), ['branch', 'kind', 'name', 'path', 'source'])
+  const r = Mention.tagFor(recs[0])
+  const s = Mention.tagPrompt([r, tag])
+  assert.ok(s.includes('Recordings the user tagged:\n- lasso-demo: /r/lasso-demo.mov'), s)
+  assert.ok(s.includes('Projects the user tagged:\n- majuro: /u/conductor/workspaces/rec/majuro\n' +
+    '  Conductor, branch SankrityaT/mac-screen-recorder'), s)
+  assert.ok(!/description|Fetch is a Mac capture tool/.test(s), 'the description comes from main at send time')
+  // the same doctrine the system prompt gives, and not list_windows, which cannot see a
+  // dev Electron build
+  assert.ok(/record_start or take_shot with project set to its path/.test(s) && !/list_windows/.test(s), s)
+  assert.ok(/Do not ask the person for a path/.test(s), s)
+  assert.ok(!/—/.test(s), 'no em dash')
+  // recordings alone read exactly as they did before this round
+  assert.strictEqual(Mention.tagPrompt([r]), '\n\nRecordings the user tagged:\n- lasso-demo: /r/lasso-demo.mov')
+  assert.strictEqual(Mention.tagPrompt([]), '')
+})
+
+t('"@majuro record a demo" typed straight through still tags majuro', () => {
+  const got = Mention.bareMentions('@majuro record a demo of the lasso, and @lasso-demo.', recs, projects)
+  assert.deepStrictEqual(got.map(t => [t.kind || 'recording', t.name]), [['project', 'majuro'], ['recording', 'lasso-demo']])
+  assert.strictEqual(got[0].path, '/u/conductor/workspaces/rec/majuro')
+  // an address is not a mention, and a partial name is not a guess worth making
+  assert.deepStrictEqual(Mention.bareMentions('mail me@majuro or @maj', recs, projects), [])
+  // two things with one name: ambiguous, so neither
+  const twins = projects.concat([{ source: 'orca', name: 'majuro', path: '/u/orca/workspaces/majuro' }])
+  assert.deepStrictEqual(Mention.bareMentions('@majuro', recs, twins), [])
+})
+
+t('a typed @word matches a handle or alias the way the bridge does, and refuses a shared one', () => {
+  const idx = [
+    { id: 'P1', source: 'conductor', name: 'rec/majuro', handle: 'rec/majuro', aliases: ['rec/majuro', 'majuro'], path: '/u/conductor/workspaces/rec/majuro' },
+    { id: 'P2', source: 'orca', name: 'Tend/timingila', handle: 'timingila', aliases: ['tend/timingila', 'timingila'], path: '/u/orca/workspaces/Tend/timingila' },
+  ]
+  // the handle or an alias tags it, typed straight through
+  assert.deepStrictEqual(Mention.bareMentions('@timingila record it', [], idx).map(t => t.path), ['/u/orca/workspaces/Tend/timingila'])
+  assert.deepStrictEqual(Mention.bareMentions('@majuro record it', [], idx).map(t => t.path), ['/u/conductor/workspaces/rec/majuro'])
+  // a Claude-only ~/code/majuro whose name is majuro: two projects answer, so neither is
+  // tagged, exactly as resolveProject would refuse it
+  const both = idx.concat([{ id: 'P3', source: 'claude', name: 'majuro', handle: 'code/majuro', aliases: ['majuro', 'code/majuro'], path: '/u/code/majuro' }])
+  assert.deepStrictEqual(Mention.bareMentions('@majuro record a demo', [], both), [])
+  assert.deepStrictEqual(Mention.bareMentions('@code/majuro record a demo', [], both).map(t => t.path), ['/u/code/majuro'])
+  // handle and aliases survive the merge of one folder seen by two tools
+  const merged = Mention.normProjects(idx.concat([{ source: 'claude', name: 'majuro', path: '/u/conductor/workspaces/rec/majuro' }]))
+  const m = merged.find(p => p.path === '/u/conductor/workspaces/rec/majuro')
+  assert.deepStrictEqual([m.handle, m.aliases.includes('majuro'), m.id], ['rec/majuro', true, 'P1'])
+})
+
+// The lassoed area's picture keeps the area's own shape (a fix from an earlier round),
+// and this round rewrote the chips beside it. Run the real function from the file.
+t('a lassoed area thumbnail still keeps its shape', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../ui/chat.js'), 'utf8')
+  const body = /function regionThumb\(r, h\) \{[\s\S]*?\n  \}/.exec(src)
+  assert.ok(body, 'regionThumb is still there')
+  const regionThumb = new Function('esc', 'fileUrl', body[0] + '\nreturn regionThumb')(x => x, x => 'file://' + x)
+  const wide = regionThumb({ image: '/a.png', px: { w: 400, h: 100 } }, 18)
+  assert.ok(wide.includes('width="47"') && wide.includes('height="18"'), wide)
+  assert.ok(regionThumb({ image: '/a.png', px: { w: 100, h: 100 } }, 18).includes('width="18"'))
+  assert.ok(regionThumb({ image: '/a.png' }, 16).includes('width="24"'), 'no size known: 3 by 2')
+})
+
+t('every chip the composer draws is still drawn', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../ui/chat.js'), 'utf8')
+  for (const k of ['class="chat-tag"', 'chat-region-chip', 'data-unregion', 'data-untag', 'chat-me-tags', 'chat-me-regions', 'data-unattach']) {
+    assert.ok(src.includes(k), k)
+  }
+  const css = fs.readFileSync(path.join(__dirname, '../ui/chat.css'), 'utf8')
+  assert.ok(css.includes('.chat-tag-branch') && css.includes('.chat-mention-branch'))
+  assert.ok(!/—/.test(src + css), 'no em dash in the chat')
+})
+
 fs.rmSync(dir, { recursive: true, force: true })
 console.log(`\n${n} chat checks passed`)

@@ -2037,6 +2037,219 @@ async function main() {
     }
   })()
 
+  // ── a project, from @ to its window ──────────────────────────────────────
+  // "@majuro record a demo of the lasso" has to end with Fetch recording majuro's running
+  // app with nobody pasting a path or a window id. The index (ui/projects.js) and the
+  // finder (ui/project-windows.js) have suites of their own; these hold the seam: the
+  // tools take a project, a near miss is refused rather than guessed, nothing is started
+  // when nothing suitable runs, and the window found reaches the person's yes by its app.
+  await (async () => {
+    const here = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-proj-'))
+    const majuro = path.join(here, 'conductor', 'workspaces', 'rec', 'majuro')
+    fs.mkdirSync(majuro, { recursive: true })
+    const P = (o) => ({ sources: [o.source || 'conductor'], aliases: [o.name.toLowerCase(), o.handle], ...o })
+    const list = [
+      P({ id: 'P29a2cd', name: 'rec/majuro', handle: 'majuro', source: 'conductor', path: majuro, repo: 'rec',
+        workspace: 'majuro', branch: 'SankrityaT/mac-screen-recorder', remote: 'https://github.com/SankrityaT/Fetch.git',
+        remoteShort: 'SankrityaT/Fetch', about: 'Fetch is a Mac capture tool.', lastUsed: 1 }),
+      P({ id: 'P111111', name: 'rec/majuro/mcp', handle: 'majuro/mcp', source: 'claude', path: path.join(majuro, 'mcp') }),
+      P({ id: 'P222222', name: 'shop/web', handle: 'web', path: path.join(here, 'shop-web') }),
+      P({ id: 'P333333', name: 'blog/web', handle: 'blog/web', path: path.join(here, 'blog-web') }),
+    ]
+    const FRONT = { id: 36610, app: 'Electron', title: 'Fetch', width: 1400, height: 900 }
+    let running = { ok: true, pick: { kind: 'app', pid: 51115, window: FRONT, evidence: ['Electron runs from inside majuro'], recordable: true, rank: 1 },
+      why: 'window 36610 (Electron, Fetch) is first because Electron runs from inside majuro.', candidates: [] }
+    running.candidates = [running.pick]
+    const asked = [], started = [], projectAsks = []
+    let projectsAnswer = 'once'
+    const CHAT = { chat: true, client: 'Claude Code' }
+    const win = { isDestroyed: () => false, webContents: { executeJavaScript: async () => null } }
+    let prefs = {}
+    bridge.start({
+      getWindow: () => win, isRecording: () => false, getPrefs: () => prefs,
+      proc: { probeMeta: async () => ({}) },
+      toRenderer: m => started.push(m),
+      takeShot: async () => { started.push('shot'); return { ok: false, error: 'not in a test' } },
+      // a WindowList built before it stopped skipping Electron by name leaves the dev build out
+      listWindows: async () => [],
+      frontWindow: async () => { throw new Error('the app in front was asked for, with a project named') },
+      projects: async () => list,
+      projectWindows: { find: async q => { asked.push(q); return running } },
+      // the person's answer when an agent outside the app asks for the projects
+      confirmProjects: async who => { projectAsks.push(who); return projectsAnswer },
+    })
+    try {
+      t('a project is found by its handle, its name, its id or its path, and a near miss is not a hit', () => {
+        for (const q of ['majuro', '@majuro', 'rec/majuro', 'P29a2cd', majuro, majuro + '/']) {
+          const r = bridge.resolveProject(q, list)
+          assert.ok(r.ok && r.project.id === 'P29a2cd', `${q}: ${r.why}`)
+        }
+        const near = bridge.resolveProject('maj', list)
+        assert.ok(!near.ok && /Closest: majuro/.test(near.why), near.why)
+        const none = bridge.resolveProject('nothing-like-it', list)
+        assert.ok(!none.ok && /list_projects/.test(none.why))
+      })
+
+      t('two projects answering to one name are both named, and neither is picked', () => {
+        const two = [...list, P({ id: 'P444444', name: 'other/web', handle: 'web', path: path.join(here, 'other-web') })]
+        const r = bridge.resolveProject('web', two)
+        assert.ok(!r.ok && /2 projects answer to "web"/.test(r.why), r.why)
+      })
+
+      t('a folder no tool has seen can still be named by path, and home cannot', () => {
+        // a project, which is what the rule takes: an empty folder is not one, and any
+        // folder at all used to pass, which is how ~/.ssh was taken and listed
+        const empty = path.join(here, 'empty')
+        fs.mkdirSync(empty)
+        assert.ok(!bridge.resolveProject(empty, list).ok, 'an empty folder was taken as a project')
+        const loose = path.join(here, 'loose')
+        fs.mkdirSync(loose)
+        fs.writeFileSync(path.join(loose, 'package.json'), '{}')
+        const r = bridge.resolveProject(loose, list)
+        assert.ok(r.ok && r.project.name === 'loose' && r.project.id === null, r.why)
+        assert.ok(!bridge.resolveProject(os.homedir(), list).ok, 'home was taken as a project')
+        assert.ok(!bridge.resolveProject(path.join(here, 'not-there'), list).ok)
+      })
+
+      t('a project\'s rules are kept under the product its remote names, unless the person already has one it answers to', () => {
+        assert.strictEqual(bridge.productFor(list[0], here), 'Fetch')
+        assert.strictEqual(bridge.productFor(list[2], here), 'web')
+        const root = path.join(here, 'mem')
+        require('../ui/memory').remember({ root }, { fact: 'Demos of it are for new users', scope: 'product', about: 'Majuro' })
+        assert.strictEqual(bridge.productFor(list[0], root), 'Majuro')
+        assert.strictEqual(bridge.projectTakeName(list[0], 'Fetch'), 'Fetch · majuro')
+        assert.strictEqual(bridge.projectTakeName(list[0], 'Majuro'), 'Majuro')
+      })
+
+      const listed = await bridge.ops['projects.list']({}, CHAT)
+      const found = await bridge.ops['projects.list']({ query: 'majuro' }, CHAT)
+      t('the in-app chat is not asked; its @ is the person handing a project over', () => {
+        assert.deepStrictEqual(projectAsks, [])
+      })
+
+      // Any other agent connected to Fetch reaches other tools' projects only with a yes.
+      const outside = { client: 'Claude Code' }
+      projectsAnswer = 'no'
+      const tried = []
+      for (const [op, a] of [['projects.list', { limit: 100 }], ['projects.get', { project: 'majuro' }], ['record.start', { project: 'majuro' }], ['shot.take', { project: 'maj' }]]) {
+        try { tried.push({ op, got: await bridge.ops[op](a, outside) }) } catch (e) { tried.push({ op, err: e.message }) }
+      }
+      t('an agent outside the app is refused the projects when the person says no', () => {
+        assert.deepStrictEqual(tried.map(x => !!x.err), [true, true, true, true], JSON.stringify(tried))
+        assert.ok(tried.every(x => /said no/.test(x.err) && !/majuro|Closest/.test(x.err)), JSON.stringify(tried))
+        assert.deepStrictEqual(projectAsks, ['Claude Code', 'Claude Code', 'Claude Code', 'Claude Code'])
+        assert.deepStrictEqual(started, [])
+      })
+      projectsAnswer = 'unanswered'
+      let silent = null
+      try { await bridge.ops['projects.list']({}, outside) } catch (e) { silent = e }
+      t('saying nothing is a no', () => { assert.ok(silent && /nobody answered/.test(silent.message)) })
+      projectsAnswer = 'session'
+      projectAsks.length = 0
+      const yes1 = await bridge.ops['projects.list']({}, outside)
+      const yes2 = await bridge.ops['projects.list']({}, outside)
+      t('a yes until Fetch quits is asked once', () => {
+        assert.strictEqual(yes1.count, 4)
+        assert.strictEqual(yes2.count, 4)
+        assert.deepStrictEqual(projectAsks, ['Claude Code'])
+      })
+      projectsAnswer = 'once'
+      t('list_projects is lean: names, paths and branches, and no description', () => {
+        assert.strictEqual(listed.count, 4)
+        assert.ok(listed.projects.every(p => p.name && p.path && !('about' in p)), JSON.stringify(listed.projects[0]))
+        assert.strictEqual(listed.projects[0].handle, 'majuro')
+        assert.strictEqual(listed.projects[0].remote, 'SankrityaT/Fetch')
+        assert.deepStrictEqual(found.projects.map(p => p.handle), ['majuro', 'majuro/mcp'])
+      })
+
+      const got = await bridge.ops['projects.get']({ project: 'majuro' }, CHAT)
+      t('get_project says what it is, what runs from it, and how to record it', () => {
+        assert.ok(got.ok)
+        assert.strictEqual(got.project.about, 'Fetch is a Mac capture tool.')
+        assert.strictEqual(got.running.pick.window.id, 36610)
+        assert.strictEqual(got.product, 'Fetch')
+        assert.strictEqual(got.library_folder, 'rec/majuro')
+        assert.match(got.do_next, /record_start with project "majuro" records window 36610/)
+        assert.deepStrictEqual(asked.pop(), { name: 'majuro', path: majuro })
+      })
+      const miss = await bridge.ops['projects.get']({ project: 'maj' }, CHAT)
+      t('get_project on a near miss says so rather than looking one up', () => {
+        assert.ok(!miss.ok && /Closest/.test(miss.why))
+      })
+
+      // the window found reaches the person's yes by its app, which the list left out
+      prefs = { neverRecord: ['Electron'] }
+      let refused = null
+      try { await bridge.ops['record.start']({ project: 'majuro' }) } catch (e) { refused = e }
+      t('record_start with project goes to the project\'s window, and the gate knows its app', () => {
+        assert.ok(refused, 'recorded a window on the never record list')
+        assert.match(refused.message, /Electron is on the never record list/)
+        assert.deepStrictEqual(started, [], 'a take was started')
+      })
+
+      prefs = {}
+      const says = []
+      for (const [pick, why] of [
+        [null, 'Nothing from majuro is running, so there is nothing of it to record. Start it with npm start, or npm run dev.'],
+        [{ ...running.pick, window: { ...FRONT, onScreen: false } }, 'window 36610 (Electron, Fetch) is first. It is not on screen right now, so bring it forward before recording.'],
+      ]) {
+        running = { ok: true, pick, why, candidates: pick ? [pick] : [] }
+        for (const op of ['record.start', 'shot.take']) {
+          let err = null
+          try { await bridge.ops[op]({ project: 'majuro' }) } catch (e) { err = e }
+          says.push({ op, err })
+        }
+      }
+      t('with nothing suitable running, record_start and take_shot refuse in a sentence and start nothing', () => {
+        for (const { op, err } of says) {
+          assert.ok(err, `${op} did something`)
+          assert.match(err.message, /^Nothing was captured\. /, `${op}: ${err.message}`)
+        }
+        assert.match(says[0].err.message, /npm start/)
+        assert.match(says[2].err.message, /not on screen.*never brings a window forward/)
+        assert.deepStrictEqual(started, [])
+      })
+
+      let bad = null
+      try { await bridge.ops['record.start']({ project: 'maj' }) } catch (e) { bad = e }
+      t('record_start with a project nobody is called refuses by name, never records the app in front', () => {
+        assert.ok(bad && /Closest: majuro/.test(bad.message), bad && bad.message)
+      })
+
+      running = { ok: true, pick: { kind: 'app', pid: 51115, window: FRONT, evidence: ['x'], recordable: true }, why: 'window 36610 (Electron, Fetch) is first because Electron runs from inside majuro.', candidates: [] }
+      const block = await bridge.projectTurn([{ kind: 'project', name: 'rec/majuro', path: majuro, source: 'conductor' }], 'record a demo of the lasso')
+      const typed = await bridge.projectTurn([], '@majuro record a demo of the lasso')
+      const neither = await bridge.projectTurn([], '@maj record it, mail me at a@majuro')
+      t('a tagged project reaches the turn with what runs from it, and a typed @name only when it is exact', () => {
+        assert.match(block, /Tagged project majuro \(rec\/majuro\)/)
+        assert.match(block, /Running: window 36610 \(Electron, Fetch\)/)
+        assert.match(block, /record_start with project "majuro"/)
+        assert.match(block, /product Fetch/)
+        // the chat already said where it is; what it is comes from the index here, since
+        // the chat's tag is written to its log and no longer carries it
+        assert.ok(!/Where:/.test(block), block)
+        assert.match(block, /Its own description: "Fetch is a Mac capture tool\."/)
+        assert.match(typed, /Where: .*branch SankrityaT\/mac-screen-recorder, remote SankrityaT\/Fetch/)
+        assert.match(typed, /Its own description: "Fetch is a Mac capture tool\."/)
+        assert.strictEqual(neither, '')
+        assert.ok(!/[—–]/.test(block + typed))
+      })
+
+      t('the tools that take a project say so, and the pane may call the two that list and look one up', () => {
+        const doc = name => SRC.split(`'${name}',`)[1] || ''
+        for (const name of ['record_start', 'take_shot', 'guidelines']) {
+          assert.ok(/project: z\.string\(\)/.test(doc(name).split('server.registerTool(')[0]), `${name} takes no project`)
+        }
+        assert.deepStrictEqual(source.find(s => s.name === 'list_projects').ops, ['projects.list'])
+        assert.deepStrictEqual(source.find(s => s.name === 'get_project').ops, ['projects.get'])
+        assert.ok(bare.includes('list_projects') && bare.includes('get_project'))
+      })
+    } finally {
+      bridge.stop()
+      fs.rmSync(here, { recursive: true, force: true })
+    }
+  })()
+
   fs.rmSync(dir, { recursive: true, force: true })
   console.log(`\n${n} tool surface checks passed`)
 }

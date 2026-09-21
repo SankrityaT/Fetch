@@ -57,6 +57,8 @@ let pendingTake = null         // { phase: 'starting'|'recording'|'stopping', re
 // What audioFor() decided for the take in hand. Held because record_start can only say
 // what was wired and record_stop is the one that can read the written file.
 let takeHeard = null
+// The Library folder an agent's take of a project goes into once it lands, or null.
+let takeProject = null
 // A take that ended on its own (the window closed) with nobody waiting on it. The
 // agent that started it learns its path from the record_stop it sends next.
 let endedTake = null
@@ -141,6 +143,8 @@ const TITLES = {
   'shot.take': 'Took a screenshot',
   'sim.do': 'Worked with a simulator',
   'edit.versions': 'Read the version history',
+  'projects.list': 'Listed the projects',
+  'projects.get': 'Looked up a project',
 }
 
 // ── a shot is a take of one frame ────────────────────────────────────────
@@ -204,9 +208,16 @@ const ops = {
     if (deps.isRecording()) throw new Error('already recording')
     if (pendingTake) throw new Error('a take is already being awaited')
     endedTake = null; endingAt = 0
+    takeProject = null
 
     const win = deps.getWindow()
     if (!win || win.isDestroyed()) throw new Error('Fetch is not running')
+
+    // A project is named by its folder and recorded as the window of what runs from it,
+    // found at this moment (projectTarget), or refused in a sentence. Never the app that
+    // happens to be in front: that is the one thing "@majuro" did not mean.
+    const proj = await projectArgs(args, ctx)
+    if (proj) args = proj.args
 
     // A simulator is named by device and recorded as the window it sits in. That is the
     // whole of it: the take can then have an audio track, which the framebuffer capture
@@ -241,7 +252,7 @@ const ops = {
     // What the take will listen to is decided before the person is asked, so the
     // question can say it: a yes to a picture of a phone is not a yes to its sound.
     const heardPlan = Opts.audioFor(args, { simulator: !!sim, prefs: deps.getPrefs ? deps.getPrefs() : null })
-    await enforceAccess({ ...args, kind: 'take', sim, sound: heardPlan }, ctx)
+    await enforceAccess({ ...args, kind: 'take', sim, sound: heardPlan }, ctx, proj && proj.seen)
 
     // macOS sends no frames for the part of a window another covers, so a take of a
     // covered window is a frozen picture. Say so before recording anything, with the
@@ -285,6 +296,8 @@ const ops = {
       // A name the agent gives is used as it is and never replaced by an automatic one
       const naming = require('./naming')
       const given = args.name != null ? naming.fit(naming.clean(args.name)) : ''
+      // the take of a project is filed in its Library folder once it lands (afterTake)
+      takeProject = proj && proj.folder ? { folder: proj.folder } : null
       await win.webContents.executeJavaScript(`window.__takeName = ${JSON.stringify(given || null)}`)
       // Esc may have landed during the awaits above; a stopped agent starts nothing
       if (deps.held && deps.held()) {
@@ -313,20 +326,25 @@ const ops = {
       // The product's rules, on the first result of the take, so what must never be on
       // screen is read while there is still time to stop. The product is the one the
       // take's name gives, where it gives one.
-      const about = args.name ? require('./memory').productOf(args.name) : null
+      const about = proj && proj.product ? proj.product : args.name ? require('./memory').productOf(args.name) : null
       const rules = memoryState(null, about) || {}
+      const ofProject = proj ? { project: proj.said } : {}
       // say which window was picked, so an agent that meant another can stop and name it
       if (sim && started && typeof started === 'object') {
         // What is on the glass, off the picture that measured it, so the first tap of the
         // take is the next call rather than a shot and a search.
         const screen = await simScreen(sim, { since: measuredAt })
         const seen = screen ? neverSeen(screen.path, screen.elements, about) : null
-        return { ...started, audio, simulator: simFacts(sim, bar), ...(screen ? { screen } : {}), ...(seen || {}), ...rules }
+        return { ...started, audio, simulator: simFacts(sim, bar), ...(screen ? { screen } : {}), ...(seen || {}), ...ofProject, ...rules }
       }
+      const picked = proj && proj.target && proj.target.pick.window
       return front && started && typeof started === 'object'
         ? { ...started, audio, recording: { window: String(front.id), app: front.app, title: front.title || '', chosen: 'the app in front' }, ...rules }
-        : (started && typeof started === 'object' ? { ...started, audio, ...rules } : started)
+        : picked && started && typeof started === 'object'
+          ? { ...started, audio, recording: { window: String(picked.id), app: picked.app, title: picked.title || '', chosen: `the project's own window: ${proj.target.why}` }, ...ofProject, ...rules }
+          : (started && typeof started === 'object' ? { ...started, audio, ...ofProject, ...rules } : started)
     } catch (e) {
+      takeProject = null
       // Nothing is left dressed for a take that never started, which is what the comment
       // above the dressing has always claimed and what this makes true.
       const held = takeSim
@@ -433,6 +451,62 @@ const ops = {
     }))
   },
 
+  // ── projects ───────────────────────────────────────────────────────────
+  // The folders of code the person works in, from Conductor, Orca and Claude Code
+  // (ui/projects.js), so an agent outside the app can do what @ does inside it. The
+  // list is lean on purpose: names, paths and branches, and a description only for the
+  // one project looked up. Nothing here opens more than ui/projects.js already read.
+  // Other tools' projects are the person's own, so an agent outside the app reaches them
+  // only with the person's yes (projectsAllowed); Fetch's own chat is where @ hands one
+  // over already.
+  async 'projects.list'(args = {}, ctx) {
+    await projectsAllowed(ctx)
+    const list = await projectList()
+    const limit = Math.max(1, Math.min(100, Math.round(+args.limit) || 20))
+    const q = String(args.query || '').trim()
+    let hits = list
+    if (q) { try { hits = require('./projects').findProjects(q, list, limit) } catch { hits = [] } }
+    return { count: list.length, ...(q ? { query: q, matched: hits.length } : {}),
+      projects: hits.slice(0, limit).map(p => projectRow(p, { about: false })),
+      do_next: 'get_project with one of these names says what it is and what runs from it; record_start and ' +
+        'take_shot take project and find its window themselves.' }
+  },
+
+  // One project, whole: where it is, what it is in its own words, what runs from it this
+  // moment and which window record_start would take, the product its rules are kept
+  // under and the Library folder its takes go in.
+  async 'projects.get'(args = {}, ctx) {
+    await projectsAllowed(ctx)
+    const r = resolveProject(args.project != null ? args.project : args.name, await projectList())
+    if (!r.ok) return { ok: false, why: r.why, ...(r.candidates ? { candidates: r.candidates } : {}) }
+    const p = r.project
+    const product = productFor(p, ownRoot())
+    const running = await projectRunning(p, 15000)
+    let rules = null
+    try {
+      const g = require('./guidelines').read({ root: ownRoot(), product })
+      if (g && g.ok) rules = g.text
+    } catch {}
+    const pick = running && running.pick
+    const ready = !!(pick && !(pick.window && pick.window.onScreen === false))
+    return {
+      ok: true,
+      project: projectRow(p),
+      running: running
+        ? { ...(pick ? { pick: candidateRow(pick) } : {}), why: running.why,
+          candidates: (running.candidates || []).slice(0, 6).map(candidateRow) }
+        : { why: 'Fetch could not read what is running in time. Ask again.' },
+      ...(product ? { product } : {}),
+      ...(rules ? { guidelines: rules } : {}),
+      library_folder: projectFolder(p),
+      do_next: ready
+        ? `record_start with project "${projectArgName(p)}" records ${pick.window ? `window ${pick.window.id}` : 'it'}; ` +
+          `take_shot with project "${projectArgName(p)}" captures one frame of it.`
+        : 'Nothing of it can be recorded yet. Tell the person what would change that (the why above), ' +
+          'and never record another window in its place.',
+    }
+  },
+
   // ── the machine inside the window ──────────────────────────────────────
   // One op behind one tool with five actions, because six tools for six simctl verbs
   // would be six tool descriptions of prose in every context window for one capability.
@@ -488,6 +562,10 @@ const ops = {
       throw new Error('this build of Fetch cannot take a screenshot, so there is nothing to style. ' +
         'record_start records the screen instead.')
     }
+    // A project's window, found now, exactly as record_start finds one, or the sentence
+    // that says why there is none
+    const proj = await projectArgs(args, ctx)
+    if (proj) args = proj.args
     const region = args.region && typeof args.region === 'object' ? args.region : null
     let front = null, target = null
     // A simulator is a window, always. A region of the device screen is judged as a
@@ -514,7 +592,7 @@ const ops = {
     // The person's say, through the same gate a take goes through and asked once for
     // the session. take-shot refuses an unapproved agent capture on its own, so this
     // is the question rather than a second opinion about the policy.
-    await enforceAccess({ kind: 'shot', window: target.windowId, display: target.displayId, sim }, ctx)
+    await enforceAccess({ kind: 'shot', window: target.windowId, display: target.displayId, sim }, ctx, proj && proj.seen)
     // Dressed for the picture and undressed again in the same call: a still is over
     // before the dialog is off the screen, so nobody's simulator is left at 9:41.
     //
@@ -577,14 +655,18 @@ const ops = {
     // against the document as it stands.
     if (shot) await readForRules(file, SHOT_AT, shot.crop)
     const ruled = shot ? rulesCheck(file, shot, { width: shot.w, height: shot.h }) : null
+    // a shot of a project goes into that project's Library folder
+    const library = proj && proj.folder ? await fileInFolder(file, proj.folder).catch(() => null) : null
     return {
       ...(ruled ? { guidelines: ruled } : {}),
       path: file, name, kind: 'shot',
+      ...(proj ? { project: proj.said } : {}),
+      ...(library ? { library } : {}),
       captured: { ...cap,
         width: got.width, height: got.height, scale: got.scale,
         ...(got.display != null ? { display: String(got.display) } : {}),
         ...(got.clipped ? { clipped: true } : {}),
-        ...(front ? { chosen: 'the app in front' } : {}) },
+        ...(front ? { chosen: 'the app in front' } : proj && proj.target ? { chosen: `the project's own window: ${proj.target.why}` } : {}) },
       ...(sim ? { simulator: simFacts(sim, bar) } : {}),
       ...(shot ? { shot: summariseShot(shot, file) } : {}),
       ...(p ? { preview: { image: p.file, at: SHOT_AT, why: 'the capture as it stands, unstyled. Look at it before deciding what to do with it.' } } : {}),
@@ -1503,6 +1585,12 @@ const ops = {
   // app is the person acting, and needs no question.
   async 'memory.guidelines'(args = {}) {
     await sampleRoot()
+    // a project names its product: the one its takes are named for (productFor)
+    if (args.project != null && !args.product && !args.path) {
+      const r = resolveProject(args.project, await projectList())
+      if (!r.ok) return { ok: false, refused: { keep: false, kind: 'unplaced', why: r.why } }
+      args = { ...args, product: productFor(r.project, ownRoot()) }
+    }
     const about = args.product || args.about || null
     const where = { root: memRoot(args.path, about), take: args.path || null, ...(about ? { about } : {}) }
     const G = require('./guidelines')
@@ -1832,7 +1920,7 @@ async function recPhase() {
 // Refuse the take if the policy says so, with a reason the agent can relay verbatim.
 // Window targets are resolved to their owning app first, since the policy is written in
 // terms of apps and the caller only gives us an id.
-async function enforceAccess(args, ctx) {
+async function enforceAccess(args, ctx, seen = null) {
   const prefs = deps.getPrefs ? deps.getPrefs() : {}
   const p = {
     mode: prefs.recordAccess,
@@ -1855,7 +1943,11 @@ async function enforceAccess(args, ctx) {
   if (args.window != null) {
     const list = await deps.listWindows()
     const hit = (list || []).find(w => String(w.id) === String(args.window))
-    app = hit && hit.app
+    // A window the list leaves out (a helper built before it stopped skipping Electron
+    // by name leaves every dev build of an app out) is named by what Fetch itself read
+    // of it while finding a project's window, never by anything the agent sent: the
+    // question then says which app, and the never-record list is held to that name.
+    app = (hit && hit.app) || (seen && seen.app) || null
     if (hit && String(app || '') === policy.SIMULATOR_APP) {
       let joined = null
       try { joined = (await attachDevices([hit], { strict: true }))[0] } catch { joined = null }
@@ -1895,7 +1987,7 @@ async function enforceAccess(args, ctx) {
     if (sessionAllowed.has(key)) return
     const who = (ctx && ctx.client) || 'An agent'
     const what = sim ? `the ${sim.name} simulator`
-      : args.window != null ? `a ${app || 'window'} window` : 'your whole screen'
+      : args.window != null ? (app ? `a ${app} window` : 'a window') : 'your whole screen'
     const heardSaid = !sound ? ''
       // What they are saying yes to, in the scope the recorder really has: a window take's
       // sound is the display's, with no app left out (Recorder.swift start says why).
@@ -3073,8 +3165,13 @@ async function afterTake(r) {
     const sync = soundSync(await withAudioEnd(src, meta), sound)
     if (sync) audio = { ...audio, sync }
   }
+  // an agent's take of a project goes into that project's Library folder
+  const filing = takeProject
+  takeProject = null
+  const library = filing && src ? await fileInFolder(src, filing.folder).catch(() => null) : null
   return { ...out,
     ...(audio ? { audio } : {}),
+    ...(library ? { library } : {}),
     ...(job ? { job: 'the brief you wrote before the take is now the job on it, and the steps that made the ' +
       'take are closed', plan: job.plan } : {}) }
 }
@@ -4523,6 +4620,300 @@ function neverSeen(file, labels, about) {
   } catch { return null }
 }
 
+// ── a project, from @ to its window ──────────────────────────────────────
+// "@majuro record a demo of the lasso" names a folder of the person's own code, and a
+// take needs a window. ui/projects.js knows the folders (Conductor, Orca, Claude Code),
+// ui/project-windows.js knows what runs from one; this is where the two meet the tools.
+// record_start and take_shot take project and resolve it to the best window at the
+// moment of the call, and refuse with the finder's own sentence when nothing suitable
+// is running, rather than record the app that happens to be in front.
+//
+// A name has to be exact to count: an id, a path, or a name or alias one project and
+// no other answers to. A near miss is refused with the closest names, because a guess
+// here points a recording at the wrong project with the person's authority.
+function projectList() {
+  if (typeof deps.projects === 'function') return Promise.resolve(deps.projects()).then(l => l || [], () => [])
+  return require('./projects').projectIndexAsync().catch(() => [])
+}
+let projectFinderMade = null
+function projectFinder() {
+  if (deps.projectWindows) return deps.projectWindows
+  if (!projectFinderMade) {
+    // the Fetch doing the recording is found and named, never picked: it hides its own
+    // window while a take runs
+    projectFinderMade = require('./project-windows').make({ selfPid: process.pid, simModel: () => simModel() })
+  }
+  return projectFinderMade
+}
+
+// Where an unlisted folder may not be taken from, and what makes one look like a project.
+// Hidden folders are where keys and settings live (.ssh, .aws, .gnupg, .config), ~/Library
+// holds keychains and every app's data, and the system folders are nobody's project.
+// Temp folders (/tmp, /private/var/folders) stay open: they are scratch, someone may well
+// clone a project into one, and the hidden-folder and project-file rules still apply there.
+const SYSTEM_DIR = /^\/(System|Library|etc|usr|bin|sbin|dev|cores|opt|private\/(etc|var\/db|var\/root)|Volumes\/[^/]+\/(System|Library))(\/|$)/
+const PROJECT_MARKERS = ['.git', 'package.json', 'Package.swift', 'Cargo.toml', 'pyproject.toml', 'go.mod',
+  'Gemfile', 'pom.xml', 'build.gradle', 'CMakeLists.txt', 'Makefile', 'README.md', 'README']
+function unlistedFolderRefusal(real, home) {
+  if (real.split(path.sep).some(part => part.startsWith('.'))) return 'is inside a hidden folder, where keys and settings live rather than projects'
+  const rel = path.relative(home, real)
+  const inHome = rel && !rel.startsWith('..') && !path.isAbsolute(rel)
+  if (inHome && (rel === 'Library' || rel.startsWith('Library' + path.sep))) return 'is inside ~/Library, which holds keychains and app data rather than projects'
+  if (!inHome && SYSTEM_DIR.test(real)) return 'is a system folder'
+  // asked of each name in turn, never a listing of the folder
+  const marked = PROJECT_MARKERS.some(m => { try { fs.lstatSync(path.join(real, m)); return true } catch { return false } })
+  if (!marked) return 'does not look like a project: it has no .git, package.json, README or other project file'
+  return null
+}
+
+const lowerOf = v => String(v == null ? '' : v).trim().toLowerCase()
+function resolveProject(q, list) {
+  const raw = typeof q === 'object' && q ? (q.path || q.id || q.name || '') : q
+  const want = String(raw == null ? '' : raw).trim().replace(/^@/, '').replace(/\/+$/, '')
+  if (!want) return { ok: false, why: 'project is empty. list_projects lists the projects Fetch knows.' }
+  list = Array.isArray(list) ? list : []
+  let hits
+  if (want.startsWith('/') || want.startsWith('~')) {
+    const abs = want.startsWith('~') ? path.join(require('os').homedir(), want.slice(1)) : want
+    let real = abs
+    try { real = fs.realpathSync(abs) } catch {}
+    hits = list.filter(p => p.path === real || p.path === abs)
+    if (!hits.length) {
+      // A folder the tools have not seen is still a folder something can run from. It is
+      // named by its last part and carries nothing read out of it.
+      let dir = false
+      try { dir = fs.statSync(real).isDirectory() } catch {}
+      if (!dir) return { ok: false, why: `${want} is not a folder on this Mac.` }
+      // Being a folder was all it took, so ~/.ssh passed and its file names were listed.
+      // A folder no tool has seen is taken only where a project could live and only if it
+      // looks like one, and that is judged by name and by asking after a few project files,
+      // so a secret folder is refused without anything inside it being listed.
+      const off = unlistedFolderRefusal(real, require('os').homedir())
+      if (off) return { ok: false, why: `${want} ${off}. Name a project's own folder, or one list_projects gives.` }
+      if (require('./project-windows').tooBroad(real, require('os').homedir())) {
+        return { ok: false, why: `${want} holds far more than one project. Name the project's own folder.` }
+      }
+      return { ok: true, project: { id: null, name: path.basename(real), handle: path.basename(real), path: real, source: null } }
+    }
+  } else {
+    const w = lowerOf(want)
+    hits = list.filter(p => p.id === want || lowerOf(p.handle) === w || lowerOf(p.name) === w ||
+      (Array.isArray(p.aliases) && p.aliases.includes(w)))
+  }
+  if (hits.length === 1) return { ok: true, project: hits[0] }
+  if (hits.length > 1) {
+    return { ok: false, why: `${hits.length} projects answer to "${want}": ` +
+      `${hits.slice(0, 5).map(p => `${p.name} (${p.path})`).join('; ')}. Name one by its path or its id.`,
+    candidates: hits.slice(0, 5).map(projectRow) }
+  }
+  let near = []
+  try { near = require('./projects').findProjects(want, list, 5) } catch {}
+  return { ok: false, why: `No project Fetch knows is called "${want}".` +
+    (near.length ? ` Closest: ${near.map(p => p.handle || p.name).join(', ')}.` : '') +
+    ' list_projects lists them, from Conductor, Orca and Claude Code.',
+  ...(near.length ? { candidates: near.map(projectRow) } : {}) }
+}
+
+// What record_start's project takes to mean this project and no other: its handle, which
+// ui/projects.js keeps unique, or its path when it is a folder no tool has listed.
+const projectArgName = p => (p && p.id && p.handle) || (p && p.path) || (p && p.name) || ''
+
+// Other tools' data about other projects leaves Fetch only for an agent the person let
+// see it. Fetch's own chat is the person's (the shim it starts says --chat); any other
+// agent is asked about once, and a yes holds until Fetch quits, like a take's. Saying
+// nothing is a no. deps.confirmProjects stands in for the question in the tests.
+async function projectsAllowed(ctx) {
+  if (ctx && ctx.chat === true) return
+  if (sessionAllowed.has('projects')) return
+  const who = (ctx && ctx.client) || 'An agent'
+  let answer
+  if (typeof deps.confirmProjects === 'function') answer = await deps.confirmProjects(who)
+  else {
+    answer = await askPerson(`${who} wants to see the projects on this Mac.`,
+      'Their names, folders, branches and remotes, from Conductor, Orca and Claude Code, what runs from one ' +
+      'it names, and the first lines of that one\'s README. It goes to that agent\'s model.',
+      'Allow until Fetch quits', false, 'Allow once')
+  }
+  if (answer === 'session') { sessionAllowed.add('projects'); return }
+  if (answer === 'once') return
+  throw new Error(answer === 'unanswered'
+    ? 'Fetch did not hand over the projects on this Mac: nobody answered the question on screen. Ask the person to tag the project in Fetch\'s chat, or to allow it.'
+    : 'Fetch did not hand over the projects on this Mac: the person at the Mac said no. Do not ask again in this task.')
+}
+
+// One project as a tool hands it back. The description is the project's own first
+// lines, already capped and cleaned of anything shaped like a key by ui/projects.js.
+function projectRow(p, o = {}) {
+  if (!p) return null
+  return {
+    ...(p.id ? { id: p.id } : {}),
+    name: p.name, handle: p.handle || p.name, path: p.path,
+    ...(p.sources && p.sources.length ? { from: p.sources } : p.source ? { from: [p.source] } : {}),
+    ...(p.branch ? { branch: p.branch } : {}),
+    ...(p.remoteShort || p.remote ? { remote: p.remoteShort || p.remote } : {}),
+    ...(o.about !== false && p.about ? { about: p.about } : {}),
+    ...(p.lastUsed ? { last_used: new Date(p.lastUsed).toISOString() } : {}),
+  }
+}
+
+// The product a project's rules are kept under. A product the person already has rules
+// or facts for wins when the project answers to it (its remote's name, its repo, its
+// workspace, its handle, its folder); otherwise the remote's name, since that is what a
+// repo is called outside this Mac, and then the handle. "rec/majuro" with the remote
+// SankrityaT/Fetch is Fetch, so its rules are the ones Fetch's takes are held to.
+function productFor(p, root) {
+  if (!p) return null
+  const Memory = require('./memory')
+  const fromRemote = p.remoteShort ? String(p.remoteShort).split('/').pop() : p.remote
+    ? String(p.remote).replace(/\.git$/, '').split(/[/:]/).pop() : null
+  const names = [fromRemote, p.repo, p.workspace, p.handle, p.name, p.path ? path.basename(p.path) : null]
+    .map(x => Memory.clean(x || '', 60)).filter(Boolean)
+  try {
+    const known = new Set()
+    for (const f of Memory.read(root || ownRoot()).facts) if (f.scope === 'product' && f.about) known.add(f.about)
+    for (const n of names) for (const k of known) if (Memory.sameSubject(n, k)) return k
+  } catch {}
+  return names[0] || null
+}
+
+// The Library folder a project's takes and shots are filed in: the project's own name,
+// as the chip in the chat showed it.
+const projectFolder = p => (p && (p.name || p.handle)) || null
+
+// Where a project's rules and facts are kept: the person's own memory, always. A project
+// is a folder of their code, never the sample's made up product.
+const ownRoot = () => (app ? app.getPath('userData') : require('os').tmpdir())
+
+// What runs from a project right now, bounded: a turn does not wait on a slow Mac.
+function projectRunning(p, ms = 6000) {
+  return Promise.race([
+    Promise.resolve().then(() => projectFinder().find({ name: p.handle || p.name, path: p.path })).catch(() => null),
+    new Promise(res => { const t = setTimeout(() => res(null), ms); if (t.unref) t.unref() }),
+  ])
+}
+
+// The candidates as a tool hands them back: what the finder said, less its internals.
+const candidateRow = c => ({
+  kind: c.kind, ...(c.window ? { window: c.window } : {}), ...(c.device ? { device: c.device } : {}),
+  ...(c.url ? { url: c.url } : {}), recordable: !!c.recordable, evidence: c.evidence || [],
+  ...(c.note ? { note: c.note } : {}), ...(c.self ? { self: true } : {}),
+})
+
+// record_start and take_shot with project: the window to use, or the sentence that
+// refuses. A pick that is not on screen is refused too, since a take of it gets no
+// frames and Fetch never brings a window forward.
+async function projectTarget(q) {
+  const list = await projectList()
+  const r = resolveProject(q, list)
+  if (!r.ok) throw new Error(r.why)
+  const p = r.project
+  const running = await projectRunning(p, 15000)
+  if (!running) throw new Error(`Fetch could not read what is running from ${p.handle || p.name} in time, so nothing was captured. Call it again.`)
+  const pick = running.pick
+  const others = (running.candidates || []).filter(c => c.window && c.recordable).slice(0, 3)
+  const named = others.length ? ` Seen: ${others.map(c => `window ${c.window.id} (${c.window.app}${c.window.title ? `, ${c.window.title}` : ''})`).join('; ')}.` : ''
+  if (!pick) throw new Error(`Nothing was captured. ${running.why}${/Say which one/.test(running.why) ? '' : named}`)
+  if (pick.window && pick.window.onScreen === false) {
+    throw new Error(`Nothing was captured. ${running.why} Fetch never brings a window forward itself.`)
+  }
+  const root = ownRoot()
+  const product = productFor(p, root)
+  return { project: p, pick, why: running.why, product, folder: projectFolder(p),
+    said: { name: p.name, handle: p.handle || p.name, path: p.path, ...(p.branch ? { branch: p.branch } : {}),
+      chosen: running.why, ...(product ? { product } : {}) } }
+}
+
+// A take or a shot of a project, named product first, so the rules and the facts kept for
+// that product follow the file without anyone passing about (ui/memory.js productOf reads
+// the part before the dot). The app in front would have named it after Electron.
+function projectTakeName(p, product) {
+  const handle = (p && (p.handle || p.name)) || ''
+  if (!product) return handle || null
+  return !handle || require('./memory').sameSubject(handle, product) ? product : `${product} · ${handle}`
+}
+
+// record_start's and take_shot's project argument, taken off the args and turned into
+// what they already understand: a window (or a simulator) found now, a name that says the
+// product, and the folder the file is filed in. A window, display, region or simulator
+// named alongside wins over the finder, and the project still names the product and the
+// folder. Null when no project was named.
+async function projectArgs(args = {}, ctx = null) {
+  if (args.project == null || String(args.project).trim() === '') return null
+  // resolving a name hands back names and paths of the projects near it, so an agent
+  // outside the app needs the same yes list_projects does
+  await projectsAllowed(ctx)
+  const out = { ...args }
+  delete out.project
+  const named = args.window != null || args.display != null || args.simulator != null || !!args.full_screen || !!args.region
+  let target = null, p, product
+  if (named) {
+    const r = resolveProject(args.project, await projectList())
+    if (!r.ok) throw new Error(r.why)
+    p = r.project
+    product = productFor(p, ownRoot())
+  } else {
+    target = await projectTarget(args.project)
+    p = target.project
+    product = target.product
+    if (target.pick.kind === 'simulator' && target.pick.device) out.simulator = target.pick.device.udid
+    else out.window = String(target.pick.window.id)
+  }
+  if (out.name == null) {
+    const n = projectTakeName(p, product)
+    if (n) out.name = n
+  }
+  const said = target ? target.said : { name: p.name, handle: p.handle || p.name, path: p.path,
+    ...(p.branch ? { branch: p.branch } : {}), ...(product ? { product } : {}),
+    chosen: 'the window, display or simulator named alongside it' }
+  return { args: out, target, product, folder: projectFolder(p), said,
+    seen: target && target.pick.window && target.pick.kind !== 'simulator' ? { app: target.pick.window.app } : null }
+}
+
+// The block a chat turn carries for each project it tagged: where it is, what it is,
+// what runs from it now and how to record it (ui/edit-assist.js projectLines). Tags the
+// chat already described carry only what it could not know. A typed @name the chat did
+// not tag is resolved here too, exactly or not at all.
+async function projectTurn(tags = [], text = '') {
+  const list = await projectList()
+  const picked = []
+  for (const t of (Array.isArray(tags) ? tags : [])) {
+    if (!t || t.kind !== 'project' || !t.path) continue
+    const r = resolveProject(t.path, list)
+    picked.push({ project: r.ok ? { ...t, ...r.project } : { ...t, handle: t.name }, described: true })
+  }
+  const re = /(^|\s)@([^\s@]+)/g
+  let m
+  while ((m = re.exec(String(text || ''))) && picked.length < 3) {
+    const word = m[2].replace(/[.,;:!?)]+$/, '')
+    const r = resolveProject(word, list)
+    if (r.ok && r.project.id && !picked.some(x => x.project.path === r.project.path)) picked.push({ project: r.project, described: false })
+  }
+  if (!picked.length) return ''
+  const root = ownRoot()
+  const out = await Promise.all(picked.slice(0, 3).map(async e =>
+    ({ ...e, product: productFor(e.project, root), running: await projectRunning(e.project) })))
+  return require('./edit-assist').projectLines(out)
+}
+
+// Filed in the project's Library folder, through the Library itself: its folders live in
+// the window and are written from there, so a second writer here would lose one side's
+// change. Said plainly when this build's Library cannot take it.
+async function fileInFolder(file, folder) {
+  if (!file || !folder) return null
+  const win = deps.getWindow ? deps.getWindow() : null
+  if (!win || win.isDestroyed()) return { folder, filed: false, why: 'Fetch has no window to file it from.' }
+  const js = `(() => { try { const L = require('./ui/library.js'); ` +
+    `if (typeof L.fileInto !== 'function') return { filed: false, why: 'this build of the Library cannot file into a folder yet' }; ` +
+    `const r = L.fileInto(${JSON.stringify(folder)}, ${JSON.stringify(file)}); ` +
+    `if (typeof window.refreshLibrary === 'function') window.refreshLibrary(); ` +
+    `return { filed: r !== false } } catch (e) { return { filed: false, why: String(e && e.message || e) } } })()`
+  const r = await Promise.race([
+    win.webContents.executeJavaScript(js).catch(e => ({ filed: false, why: e.message })),
+    new Promise(res => setTimeout(() => res({ filed: false, why: 'the Library did not answer' }), 3000)),
+  ])
+  return { folder, ...(r && typeof r === 'object' ? r : { filed: false }) }
+}
+
 // ── the product's rules, as checks ──────────────────────────────────────
 // A rule an agent only reads is a suggestion. ui/guidelines.js holds work to four of the
 // five sections (the words it avoids, what it is called, what must never be on screen,
@@ -4952,6 +5343,8 @@ function logOp(op, ctx, t0, args, result, error) {
   if (op === 'record.start' && result) detail = result.path
   else if (op === 'transcribe' && result) detail = `${result.words} words, ${result.cues} cues`
   else if (op === 'windows.list' && result) detail = `${result.length} windows`
+  else if (op === 'projects.list' && result) detail = `${(result.projects || []).length} of ${result.count}`
+  else if (op === 'projects.get' && result) detail = result.project ? result.project.name : result.why
   else if (op === 'recordings.list' && result) detail = `${result.length} take${result.length === 1 ? '' : 's'}`
   else if (op === 'probe' && args && args.path) detail = args.path
   else if (op === 'edit.silence' && result) detail = `${result.removed_percent}% removed, ${result.path}`
@@ -5114,7 +5507,10 @@ function stop() {
   server = null
 }
 
-module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEndedAlone, stillNote, occludedTake, noteMoves, follow, checkTimes, liftable,
+module.exports = { start, stop, socketPath, VERSION,
+  // a project, from @ to its window: the chat turn's block (main.js chat-send), and the
+  // pieces test/tools.test.js holds to their word
+  projectTurn, resolveProject, unlistedFolderRefusal, productFor, projectTakeName, startingAgentTake, takeEndedAlone, stillNote, occludedTake, noteMoves, follow, checkTimes, liftable,
   // every op this bridge answers. test/tools.test.js walks it against the tools
   // mcp/index.js registers, because record.pause sat here unregistered for months and
   // a feature no agent can reach is a feature that does not exist.

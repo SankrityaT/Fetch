@@ -404,6 +404,7 @@
 /* the matched part is what you typed, so it is the part you are looking for */
 .chat-mention-name strong { color:var(--text-0); font-weight:600; }
 .chat-mention-sub { font-size:var(--t-11); color:var(--text-2); }
+.chat-mention-branch { font-size:var(--t-11); color:var(--text-1); }
 
 /* chips riding along with the message you are writing */
 .chat-ctx { display:flex; flex-wrap:wrap; gap:6px; }
@@ -422,6 +423,16 @@
 }
 .chat-tag button:hover { opacity:1; background:rgba(240,169,60,.2); }
 .chat-tag button svg { width:10px; height:10px; }
+/* a project chip is the same gold chip, with a folder for the film strip and the
+   branch after the name in mono, the way a lassoed area carries its id: two
+   workspaces of one repo differ by exactly that. */
+.chat-tag .chat-tag-branch {
+  flex:0 1 auto; min-width:3ch; max-width:16ch;
+  font-size:var(--t-11); color:var(--text-2);
+}
+.chat-tag button:active { background:rgba(240,169,60,.3); }
+.chat-tag button:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; opacity:1; }
+.chat-mention-row:focus-visible { outline:2px solid var(--fur-1); outline-offset:-2px; }
 
 /* an area lassoed on the stage, which points at one thing in the picture. The gold
    chip idiom again: the person drew this, and Fetch did not infer it. The id is on

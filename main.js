@@ -1901,6 +1901,14 @@ ipcMain.handle('guidelines', (e, args = {}) => {
   }
 })
 
+// The projects @ can point at: every folder of code the person's tools know (Conductor,
+// Orca, Claude Code), read by ui/projects.js on a worker thread and kept half a minute.
+// Only names, paths, branches, remotes and the first lines of a README or agent notes.
+// It goes to the chat's model when the person tags a project, and to an outside agent
+// only after the person's yes (agent-bridge projectsAllowed); the chat's log keeps a
+// tag's name, path, source and branch and never the description (ui/chat.js tagFor).
+ipcMain.handle('list-projects', () => require('./ui/projects').projectIndexAsync().catch(() => []))
+
 ipcMain.handle('list-recordings', () => {
   const s = sampleOpen()
   if (s) return require('./ui/sample').list(s, proc)
@@ -1982,7 +1990,13 @@ ipcMain.handle('lasso-drop', (e, { path: src, id } = {}) => agentBridge.forgetRe
 // back from a real CLI rather than from any model Fetch talks to itself.
 // Everything the pane shows is also written to userData/chat.jsonl, so the thread is
 // still there after a restart (ui/chat-log.js).
-ipcMain.on('chat-send', (e, payload) => {
+//
+// A project the message tagged, or named with an @ that answers to exactly one, is read
+// before the turn starts: what runs from it now, which window a take of it would be,
+// and the product its rules are kept under (agentBridge.projectTurn). That is the one
+// await in front of a turn, bounded, and a Stop pressed during it starts nothing.
+let chatPending = null
+ipcMain.on('chat-send', async (e, payload) => {
   const d = (payload && payload.display) || {}
   // the lassoed areas ride with the message, so the chips are still on the bubble
   // after a restart
@@ -1993,6 +2007,17 @@ ipcMain.on('chat-send', (e, payload) => {
   }
   // a person sending a message is them letting the chat's agent go on, and only that one
   releaseAgent(true)
+  const tagged = (d.tags || []).some(t => t && t.kind === 'project')
+  if (tagged || /(^|\s)@[^\s@]/.test(d.text || '')) {
+    const mine = chatPending = { cancelled: false }
+    const block = await Promise.race([
+      agentBridge.projectTurn(d.tags || [], d.text || '').catch(() => ''),
+      new Promise(res => setTimeout(() => res(''), 8000)),
+    ])
+    if (chatPending === mine) chatPending = null
+    if (mine.cancelled) { reply({ kind: 'done', ok: false, cancelled: true, ms: 0 }); return }
+    if (block) payload = { ...payload, prompt: `${payload.prompt}\n\n${block}` }
+  }
   try {
     agentChat.send(payload, reply)
     driveChanged()
@@ -2000,7 +2025,7 @@ ipcMain.on('chat-send', (e, payload) => {
     reply({ kind: 'done', ok: false, error: err.message, ms: 0 })
   }
 })
-ipcMain.on('chat-cancel', () => agentChat.cancel())
+ipcMain.on('chat-cancel', () => { if (chatPending) chatPending.cancelled = true; agentChat.cancel() })
 // A pasted image with no file behind it (a screenshot copied to the clipboard) gets
 // one in the temp dir, so from here on every attachment is just a path.
 ipcMain.handle('chat-attach-blob', (e, { bytes, type }) => {

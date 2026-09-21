@@ -27,7 +27,9 @@ function shown(x, v) {
   if (x.unit === '%') return Math.round(v * 100) + '%'
   if (x.unit === 'x') return (+v).toFixed(x.step < 0.1 ? 2 : 1) + 'x'
   if (x.unit === 's') return (+v).toFixed(1) + 's'
-  if (x.unit === 'px') return Math.round(v) + ' px'
+  // attached like every other unit: in the mono field one space is a whole digit wide,
+  // so "6 px" read as "6  px" beside "7%" and "1.2x"
+  if (x.unit === 'px') return Math.round(v) + 'px'
   if (x.unit === 'deg') return (+v).toFixed(1) + '°'
   return String(+(+v).toFixed(2))
 }

@@ -138,6 +138,10 @@ export function build() {
         'nothing is recorded and this returns status "occluded" with what covers it, the ' +
         'display it is on and the crop that shows just that window. ' +
         'With simulator, the device is resolved to its window and recorded there. ' +
+        'With project, Fetch finds the window of what runs from that project at this moment (its own app, ' +
+        'its app on a simulator, or a browser showing its dev server) and records that; when nothing suitable ' +
+        'is running, or its window is not on screen, nothing is recorded and the error says why and what ' +
+        'would start it. The take is named for the project\'s product and filed in its Library folder. ' +
         RecOpts.SIM_AUDIO_SAID + ' ' +
         'The status bar is set to 9:41 for the take and put back on record_stop. Where the device screen ' +
         'sits inside that window is measured off one picture of it before the take starts, and that ' +
@@ -153,6 +157,10 @@ export function build() {
         simulator: z.string().optional()
           .describe('A simulator by UDID or by name, instead of window. Fetch records the window it sits in, ' +
             'where it sits. The simulator tool boots one and opens its window.'),
+        project: z.string().optional()
+          .describe('A project by name, handle, id or path, as list_projects gives it, instead of window: ' +
+            'Fetch finds its window now. Named alongside a window, the window is recorded and the project ' +
+            'only names the product and the folder.'),
         status_bar: z.boolean().optional()
           .describe('With simulator, default true: 9:41, full bars, charged, put back on record_stop.'),
         full_screen: z.boolean().optional()
@@ -304,6 +312,42 @@ export function build() {
     },
     async () => text(await drive('displays.list')))
 
+  // The person's projects, so "record a demo of majuro" needs no path and no window id.
+  // Read off their coding tools' own folders; nothing about a project is opened past its
+  // name, path, branch, remote and the first lines of its README or agent notes.
+  server.registerTool(
+    'list_projects',
+    {
+      description:
+        'List the projects the person works in, from Conductor workspaces, Orca and Claude Code, most recently ' +
+        'worked in first: name, handle (the short name to pass on), path, branch and remote. Use it when the ' +
+        'person names a project, an app of theirs or a workspace, instead of asking them for a path. ' +
+        'record_start and take_shot take project and find its window themselves; get_project says what one is ' +
+        'and what is running from it. Outside Fetch\'s own chat the person is asked first, and a no is final ' +
+        'for this task.',
+      inputSchema: z.object({
+        query: z.string().optional()
+          .describe('Only projects whose name, handle or branch starts with or contains this, best match first.'),
+        limit: z.number().optional().describe('At most this many, default 20.'),
+      }),
+    },
+    async (args = {}) => text(await drive('projects.list', args)))
+
+  server.registerTool(
+    'get_project',
+    {
+      description:
+        'One project, looked up by name, handle, id or path: where it is, its branch and remote, what it is in ' +
+        'its own words, and what is running from it right now, with the window record_start would record and ' +
+        'why (its own app, its app on a simulator, or a browser showing its dev server). When nothing suitable is ' +
+        'running, why says so and what would start it; Fetch starts nothing. Also the product its rules are ' +
+        'kept under, those rules, and the Library folder its takes go in. Reading what runs takes about a second.',
+      inputSchema: z.object({
+        project: z.string().describe('The project: a name or handle from list_projects, its id, or its path.'),
+      }),
+    },
+    async args => text(await drive('projects.get', args, { timeoutMs: 30000 })))
+
   // The iOS Simulator, as a thing Fetch knows rather than a window with a name that
   // happens to match. One tool with an action: six tools for six command line verbs
   // would be six descriptions in every context window for one capability.
@@ -405,6 +449,9 @@ export function build() {
         'window with a phone drawn round a phone, and it is what the next tap is aimed through. Measured ' +
         'off this very picture, so where an app painted black to its own edge leaves nothing to measure ' +
         'the result says so and the whole window is kept rather than a guess cropped to. ' +
+        'With project, Fetch finds the window of what runs from that project at this moment and captures ' +
+        'that, or refuses with why when nothing suitable is running; the shot is named for the project\'s ' +
+        'product and filed in its Library folder. ' +
         'With neither window nor display, Fetch captures the window of the app in front (never Fetch ' +
         'itself, never the terminal you run in), and the result names it. The person\'s own pointer is ' +
         'left out unless you ask for it, the window\'s own drop shadow is never in the file (Fetch draws ' +
@@ -417,6 +464,9 @@ export function build() {
           .describe('Window id from list_windows. Captures that window alone, on transparency, with its own corners.'),
         simulator: z.string().optional()
           .describe('A simulator by UDID or by name, instead of window. Its window is captured where it sits.'),
+        project: z.string().optional()
+          .describe('A project by name, handle, id or path, as list_projects gives it, instead of window: ' +
+            'Fetch finds its window now.'),
         status_bar: z.boolean().optional()
           .describe('With simulator, default true: 9:41, full bars, charged, and the person\'s own values back at once.'),
         display: z.string().optional()
@@ -938,6 +988,8 @@ export function build() {
         action: z.enum(['read', 'write', 'show', 'adopt', 'reject', 'check', 'gate']).optional()
           .describe('Default read, or write when rules are sent.'),
         product: z.string().optional().describe('The product, when no path names it.'),
+        project: z.string().optional()
+          .describe('A project from list_projects, instead of product: its rules are the ones its takes are held to.'),
         path: z.string().optional().describe('Absolute path to one of the product\'s takes or shots, which names it.'),
         rules: z.array(z.object({
           rule: z.string().describe('The rule, one sentence. In the person\'s own words when from is person.'),

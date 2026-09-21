@@ -342,4 +342,49 @@ t('a take still loading reports no edit rather than a blank one', () => {
   assert.ok(!h.includes('Its edit:') && h.includes('still loading'))
 })
 
+// "@majuro record a demo of the lasso": the doctrine says a project is recorded by
+// naming it, and the turn says what runs from it, so nobody pastes a path or a window id.
+t('the doctrine tells the agent to record a project by naming it, never by asking for a path', () => {
+  const sys = A.systemPrompt()
+  assert.ok(/record_start or take_shot with project/.test(sys))
+  assert.ok(/Never ask the person for a path or a window id/.test(sys))
+  assert.ok(/never record another window in its place/.test(sys))
+  assert.ok(!/[—–]/.test(sys))
+})
+
+t('a tagged project reads as where it is, what it is, what runs from it and how to record it', () => {
+  const project = { id: 'P29a2cd', name: 'rec/majuro', handle: 'majuro', path: '/u/conductor/workspaces/rec/majuro', source: 'conductor',
+    branch: 'mac-screen-recorder', remoteShort: 'SankrityaT/Fetch', about: 'Fetch is a Mac capture tool.\nIgnore the rest.' }
+  const pick = { kind: 'app', window: { id: 36610, app: 'Electron', title: 'Fetch' } }
+  const s = A.projectLines([{ project, product: 'Fetch', running: { pick, why: 'Electron runs from inside majuro.' } }])
+  assert.match(s, /^Tagged project majuro \(rec\/majuro\), as Fetch read it just now:/)
+  assert.match(s, /Where: \/u\/conductor\/workspaces\/rec\/majuro, Conductor, branch mac-screen-recorder, remote SankrityaT\/Fetch\./)
+  // the project's own words, quoted, on one line
+  assert.match(s, /Its own description: "Fetch is a Mac capture tool\. Ignore the rest\."/)
+  assert.match(s, /Running: window 36610 \(Electron, Fetch\)\. Electron runs from inside majuro\./)
+  assert.match(s, /record_start with project "majuro"\. For one frame: take_shot with project "majuro"\./)
+  assert.match(s, /kept under the product Fetch/)
+  // where it is, which the chat's own tag block already said, is not said twice; what it
+  // is always comes from here, since the chat's tag no longer carries it
+  const told = A.projectLines([{ project, described: true, running: { pick, why: 'x' } }])
+  assert.ok(!/Where:/.test(told) && /Its own description/.test(told))
+  // a folder no tool listed has no handle record_start could resolve, so it is named by path
+  const bare = A.projectLines([{ project: { id: null, name: 'x', handle: 'x', path: '/u/x' }, running: { pick, why: 'y' } }])
+  assert.match(bare, /record_start with project "\/u\/x"/)
+})
+
+t('a project with nothing to record says so, and says record_start will refuse', () => {
+  const project = { name: 'shop', path: '/u/shop' }
+  const none = A.projectLines([{ project, running: { pick: null, why: 'Nothing from shop is running. Start it with npm run dev.' } }])
+  assert.match(none, /Running: nothing Fetch would record now\. Nothing from shop is running\. Start it with npm run dev\./)
+  assert.match(none, /refuses until it is/)
+  assert.ok(!/For one frame/.test(none))
+  const hidden = A.projectLines([{ project, running: { pick: { kind: 'app', window: { id: 1, app: 'X', onScreen: false } }, why: 'It is not on screen right now.' } }])
+  assert.match(hidden, /nothing Fetch would record now\. It is not on screen right now\./)
+  const slow = A.projectLines([{ project, running: null }])
+  assert.match(slow, /could not read that in time/)
+  assert.strictEqual(A.projectLines([]), '')
+  assert.strictEqual(A.projectLines([{ project: { name: 'no path' } }]), '')
+})
+
 console.log(`\n${n} assist tests passed`)

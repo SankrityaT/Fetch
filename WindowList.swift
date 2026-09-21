@@ -7,6 +7,8 @@ import ScreenCaptureKit
 // removed in macOS 15, and desktopCapturer only ever returns a couple of windows.
 //   WindowList            -> JSON list of windows
 //   WindowList <id> <px>  -> base64 JPEG preview of that window
+//   WindowList --owners   -> every normal window with its owner's pid, CoreGraphics only
+//   WindowList --cwd <pids> -> each process's working directory, proc_pidinfo only
 
 func jpeg(_ img: CGImage, maxW: CGFloat) -> String? {
     let w = CGFloat(img.width), h = CGFloat(img.height)
@@ -41,8 +43,12 @@ func iconFor(_ pid: pid_t) -> String {
 
 // System chrome and background helpers a user would never want to record.
 // Matched against the owning app's name (ScreenCaptureKit's applicationName).
+// Not "Electron": that name is every app run from a development checkout, and skipping it
+// hid them all from list_windows, so "@majuro record a demo" could never name its window.
+// The Fetch that ran this helper, installed or a development build, is skipped by its pid
+// instead (SELF_PIDS), and the installed one by its name as well.
 let SKIP: Set<String> = [
-    "Window Server", "Dock", "Fetch", "CamBubble", "Electron",
+    "Window Server", "Dock", "Fetch", "CamBubble",
     "Control Centre", "Control Center", "Notification Center", "Spotlight",
     "UserNotificationCenter", "CoreServicesUIAgent", "TextInputMenuAgent",
     "TextInputSwitcher", "universalAccessAuthWarn", "Emoji & Symbols",
@@ -54,6 +60,16 @@ let SKIP_PREFIX = ["AutoFill ("]
 // Placeholder titles some helper windows report instead of real content.
 let JUNK_TITLES: Set<String> = ["Item-0", "Window", "Menubar", "Desktop"]
 
+// This helper and the Fetch that started it (main.js runs every WindowList itself, so the
+// parent is Fetch's main process, which owns all its windows: the control window, the
+// halo, the agent's cursor). FETCH_SELF_PID names it too, for a caller that is not the
+// parent.
+let SELF_PIDS: Set<Int> = {
+    var s: Set<Int> = [Int(ProcessInfo.processInfo.processIdentifier), Int(getppid())]
+    if let v = ProcessInfo.processInfo.environment["FETCH_SELF_PID"], let n = Int(v) { s.insert(n) }
+    return s
+}()
+
 @available(macOS 14.0, *)
 func listWindows() async throws -> [[String: Any]] {
     let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
@@ -64,7 +80,7 @@ func listWindows() async throws -> [[String: Any]] {
 
     for w in content.windows {
         guard let owner = w.owningApplication else { continue }
-        guard owner.processID != mine,
+        guard owner.processID != mine, !SELF_PIDS.contains(Int(owner.processID)),
               !SKIP.contains(owner.applicationName),
               !SKIP_PREFIX.contains(where: { owner.applicationName.hasPrefix($0) })
         else { continue }
@@ -96,6 +112,9 @@ func listWindows() async throws -> [[String: Any]] {
 
         out.append([
             "id": Int(w.windowID),
+            // the owning process, so a window can be tied to what runs from a project
+            // (ui/project-windows.js matches a process's working directory to a folder)
+            "pid": Int(owner.processID),
             "app": owner.applicationName,
             "title": title,
             "icon": iconFor(owner.processID),
@@ -183,6 +202,7 @@ if args.count >= 3, args[1] == "--covered", let id = UInt32(args[2]) {
         let owner = w[kCGWindowOwnerName as String] as? String ?? ""
         guard (w[kCGWindowLayer as String] as? Int ?? 0) == 0,
               (w[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
+              !SELF_PIDS.contains(w[kCGWindowOwnerPID as String] as? Int ?? 0),
               !SKIP.contains(owner), let r = frame(w), r.intersects(target) else { return nil }
         return (r, owner)
     }
@@ -240,6 +260,7 @@ if args.count >= 2, args[1] == "--front" {
             guard (w[kCGWindowLayer as String] as? Int ?? 0) == 0,
                   (w[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
                   (w[kCGWindowOwnerPID as String] as? Int ?? 0) != mine,
+                  !SELF_PIDS.contains(w[kCGWindowOwnerPID as String] as? Int ?? 0),
                   !owner.isEmpty, !SKIP.contains(owner), !passOver.contains(owner),
                   !SKIP_PREFIX.contains(where: { owner.hasPrefix($0) }),
                   let b = w[kCGWindowBounds as String] as? [String: CGFloat],
@@ -272,6 +293,54 @@ if args.count >= 2, args[1] == "--front" {
         print(sample())
         usleep(useconds_t(secs * 1_000_000))
     }
+}
+
+// `--owners`: every window in the normal layer, on screen or not (another Space,
+// minimised, behind a full-screen app), at least the size the list above keeps, as JSON
+// [{"id":..,"pid":..,"app":..,"title":..,"width":..,"height":..,"onScreen":true}].
+// CoreGraphics only: no ScreenCaptureKit, so the capture service is never asked anything.
+// Nothing is skipped; ui/project-windows.js names the Fetch doing the recording itself.
+if args.count >= 2, args[1] == "--owners" {
+    let all = (CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+    var out: [[String: Any]] = []
+    for w in all {
+        guard (w[kCGWindowLayer as String] as? Int ?? -1) == 0,
+              (w[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
+              let b = w[kCGWindowBounds as String] as? [String: CGFloat] else { continue }
+        let width = Int((b["Width"] ?? 0).rounded()), height = Int((b["Height"] ?? 0).rounded())
+        guard width >= 140, height >= 120 else { continue }
+        out.append([
+            "id": w[kCGWindowNumber as String] as? Int ?? 0,
+            "pid": w[kCGWindowOwnerPID as String] as? Int ?? 0,
+            "app": w[kCGWindowOwnerName as String] as? String ?? "",
+            "title": w[kCGWindowName as String] as? String ?? "",
+            "width": width, "height": height,
+            "onScreen": (w[kCGWindowIsOnscreen as String] as? Bool) ?? false,
+        ])
+    }
+    let data = (try? JSONSerialization.data(withJSONObject: out)) ?? Data("[]".utf8)
+    print(String(data: data, encoding: .utf8) ?? "[]")
+    exit(0)
+}
+
+// `--cwd <pid,pid,...>`: each process's working directory, as JSON {"51115":"/Users/..."}.
+// proc_pidinfo answers for the person's own processes in microseconds each, which is
+// what lsof asks the kernel for anyway. A process it cannot read is left out.
+if args.count >= 3, args[1] == "--cwd" {
+    var out: [String: String] = [:]
+    for part in args[2].split(separator: ",") {
+        guard let pid = Int32(part.trimmingCharacters(in: .whitespaces)), pid > 0 else { continue }
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.stride)
+        guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { continue }
+        let cwd = withUnsafePointer(to: &info.pvi_cdir.vip_path) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+        }
+        if !cwd.isEmpty { out[String(pid)] = cwd }
+    }
+    let data = (try? JSONSerialization.data(withJSONObject: out)) ?? Data("{}".utf8)
+    print(String(data: data, encoding: .utf8) ?? "{}")
+    exit(0)
 }
 
 let sem = DispatchSemaphore(value: 0)

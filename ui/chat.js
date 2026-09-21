@@ -10,6 +10,147 @@
 ;(function () {
   'use strict'
 
+  // ── what @ can point at ────────────────────────────────────────────────
+  // A recording, and since this round a project: a workspace in Conductor or Orca, or
+  // a folder Claude Code has worked in. "Record a demo of @majuro" is the person saying
+  // which app without knowing its path, so the tag carries what the agent needs to find
+  // it: the path, the branch, and a line saying what the thing is.
+  //
+  // Pure, and above the DOM, so test/chat.test.js can run it under plain node.
+  const SOURCE = { conductor: 'Conductor', orca: 'Orca', claude: 'Claude Code' }
+  // one folder seen by two tools is one project; the one that knows most names it
+  const SOURCE_RANK = { conductor: 0, orca: 1, claude: 2 }
+  const ABOUT_MAX = 280
+
+  const timeOf = x => +(x && (x.at || x.lastUsed || x.mtime || x.updatedAt)) || 0
+  const oneLine = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim()
+
+  // The index is another module's, so read it the forgiving way: a bare list or
+  // { projects }, fields that may be missing, and one folder listed by every tool that
+  // has touched it.
+  function normProjects(raw) {
+    const arr = Array.isArray(raw) ? raw : raw && Array.isArray(raw.projects) ? raw.projects : []
+    const byPath = new Map()
+    for (const p of arr) {
+      if (!p || !p.path) continue
+      const source = SOURCE[p.source] ? p.source : 'claude'
+      const name = oneLine(p.name) || String(p.path).split('/').filter(Boolean).pop() || p.path
+      const one = {
+        kind: 'project', source, name, path: String(p.path).replace(/\/+$/, '') || '/',
+        // what the person can type after @ to mean it, as the bridge resolves it
+        // (ui/agent-bridge.js resolveProject): its id, its handle, or any of its aliases
+        id: p.id || null,
+        handle: oneLine(p.handle).toLowerCase() || null,
+        aliases: Array.isArray(p.aliases) ? p.aliases.map(a => oneLine(a).toLowerCase()).filter(Boolean) : [],
+        repo: oneLine(p.repo) || null,
+        branch: oneLine(p.branch) || null,
+        remote: oneLine(p.remote) || null,
+        about: oneLine(p.about || p.description || p.summary).slice(0, ABOUT_MAX) || null,
+        at: timeOf(p),
+      }
+      const had = byPath.get(one.path)
+      if (!had) { byPath.set(one.path, one); continue }
+      const [a, b] = SOURCE_RANK[one.source] < SOURCE_RANK[had.source] ? [one, had] : [had, one]
+      byPath.set(one.path, {
+        ...a,
+        id: a.id || b.id, handle: a.handle || b.handle, aliases: [...new Set([...a.aliases, ...b.aliases])],
+        repo: a.repo || b.repo, branch: a.branch || b.branch, remote: a.remote || b.remote,
+        about: a.about || b.about, at: Math.max(a.at, b.at),
+      })
+    }
+    return [...byPath.values()]
+  }
+
+  // How well a row answers what was typed: the start of its name, then anywhere in it,
+  // then the repo or branch it sits on. Nothing typed ranks everything alike.
+  function matchRank(item, q) {
+    if (!q) return 0
+    const name = String(item.name).toLowerCase()
+    if (name.startsWith(q)) return 0
+    if (name.includes(q)) return 1
+    const also = [item.repo, item.branch, item.kind === 'project' ? item.path.split('/').slice(-2).join('/') : '']
+    return also.some(s => s && String(s).toLowerCase().includes(q)) ? 2 : -1
+  }
+
+  // Recordings and projects in one list: best match first, and among equals the most
+  // recent, whichever kind it is.
+  function mentionItems(recordings, projects, q, limit) {
+    q = String(q || '').toLowerCase()
+    const all = (recordings || []).map(r => ({ ...r, kind: 'recording', at: timeOf(r) }))
+      .concat(normProjects(projects))
+    return all
+      .map(x => ({ x, r: matchRank(x, q) }))
+      .filter(o => o.r >= 0)
+      .sort((a, b) => a.r - b.r || b.x.at - a.x.at)
+      .slice(0, limit || 8)
+      .map(o => o.x)
+  }
+
+  // What rides on the message and is kept in the chat's log (userData/chat.jsonl), so
+  // only what the chip draws and the turn needs to find it again: never the description
+  // or the remote. Those are another tool's data about another project; main reads them
+  // from the index for the prompt of the turn that tagged it (agent-bridge projectTurn)
+  // and nothing writes them down.
+  function tagFor(item) {
+    if (item.kind !== 'project') return { name: item.name, path: item.path }
+    const t = { kind: 'project', name: item.name, path: item.path, source: item.source }
+    if (item.branch) t.branch = item.branch
+    return t
+  }
+
+  // "@majuro record a demo" typed straight through, without stopping on the picker,
+  // still tags majuro. Only an exact, unambiguous name counts, by the same rule the
+  // bridge resolves a project by (its id, its name, its handle or any alias): a guess
+  // here would point the agent at the wrong project with the person's authority, and a
+  // word two projects answer to tags neither.
+  const answersTo = (x, raw, word) => String(x.name).toLowerCase() === word ||
+    (x.kind === 'project' && (x.id === raw || x.handle === word || (x.aliases || []).includes(word)))
+  function bareMentions(text, recordings, projects) {
+    const out = []
+    const re = /(^|\s)@([^\s@]+)/g
+    const pool = (recordings || []).map(r => ({ ...r, kind: 'recording' })).concat(normProjects(projects))
+    let m
+    while ((m = re.exec(String(text || '')))) {
+      const raw = m[2].replace(/[.,;:!?)]+$/, '')
+      const word = raw.toLowerCase()
+      const hits = pool.filter(x => answersTo(x, raw, word))
+      if (hits.length === 1 && !out.some(t => t.path === hits[0].path)) out.push(tagFor(hits[0]))
+    }
+    return out
+  }
+
+  // record_start and take_shot take project and find its window themselves
+  // (ui/project-windows.js). The path is what the tag carries and it names one project
+  // and no other, so it is what the agent passes.
+  const PROJECT_HOW =
+    'To record or capture one of these, call record_start or take_shot with project set to its path; Fetch finds ' +
+    'its running window at that moment. Do not ask the person for a path or a window id; they tagged the project ' +
+    'so they would not have to.'
+
+  // The prompt lines for what was tagged. Recordings go as exact paths, as before.
+  // Projects go with where they are, so "record a demo of @majuro" has something to act
+  // on. What each one is, in its own words, and what runs from it, main adds from the
+  // index as the turn starts (agent-bridge projectTurn), so none of it is kept here.
+  function tagPrompt(tags) {
+    const recs = (tags || []).filter(t => t.kind !== 'project')
+    const projs = (tags || []).filter(t => t.kind === 'project')
+    let s = ''
+    if (recs.length) s += '\n\nRecordings the user tagged:\n' + recs.map(t => `- ${t.name}: ${t.path}`).join('\n')
+    if (projs.length) {
+      s += '\n\nProjects the user tagged:\n' + projs.map(t => {
+        const where = [SOURCE[t.source] || 'Project', t.branch ? `branch ${t.branch}` : ''].filter(Boolean).join(', ')
+        return `- ${t.name}: ${t.path}\n  ${where}`
+      }).join('\n') + '\n' + PROJECT_HOW
+    }
+    return s
+  }
+
+  const Pure = { SOURCE, normProjects, mentionItems, tagFor, bareMentions, tagPrompt, matchRank }
+  if (typeof document === 'undefined') {
+    if (typeof module !== 'undefined') module.exports = Pure
+    return
+  }
+
   if (!document.querySelector('link[data-chat-style]')) {
     const link = document.createElement('link')
     link.rel = 'stylesheet'
@@ -309,7 +450,7 @@
         <div class="chat-ctx" id="chatCtx" hidden></div>
         <div class="chat-region" id="chatRegion" hidden></div>
         <div class="att-tray" id="chatAtt" hidden></div>
-        <textarea id="chatInput" rows="1" placeholder="Ask anything, or type @ to point at a recording"></textarea>
+        <textarea id="chatInput" rows="1" placeholder="Ask anything, or type @ to point at a recording or project"></textarea>
         <div class="chat-foot">
           <button type="button" class="chat-engine" id="chatEngine"></button>
           <span class="chat-hint" id="chatTrust"></span>
@@ -350,7 +491,8 @@
     // an agent's edit changes what is worth suggesting, and what can be undone
     window.addEventListener('fetch:agent-edit', () => { paintIntro(); paintUndo() })
     // a rename can move the open recording under the chip, so look again before typing
-    input.addEventListener('focus', () => paintOn())
+    // and warm the @ lists, so the first @ and a typed-through @name both have them
+    input.addEventListener('focus', () => { paintOn(); warmMentions() })
     input.addEventListener('input', () => { grow(); sync(); updateMention() })
     // Enter sends, Shift+Enter is a newline: this is a chat box, not a document.
     input.addEventListener('keydown', e => {
@@ -393,11 +535,32 @@
   // names: the match is bolded, and the second line carries the one fact that
   // disambiguates. Kind is shown as a glyph, not a thumbnail, because at this size
   // kind resolves faster than a 20px picture.
-  let tags = []                        // [{ name, path }] riding along with the message
-  let mentionList = [], mentionPick = 0, mentionAt = -1
+  //
+  // Projects come from the index main keeps of the person's coding tools
+  // ('list-projects'). Walking three tools' folders is not free, so the list is kept
+  // for half a minute and asked for as the pane opens, before the first @ is typed.
+  // No index, or one that fails, and the picker is recordings as it always was.
+  let tags = []                        // [{ name, path }] or a project's tagFor, riding along with the message
+  let mentionList = [], mentionPick = 0, mentionAt = -1, mentionSeq = 0
 
   async function recordingsForMention() {
     try { return await ipcRenderer.invoke('list-recordings') || [] } catch { return [] }
+  }
+
+  let projCache = null, projAt = 0
+  function projectsForMention() {
+    if (!projCache || Date.now() - projAt > 30000) {
+      projAt = Date.now()
+      projCache = ipcRenderer.invoke('list-projects').then(normProjects).catch(() => [])
+      projCache.then(p => { mentionSnap.projs = p })
+    }
+    return projCache
+  }
+  // the last of each list seen, for resolving a typed-through @name at send time
+  const mentionSnap = { recs: [], projs: [] }
+  function warmMentions() {
+    recordingsForMention().then(r => { mentionSnap.recs = r })
+    projectsForMention()
   }
 
   function mentionQuery() {
@@ -427,23 +590,45 @@
     const pop = pane.querySelector('#chatMention')
     if (!hit) { pop.hidden = true; mentionAt = -1; return }
     mentionAt = hit.at
-    const all = await recordingsForMention()
-    mentionList = all
-      .filter(r => !hit.q || String(r.name).toLowerCase().includes(hit.q))
-      .slice(0, 7)
+    // typing outruns the lookups; only the answer to the latest keystroke is drawn
+    const seq = ++mentionSeq
+    const [recs, projs] = await Promise.all([recordingsForMention(), projectsForMention()])
+    mentionSnap.recs = recs
+    if (seq !== mentionSeq) return
+    mentionList = mentionItems(recs, projs, hit.q, 8)
     if (!mentionList.length) { pop.hidden = true; return }
     mentionPick = Math.min(mentionPick, mentionList.length - 1)
     pop.innerHTML = mentionList.map((r, i) =>
-      '<button type="button" class="chat-mention-row" data-i="' + i + '" data-on="' + (i === mentionPick) + '">' +
-        ico(r.srt ? 'closed-captioning' : 'film-strip', 'icon-sm') +
-        '<span class="chat-mention-txt">' +
-          '<span class="chat-mention-name">' + boldMatch(r.name, hit.q) + '</span>' +
-          '<span class="chat-mention-sub">Recording' +
-            (r.mb ? ' · ' + r.mb + ' MB' : '') + (r.mtime ? ' · ' + agoText(r.mtime) : '') +
-            (r.srt ? ' · transcribed' : '') + '</span>' +
-        '</span>' +
+      '<button type="button" class="chat-mention-row" data-i="' + i + '" data-on="' + (i === mentionPick) + '"' +
+        (r.kind === 'project' ? ' data-kind="project" title="' + esc(r.path) + '"' : '') + '>' +
+        (r.kind === 'project' ? projectRow(r, hit.q) : recordingRow(r, hit.q)) +
       '</button>').join('')
     pop.hidden = false
+    const on = pop.querySelector('[data-on="true"]')
+    if (on) on.scrollIntoView({ block: 'nearest' })
+  }
+
+  function recordingRow(r, q) {
+    return ico(r.srt ? 'closed-captioning' : 'film-strip', 'icon-sm') +
+      '<span class="chat-mention-txt">' +
+        '<span class="chat-mention-name">' + boldMatch(r.name, q) + '</span>' +
+        '<span class="chat-mention-sub">Recording' +
+          (r.mb ? ' · ' + r.mb + ' MB' : '') + (r.mtime ? ' · ' + agoText(r.mtime) : '') +
+          (r.srt ? ' · transcribed' : '') + '</span>' +
+      '</span>'
+  }
+
+  // A project row says which tool it came from in words, and the branch in mono,
+  // because two workspaces of one repo differ by exactly that.
+  function projectRow(p, q) {
+    return ico('folder', 'icon-sm') +
+      '<span class="chat-mention-txt">' +
+        '<span class="chat-mention-name">' + boldMatch(p.name, q) + '</span>' +
+        '<span class="chat-mention-sub">' + esc(SOURCE[p.source]) +
+          (p.repo && p.repo !== p.name ? ' · ' + esc(p.repo) : '') +
+          (p.branch ? ' · <span class="chat-mention-branch mono">' + esc(p.branch) + '</span>' : '') +
+          (p.at ? ' · ' + agoText(p.at) : '') + '</span>' +
+      '</span>'
   }
 
   function takeMention(i) {
@@ -452,7 +637,7 @@
     const v = input.value, caret = input.selectionStart
     input.value = (v.slice(0, mentionAt) + v.slice(caret)).replace(/\s{2,}/g, ' ')
     input.selectionStart = input.selectionEnd = mentionAt
-    if (!tags.some(t => t.path === r.path)) tags.push({ name: r.name, path: r.path })
+    if (!tags.some(t => t.path === r.path)) tags.push(tagFor(r))
     pane.querySelector('#chatMention').hidden = true
     mentionAt = -1
     paintTags(); grow(); sync(); input.focus()
@@ -461,11 +646,17 @@
   function paintTags() {
     const host = pane.querySelector('#chatCtx')
     host.hidden = !tags.length
-    host.innerHTML = tags.map((t, i) =>
-      '<span class="chat-tag">' + ico('film-strip', 'icon-sm') +
-        '<span>' + esc(t.name) + '</span>' +
-        '<button type="button" data-untag="' + i + '" aria-label="Remove">' + ico('x', 'icon-sm') + '</button>' +
-      '</span>').join('')
+    host.innerHTML = tags.map((t, i) => t.kind === 'project'
+      ? '<span class="chat-tag" data-kind="project" title="' + esc(SOURCE[t.source] + ' · ' + t.path) + '">' +
+          ico('folder', 'icon-sm') +
+          '<span>' + esc(t.name) + '</span>' +
+          (t.branch ? '<span class="chat-tag-branch mono">' + esc(t.branch) + '</span>' : '') +
+          '<button type="button" data-untag="' + i + '" aria-label="Remove ' + esc(t.name) + '">' + ico('x', 'icon-sm') + '</button>' +
+        '</span>'
+      : '<span class="chat-tag">' + ico('film-strip', 'icon-sm') +
+          '<span>' + esc(t.name) + '</span>' +
+          '<button type="button" data-untag="' + i + '" aria-label="Remove">' + ico('x', 'icon-sm') + '</button>' +
+        '</span>').join('')
   }
 
   // ── lassoed areas ──────────────────────────────────────────────────────
@@ -731,7 +922,12 @@
     const sentAtt = attach.slice()
     attach = []; paintAttach()
     // the chips were for this message; the conversation remembers them from here
+    // plus any @name typed straight through that names exactly one thing
+    // (read from the last lists fetched, so nothing is awaited before the turn starts)
     const sentTags = tags.slice()
+    for (const t of bareMentions(typed, mentionSnap.recs, mentionSnap.projs)) {
+      if (!sentTags.some(x => x.path === t.path)) sentTags.push(t)
+    }
     tags = []; paintTags()
     // the lassoed areas go with this message and no other: the agent is told about
     // them once, and the chips leave the composer as the message does
@@ -749,10 +945,9 @@
     let prompt = (await contextHeader(sentRegions)) + '\n\n' + text
     // Tagged recordings travel as exact paths, so the agent acts on the file that was
     // pointed at rather than one it guessed from a description.
-    if (sentTags.length) {
-      prompt += '\n\nRecordings the user tagged:\n' +
-        sentTags.map(t => `- ${t.name}: ${t.path}`).join('\n')
-    }
+    // Projects travel with where they live and what they are, so the agent can find
+    // the running app rather than ask for a path.
+    prompt += tagPrompt(sentTags)
     turn.pending = false
     // stopped while the header was being read: nothing was sent, so nothing to cancel
     if (turn.stopped) { render({ kind: 'done', ok: false, cancelled: true }); return }
@@ -1407,6 +1602,8 @@
     }
 
     field.addEventListener('input', () => { grow(); sync() })
+    // the front door sends through the pane, so it warms the @ lists the same way
+    field.addEventListener('focus', warmMentions)
     field.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(field.value) }
     })

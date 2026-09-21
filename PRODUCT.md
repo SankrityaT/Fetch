@@ -112,7 +112,9 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   the terminal an agent runs in), never the whole screen unless someone asks for it.
 - Chat pane (Cmd J): spawns the person's own Claude Code or Codex with the Fetch MCP
   server attached. Streams every tool call as a row with its duration. Remembers the
-  conversation (`--resume` on the session id). `@` tags a recording by exact path.
+  conversation (`--resume` on the session id). `@` tags a recording by exact path, or a
+  project from Conductor, Orca or Claude Code by its path, its branch and a line of what it
+  is (see **Projects** below).
   An attached image goes to the model as an image, since the pane allows Fetch's tools
   and nothing that opens a file, and a capture Fetch made goes both ways: the picture to
   look at and the path to work on. It is a PNG, so it used to go as a picture alone, and
@@ -579,8 +581,8 @@ preview frame, a contact sheet cell and an exported PNG of one plan are the same
 the same format. What is left for the classic ffmpeg renderer is a sound file and a
 preview still taken off its own path.
 
-**MCP tools** (`mcp/index.js`), 43: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `take_shot`, `pointer`,
-`list_windows`, `list_displays`, `list_recordings`, `simulator`, `probe`, `transcribe`,
+**MCP tools** (`mcp/index.js`), 45: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `take_shot`, `pointer`,
+`list_windows`, `list_displays`, `list_recordings`, `list_projects`, `get_project`, `simulator`, `probe`, `transcribe`,
 `list_beats`, `get_edit`, `apply_edit`, `direct`, `review`, `fit_to_length`, `revert_my_edit`, `versions`,
 `ask`, `propose`, `can_loop`,
 `export`, `rename_recording`,
@@ -1195,6 +1197,67 @@ Cmd+. and the Stop button on the working pill do the same,
 and an Esc in Fetch's own window is caught ahead of every other handler, which covers the case
 of macOS not handing a bare Esc to a global shortcut (proven through the registered callback,
 never by pressing a key).
+
+## Projects: from @ to the window worth recording
+
+"@majuro record a demo of the lasso" is the person naming a folder of their own code, and
+Fetch records windows. The person's words for the need were that they could not tell it what
+to record because they could not attach the path. So a project is a thing Fetch knows, and
+nobody pastes a path or a window id.
+
+- **The index** (`ui/projects.js`) lists every project the person's coding tools know:
+  Conductor workspaces and repos (its folders, and its database read only, a handful of named
+  columns and never notes or prompts), Orca's projects and workspaces, and Claude Code's
+  project folders, decoded against the disk because a dash in a real folder name makes the
+  folder name ambiguous. One folder two tools know is one project. Each carries a name, a short
+  `handle` (what `@` completes to), its path, branch and remote, and one or two sentences from
+  its README, PRODUCT.md, CLAUDE.md or AGENTS.md. Nothing named like a secret is ever opened,
+  checked on the path as asked and on the real path with every symlink resolved, and a
+  worktree's gitdir or commondir that leads outside the project or a real git folder is not
+  followed. A first paragraph that talks about a password, token, key or secret is dropped
+  whole, and key-shaped runs, URLs with a user, password or query, and a remote's user,
+  password and query are cut. Claude Code's folders are listed and never read (they hold
+  conversations). What is read goes only to the model of the chat the person tags a project
+  in, or of an agent the person said yes to, and the chat's log keeps a tag's name, path,
+  source and branch, never the description. Built on a worker, kept 30 s.
+- **The finder** (`ui/project-windows.js`) says what runs from a project now and which window
+  a take of it would be: its own app (an executable inside the folder, or built there by Xcode,
+  or running with it as its working directory), its app on a simulator, or a browser window
+  showing its dev server. A window title that says the project's name is never evidence, since
+  a terminal and an editor say it all day. It refuses to pick between two equals, names the
+  Fetch doing the recording and never picks it (it hides its own window during a take), and
+  says when the window it found is not on screen. When nothing runs it says what would start
+  it; Fetch starts nothing.
+- **The turn.** A tagged project, or an `@name` typed straight through that answers to exactly
+  one project, reaches the agent on that turn with where it is, what it is in its own words,
+  what runs from it right now and the call that records it (`main.js` chat-send,
+  `agentBridge.projectTurn`, `EditAssist.projectLines`). That read is the one await in front of
+  a turn, bounded at 8 s, and a Stop during it starts nothing. The standing doctrine says to
+  record a project by naming it and never to ask the person for a path or a window id.
+- **The tools.** `record_start` and `take_shot` take `project` (a name, handle, id or path)
+  and find its window at the moment of the call. When nothing suitable is running, or the
+  window is off screen, they refuse with the finder's own sentence and start nothing, rather
+  than record the app in front. A name must be exact: a near miss is refused with the closest
+  names. The window found is put to the person's yes by the app Fetch read it as. The window
+  list used to skip every app named Electron, so a dev build was invisible to `list_windows`;
+  it now skips the Fetch that ran it by pid, and gives each window's `pid`. `list_projects`
+  lists them lean (names, paths, branches), and `get_project` says one whole: what it is,
+  what runs from it and why, its product and its rules, and its Library folder. Fetch's own
+  chat calls these freely, since its `@` is the person handing a project over; any other
+  agent connected to Fetch is asked about first (a native question, a yes that can hold until
+  Fetch quits, silence is a no), and that includes naming a project to `record_start` or
+  `take_shot`.
+- **Rules and folder.** A project's takes and shots are named product first (`Fetch · majuro`),
+  so the rules and facts kept for that product follow the file the way they follow any take.
+  The product is one the person already keeps rules for when the project answers to it, else
+  the remote's repository name, else the handle. `guidelines` takes `project` as well. A take or
+  shot of a project is filed in a Library folder named for it, through the Library in the
+  window; this build's Library has no call to file into a folder by name yet, so the result says
+  `filed: false` and why, until `ui/library.js` exports `fileInto`.
+
+Not yet proven live: a take started from `@majuro` end to end. On the Mac this was built on,
+the only thing running from majuro is the development Fetch itself, which the finder names and
+refuses (it cannot record itself); recording it takes the installed Fetch.
 
 ## Strategic principles
 

@@ -71,6 +71,8 @@ const ALLOWED = [
   // recording edits one of these too, so this is the only name stills add here
   'take_shot',
   'list_windows', 'list_displays', 'list_recordings',
+  // the person's projects, so "@majuro" needs no path: what one is, and what runs from it
+  'list_projects', 'get_project',
   // a simulator, which is a window with a machine inside it: list, ready, go, tap, restore
   'simulator',
   'probe', 'transcribe',

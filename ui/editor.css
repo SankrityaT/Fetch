@@ -655,7 +655,7 @@ video.motion, img.motion { display:block; }
   color:var(--text-2); cursor:pointer; transition:color var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in); }
 .lk-reset:hover { color:var(--text-0); background:var(--ink-2); }
 .lk-num { width:64px; height:24px; padding:0 8px; border-radius:var(--r-pill); border:1px solid transparent;
-  background:var(--ink-2); color:var(--text-0); font-size:var(--t-11); text-align:right; }
+  background:var(--ink-2); color:var(--text-0); font-size:var(--t-11); text-align:center; }
 .lk-num:hover { border-color:var(--ink-4); }
 .lk-num:focus { outline:none; border-color:var(--fur-1); }
 .lk-hex { font-size:var(--t-11); color:var(--text-2); }
