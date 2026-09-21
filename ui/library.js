@@ -52,7 +52,9 @@ function load() {
   return empty()
 }
 function save() {
-  if (headless) return
+  // The sample has folders and provenance of its own, held in memory: while it is open
+  // the person's collections.json is not written, whatever is done to the sample.
+  if (headless || sample) return
   try {
     fs.mkdirSync(DIR, { recursive: true })
     fs.writeFileSync(FILE, JSON.stringify(state, null, 2))
@@ -60,6 +62,26 @@ function save() {
 }
 
 let state = headless ? empty() : load()
+
+// ── the sample library (ui/sample.js) ──────────────────────────────────────
+// While it is open, the person's folders, provenance and view are set aside whole and
+// the sample starts from nothing. Leaving puts back exactly what was set aside: the
+// same objects, so a folder chosen or a search typed before the sample is still there.
+let sample = null
+function enterSample(root) {
+  if (sample) { sample.root = root; return }
+  sample = { root, saved: { state, view } }
+  state = empty()
+  view = { folder: 'all', kind: 'all', platform: 'all', query: '', sort: 'new' }
+  stale()
+}
+function leaveSample() {
+  if (!sample) return
+  state = sample.saved.state
+  view = sample.saved.view
+  sample = null
+  stale()
+}
 
 // Membership is asked thousands of times in one refresh (every card's tags, every
 // folder's count), and a library of thousands against a folder of thousands is a
@@ -413,7 +435,8 @@ async function duplicate(g, opts = {}) {
   const c = item(g)
   const src = c.path
   if (!src) throw new Error('nothing to duplicate')
-  const root = opts.root || (headless ? null : saveRoot())
+  // a copy made in the sample stays in the sample
+  const root = opts.root || (sample ? sample.root : headless ? null : saveRoot())
   // headless is a test or a tool: it has no right to write in the person's folders
   if (!root) throw new Error('no save folder to copy into')
   if (!fs.existsSync(src)) throw new Error('that file is no longer there')
@@ -674,7 +697,7 @@ function renderBar(gridEl, groups, onChange) {
       <button class="chip-more" data-more="${f.id}" data-tip="More">${ico('dots-three')}</button>
     </span>`).join('')
 
-  bar.innerHTML = `
+  bar.innerHTML = sampleBannerHTML() + `
     <div class="lib-bar-row">
       ${kindHtml}
       <div style="flex:1"></div>
@@ -688,6 +711,7 @@ function renderBar(gridEl, groups, onChange) {
       ${folders}
       <button class="chip new-folder-chip" id="libNewFolder">${ico('plus')} New folder</button>
       ${platformHtml}
+      ${sample ? '' : `<div style="flex:1"></div><button class="chip lib-try-sample" id="libTrySample" data-tip="Two takes and a screenshot of a made up app, to edit and export. Your own library is not touched.">${ico('play')} Try the sample</button>`}
     </div>`
 
   bar.querySelectorAll('.folder-chip').forEach(c => {
@@ -710,6 +734,8 @@ function renderBar(gridEl, groups, onChange) {
     onConfirm: name => { const f = addFolder(name); view.folder = f.id; onChange() }
   })
 
+  wireSample(bar)
+
   const sort = bar.querySelector('#libSort')
   sort.onclick = () => {
     const m = openMenu(sort, SORTS.map(([id, label]) =>
@@ -727,6 +753,53 @@ function renderBar(gridEl, groups, onChange) {
   })
   q.addEventListener('keydown', e => { if (e.key === 'Escape' && view.query) { view.query = ''; q.value = ''; onChange() } })
   if (caret != null) { q.focus(); try { q.setSelectionRange(caret, caret) } catch {} }
+}
+
+// ── the sample, in the bar ──────────────────────────────────────────────────
+// One line saying what this is, three things to ask for, and the way out. Each ask is
+// handed to the chat composer with the take's name in it, so the first thing someone
+// sends is a real job on a real take rather than a blank box.
+function sampleAsks() {
+  try {
+    const S = require('./sample')
+    return S.items().filter(i => i.try).map(i => ({ id: i.id, label: i.try, ask: `${i.try} The ${i.kind === 'shot' ? 'screenshot' : 'take'} is "${i.title}" (${i.path}).` }))
+  } catch { return [] }
+}
+function sampleBannerHTML() {
+  if (!sample) return ''
+  const asks = sampleAsks().map(a =>
+    `<button class="chip lib-sample-ask" data-ask="${esc(a.ask)}">${ico('sparkle')}<span>${esc(a.label)}</span></button>`).join('')
+  return `<div class="lib-sample" role="status">
+    <img class="lib-sample-dog" src="./assets/mascot/idle.png" alt="">
+    <div class="lib-sample-say">
+      <div class="lib-sample-title">Sample library</div>
+      <p>Two takes and a screenshot of a made up app. Ask your agent for any of these, export, and see what comes back. Nothing of yours is here, and nothing of yours changes.</p>
+      ${asks ? `<div class="lib-sample-asks">${asks}</div>` : ''}
+    </div>
+    <button class="btn btn-sm lib-sample-leave" id="libLeaveSample" data-tip="Deletes the sample and anything made from it, then puts your library back">${ico('arrow-left')}<span>Back to my library</span></button>
+  </div>`
+}
+// Hands a line to the chat composer and opens the pane. The composer is ui/chat.js's;
+// this only types into it, the way a person would, and never sends.
+function askAgent(text) {
+  if (typeof window.toggleChat === 'function') window.toggleChat(true)
+  const input = document.getElementById('chatInput')
+  if (!input) { say('Open the chat with Cmd J and ask: ' + text, 'ok', 8000); return }
+  input.value = text
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  input.focus()
+}
+function wireSample(bar) {
+  const S = () => require('./sample')
+  const go = bar.querySelector('#libTrySample')
+  if (go) go.onclick = async () => {
+    go.disabled = true
+    try { await S().enter() } catch (e) { say('Could not open the sample: ' + String((e && e.message) || e), 'bad', 6000) }
+    go.disabled = false
+  }
+  const back = bar.querySelector('#libLeaveSample')
+  if (back) back.onclick = () => S().leave()
+  bar.querySelectorAll('.lib-sample-ask').forEach(b => { b.onclick = () => askAgent(b.dataset.ask) })
 }
 
 // ── card decorations ────────────────────────────────────────────────────────
@@ -861,6 +934,11 @@ module.exports = {
   noteSource,
   sourceOf,
   duplicate,
+  // the sample library: set the person's folders and view aside, and put them back
+  enterSample,
+  leaveSample,
+  inSample: () => !!sample,
+  sampleRoot: () => (sample ? sample.root : null),
   // for tests: the view, the folders and the sources, without touching the person's own
   _view: () => ({ ...view }),
   _setView: next => { view = { ...view, ...next } },

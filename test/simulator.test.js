@@ -238,20 +238,20 @@ for (const key of Object.keys(DEVICE)) {
 }
 
 console.log('the glass is round, and how round is read off the pixels')
+// The ring's inner edge on each row down from the top left corner of the glass, off a
+// real 794 x 1718 capture of Yolk-ProMax (iPhone 16 Pro Max, iOS 26.5): row 0 still has
+// 97 pixels of ring inside the rectangle, row 96 has 1, row 97 none. The same curve in
+// all four corners measured 111.4, 111.4, 110.3 and 111.4 pixels off that capture.
+const PROFILE = [97, 89, 82, 77, 73, 69, 66, 63, 60, 58, 56, 53, 51, 49, 48, 46, 44, 43, 41, 40, 38, 37,
+  36, 35, 34, 32, 31, 30, 29, 28, 27, 26, 26, 25, 24, 23, 22, 21, 21, 20, 19, 18, 18, 17, 16, 16, 15, 15, 14,
+  14, 13, 12, 12, 11, 11, 11, 10, 10, 9, 9, 8, 8, 8, 7, 7, 7, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 3,
+  2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1]
 {
-  // The ring's inner edge on each row down from the top left corner of the glass, off a
-  // real 794 x 1718 capture of Yolk-ProMax (iPhone 16 Pro Max, iOS 26.5): row 0 still has
-  // 97 pixels of ring inside the rectangle, row 96 has 1, row 97 none. The same curve in
-  // all four corners measured 111.4, 111.4, 110.3 and 111.4 pixels off that capture.
-  const PROFILE = [97, 89, 82, 77, 73, 69, 66, 63, 60, 58, 56, 53, 51, 49, 48, 46, 44, 43, 41, 40, 38, 37,
-    36, 35, 34, 32, 31, 30, 29, 28, 27, 26, 26, 25, 24, 23, 22, 21, 21, 20, 19, 18, 18, 17, 16, 16, 15, 15, 14,
-    14, 13, 12, 12, 11, 11, 11, 10, 10, 9, 9, 8, 8, 8, 7, 7, 7, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 3,
-    2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1]
   const d = DEVICE.proMax
   const m = S.measureGlass(frameOf(d, { corner: PROFILE }))
   is('rounding the corners does not move the rectangle', m.ok && m.value.px, d.glass)
   is('the corner is the smallest circle that hides every pixel of that ring',
-    m.value.corner, { px: 111.4, share: 0.1578 })
+    m.value.corner, { px: 111.4, share: 0.1578, corners: [111.39, 111.39, 111.39, 111.39] })
   // Every row of the profile is under the circle: the mask hides all of the bezel.
   const R = m.value.corner.px
   ok('no row of ring is left outside the circle', PROFILE.every((dd, t) => {
@@ -268,7 +268,8 @@ console.log('the glass is round, and how round is read off the pixels')
   // A dark app in one corner runs into the ring and makes that corner look rounder. It
   // cannot make one look squarer, so the smallest of the four is the glass's.
   const dark = S.measureGlass(frameOf(d, { corner: PROFILE, app: 'corner' }))
-  is('an app dark into one corner does not round the others', dark.value.corner, { px: 111.4, share: 0.1578 })
+  is('an app dark into one corner does not round the others', dark.value.corner,
+    { px: 111.4, share: 0.1578, corners: [149, 111.39, 111.39, 111.39] })
 
   // Square glass, and the fixtures before this round: no corner, and the viewport keeps
   // exactly the four numbers everything downstream already reads.
@@ -294,6 +295,257 @@ console.log('the glass is round, and how round is read off the pixels')
   is('a rectangle the ring is not round reads nothing',
     S.measureCorner(video(frameOf(d, { corner: PROFILE })), { ...old, x: 0.08 }).ok, false)
   is('and no rectangle is no corner', S.measureCorner(video(frameOf(d)), null).ok, false)
+}
+
+console.log('a corner is measured right, and never stored wrong')
+// The four corners of a real frame of a real take (recording-1789991341899, Yolk-ProMax,
+// iPhone 16 Pro Max, 794 x 1718, the frame at 20 s), each turned so the corner is top left,
+// from 14 pixels outside the glass's corner to 186 inside it. Each row is runs of dark
+// (the encoder's 12 and under) and lit, starting with dark. The capture wrote 0.1578 for
+// this take and the old reading said 0.0535 off every frame of it, because in a recording
+// what was clear round the window is black, and the bezel's grey edge curving into the
+// rectangle's corner then sits after a run of dark exactly as the glass does.
+const REAL_CORNERS = {
+  tl: [
+    '61 41 98', '58 37 105', '56 34 110', '54 31 115', '52 30 118', '51 27 122', '49 26 125',
+    '47 25 128', '46 23 131', '44 23 133', '42 22 136', '41 21 138', '39 21 140', '38 20 142',
+    '37 19 56 88', '35 20 48 97', '34 19 43 104', '33 18 40 109', '32 18 37 113', '31 17 35 117',
+    '30 17 33 120', '28 17 32 123', '27 17 30 126', '26 17 29 128', '25 16 29 130', '24 16 27 133',
+    '23 16 26 135', '22 16 26 136', '22 15 25 138', '21 15 24 140', '20 14 25 141', '19 14 24 143',
+    '18 14 23 145', '17 14 23 146', '17 13 23 147', '16 14 21 149', '15 14 21 150', '14 14 21 151',
+    '14 13 21 152', '13 13 21 153', '12 13 20 155', '11 14 19 156', '11 13 19 157', '10 13 19 158',
+    '10 12 19 159', '9 13 18 160', '8 13 19 160', '8 12 19 161', '7 13 18 162', '7 12 18 163',
+    '6 12 18 164', '5 13 17 165', '5 12 18 165', '4 13 17 166', '4 12 17 167', '3 12 17 168',
+    '3 12 17 94 2 72', '2 12 17 91 8 24 4 11 3 28', '2 12 16 91 3 4 4 21 5 9 5 28',
+    '2 11 17 91 2 7 2 21 1 2 2 8 2 2 2 28', '1 12 16 91 2 9 2 6 2 11 2 2 2 7 2 3 2 28',
+    '1 11 17 91 2 9 2 6 3 9 2 3 2 7 1 4 2 28', '0 12 16 92 2 9 3 5 2 10 1 4 2 12 2 28',
+    '0 11 17 92 2 9 3 16 2 4 2 12 2 28', '0 11 16 93 2 9 3 15 2 5 2 12 2 28',
+    '0 11 16 93 3 7 4 15 2 5 2 12 2 28', '0 10 16 95 3 5 1 2 2 14 2 6 2 12 2 28',
+    '0 10 16 96 4 2 1 3 2 14 1 7 2 12 2 28', '0 9 16 98 5 4 2 13 2 7 2 12 2 28',
+    '0 9 16 107 2 12 2 8 2 12 2 28', '0 9 15 107 2 6 2 5 15 9 2 28',
+    '0 8 16 107 2 6 3 4 15 9 2 28', '0 8 15 97 3 7 3 6 2 15 3 11 2 28',
+    '0 8 15 98 2 7 2 24 2 12 2 28', '0 7 15 100 3 3 3 25 2 12 2 28', '0 7 15 101 7 26 2 12 2 28',
+    '0 7 15 178', '0 6 15 179', '0 6 15 179', '0 6 15 179', '0 6 14 180', '0 5 15 180',
+    '0 5 15 180', '0 5 14 181', '0 4 15 181', '0 4 15 181', '0 4 15 181', '0 4 14 182',
+    '0 4 14 182', '0 3 15 182', '0 3 15 182', '0 3 14 183', '0 3 14 183', '0 3 14 183',
+    '0 2 15 183', '0 2 15 183', '0 2 14 184', '0 2 14 184', '0 2 14 184', '0 2 14 184',
+    '0 2 14 184', '0 1 15 184', '0 1 15 184', '0 1 14 185', '0 1 14 185', '0 1 14 185',
+    '0 1 14 185', '0 1 14 185', '0 1 14 185', '0 1 14 185', '0 1 14 185', '15 185', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+  ],
+  tr: [
+    '61 41 98', '58 38 104', '56 34 110', '54 31 115', '52 30 118', '51 27 122', '49 26 125',
+    '47 25 128', '46 23 131', '44 23 133', '42 22 136', '41 21 138', '40 20 140', '38 20 142',
+    '37 19 56 88', '35 19 49 97', '34 19 43 104', '33 18 40 109', '32 18 37 113', '31 17 35 117',
+    '30 17 33 120', '28 17 32 123', '27 17 30 126', '26 17 29 128', '25 16 29 130', '24 16 28 132',
+    '23 16 27 134', '22 16 26 136', '22 15 25 138', '21 14 25 140', '20 14 24 142', '19 14 24 143',
+    '18 14 23 145', '17 14 23 146', '17 14 22 147', '16 14 21 149', '15 14 21 150', '14 14 21 151',
+    '14 13 21 152', '13 13 21 153', '12 13 20 155', '11 14 19 156', '11 13 19 157', '10 13 19 158',
+    '10 12 19 159', '9 13 18 160', '8 13 19 160', '8 12 19 161', '7 13 18 162', '7 12 18 163',
+    '6 12 18 164', '5 13 17 165', '5 12 17 166', '4 13 17 166', '4 12 17 167',
+    '3 12 17 121 7 26 2 12', '3 12 17 117 15 21 4 11', '2 12 17 116 19 19 4 11',
+    '2 12 16 115 9 6 8 17 4 11', '2 11 17 114 6 13 6 16 4 11', '1 12 16 113 6 17 5 15 4 6 3 2',
+    '1 11 17 113 4 21 3 15 4 5 5 1', '0 12 16 115 2 23 2 15 4 5 5 1', '0 12 15 125 9 24 4 5 5 1',
+    '0 11 16 123 13 22 4 5 5 1', '0 11 15 123 16 20 4 5 5 1', '0 10 16 121 6 7 6 19 4 5 5 1',
+    '0 10 15 123 3 11 3 20 4 5 5 1', '0 9 16 124 1 13 1 21 4 5 5 1', '0 9 16 160 4 5 5 1',
+    '0 9 15 131 3 27 4 5 5 1', '0 8 16 129 7 25 4 5 5 1', '0 8 15 130 7 25 4 5 5 1',
+    '0 8 15 131 5 26 4 5 5 1', '0 7 15 133 3 27 4 5 5 1', '0 7 15 134 1 28 4 6 3 2', '0 7 15 178',
+    '0 6 15 179', '0 6 15 179', '0 6 15 179', '0 5 15 180', '0 5 15 180', '0 5 15 180',
+    '0 5 14 181', '0 4 15 181', '0 4 15 181', '0 4 15 181', '0 4 14 182', '0 4 14 182',
+    '0 3 15 182', '0 3 15 182', '0 3 14 183', '0 3 14 183', '0 3 14 183', '0 2 15 183',
+    '0 2 15 183', '0 2 14 184', '0 2 14 184', '0 2 14 184', '0 2 14 184', '0 2 14 184',
+    '0 1 15 184', '0 1 15 184', '0 1 14 185', '0 1 14 185', '0 1 14 185', '0 1 14 185',
+    '0 1 14 185', '0 1 14 185', '0 1 14 185', '0 1 14 185', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186',
+  ],
+  bl: [
+    '61 41 98', '58 38 104', '56 34 110', '54 31 115', '52 29 119', '51 27 122', '49 26 125',
+    '47 25 128', '46 23 131', '44 23 133', '42 22 136', '41 21 138', '39 21 140', '38 20 142',
+    '37 19 54 90', '36 19 48 97', '34 19 43 104', '33 18 40 109', '32 18 37 113', '31 17 35 117',
+    '30 17 33 120', '28 17 32 123', '27 17 30 126', '26 17 29 128', '25 16 29 130', '24 16 28 132',
+    '23 16 26 135', '22 16 26 136', '22 15 25 138', '21 15 24 140', '20 14 24 142', '19 14 24 143',
+    '18 14 23 145', '17 14 23 146', '17 13 23 147', '16 14 21 149', '15 14 21 150', '14 14 21 151',
+    '14 13 21 152', '13 13 21 153', '12 13 20 155', '11 14 19 156', '11 13 19 157', '10 13 19 158',
+    '9 13 19 159', '9 13 18 160', '8 13 19 160', '8 12 19 161', '7 13 18 162', '7 12 18 163',
+    '6 12 18 164', '5 13 17 165', '5 12 17 166', '4 13 17 166', '4 12 17 167', '3 12 17 168',
+    '3 12 17 168', '2 12 17 169', '2 12 16 170', '2 11 17 170', '1 12 16 171', '1 11 17 171',
+    '0 12 16 172', '0 11 17 172', '0 11 16 173', '0 11 15 174', '0 10 16 174', '0 10 16 174',
+    '0 9 16 175', '0 9 16 175', '0 9 15 176', '0 8 16 176', '0 8 15 177', '0 8 15 177',
+    '0 7 15 178', '0 7 15 178', '0 7 15 178', '0 6 15 179', '0 6 15 179', '0 6 15 179',
+    '0 5 15 180', '0 5 15 180', '0 5 15 180', '0 5 14 181', '0 4 15 181', '0 4 15 181',
+    '0 4 15 181', '0 4 14 182', '0 4 14 182', '0 3 15 182', '0 3 15 182', '0 3 14 183',
+    '0 3 14 183', '0 3 14 183', '0 2 15 183', '0 2 15 183', '0 2 14 184', '0 2 14 184',
+    '0 2 14 184', '0 2 14 184', '0 2 14 184', '0 1 15 184', '0 1 15 184', '0 1 14 185',
+    '0 1 14 185', '0 1 14 185', '0 1 14 185', '0 1 14 185', '0 1 14 77 108', '0 1 14 70 115',
+    '0 1 14 66 119', '15 63 122', '14 61 125', '14 60 126', '14 58 128', '14 56 130', '14 55 131',
+    '14 54 132', '14 52 134', '14 52 134', '14 51 135', '14 50 136', '14 49 137', '14 48 138',
+    '14 47 139', '14 47 139', '14 46 140', '14 45 141', '14 45 141', '14 44 142', '14 43 143',
+    '14 43 143', '14 43 143', '14 42 144', '14 42 144', '14 42 144', '14 41 145', '14 41 145',
+    '14 41 145', '14 40 146', '14 40 146', '14 40 146', '14 40 146', '14 40 146', '14 40 146',
+    '14 39 147', '14 39 147', '14 39 147', '14 39 147', '14 39 147', '14 39 147', '14 39 147',
+    '14 39 147', '14 40 146', '14 40 146', '14 40 146', '14 40 146', '14 40 146', '14 40 146',
+    '14 41 145', '14 41 145', '14 41 145', '14 42 144', '14 42 144', '14 42 144', '14 43 143',
+    '14 43 143', '14 44 142', '14 44 142', '14 45 141', '14 46 140', '14 46 140', '14 47 139',
+    '14 48 138', '14 48 138', '14 49 137', '14 50 136', '14 51 135', '14 52 134', '14 53 133',
+    '14 54 132', '14 56 130', '14 57 129', '14 58 128', '14 60 126', '14 62 124', '14 65 121',
+    '14 68 118', '14 74 112', '14 87 99', '14 186', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186',
+  ],
+  br: [
+    '61 41 98', '58 37 105', '56 34 110', '54 31 115', '52 30 118', '51 27 122', '49 26 125',
+    '47 25 128', '45 24 131', '44 23 133', '42 22 136', '41 21 138', '39 21 140', '38 20 142',
+    '37 19 54 90', '36 19 48 97', '34 19 43 104', '33 18 40 109', '32 18 36 114', '31 17 35 117',
+    '30 17 33 120', '28 17 32 123', '27 17 30 126', '26 17 29 128', '25 16 29 130', '24 16 28 132',
+    '23 16 26 135', '22 16 26 136', '22 15 25 138', '21 14 25 140', '20 14 24 142', '19 14 24 143',
+    '18 14 23 145', '17 14 23 146', '16 15 21 148', '16 14 21 149', '15 14 21 150', '14 14 21 151',
+    '14 13 21 152', '13 13 20 154', '12 13 20 155', '11 14 19 156', '11 13 19 157', '10 13 19 158',
+    '10 12 19 159', '9 13 18 160', '8 13 19 160', '8 12 19 161', '7 13 18 162', '7 12 18 163',
+    '6 12 18 164', '5 13 17 165', '5 12 18 165', '4 13 17 166', '4 12 17 167', '3 12 17 168',
+    '3 12 17 168', '3 11 17 169', '2 12 16 170', '2 11 17 170', '1 12 16 171', '1 11 17 171',
+    '0 12 16 172', '0 11 17 172', '0 11 16 173', '0 11 15 174', '0 10 16 174', '0 10 16 174',
+    '0 9 16 175', '0 9 16 175', '0 9 15 176', '0 8 16 176', '0 8 15 177', '0 8 15 177',
+    '0 7 15 178', '0 7 15 178', '0 7 15 178', '0 6 15 179', '0 6 15 179', '0 6 15 179',
+    '0 6 14 180', '0 5 15 180', '0 5 15 180', '0 5 14 181', '0 4 15 181', '0 4 15 181',
+    '0 4 14 182', '0 4 14 182', '0 4 14 182', '0 3 15 182', '0 3 15 182', '0 3 14 183',
+    '0 3 14 183', '0 3 14 183', '0 2 15 183', '0 2 15 183', '0 2 14 184', '0 2 14 184',
+    '0 2 14 184', '0 2 14 184', '0 2 14 184', '0 1 15 184', '0 1 14 185', '0 1 14 185',
+    '0 1 14 185', '0 1 14 185', '0 1 14 185', '0 1 14 185', '0 1 14 77 108', '0 1 14 70 115',
+    '0 1 13 66 120', '0 1 13 63 123', '14 61 125', '14 59 127', '14 58 128', '14 56 130',
+    '14 55 131', '14 54 132', '14 53 133', '14 51 135', '14 51 135', '14 50 136', '14 49 137',
+    '14 48 138', '14 47 139', '14 46 140', '14 46 140', '14 45 141', '14 45 141', '14 44 142',
+    '14 43 143', '14 43 143', '14 43 143', '14 42 144', '14 42 144', '14 41 145', '14 41 145',
+    '14 41 145', '14 40 146', '14 40 146', '14 40 146', '14 40 146', '14 40 146', '14 40 146',
+    '14 39 147', '14 39 147', '14 39 147', '14 39 147', '14 39 147', '14 39 147', '14 39 147',
+    '14 39 147', '14 39 147', '14 40 146', '14 40 146', '14 40 146', '14 40 146', '14 40 146',
+    '14 40 146', '14 41 145', '14 41 145', '14 41 145', '14 42 144', '14 42 144', '14 42 144',
+    '14 43 143', '14 43 143', '14 44 142', '14 44 142', '14 45 141', '14 46 140', '14 46 140',
+    '14 47 139', '14 48 138', '14 48 138', '14 49 137', '14 50 136', '14 51 135', '14 52 134',
+    '14 53 133', '14 54 132', '14 56 130', '14 57 129', '14 58 128', '14 60 126', '14 62 124',
+    '14 65 121', '14 68 118', '14 74 112', '14 87 99', '14 186', '14 186', '14 186', '14 186',
+    '14 186', '14 186', '14 186', '14 186', '14 186', '14 186',
+  ],
+}
+// A recording of that glass: black round it as a recording is, the app lit, and each
+// corner the real one.
+function realFrame(corners = REAL_CORNERS) {
+  const w = 794, h = 1718, g = { x: 44, y: 154, w: 706, h: 1534 }, M = 14
+  const data = new Uint8Array(w * h * 4)
+  for (let p = 3; p < data.length; p += 4) data[p] = 255
+  const put = (x, y, v) => { const p = (y * w + x) * 4; data[p] = data[p + 1] = data[p + 2] = v }
+  for (let y = g.y; y < g.y + g.h; y++) for (let x = g.x; x < g.x + g.w; x++) put(x, y, 200)
+  for (const [k, top, left] of [['tl', 1, 1], ['tr', 1, 0], ['bl', 0, 1], ['br', 0, 0]]) {
+    corners[k].forEach((line, i) => {
+      const v = i - M, y = top ? g.y + v : g.y + g.h - 1 - v
+      let u = -M, lit = false
+      for (const n of line.split(' ').map(Number)) {
+        for (let j = 0; j < n; j++, u++) put(left ? g.x + u : g.x + g.w - 1 - u, y, lit ? 200 : 0)
+        lit = !lit
+      }
+    })
+  }
+  return { width: w, height: h, data }
+}
+{
+  const PRO_MAX = { w: 1320, h: 2868, scale: 3 }
+  const vp = { x: 0.0554, y: 0.0896, w: 0.8892, h: 0.8929 }
+  const got = S.measureCorner(realFrame(), vp, { screen: PRO_MAX })
+  ok('a real frame of an old take reads its corner', got.ok)
+  is('each corner is the glass, not the bezel: 110 to 112 pixels, where the old reading said 37.7',
+    got.value.corners, [112.46, 111.39, 112.46, 110.32])
+  is('and the circle hides the ring in all four of them', got.value.px, 112.47)
+  is('which is 0.1594 of the short side, where the old reading said 0.0535', got.value.share, 0.1594)
+  near('within 1 percent of the 0.1578 the capture wrote for the same take', got.value.share, 0.1578, 0.1578 * 0.011)
+  // The device's own corner, as a check. 62 points is the iPhone 16 Pro Max's; the circle
+  // that hides a continuous corner is wider than the curve's own radius.
+  is('a ProMax\'s screen corner is 62 points', S.screenCorner(PRO_MAX), 62)
+  const pts = got.value.share * 440
+  ok(`the reading is ${pts.toFixed(1)} points, inside the band round 62`, pts / 62 > 0.85 && pts / 62 < 1.4)
+  ok('where the old reading, 23.5 points, is nowhere near it', 0.0535 * 440 / 62 < 0.85)
+  is('an iPhone 17 Pro\'s is 62 as well', S.screenCorner({ w: 1206, h: 2622, scale: 3 }), 62)
+  is('an SE\'s is square', S.screenCorner({ w: 750, h: 1334, scale: 2 }), 0)
+  is('and a screen this does not know has none, rather than a guess', S.screenCorner({ w: 2064, h: 2752, scale: 2 }), null)
+  is('the same device on its side is the same screen', S.screenCorner({ w: 2868, h: 1320, scale: 3 }), 62)
+
+  // Refused, not returned: a reading that has not passed its own check is never an answer,
+  // so nothing that writes the answer onto a document can write a guess.
+  const wrongDevice = S.measureCorner(realFrame(), vp, { screen: { w: 1125, h: 2436, scale: 3 } })
+  is('held to a screen whose corner it is not (an iPhone 11 Pro, 39 points), it refuses', wrongDevice.ok, false)
+  ok('and says how far out it is', /39 points/.test(wrongDevice.reason))
+  is('held to a square screen, it refuses', S.measureCorner(realFrame(), vp, { screen: { w: 750, h: 1334, scale: 2 } }).ok, false)
+  is('handed no screen, it still reads, on its own check', S.measureCorner(realFrame(), vp).value.share, 0.1594)
+
+  // The squarest corner must have another agreeing with it: three corners pushed round by
+  // an app, agreeing with each other, are the app.
+  const pushed = k => REAL_CORNERS[k].map((line, i) => (i >= 14 && i < 14 + 30 ? '74 126' : line))
+  const three = S.measureCorner(realFrame({ tl: REAL_CORNERS.tl, tr: pushed('tr'), bl: pushed('bl'), br: pushed('br') }), vp)
+  is('one true corner and three an app made rounder alike is refused', three.ok, false)
+  ok('and says the squarest had no other agreeing with it', /squarest corner/.test(three.reason))
+  const two = S.measureCorner(realFrame({ tl: REAL_CORNERS.tl, tr: REAL_CORNERS.tr, bl: pushed('bl'), br: pushed('br') }), vp)
+  is('two true corners are enough, and the pushed two are left out', two.ok && two.value.corners, [112.46, 111.39, 149, 149])
+
+  // Nothing outside the glass may show inside the circle. A crack of ring running down
+  // into the glass from the corner's tail, joined to the ring and so outside the glass,
+  // is past the row where the corner closes, and the circle leaves it showing.
+  const cracked = realFrame()
+  for (let y = 154 + 69; y <= 154 + 100; y++) { const p = (y * 794 + 44 + 5) * 4; cracked.data[p] = cracked.data[p + 1] = cracked.data[p + 2] = 0 }
+  const crack = S.measureCorner(cracked, vp)
+  ok('ring showing inside the circle is refused', !crack.ok && /still shows/.test(crack.reason))
+  // And a corner rounder than a quarter of the short side is not a corner: a dark bar
+  // across the top of the glass in all four corners alike.
+  const barred = k => REAL_CORNERS[k].map((line, i) => (i >= 14 + 30 && i < 14 + 34 ? '164 36' : line))
+  const bar = S.measureCorner(realFrame({ tl: barred('tl'), tr: barred('tr'), bl: barred('bl'), br: barred('br') }), vp)
+  ok('a corner past a quarter of the short side is refused', !bar.ok && /quarter/.test(bar.reason))
+
+  // A stored corner is recognised as suspect.
+  is('0.0535 stored on a ProMax is suspect without reading a frame', /23\.5 points/.test(S.cornerSuspect({ ...vp, corner: 0.0535 }, PRO_MAX)), true)
+  is('the 0.1578 the capture wrote is not', S.cornerSuspect({ ...vp, corner: 0.1578 }, PRO_MAX), null)
+  is('nor is the 0.1594 this reads', S.cornerSuspect({ ...vp, corner: 0.1594 }, PRO_MAX), null)
+  is('a document with no corner has nothing to suspect', S.cornerSuspect(vp, PRO_MAX), null)
+  ok('a stored corner that is no share of anything is suspect', S.cornerSuspect({ ...vp, corner: 0.7 }, PRO_MAX))
+  ok('a round corner stored on a square screen is suspect', S.cornerSuspect({ ...vp, corner: 0.1 }, { w: 750, h: 1334, scale: 2 }))
+  is('on a screen this does not know, the number alone says nothing', S.cornerSuspect({ ...vp, corner: 0.0535 }, { w: 2064, h: 2752, scale: 2 }), null)
+  // There the frame says it: the reading carries whether the stored corner is the one
+  // the frame shows.
+  is('read against a frame, a stored 0.0535 is not the corner the frame shows',
+    S.measureCorner(realFrame(), { ...vp, corner: 0.0535 }).value.stored, { share: 0.0535, agrees: false })
+  is('and a stored 0.1578 is', S.measureCorner(realFrame(), { ...vp, corner: 0.1578 }).value.stored, { share: 0.1578, agrees: true })
+
+  // A new capture: a corner that fails its check is left off the measurement, and the
+  // rectangle, which is fine, is kept.
+  const d = DEVICE.proMax
+  const cap = frameOf(d, { corner: PROFILE })
+  // an app dark into three corners alike, touching the ring: 60 by 30 of black in each
+  for (const [top, left] of [[1, 0], [0, 1], [0, 0]]) {
+    for (let v = 0; v < 30; v++) for (let u = 0; u < 60; u++) {
+      const x = left ? d.glass.x + u : d.glass.x + d.glass.w - 1 - u
+      const y = top ? d.glass.y + v : d.glass.y + d.glass.h - 1 - v
+      const p = (y * d.cap.w + x) * 4
+      cap.data[p] = cap.data[p + 1] = cap.data[p + 2] = 0
+    }
+  }
+  const sq = S.measureGlass(cap)
+  ok('a capture whose corners do not agree keeps its rectangle', sq.ok && sq.value.px.w === d.glass.w)
+  is('and has no corner', sq.value.corner, undefined)
+  ok('and says why', /squarest corner/.test(sq.value.cornerRefused))
+  is('so the viewport written onto the document carries no corner', 'corner' in S.viewport(d.win, d.screen, { glass: sq }), false)
 }
 
 console.log('where the glass is inside the window, worked out rather than seen')

@@ -52,8 +52,24 @@ lands while a capture is still starting waits for the start to answer (up to 10 
 what it opened, rather than exiting under it. A window that drops out of capture is started
 again once, when it is back on screen, and never at all when the service itself went away:
 a start straight after replayd fell over is what keeps it down. The narrow
-scope can come back through a CoreAudio process tap in the recorder itself, which has its own
-permission prompt and has not been built. The person's approval says **with sound**, and a
+scope is back through a Core Audio process tap in the recorder itself (`Recorder.swift`
+`SoundPlan`, `AppSound`), which coreaudiod serves and replayd never sees: a window take hears
+its app and the processes it started or answers for, a simulator take hears that device's own
+processes. It is used only on macOS 14.4 or later, only where the person has already given
+Fetch System Audio Recording (a take never asks for it), and only where the target is not a
+guess; anywhere else the take hears the whole Mac. The permission is asked for in one place:
+the person turning on **Only the recorded app's sound** in Settings, which reads the permission
+without asking and, when they turn it on, has the recorder ask (`Recorder --audio-access
+request`). An agent's simulator take names its device to the recorder (`--sound-device`), so
+the tap hears that device with two booted. With two booted, CoreSimulator's shared audio
+service could carry the other device's sound, so such a take hears the whole Mac and says so
+rather than claim the device alone. The tap reads its own buffers past any input the output
+device has (a headset's microphone), and drops a buffer that is not its shape rather than read
+the wrong sound as the app's. The recorder reports the scope on every take, `record_start`
+says the scope it started with, and `record_stop` says it off the finished take's report:
+`audio.scope` is `app`, `device` or `mac`, and `audio.heard` says it in words, with the reason
+when it is the whole Mac. The tap is built and checked without recording anything, and is
+**not yet proven on a live take**. The person's approval says **with sound**, and a
 yes to a silent take is not a yes to one with it. The default rides only on Fetch's own
 recorder; where the Mac falls back to the browser capture, a take whose sound was only the
 default is recorded silent and the result says why: the default is the recorder's, and the
@@ -151,6 +167,24 @@ Kept in step with `landing/DESIGN-HANDOFF.md`, which is the public-facing versio
   and a source that was trashed keeps its row and loses its click. It is kept in
   `collections.json` beside the folders, and an item that carries its own `from` wins
   over it.
+- The sample (`ui/sample.js`, `assets/sample/`, the `sample` tool): "Try the sample" in the
+  Library bar, there even when the library is empty, opens two takes and a screenshot Fetch
+  made itself of a product made up for it, laid out as real takes in a scratch folder of their
+  own, so every tool and every export works on them and an export lands inside the sample. The
+  person's own folders, provenance and view are set aside in memory and put back as they were,
+  `collections.json` is not written while it is open, the sample is only ever deleted where it
+  carries its own marker, and leaving compares a fingerprint of their save folder, their
+  settings, the Library's own files, what Fetch remembers (`memory.json`) and the activity log
+  with the one taken on the way in, so "untouched" is measured rather than said. The chat's own
+  transcript is not in it: what they say while trying the sample is their conversation.
+  `main.js` holds where the sample is (`sample-root`), so the Library's grid and an agent's
+  `list_recordings` both list the sample and nothing else while it is open. What an agent
+  remembers while it is open is kept in the sample and deleted with it, unless it names one of
+  the person's own takes or a product that is not the sample's. The activity log marks its rows
+  as the sample's and drops them on leaving. Leaving stops an agent's export of a sample take
+  before the folder goes, and a folder a late export remade is cleared by the next open rather
+  than refused. The takes have no speech, so the transcript, the beats and the captions have
+  nothing to show on them.
 - Shot editor: the same editor, the same stage, the same compositor, with the clock
   taken off it. Crop, Zooms and marks, and Look; a Styled and Original switch where the
   play button was, Space to peek at the capture, and one Export PNG button, since a
@@ -545,13 +579,14 @@ preview frame, a contact sheet cell and an exported PNG of one plan are the same
 the same format. What is left for the classic ffmpeg renderer is a sound file and a
 preview still taken off its own path.
 
-**MCP tools** (`mcp/index.js`), 41: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `take_shot`, `pointer`,
+**MCP tools** (`mcp/index.js`), 43: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `take_shot`, `pointer`,
 `list_windows`, `list_displays`, `list_recordings`, `simulator`, `probe`, `transcribe`,
 `list_beats`, `get_edit`, `apply_edit`, `direct`, `review`, `fit_to_length`, `revert_my_edit`, `versions`,
 `ask`, `propose`, `can_loop`,
 `export`, `rename_recording`,
 `remove_dead_air`, `enhance_audio`, `get_settings`, `set_settings`, `delete_recording`,
-`get_frame`, `find_on_screen`, `preview_frame`, `contact_sheet`, `list_voices`, `voiceover`, `remember`.
+`get_frame`, `find_on_screen`, `preview_frame`, `contact_sheet`, `list_voices`, `voiceover`, `remember`,
+`guidelines`, `sample`.
 `test/tools.test.js` is what keeps that list one list: every op the bridge answers has a tool
 on it, every tool drives an op that exists, and the names the in-app pane allows are the names
 the server registers, both directions. `record.pause` sat in the bridge for months with no
@@ -775,6 +810,31 @@ heading in the system prompt, and `direct` and `apply_edit` carry it back beside
 `distance`, so an outside client that never saw that prompt still knows what it was told last
 week.
 
+**A product's rules, read before anything is done** (`ui/guidelines.js`, `guidelines`). The
+facts that decide work before it starts get sections of their own: what the product is called
+and how it is said, who a demo of it is for, what must never be on screen, how its screenshots
+look, and the words it avoids with what it says instead. A rule is a product fact in the same
+file under the same `F` ids and the same refusals, so a secret is refused here as it is there.
+The person's own words are in force at once: written in the **Product guidelines** card in
+Settings, where they also say yes or no to an agent's drafts and remove a rule, or relayed by an
+agent and confirmed by the person in a question Fetch asks with the words in front of them. What
+an agent drafts from the product itself (its screens, its help pages, its code) is a draft, in
+no briefing and failing nothing, until the person has been shown it word for word (`show`,
+which hands back a seal) and said yes (`adopt` with that seal, and any rewording they made on
+the way in). Nothing an agent sends is taken as the person's yes on its own: the seal only
+proves the words did not change after they were shown, so the bridge asks the person before a
+rule sent as theirs goes into force (unconfirmed, it is kept as a draft) and before an adopt
+(unconfirmed, it is refused), and a `remember` never settles a draft, whatever it says. A draft that would change a rule in
+force sits beside it and takes its id on yes, so an id an agent holds never starts meaning
+something else. The rules reach the agent before it acts: they open the memory block, under
+their own budget, in the in-app system prompt and on `direct`, `apply_edit`, `apply_look`,
+`take_shot` and `record_start`, and the server's instructions tell an outside agent to read them
+before it plans, captures or styles anything. Two are checked by machine as well as read:
+`find_on_screen` names any label on the picture that a never-rule keeps off screen, the moment
+the agent looks, and `review` names the words on an edit that the product avoids as a finding
+of its own (`rule-words`), which holds the verdict at nearly until it is fixed or declined. Rules belong
+to one product, always named; a rule with no product is refused rather than filed for everyone.
+
 **The agent's own cursor** (`ui/pointer.js`). An agent's take is recorded without the
 Mac's pointer, which belongs to the person at the desk. The agent reports where its
 pointer is with `pointer` as it acts (fractions of the window, page pixels plus the
@@ -864,9 +924,20 @@ take is masked at that corner too: with nothing behind it the corner is black, w
 the ring was there. A take recorded before the corner was stored has it read off one of its
 own frames when it is drawn (`ui/compositor/prepare.js`, the middle frame, then a quarter
 and three quarters if the screen is dark there), within a few pixels of the stored rectangle
-(`ui/simulator.js measureCorner`). An `export` writes that corner onto the edit's viewport,
-so it is read once, and review and the editor see the corner the export drew. A corner the
-capture stored always wins. **The picture is the
+(`ui/simulator.js measureCorner`). The glass is what is joined to the glass: in each corner,
+the lit pixels joined through lit pixels to the square's two inner sides, so the bezel's grey
+highlight, which the old walk took for glass on a recording and read as 0.0535 against a true
+0.1578, is never counted. A reading is refused, never guessed, when fewer than two corners
+agree, when ring shows inside the circle, or when it falls outside the band round the screen's
+own radius where that is known. An `export` writes that corner onto the edit's viewport only
+once it has passed that check (two corners agree, no ring shows inside it, and it sits within
+the band round the screen's own radius where that is known). A stored corner outside that band
+is dropped where the document is read (`ui/fetchdoc.js cleanViewport`), so every reader, the
+person's own export, the editor and review as well as an agent, draws as if there were none and
+reads it again. On a screen whose radius is not known (every iPad), a stored corner is checked
+against one frame of the take and gives way to the reading where the two disagree. The
+document gets the checked reading in its place, or no corner where the reading is refused, so a
+wrong number is never kept for every export after it. **The picture is the
 length**: the sound is padded to the edit, never the other way round. The written file is
 measured again afterwards, frames counted off the file, and the result's `seconds` is that
 count, so nothing is called a store file that is not one: a file short of its edit is not
@@ -945,12 +1016,24 @@ handed out. Where it is has to agree with the rest of the screen: a word that mo
 only when the words around it moved with it, and never when it passed rows that stayed where
 they were, so a row's Delete that shows on Carol's row after it showed on Alice's is a new id
 and the one held for Alice's is refused. So an id held from an earlier screen of the device
-names the same control on the newest one, or is refused as not there. The one thing it cannot
-tell apart is a control with the same words, size and place on a screen the device navigated
-to (a Done in the same corner), and that is carried as the same control. A second
+names the same control on the newest one, or is refused as not there. A control repeated down
+a list (a Delete per row) takes its identity from its own row's words and nothing else, so when
+a row is deleted its Delete's id goes with it and never passes to the next row's; before, the
+rows closing up under a title that stayed put carried every Delete's id one row up. A row with
+no words of its own is never carried at all: rows that all read "Untitled", a cart of "Milk", a
+grid of bare thumbnails, or rows named only by their place ("Step 1", a price, a time). Delete
+the first of twenty and the next scrolls in, or delete Step 1 and Step 2 is renamed, and the
+same count sits in the same places, so the id dies and the agent looks again. A heading replaced
+in place (the recipe's name became the next recipe's over the same toolbar) is another screen,
+and nothing on it is carried. The things it cannot tell apart are a control with the same
+words, size and place on a screen the device navigated to (a Done in the same corner), and two
+controls that each appear once on a one-row screen whose label changed below a heading that
+stayed, which vouch for each other; both are carried as the same controls. A second
 `find_on_screen` of the same moment keeps its ids the same way, and a search of an older
-picture in the run is numbered on from the run without becoming the screen the next picture is
-matched against. The bridge checks that each pass really carried on rather than starting at E1
+picture in the run is numbered on from the run, and moves the run's count on, without becoming
+the screen the next picture is matched against. A tap is only ever aimed on the device's newest
+screen: an id sent with the path of an older picture in the run is looked up there, and refused
+when it is not on it. The bridge checks that each pass really carried on rather than starting at E1
 again (a list that handed out nothing is no proof), and where one did not, the run starts over
 and a bare id is trusted only on the newest pass, as before. An id sent with no `path` is read
 off the device's newest screen while that screen is the newest `find_on_screen` pass, or while
@@ -1016,7 +1099,8 @@ look or a restore waits while an agent's change is landing.
 for the four screens, Cmd+F for search, Cmd+Y for history, Cmd+, for Settings). **Esc
 stops an agent that is driving, whatever has focus**: while one of its calls runs, a chat
 turn runs or its take rolls, and for three seconds after, Esc is Fetch's, and pressing it
-cancels the chat turn, stops an agent's take (kept, not discarded), withdraws every "until
+cancels the chat turn, stops an agent's take (kept, not discarded), stops every export an
+agent has queued or running (the file that was there stays as it was), withdraws every "until
 Fetch quits" yes, and refuses every later call with a sentence telling the agent to stop and
 ask, until the person lets it continue. A yes clicked on a dialog after Esc does not act, and
 a take whose start was already on its way is stopped the moment it goes live. **The trade**:
@@ -1030,6 +1114,14 @@ shim names itself with `--chat`); a stopped terminal agent waits for Let it cont
 the chat turn is bounded: the CLI is asked to stop, told to two seconds later, and the turn is
 ended by Fetch two seconds after that whether or not the process has gone, so the pane is
 free again in under five seconds even when the CLI is sitting on a tool call.
+An export an agent asked for can also be stopped by the agent's own client: `export` hands the
+app a key for the work, and a cancelled call, or one the server gave up waiting on, sends
+`job.cancel` with it, so the export stops where it runs and the call answers that it was
+stopped and nothing was written. A client whose connection closes takes its exports with it.
+Stopping is measured, not only answered: `npm run test:gl` stops an agent's export through
+the queue on both renderers and checks that its encoder was found while it ran and is gone
+within a second, that no scratch or partial file is left, that the deliverable is byte for
+byte what was there before, and that the queue's lane is given back.
 Cmd+. and the Stop button on the working pill do the same,
 and an Esc in Fetch's own window is caught ahead of every other handler, which covers the case
 of macOS not handing a bare Esc to a global shortcut (proven through the registered callback,

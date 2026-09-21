@@ -108,3 +108,20 @@
   background:var(--ink-2); border:var(--edge);
   font:500 10px/1.5 var(--font-mono); color:var(--text-1);
 }
+
+/* Product guidelines: a rule per line, its id first, so the handle an agent names it by
+   is on screen. Drafts carry where they were read and wait for a Yes. */
+.guide-list { display:flex; flex-direction:column; gap:var(--s-1); margin-bottom:var(--s-3); }
+.guide-row { display:flex; align-items:baseline; gap:var(--s-3); padding:var(--s-2) var(--s-3);
+  border-radius:10px; background:var(--ink-2); }
+.guide-id { font-family:var(--font-mono); font-size:var(--t-11); color:var(--text-2); flex:none; min-width:3ch; }
+.guide-sec { font-size:var(--t-11); color:var(--text-2); flex:none; min-width:14ch; }
+.guide-text { flex:1; font-size:var(--t-13); color:var(--text-0); line-height:1.45; max-width:70ch; }
+.guide-src { display:block; font-size:var(--t-11); color:var(--text-2); margin-top:var(--s-1); }
+.guide-acts { display:flex; gap:var(--s-3); flex:none; }
+.guide-draft .guide-id { color:var(--warn); }
+.guide-x { flex:none; opacity:.7; }
+.guide-row:hover .guide-x, .guide-x:focus-visible { opacity:1; }
+.guide-none { margin-bottom:var(--s-3); }
+#guideProductForm { margin-bottom:var(--s-4); }
+#guideAdd select { flex:0 0 18ch; }

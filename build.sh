@@ -97,6 +97,12 @@ P="$APP/Contents/Info.plist"
   || /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'Fetch shows your webcam in a floating circle.'" "$P"
 /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription Fetch records your microphone while you record the screen." "$P" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'Fetch records your microphone while you record the screen.'" "$P"
+# System Audio Recording: the recorder taps the sound of just the app or simulator being
+# recorded (Recorder.swift AppSound), rather than everything the Mac plays. macOS shows
+# this line when the person is asked, and will not ask without it. A take never asks;
+# the recorder's --audio-access request does, and only when the person turns it on.
+/usr/libexec/PlistBuddy -c "Set :NSAudioCaptureUsageDescription Fetch records the sound of the app you are recording, and nothing else your Mac plays." "$P" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :NSAudioCaptureUsageDescription string 'Fetch records the sound of the app you are recording, and nothing else your Mac plays.'" "$P"
 
 # helper bundles need unique ids under our identifier
 for h in "" " (GPU)" " (Plugin)" " (Renderer)"; do

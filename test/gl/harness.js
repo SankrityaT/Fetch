@@ -61,8 +61,9 @@
 // Windows are hidden and never focused. Exits 1 on any failure.
 const { app, BrowserWindow, ipcMain } = require('electron')
 const path = require('path')
+const os = require('os')
 const fs = require('fs')
-const { spawnSync } = require('child_process')
+const { spawnSync, execFileSync } = require('child_process')
 
 const args = process.argv.slice(2)
 const update = args.includes('--update')
@@ -2220,6 +2221,63 @@ app.whenReady().then(async () => {
         try { await bounded(run, 2000) } catch (e) { cancelled = !!e.cancelled; why = e.cancelled ? '' : ' ' + e.message }
         is('a cancelled export stops and says so', started && cancelled,
           `${started ? '' : 'never started drawing, '}${Date.now() - t} ms${why}`)
+      }
+      // 3. an agent's export, through the queue as main.js submits it, stopped by the brake,
+      // and then measured: an answer of "cancelled" is not the same as the work being gone.
+      // Render-window ffmpegs are children of the renderer, not of this process, so they are
+      // found by the scratch name render-host gives them, and the deliverable is checked
+      // byte for byte against what was there before.
+      {
+        const jobQueue = require('../../ui/job-queue')
+        const alive = () => {
+          try {
+            return execFileSync('pgrep', ['-f', `fetch-gl-${process.pid}-|\\.${path.parse(dest).name}\\.(partial|staged)`])
+              .toString().trim().split('\n').filter(Boolean)
+          } catch { return [] }
+        }
+        const scratch = () => fs.readdirSync(os.tmpdir()).filter(f => f.startsWith(`fetch-gl-${process.pid}-`))
+        const until = async (fn, ms) => {
+          const s0 = Date.now()
+          while (Date.now() - s0 < ms) { if (fn()) return Date.now() - s0; await new Promise(r => setTimeout(r, 25)) }
+          return -1
+        }
+        const LAST = 'the last good export\n'
+        fs.writeFileSync(dest, LAST)
+        for (const engine of ['gl', 'classic']) {
+          let fire
+          const drawing = new Promise(r => { fire = r })
+          const id = 'agent:export:harness-' + engine
+          const run = jobQueue.submit({ id, op: 'export', run: () => host.exportEdit(take, { ...high, engine }, () => fire(), id) })
+          run.catch(() => {})
+          await bounded(drawing, 120000).catch(() => {})
+          // the children are looked for the same way before the stop, so "none left" below
+          // is a count of something that was there rather than a search that finds nothing
+          const seenBefore = alive().length
+          is(`${engine}: its encoder is found while it runs`, seenBefore > 0, `${seenBefore}`)
+          const hit = jobQueue.cancelWhere(x => String(x).startsWith('agent:'))
+          const t = Date.now(); let cancelled = false
+          try { await bounded(run, 2000) } catch (e) { cancelled = !!e.cancelled }
+          is(`${engine}: the brake stops an agent's export and says so`, hit.includes(id) && cancelled, `${Date.now() - t} ms`)
+          // the answer comes before the work has stopped; while any child of it is alive the
+          // lane is still held, so the next export cannot start beside it
+          const livesAt = alive().length, heldAt = jobQueue.jobs().stopping.includes(id)
+          is(`${engine}: while its children are dying, its lane is still held`, !livesAt || heldAt,
+            `${livesAt} alive, ${JSON.stringify(jobQueue.jobs())}`)
+          const gone = await until(() => !alive().length && !proc.runningJobs().includes(id), 1000)
+          is(`${engine}: every ffmpeg and render child of that export is gone within 1 s`, gone >= 0,
+            gone >= 0 ? `${gone} ms` : alive().join(' '))
+          const swept = await until(() => !scratch().length, 6000)
+          is(`${engine}: no scratch is left in tmp`, swept >= 0, scratch().join(' '))
+          is(`${engine}: the deliverable was not replaced`, fs.readFileSync(dest, 'utf8') === LAST)
+          // the staged file goes in the export's own finally, a moment after its ffmpeg is gone
+          const partial = () => fs.readdirSync(path.dirname(dest)).filter(f => /\.(partial|staged)/.test(f))
+          const tidy = await until(() => !partial().length, 6000)
+          is(`${engine}: nothing partial is left beside it`, tidy >= 0, tidy >= 0 ? `${tidy} ms` : partial().join(' '))
+          // the lane is given back once the work has stopped, so the next export is not held
+          const freed = await until(() => { const j = jobQueue.jobs(); return !j.running.length && !j.stopping.length }, 6000)
+          is(`${engine}: the queue's lane is given back`, freed >= 0, JSON.stringify(jobQueue.jobs()))
+        }
+        fs.unlinkSync(dest)
       }
       const again = await host.exportEdit(take, { backdrop: 'dusk', format: 'mp4', dest, engine: 'gl', end: 2 }, null, 'gl-test-after')
       is('the next export still draws', again.engine === 'gl' && fs.existsSync(dest), again.engine)

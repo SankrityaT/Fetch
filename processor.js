@@ -3394,6 +3394,9 @@ function musicFile(id) {
     path.join(__dirname, 'assets', 'music', `${id}.m4a`)].find(f => fs.existsSync(f)) || null
 }
 // music is a bed id, or { bed, level } with level in dB against the bed's own (-10 default)
+// Where musicBed writes the bed it mixes under `file`, so a caller can sweep it too.
+const musicTmp = (file, fmt) => path.join(path.dirname(file), `.${path.parse(file).name}.music.${fmt.ext}`)
+
 async function musicBed(file, music, fmt, dur, hasVoice, jobId) {
   const id = typeof music === 'string' ? music : music && music.bed
   const bedFile = musicFile(id)
@@ -3408,10 +3411,17 @@ async function musicBed(file, music, fmt, dur, hasVoice, jobId) {
       `[v][md]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95:latency=1[a]`
     : `${bed}[a]`
   const acodec = fmt.ext === 'webm' ? ['-c:a', 'libopus', '-b:a', '128k'] : ['-c:a', 'aac', '-b:a', '192k']
-  const tmp = path.join(path.dirname(file), `.${path.parse(file).name}.music.${fmt.ext}`)
-  await run(FFMPEG, ['-y', '-i', file, '-stream_loop', '-1', '-i', bedFile, '-filter_complex', graph,
-    '-map', '0:v?', '-map', '[a]', '-c:v', 'copy', ...acodec, '-ar', '48000', '-ac', '2',
-    '-t', dur.toFixed(3), ...(fmt.ext === 'mp4' || fmt.ext === 'mov' ? ['-movflags', '+faststart'] : []), tmp], null, jobId)
+  const tmp = musicTmp(file, fmt)
+  // A bed that fails or is cancelled takes its half written file with it: it sits beside
+  // the deliverable, and nothing else would ever clear it.
+  try {
+    await run(FFMPEG, ['-y', '-i', file, '-stream_loop', '-1', '-i', bedFile, '-filter_complex', graph,
+      '-map', '0:v?', '-map', '[a]', '-c:v', 'copy', ...acodec, '-ar', '48000', '-ac', '2',
+      '-t', dur.toFixed(3), ...(fmt.ext === 'mp4' || fmt.ext === 'mov' ? ['-movflags', '+faststart'] : []), tmp], null, jobId)
+  } catch (e) {
+    try { fs.unlinkSync(tmp) } catch {}
+    throw e
+  }
   return tmp
 }
 

@@ -44,9 +44,20 @@ try { ({ app: electronApp } = require('electron')) } catch {}
 // read off disk at the moment the conversation opens. A new chat used to be a stranger
 // every time; this is the one place the doctrine can carry it without paying for it on
 // every message. A store that cannot be read costs the turn nothing.
+// A take of the sample library reads the sample's own memory, which is where the bridge
+// keeps what was said about its made up product (ui/agent-bridge.js memRoot).
+function sampleOf(take) {
+  if (!take) return null
+  try {
+    const S = require('./sample')
+    let d = path.dirname(String(take))
+    for (let i = 0; i < 4; i++) { if (S.isSample(d)) return d; const up = path.dirname(d); if (up === d) break; d = up }
+  } catch {}
+  return null
+}
 function memoryText(take) {
   try {
-    const root = process.env.FETCH_CHAT_DIR || (electronApp ? electronApp.getPath('userData') : null)
+    const root = sampleOf(take) || process.env.FETCH_CHAT_DIR || (electronApp ? electronApp.getPath('userData') : null)
     if (!root) return ''
     return Memory.recallFor({ root, take: take || null }).text || ''
   } catch { return '' }
@@ -74,8 +85,11 @@ const ALLOWED = [
   'can_loop',
   // put the fork to the person instead of guessing, and show a wide change before it lands
   'ask', 'propose',
-  // what the person said that is still true next week, so a new chat is not a stranger
-  'remember',
+  // what the person said that is still true next week, so a new chat is not a stranger,
+  // and the product's rules, read before anything is planned, captured or styled
+  'remember', 'guidelines',
+  // Fetch's own takes of a made up product, to try every tool with nothing recorded
+  'sample',
   'list_voices', 'voiceover',
 ].map(t => `mcp__fetch__${t}`)
 

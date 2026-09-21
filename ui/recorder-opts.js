@@ -23,27 +23,38 @@
 //
 // ── what it costs, measured rather than assumed ──────────────────────────
 //
-// **Nothing is asked of the person.** System audio rides the Screen Recording grant the
-// take already cannot start without (ui/record-policy.js, screenAccess); macOS 15 calls
-// that pane Screen and System Audio Recording for exactly this reason. No second dialog,
-// no second pane, no microphone permission. The microphone is the one that needs its own
-// grant and its own asking, and it stays off unless the agent asks for it: the room is
-// never in a take nobody asked to be in.
+// **Nothing is asked of the person by a take.** Whole-Mac sound rides the Screen
+// Recording grant the take already cannot start without (ui/record-policy.js,
+// screenAccess); macOS 15 calls that pane Screen and System Audio Recording for exactly
+// this reason. One app's sound (below) needs a second permission, System Audio Recording,
+// and a take never asks for it: Recorder.swift looks it up without asking and, without
+// it, takes the whole Mac's sound and says so. The microphone needs its own grant and its
+// own asking too, and it stays off unless the agent asks for it: the room is never in a
+// take nobody asked to be in.
 //
-// **What reaches the file is everything this Mac plays while the take runs.** It used
-// to be narrower: Recorder.swift took a window take's sound from the display with every
-// other app that owned a window left out by process id. A filter that names apps is what
-// took macOS's screen capture service down (replayd crashed 25 times, a use after free in
-// its audio input callback, because naming processes makes it rebuild its audio queue
-// whenever one of them changes state), so no capture names an app any more and the
-// sound is the display's. The person's music, a call, a second booted simulator: all of
-// it is in the file. The sentences below say that scope, and the question the person
-// answers before an agent's take names their music and a call. A CoreAudio process tap
-// in the recorder can bring the narrow scope back without replayd; it is not built.
+// **What reaches the file is everything this Mac plays while the take runs, unless the
+// recorder could tap the one app's sound.** It used to be narrower: Recorder.swift took a
+// window take's sound from the display with every other app that owned a window left out
+// by process id. A filter that names apps is what took macOS's screen capture service
+// down (replayd crashed 25 times, a use after free in its audio input callback, because
+// naming processes makes it rebuild its audio queue whenever one of them changes state),
+// so no capture names an app any more. The narrow scope is back through a Core Audio
+// process tap (Recorder.swift SoundPlan and AppSound), which coreaudiod serves and replayd
+// never sees: a window take hears its app and the processes it started or answers for, a
+// simulator take hears that device's own processes. It is had only on macOS 14.4 or later,
+// with the person's yes to System Audio Recording already given, and with a target that is
+// not a guess (Simulator.app's window with two devices booted and none named is a guess).
+// Anywhere else the take has the whole Mac's sound: the person's music, a call, a second
+// booted simulator. The recorder reports which on started and on stopped (`soundScope`,
+// and on the system track of `sound`), and takeAudio() says it on the result when it is
+// handed that report (o.sound); the descriptions promise no more than that. Proven by
+// the build and the plan it prints, not by a live take: see .context/survey/q-q4.md.
 //
-// **The device's sound is in it because the Mac plays it.** A simulator's guest app
-// renders through CoreSimulator's own host audio process, and a process of exactly that
-// shape was captured and transcribed word perfect.
+// **The device's sound is in it because the Mac plays it.** A simulator's guest app is a
+// host process of its own, under that device's launchd_sim, and plays to the Mac's output
+// (sim-m0 read it off Core Audio's process list); a process of exactly that shape was
+// captured and transcribed word perfect. That is also why a tap can find it: it has a
+// process id, where it has no window and no app to name.
 //
 // **Why the default stays on.** The sound is the whole reason to record the window, and
 // an agent's take is never started without the person's yes, which says "with sound" and
@@ -62,8 +73,9 @@
 // **When it is refused.** It cannot be refused on its own. If Screen Recording is off the
 // take never starts and screenAccess says which pane to turn it on in. What can still
 // happen is the sound capture failing by itself: Recorder.swift opens a second, tiny
-// stream for a window take's audio and, if that one will not start or stops part way, it
-// writes a line to stderr and lets the take go on rather than losing the picture too.
+// stream (or a tap) for a window take's audio and, if that one will not start or stops
+// part way, it writes a line to stderr and lets the take go on rather than losing the
+// picture too. A tap that will not start falls back to the stream, once.
 // That take lands with video and no track (or a track that goes silent part way), and takeAudio() is what says so in the result instead of leaving
 // transcribe to break the news.
 
@@ -110,10 +122,16 @@ function audioFor(args = {}, o = {}) {
  * The file does not exist yet, so nothing here claims a track: that claim is takeAudio's
  * and it is read off the written file.
  */
+// `plan.scope` is the recorder's own word at start (its started event's soundScope, which
+// main.js hands the bridge), and where it is there the scope is said as the recorder
+// said it rather than as the widest it could be.
 function startedAudio(plan = {}) {
   const from = []
+  const at = plan.systemAudio ? scopeOf(plan.scope) : null
   if (plan.systemAudio) {
-    from.push(plan.simulator ? 'everything this Mac plays, the device among it' : 'everything this Mac plays')
+    from.push(at && at.scope === 'device' ? 'the device\'s own sound'
+      : at && at.scope === 'app' ? 'the window\'s app\'s sound'
+      : plan.simulator ? 'everything this Mac plays, the device among it' : 'everything this Mac plays')
   }
   if (plan.mic) from.push('the microphone')
 
@@ -122,9 +140,9 @@ function startedAudio(plan = {}) {
   if (plan.systemAudio) {
     note = (plan.simulator && plan.asked === 'default'
       ? 'System audio is on by default for a simulator take, because the sound is the ' +
-        'whole reason Fetch records the window rather than the device\'s framebuffer. ' + SCOPE_SAID(true) +
+        'whole reason Fetch records the window rather than the device\'s framebuffer. ' + (at ? startSaid(at, plan) : SCOPE_SAID(true)) +
         ' ' + FALLBACK_SAID
-      : 'System audio is on. ' + SCOPE_SAID(plan.simulator)) +
+      : 'System audio is on. ' + (at ? startSaid(at, plan) : SCOPE_SAID(plan.simulator))) +
       room + ' record_stop reads the finished file and says whether a track landed.'
   } else if (plan.mic) {
     // A microphone is a track. Saying "no audio track" of a take with the mic on is the
@@ -144,14 +162,33 @@ function startedAudio(plan = {}) {
     note = `This take has no audio track: system_audio and mic are both off. ${TRACK_READERS}.`
   }
 
-  return { system_audio: !!plan.systemAudio, mic: !!plan.mic, ...(from.length ? { from } : {}), note }
+  return { system_audio: !!plan.systemAudio, mic: !!plan.mic, ...(at ? { scope: at.scope } : {}), ...(from.length ? { from } : {}), note }
+}
+
+// The scope the recorder started with, in the present tense of a take under way
+function startSaid(s, plan = {}) {
+  const what = plan.simulator ? 'device' : 'window'
+  if (s.scope === 'mac') {
+    return `What reaches the file is everything this Mac plays while the take runs, the ${what} among it, so music, ` +
+      `a notification or a call on this Mac is in it too, because ${whySaid(s.why)}.`
+  }
+  return s.scope === 'device'
+    ? 'What reaches the file is only the device\'s own sound: nothing else this Mac plays.'
+    : 'What reaches the file is only the window\'s app and the processes it started or answers for: nothing else this Mac plays.'
 }
 
 // What reaches the file when system audio is on, in the scope Recorder.swift actually
-// has: the display's sound, with no app left out (its start() says why).
+// has: the display's sound, with no app left out (its start() says why), unless it could
+// tap the one app's or device's sound. Said as the widest it can be, since at start
+// nothing has said which yet; record_stop says which.
 function SCOPE_SAID(simulator) {
   return `What reaches the file is everything this Mac plays while the take runs: the ${simulator ? 'device' : 'window'}, ` +
-    'and any other sound on the Mac, music or a call included.'
+    'and any other sound on the Mac, music or a call included. ' + TAP_SAID(simulator)
+}
+
+function TAP_SAID(simulator) {
+  return `Where the person has given Fetch System Audio Recording (macOS 14.4 or later)${simulator ? ' and it is the only simulator booted' : ''}, ` +
+    `${simulator ? 'only the device\'s own sound' : 'just the sound of the window\'s app'} is taken instead, and record_stop says which the take got.`
 }
 
 const FALLBACK_SAID = 'That default is Fetch\'s own recorder\'s. Where this Mac cannot use it, a take ' +
@@ -189,6 +226,9 @@ function takeAudio(plan = {}, meta = {}, o = {}) {
   }
 
   const out = { track: true, tracks: tracks || 1, ...(meta.acodec ? { codec: meta.acodec } : {}) }
+  // Whose sound it is, off what the recorder reported rather than what was hoped for
+  const scope = plan.systemAudio ? scopeOf(o.sound || o.scope) : null
+  if (scope) Object.assign(out, scopeSaid(scope, plan))
   // A track at the floor is its own answer, and without it an agent cannot tell a silent
   // app from broken wiring: both come back from transcribe as no speech. Only said where
   // somebody measured a level, since measuring one costs a pass over the file. floor is
@@ -217,27 +257,78 @@ function takeAudio(plan = {}, meta = {}, o = {}) {
   return out
 }
 
+/**
+ * The recorder's word on whose sound a take has, from either the stopped event's
+ * `soundScope` or its `sound` array (the system track carries the same fields). null
+ * where this build's recorder said nothing, so nothing is claimed.
+ */
+function scopeOf(sound) {
+  if (!sound) return null
+  const s = Array.isArray(sound) ? sound.find(t => t && t.track === 'system' && t.scope) : sound
+  if (!s || !SCOPES.includes(s.scope)) return null
+  return { scope: s.scope, ...(s.why ? { why: String(s.why) } : {}),
+    ...(Array.isArray(s.from) && s.from.length ? { from: s.from.map(String) } : {}) }
+}
+const SCOPES = ['app', 'device', 'mac']
+
+// Why a take got the whole Mac, in words, for each reason Recorder.swift gives
+function whySaid(why = '') {
+  if (why === 'display') return 'a whole display take hears the whole Mac'
+  if (why === 'asked') return 'the whole Mac\'s sound was asked for'
+  if (why === 'macos') return 'one app\'s sound needs macOS 14.4 or later'
+  if (/^permission/.test(why)) return 'the person has not given Fetch System Audio Recording, which one app\'s sound needs, ' +
+    'and a take never asks for it'
+  if (why === 'which device') return 'more than one simulator is booted and the take did not say which one\'s sound it was'
+  if (why === 'device not booted') return 'that device\'s processes were not found running'
+  if (why === 'shared service') return 'more than one simulator is booted, and the audio service they share could carry the other one\'s sound'
+  if (why === 'no owner') return 'the window\'s app could not be told'
+  if (/^tap failed/.test(why)) return 'the tap of one app\'s sound would not start (' + why.replace(/^tap failed:\s*/, '') + ')'
+  return why ? `the recorder said: ${why}` : 'the recorder gave no reason'
+}
+
+function scopeSaid(s, plan = {}) {
+  const what = plan.simulator ? 'device' : 'window'
+  if (s.scope === 'mac') {
+    return { scope: 'mac', heard: `everything this Mac played while the take ran, the ${what} among it, so music, ` +
+      `a notification or a call on this Mac is in the file too, because ${whySaid(s.why)}.` }
+  }
+  const from = s.from ? ` (${s.from.slice(0, 6).join(', ')}${s.from.length > 6 ? ', and more' : ''})` : ''
+  return { scope: s.scope, heard: s.scope === 'device'
+    ? `only the device's own sound${from}: nothing else this Mac played is in the file.`
+    : `only the window's app and the processes it started or answers for${from}: nothing else this Mac played is in the file.` }
+}
+
 // ── the sentences the tool descriptions are made of ──────────────────────
 // Here rather than typed into mcp/index.js and ui/agent-bridge.js, because three copies
 // of this claim drifted from the code once already. A description that reads a constant
 // cannot promise a track the default does not wire.
+// Two sentences here used to be false. "On by default" left out the person's own switch,
+// which audioFor() obeys: with System audio off in their Settings, an agent that read this
+// and passed nothing got a silent take. And "system_audio false records it silent" is not
+// so with mic true, which still lands a track.
 const SIM_AUDIO_SAID =
-  'System audio is on by default for a simulator take: the sound is what a capture of ' +
+  'System audio is on by default for a simulator take, unless the person turned System ' +
+  'audio off in Fetch\'s Settings: the sound is what a capture of ' +
   'the device framebuffer has no track for at all, and it is what the transcript, the ' +
   'beats and the captions are built from. What reaches the file is everything this Mac ' +
   'plays while the take runs, the device among it, so music or a call on this Mac is in ' +
-  'it too. Where Fetch\'s own recorder cannot run, a take whose sound was only the ' +
-  'default is kept silent. Pass system_audio false to record it silent. What actually ' +
+  'it too. ' + TAP_SAID(true) + ' Where Fetch\'s own recorder cannot run, a take whose sound was only the ' +
+  'default is kept silent. Pass system_audio false to leave the device\'s sound out (the ' +
+  'microphone is still recorded if mic is true). What actually ' +
   'landed is on the result, not here.'
 
 const SYS_AUDIO_ARG_SAID =
-  'Include what this Mac plays while it records. Default off, and on for a simulator take.'
+  'Include what this Mac plays while it records. Default off, and on for a simulator take ' +
+  'unless the person turned System audio off in Fetch\'s Settings.'
 
+// Both say the person's own switch as well: audioFor() keeps a simulator take silent by
+// default when they turned System audio off, and a sentence that left it out promised a
+// track the take did not get.
 const SIM_LIST_SAID =
-  'the take carries the device\'s sound by default, where a capture of the device ' +
-  'framebuffer has no audio track at all'
+  'the take carries the device\'s sound by default (unless the person turned System audio off in ' +
+  'Fetch\'s Settings), where a capture of the device framebuffer has no audio track at all'
 
-const READY_NEXT_SAID = 'records that window, with system audio on by default'
+const READY_NEXT_SAID = 'records that window, with system audio on by default unless the person turned it off in Fetch\'s Settings'
 
-module.exports = { audioFor, startedAudio, takeAudio, SILENT_DB,
+module.exports = { audioFor, startedAudio, takeAudio, scopeOf, SILENT_DB,
   SIM_AUDIO_SAID, SYS_AUDIO_ARG_SAID, SIM_LIST_SAID, READY_NEXT_SAID }

@@ -266,9 +266,16 @@ function cropPx(c, W, H, cap = {}) {
 // The viewport with its glass's corner on it: the one the capture wrote, else the one
 // prepare.js measured off the take (`prepared.glass.corner`, a share of the glass's short
 // side, the same number ui/simulator.js cornerOf writes), else as it came.
+// A stored corner a frame of the take disagreed with (`prepared.glass.replaces`, on a
+// screen whose own radius is not known) gives way to the reading.
 function viewWithCorner(v, P) {
-  if (!v || (+v.corner > 0 && +v.corner < 0.5)) return v
+  if (!v) return v
   const k = P && P.glass ? +P.glass.corner : 0
+  if (P && P.glass && P.glass.replaces != null) {
+    const { corner, ...rest } = v
+    return k > 0 && k < 0.5 ? { ...rest, corner: k } : rest
+  }
+  if (+v.corner > 0 && +v.corner < 0.5) return v
   return k > 0 && k < 0.5 ? { ...v, corner: k } : v
 }
 

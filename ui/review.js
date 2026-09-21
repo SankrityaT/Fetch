@@ -589,7 +589,7 @@ const workSeconds = (keeps, k) => r2(mergeSpans(keeps.map(w => [w.start, w.end])
 // The picture's own rules are in the same list, in the same order of promise first: a
 // rule missing from it sorts above everything, which is not a ranking, it is a bug.
 const RANK = ['redactions', 'soft-redaction', 'aspect', 'group-unframed', 'captions', 'burn-in',
-  'must-keep', 'clipped', 'length', 'dead-air', 'never-drawn', 'spans-a-cut', 'double-chrome',
+  'must-keep', 'rule-words', 'clipped', 'length', 'dead-air', 'never-drawn', 'spans-a-cut', 'double-chrome',
   'device-fit', 'focus-share', 'focus-clash', 'subject', 'breathe', 'zoom-density', 'hand-aimed',
   'blank-bar', 'ground', 'resolution', 'no-zooms', 'no-brief']
 const WEIGHT = { blocking: 0, should: 1, note: 2 }
@@ -612,6 +612,17 @@ const NEVER_DECLINED = ['redactions']
  * how "ready, 10" ends up said about a frame with two title bars in it. Sorts `items`
  * in place and returns what the summary is written from.
  */
+// The words the product's rules avoid, where the edit's own words use them (the bridge
+// reads them with ui/guidelines.js check and hands them in as input.rules). A finding
+// like any other, so it holds the verdict at nearly until it is fixed or declined.
+function ruleWords(input, add, call) {
+  const w = input.rules && arr(input.rules.words)
+  if (!w || !w.length) return
+  const said = w.map(x => `"${x.term}"${x.instead ? ` (say "${x.instead}")` : ''}`).join(', ')
+  add('rule-words', 'should', `The product's rules avoid ${said}, and the words on this edit use ${w.length === 1 ? 'it' : 'them'}.`,
+    call('get_edit', {}, 'find the texts, captions and labels that use it, and change them with apply_edit'))
+}
+
 function settle(items, asked) {
   const declined = arr(asked).map(x => String(x).trim().toLowerCase())
   for (const i of items) {
@@ -644,6 +655,8 @@ function settle(items, asked) {
  *   looks   list_looks' entries, each { name, label, for, look }, so a look is named by
  *           what it is for rather than guessed at by its name
  *   path    the recording, so every fix is a call that can be made as it stands
+ *   rules   { words: [{ term, rule, instead }] }: the words the product's rules avoid that
+ *           the edit uses (ui/guidelines.js check, read by the bridge)
  *   declined  rule names the agent has judged and written off through direct's note.
  *           They stay in the list, marked, and stop counting towards the verdict, so a
  *           correct refusal does not hold an edit at "nearly" for ever.
@@ -866,6 +879,7 @@ function review(input = {}) {
     }
   }
 
+  ruleWords(input, add, call)
   const { bad, should, off, verdict, score } = settle(items, input.declined)
   const summary = (bad || should
     ? `${verdict === 'not ready' ? 'Not ready' : 'Nearly'}: ` +
@@ -1653,6 +1667,7 @@ function still(input = {}) {
     }
   }
 
+  ruleWords(input, (rule, sev, what, fix) => add(rule, sev, what, fix), call)
   const { live, bad, should, off, verdict, score } = settle(items, input.declined)
   // What it is, in the numbers that decide it, and then what is left. A note is counted
   // out loud rather than swept under "nothing the rubric can name": a summary that says

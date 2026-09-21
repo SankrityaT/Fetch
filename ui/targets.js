@@ -184,9 +184,36 @@ function elementsFrom(raw, prior) {
 // - it is the same size, give or take a reading. A large title and the small back
 //   button carrying the same word after a push are two controls.
 // - where it is agrees with how the rest of the screen moved. Words that appear once on
-//   both pictures anchor the match. Words that appear more than once (a "Delete" on
-//   every row) and things with no words are matched only where the nearest anchor says
-//   they should now be, and only when exactly one candidate is there.
+//   both pictures anchor the match.
+// - it sits in the same row. A row is the words level with it inside the same card or
+//   panel, and its own words are the ones that appear once on the picture (a recipe's
+//   name, a device's name). Its row-mates that were carried have to have moved with it,
+//   into its row, and a row swapped for a different one takes everything in it along.
+//
+// A word that appears more than once (a "Delete" on every row) and a thing with no words
+// take their identity from that row and nothing else: the Delete in Shakshuka's row is
+// Shakshuka's Delete, wherever Shakshuka went. The judged failure was a deleted row: the
+// rows below closed up under a title that had not moved, the Deletes were expected where
+// the title said, and each one took the id of the Delete from the row above. Morning
+// oats' Delete then meant Shakshuka's, and a second tap on it deleted the wrong recipe.
+// Now a row that went takes its Delete's id with it, a row whose words changed gets a
+// new Delete, and two alike in one row (two stars, two Shares in a toolbar) are told
+// apart by their order in it, and only while the row holds as many as it did.
+// Repeated things in a row with no words of its own are never carried: rows that all
+// read "Untitled", a cart of "Milk", a grid of bare thumbnails, or rows named only by their
+// place ("Step 1", a price, a time). Delete the first of twenty and the next scrolls in,
+// or delete Step 1 and Step 2 is renamed, and the same count sits in the same places.
+// The agent pays one find_on_screen for it. A heading replaced in place (the recipe's
+// name became another recipe's over the same toolbar) is another screen, and nothing on
+// it is carried.
+//
+// What still cannot be told apart: a screen whose content changed with no heading to say
+// so, around controls that each appear once and only vouch for each other (a one-row
+// "Shakshuka [Edit] [Delete]" whose name changed below a title that stayed).
+//
+// When the match is ambiguous the id dies rather than moves. An agent told "that
+// element is gone, find it again" loses one call; one whose Delete lands on the wrong
+// row loses someone's data.
 //
 // New elements are numbered past the highest id the earlier list could have handed out,
 // in reading order, so an id held from any earlier picture of the screen means the same
@@ -195,6 +222,7 @@ const SORT = { text: 'words', chip: 'words', icon: 'words', card: 'card', shape:
 const CARRY_NEAR = 0.2        // a lone anchor may move this far on its own, past nothing that stayed
 const CARRY_TOGETHER = 0.03   // two anchors moved the same way within this, or stayed put
 const CARRY_ASPECT = 0.02     // two frames whose shapes differ by more are not one layout
+const HOMES = new Set(['card', 'panel', 'grid'])   // what a row sits in
 
 const keyOf = e => tokens(e.text).join(' ')
 const faceOf = e => e.text_box || e.box
@@ -209,6 +237,7 @@ function alike(p, n) {
 }
 const moveOf = (p, n) => { const a = centre(faceOf(p)), b = centre(faceOf(n)); return { x: b.x - a.x, y: b.y - a.y } }
 const far = d => Math.hypot(d.x, d.y)
+const apart = (a, b) => far({ x: a.x - b.x, y: a.y - b.y })
 
 // Whether a word that appears once on both pictures is the same control, going by how it
 // moved against the other such words. Staying put is its own evidence. A move has to
@@ -222,7 +251,7 @@ const far = d => Math.hypot(d.x, d.y)
 // CARRY_NEAR.
 function anchored(c, cand, list, next) {
   if (far(c.d) <= CARRY_TOGETHER) return true
-  const block = cand.filter(o => far({ x: o.d.x - c.d.x, y: o.d.y - c.d.y }) <= CARRY_TOGETHER)
+  const block = cand.filter(o => apart(o.d, c.d) <= CARRY_TOGETHER)
   if (block.length < 2 && far(c.d) > CARRY_NEAR) return false
   const boxes = block.flatMap(o => [faceOf(list[o.pi]), faceOf(next[o.ni])])
   const x0 = Math.min(...boxes.map(b => b.x)), x1 = Math.max(...boxes.map(b => b.x + b.w))
@@ -231,6 +260,50 @@ function anchored(c, cand, list, next) {
   const inStretch = pt => pt.y > y0 && pt.y < y1 && (across || (pt.x > x0 && pt.x < x1))
   return !cand.some(o => !block.includes(o) &&
     (inStretch(centre(faceOf(list[o.pi]))) || inStretch(centre(faceOf(next[o.ni])))))
+}
+
+// The rows of one picture. For each element: the smallest card, panel or grid it sits
+// in, and the other words level with it in there. Level means either one's middle falls
+// within the other's height, so a button a little taller than its row's label is still
+// in the row, and a tall panel beside it is not words and is never a row-mate.
+function rowsOf(arr) {
+  const home = arr.map(e => {
+    let best = -1
+    arr.forEach((o, j) => {
+      if (o !== e && HOMES.has(o.kind) && area(o.box) > area(e.box) * 1.2 && inside(e.box, o.box) &&
+          (best < 0 || area(o.box) < area(arr[best].box))) best = j
+    })
+    return best
+  })
+  const level = (a, b) => {
+    const A = faceOf(a), B = faceOf(b), ca = A.y + A.h / 2, cb = B.y + B.h / 2
+    return (ca >= B.y && ca <= B.y + B.h) || (cb >= A.y && cb <= A.y + A.h)
+  }
+  return arr.map((e, i) => arr.map((o, j) => j).filter(j => j !== i && SORT[arr[j].kind] === 'words' &&
+    keyOf(arr[j]) && home[j] === home[i] && level(e, arr[j])))
+}
+
+// The screen's heading: the largest words with letters in the top quarter of the
+// picture that appear once on it. Whether one of them went and new words of its size took
+// its place, which is a different item's screen (a delete that moved on to the next
+// recipe, a push to another page), however alike the rest of it looks. A clock ticking
+// over has no letters, and a heading that only grew or shrank (a large title collapsing
+// on scroll) kept its words, so neither counts.
+function headingSwapped(list, next) {
+  const top = (arr) => {
+    const counts = new Map()
+    arr.forEach(e => { const k = keyOf(e); if (k) counts.set(k, (counts.get(k) || 0) + 1) })
+    const lettered = arr.filter(e => SORT[e.kind] === 'words' && /\p{L}/u.test(e.text || '') &&
+      counts.get(keyOf(e)) === 1 && faceOf(e).y + faceOf(e).h / 2 < 0.25)
+    const tall = Math.max(0, ...lettered.map(e => faceOf(e).h))
+    return lettered.filter(e => faceOf(e).h >= tall * 0.9)
+  }
+  const had = new Set(list.map(keyOf)), has = new Set(next.map(keyOf))
+  const gone = top(list).filter(e => !has.has(keyOf(e)))
+  const came = top(next).filter(e => !had.has(keyOf(e)))
+  const level = (a, b) => { const A = faceOf(a), B = faceOf(b); return Math.abs((A.y + A.h / 2) - (B.y + B.h / 2)) <= Math.max(A.h, B.h) / 2 }
+  const across = (a, b) => { const A = faceOf(a), B = faceOf(b); return Math.min(A.x + A.w, B.x + B.w) > Math.max(A.x, B.x) }
+  return gone.some(p => came.some(n => within(faceOf(p).h, faceOf(n).h, 1.35) && level(p, n) && across(p, n)))
 }
 
 /**
@@ -252,64 +325,157 @@ function carryIds(prior, next, frame) {
   const match = (pi, ni) => { ids[ni] = list[pi].id; taken.add(pi) }
   if (list.length && sameShape) {
     const sortOf = e => SORT[e.kind] || e.kind
+    // what a thing is called for matching: its sort and its words, or, with no words,
+    // its kind, so thumbnails are only ever matched to thumbnails
+    const nameOf = e => keyOf(e) ? sortOf(e) + '|' + keyOf(e) : '#' + e.kind
     const group = arr => {
       const m = new Map()
-      arr.forEach((e, i) => { const k = keyOf(e); if (!k) return; const g = sortOf(e) + '|' + k; m.set(g, (m.get(g) || []).concat(i)) })
+      arr.forEach((e, i) => { const g = nameOf(e); m.set(g, (m.get(g) || []).concat(i)) })
       return m
     }
     const P = group(list), N = group(next)
+    const once = (G, arr, i) => !!keyOf(arr[i]) && G.get(nameOf(arr[i])).length === 1
+    // Words that only count a place ("Step 1", "Step 2", a price, a time) are unique and
+    // say nothing about which row is which: delete Step 1 and the old Step 2 is relabelled
+    // "Step 1" in the same place. A word whose shape, numbers aside, another unique word
+    // on its picture shares is one of those, and never names a row.
+    const skeleton = e => tokens(e.text).map(t => /\p{N}/u.test(t) ? '#' : t).join(' ')
+    const counting = arr => {
+      const seen = new Map()
+      arr.forEach(e => { if (/\p{N}/u.test(e.text || '')) { const s = skeleton(e); seen.set(s, (seen.get(s) || 0) + 1) } })
+      return i => /\p{N}/u.test(arr[i].text || '') && seen.get(skeleton(arr[i])) > 1
+    }
+    const countP = counting(list), countN = counting(next)
+    // a row's own words: its members that appear once on their picture and name something
+    const RP = rowsOf(list).map(r => r.filter(j => once(P, list, j) && !countP(j)))
+    const RN = rowsOf(next).map(r => r.filter(j => once(N, next, j) && !countN(j)))
+
     // 1. anchors: words that appear exactly once on both pictures
     const cand = []
     for (const [g, ns] of N) {
       const ps = P.get(g)
-      if (!ps || ps.length !== 1 || ns.length !== 1) continue
+      if (!ps || ps.length !== 1 || ns.length !== 1 || !keyOf(next[ns[0]])) continue
       const p = list[ps[0]], n = next[ns[0]]
       if (alike(p, n)) cand.push({ pi: ps[0], ni: ns[0], d: moveOf(p, n) })
     }
-    const anchors = cand.filter(c => anchored(c, cand, list, next))
-    for (const a of anchors) match(a.pi, a.ni)
-    // where an element of the earlier picture should be now: moved as its nearest anchor
-    // moved, or not at all when nothing anchors the screen
-    const expect = p => {
-      const c = centre(faceOf(p))
-      const a = anchors.slice().sort((u, v) => far({ x: centre(faceOf(list[u.pi])).x - c.x, y: centre(faceOf(list[u.pi])).y - c.y }) -
-        far({ x: centre(faceOf(list[v.pi])).x - c.x, y: centre(faceOf(list[v.pi])).y - c.y }))[0]
-      return a ? { x: c.x + a.d.x, y: c.y + a.d.y } : c
+    let anchors = cand.filter(c => anchored(c, cand, list, next))
+    // A heading replaced in place is another screen: "Shakshuka" became "Pancakes" over
+    // the same toolbar after a delete moved on to the next recipe, and that toolbar's
+    // Delete is now Pancakes' Delete. Nothing is carried from a screen that was swapped.
+    if (headingSwapped(list, next)) anchors = []
+    // Whether p's row is n's row, for something that does not name itself: every one of
+    // p's row words was carried, into n's row, and n's row has no words of its own that
+    // were not in p's. Returns the way the row moved, or null when it is not the same
+    // row. A row of no words is { x: 0, y: 0, bare }.
+    const sameRow = (pi, ni, to, from) => {
+      const rp = RP[pi].filter(j => j !== pi), rn = RN[ni].filter(j => j !== ni)
+      if (!rp.length && !rn.length) return { x: 0, y: 0, bare: true }
+      if (rp.length !== rn.length || !rp.every(j => to.has(j)) || !rn.every(j => from.has(j))) return null
+      const want = new Set(rn)
+      if (!rp.every(j => want.has(to.get(j)))) return null
+      // and the row moved as one
+      const ds = rp.map(j => moveOf(list[j], next[to.get(j)]))
+      if (ds.some(d => apart(d, ds[0]) > CARRY_TOGETHER)) return null
+      return { x: ds.reduce((s, d) => s + d.x, 0) / ds.length, y: ds.reduce((s, d) => s + d.y, 0) / ds.length }
     }
+    // Words that appear once name themselves, so their row is held more loosely: a row
+    // may lose words (Alice's Delete moved away) or gain them (a badge on a tab) and
+    // they keep their id. What refuses them is a row that was swapped for another: the
+    // unique Delete of a one-row list whose recipe became a different recipe had row
+    // words on both pictures and not one of them in common. A row-mate carried into
+    // another row, or one that moved otherwise, refuses it too. Refusing one can leave
+    // another without its row, so this runs until nothing changes.
+    const rowHolds = (a, to) => {
+      const rp = RP[a.pi].filter(j => j !== a.pi), rn = new Set(RN[a.ni].filter(j => j !== a.ni))
+      const went = rp.filter(j => to.has(j))
+      if (went.some(j => !rn.has(to.get(j)) || apart(moveOf(list[j], next[to.get(j)]), a.d) > CARRY_TOGETHER)) return false
+      return !(rp.length && rn.size && !went.length)
+    }
+    for (;;) {
+      const to = new Map(anchors.map(a => [a.pi, a.ni]))
+      const keep = anchors.filter(a => rowHolds(a, to))
+      if (keep.length === anchors.length) break
+      anchors = keep
+    }
+    for (const a of anchors) match(a.pi, a.ni)
+    const to = new Map(anchors.map(a => [a.pi, a.ni])), from = new Map(anchors.map(a => [a.ni, a.pi]))
+
     // how close is close: under half the thing's own height, so the "Delete" one row down
     // is never in reach, and never more than 0.03 of the frame
     const reach = (p, n) => Math.min(0.03, Math.max(0.008, 0.4 * Math.min(faceOf(p).h, faceOf(n).h)))
-    // 2. the rest, by where they should be: repeated words, and things with no words at
-    // all (a thumbnail), which also have to be the very same kind
-    const same = (p, n) => SORT[p.kind] === SORT[n.kind] && keyOf(p) === keyOf(n) &&
-      (keyOf(p) || p.kind === n.kind) && alike(p, n) && (SORT[p.kind] !== 'panel' && SORT[p.kind] !== 'grid' || keyOf(p))
-    const gap = (pi, ni) => { const e = expect(list[pi]), c = centre(faceOf(next[ni])); return far({ x: c.x - e.x, y: c.y - e.y }) }
-    const open = () => ({ ps: list.map((_, i) => i).filter(i => !taken.has(i)), ns: next.map((_, i) => i).filter(i => ids[i] == null) })
-    const sure = (test, dist, tol) => {
-      const { ps, ns } = open()
-      const pairs = []
-      for (const ni of ns) {
-        const near = ps.filter(pi => test(list[pi], next[ni])).map(pi => ({ pi, v: dist(pi, ni), t: tol(list[pi], next[ni]) }))
-          .filter(o => o.v <= o.t * 2).sort((a, b) => a.v - b.v)
-        // one candidate in reach, and no second anywhere near it
-        if (!near.length || near[0].v > near[0].t || (near[1] && near[1].v <= near[0].t * 2)) continue
-        pairs.push({ pi: near[0].pi, ni })
+    // 2. repeated words, and things with no words (a thumbnail), by the row they sit in.
+    // A panel or a grid with no words is never matched here: nothing names it.
+    const rowKey = (R, i, map) => R[i].filter(j => j !== i).map(j => map ? map.get(j) : j).sort((a, b) => a - b).join(',')
+    const byX = arr => (a, b) => faceOf(arr[a]).x - faceOf(arr[b]).x || faceOf(arr[a]).y - faceOf(arr[b]).y
+    for (const [g, ps0] of P) {
+      const ns0 = N.get(g)
+      if (!ns0) continue
+      if (ps0.length === 1 && ns0.length === 1 && keyOf(list[ps0[0]])) continue   // an anchor, or refused as one
+      if (!keyOf(list[ps0[0]]) && (SORT[list[ps0[0]].kind] === 'panel' || SORT[list[ps0[0]].kind] === 'grid')) continue
+      const ps = ps0.filter(i => !taken.has(i)), ns = ns0.filter(i => ids[i] == null)
+      // the rows these sit in, by the next picture's indices of their words
+      const rows = new Map()
+      const put = (k, side, i) => { if (!rows.has(k)) rows.set(k, { ps: [], ns: [] }); rows.get(k)[side].push(i) }
+      for (const pi of ps) {
+        const own = RP[pi].filter(j => j !== pi)
+        // a row whose words were not all carried has no counterpart: its things go with it
+        if (own.length && !own.every(j => to.has(j))) continue
+        put(own.length ? rowKey(RP, pi, to) : '', 'ps', pi)
       }
-      // and the other way round: no other new element is as good a fit for that one
-      const count = new Map()
-      for (const p of pairs) count.set(p.pi, (count.get(p.pi) || 0) + 1)
-      for (const p of pairs) if (count.get(p.pi) === 1) match(p.pi, p.ni)
+      for (const ni of ns) {
+        const own = RN[ni].filter(j => j !== ni)
+        if (own.length && !own.every(j => from.has(j))) continue
+        put(own.length ? rowKey(RN, ni) : '', 'ns', ni)
+      }
+      for (const [k, r] of rows) {
+        // As many on the row as there were, or which is which cannot be said. A row with
+        // no words of its own (every row reads "Untitled", a cart of "Milk", a grid of bare
+        // thumbnails) is never carried, however still the screen: delete the first of
+        // twenty and the next one scrolls in, so the same count sits in the same places
+        // and the deleted row's Delete would name the next row's.
+        if (k === '' || !r.ps.length || r.ps.length !== r.ns.length) continue
+        const d = sameRow(r.ps[0], r.ns[0], to, from)
+        if (!d || d.bare) continue
+        r.ps.sort(byX(list)); r.ns.sort(byX(next))
+        const pairs = r.ps.map((pi, i) => ({ pi, ni: r.ns[i] }))
+        const fits = ({ pi, ni }) => {
+          const p = list[pi], n = next[ni], c = centre(faceOf(p))
+          return alike(p, n) && (keyOf(p) || p.kind === n.kind) && sameRow(pi, ni, to, from) &&
+            apart({ x: c.x + d.x, y: c.y + d.y }, centre(faceOf(n))) <= reach(p, n)
+        }
+        // one out of place and the order cannot be trusted for any of them
+        if (pairs.every(fits)) for (const { pi, ni } of pairs) match(pi, ni)
+      }
     }
-    sure(same, gap, reach)
+
     // 3. a panel or a grid whose words changed (a stat inside it ticked over) is still
-    // the pane it was, when it sits where the screen says it should, nearly box for box
+    // the pane it was, when it sits where the screen says it should, nearly box for box.
+    // Where it should be is where its nearest anchor went.
+    const expect = p => {
+      const c = centre(faceOf(p))
+      const a = anchors.slice().sort((u, v) => apart(centre(faceOf(list[u.pi])), c) - apart(centre(faceOf(list[v.pi])), c))[0]
+      return a ? { x: c.x + a.d.x, y: c.y + a.d.y } : c
+    }
     const pane = (p, n) => p.kind === n.kind && (p.kind === 'panel' || p.kind === 'grid') && alike(p, n)
     const shifted = (pi, ni) => {
       const p = list[pi], e = expect(p), c = centre(p.box)
       const b = { ...p.box, x: p.box.x + e.x - c.x, y: p.box.y + e.y - c.y }
       return 1 - iou(b, next[ni].box)
     }
-    sure(pane, shifted, () => 0.12)
+    const open = () => ({ ps: list.map((_, i) => i).filter(i => !taken.has(i)), ns: next.map((_, i) => i).filter(i => ids[i] == null) })
+    const { ps, ns } = open()
+    const pairs = []
+    for (const ni of ns) {
+      const near = ps.filter(pi => pane(list[pi], next[ni])).map(pi => ({ pi, v: shifted(pi, ni) }))
+        .filter(o => o.v <= 0.24).sort((a, b) => a.v - b.v)
+      // one candidate in reach, and no second anywhere near it
+      if (!near.length || near[0].v > 0.12 || (near[1] && near[1].v <= 0.24)) continue
+      pairs.push({ pi: near[0].pi, ni })
+    }
+    // and the other way round: no other new element is as good a fit for that one
+    const count = new Map()
+    for (const p of pairs) count.set(p.pi, (count.get(p.pi) || 0) + 1)
+    for (const p of pairs) if (count.get(p.pi) === 1) match(p.pi, p.ni)
   }
   let seq = seq0
   for (let i = 0; i < ids.length; i++) if (ids[i] == null) ids[i] = 'E' + (++seq)

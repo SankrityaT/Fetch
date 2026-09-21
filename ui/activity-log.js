@@ -21,6 +21,10 @@ try { ({ app } = require('electron')) } catch {}
 const MAX_LINES = 2000          // a few weeks of ordinary use, trimmed on write
 const listeners = new Set()
 let trimCounter = 0
+// While the sample library is open (ui/sample.js), every row is marked as the sample's,
+// and leaving takes those rows out again, so trying Fetch leaves no trace in the log of
+// what was done to the person's own work. Set by main.js 'sample-root'.
+let inSample = false
 
 function logPath() {
   const dir = app ? app.getPath('userData') : require('os').tmpdir()
@@ -48,6 +52,7 @@ function record(e) {
     ms: e.ms != null ? Math.round(e.ms) : null,
     ok: e.ok !== false,
     error: e.error || null,
+    ...(inSample ? { sample: true } : {}),
   }
   try {
     fs.appendFileSync(logPath(), JSON.stringify(entry) + '\n')
@@ -83,6 +88,21 @@ function trim() {
   } catch {}
 }
 
+// The sample opened or closed. Closing drops its rows, and leaves the file as it was
+// byte for byte when there were none.
+function sampleOpen(on) {
+  inSample = !!on
+  if (on) return 0
+  try {
+    const text = fs.readFileSync(logPath(), 'utf8')
+    const lines = text.split('\n').filter(Boolean)
+    const keep = lines.filter(l => { try { return !JSON.parse(l).sample } catch { return true } })
+    if (keep.length === lines.length) return 0
+    fs.writeFileSync(logPath(), keep.length ? keep.join('\n') + '\n' : '')
+    return lines.length - keep.length
+  } catch { return 0 }
+}
+
 function clear() {
   try { fs.unlinkSync(logPath()) } catch {}
 }
@@ -94,4 +114,4 @@ function subscribe(fn) {
   return () => listeners.delete(fn)
 }
 
-module.exports = { record, read, trim, clear, subscribe, logPath, MAX_LINES }
+module.exports = { record, read, trim, clear, subscribe, logPath, sampleOpen, MAX_LINES }

@@ -340,17 +340,98 @@ function measureGlass(frame) {
   if (!(px.w > f.w / 4 && px.h > f.h / 8)) {
     return { ok: false, reason: 'what was measured is too small to be a device screen, so nothing is reported rather than a rectangle nothing is on.' }
   }
-  const corner = cornerOf(row, x0, x1, px)
+  const corner = cornerOf(row, px)
   return { ok: true, value: {
     capture: { w: f.w, h: f.h }, px, agree,
     rect: { x: r4(px.x / f.w), y: r4(px.y / f.h), w: r4(px.w / f.w), h: r4(px.h / f.h) },
-    ...(corner ? { corner } : {}),
+    // A corner that did not pass its own check is left off, and says why: the rectangle is
+    // still good, and a guess at the corner would be written onto the document with it.
+    ...(corner.ok ? (corner.value ? { corner: corner.value } : {}) : { cornerRefused: corner.reason }),
   } }
 }
 
 // How far into the glass a corner may reach before it is not a corner: a quarter of the
 // short side. The ProMax's measured 0.158, so this is room, not a guess at a device.
 const CORNER_MAX = 0.25
+// How far apart two corners of one glass may read and still be the same corner. The four
+// corners of a real ProMax recording read 110.3, 111.4, 112.5 and 112.5 pixels, under 2
+// percent apart; a dark app in a corner reads tens of pixels rounder.
+const CORNER_AGREE = 0.03
+
+// The display corner radius of each iPhone screen, in points, by the screen's size in
+// points (short side by long side). This is a check on a reading and never the reading:
+// the reading is off the pixels. The circle that hides every pixel of Apple's continuous
+// corner is wider than the curve's own radius (the ProMax's reads 70 points against its
+// 62), so a reading is held to a band round the radius rather than to the radius.
+// A screen that is not here is not checked this way, only by its own ring.
+const SCREEN_CORNERS = {
+  '320x568': 0, '375x667': 0, '414x736': 0,
+  '375x812': 39, '414x896': 40, '360x780': 44, '390x844': 47.33, '428x926': 53.33,
+  '393x852': 55, '430x932': 55, '402x874': 62, '440x956': 62,
+}
+const CORNER_BAND = [0.85, 1.4]
+
+// The radius the screen's own maker gives, in points, or null for a screen not listed.
+function screenCorner(screen) {
+  const p = pointsOf(screen)
+  if (!p) return null
+  const key = `${Math.round(Math.min(p.w, p.h))}x${Math.round(Math.max(p.w, p.h))}`
+  return Object.prototype.hasOwnProperty.call(SCREEN_CORNERS, key) ? SCREEN_CORNERS[key] : null
+}
+
+// Why a share of the glass's short side is the wrong corner for this screen, or null when
+// it is in the band (or the screen is not one this knows).
+function cornerOffScreen(share, screen) {
+  const want = screenCorner(screen)
+  if (want == null) return null
+  const p = pointsOf(screen)
+  const pts = share * Math.min(p.w, p.h)
+  if (want === 0) return pts > 1 ? `this screen is square, and ${pts.toFixed(1)} points of corner is not its corner` : null
+  const k = pts / want
+  if (k >= CORNER_BAND[0] && k <= CORNER_BAND[1]) return null
+  return `that is ${pts.toFixed(1)} points of corner on a screen whose own corner is ${want} points, ${Math.round(k * 100)} percent of it`
+}
+
+// One corner of the glass's rectangle, turned so that the corner is at (0, 0): u counts in
+// from the side and v down from the top (or up from the bottom).
+const cornerAt = (row, px, top, left) =>
+  (u, v) => row(top ? px.y + v : px.y + px.h - 1 - v)(left ? px.x + u : px.x + px.w - 1 - u)
+
+// The pixels of an n by n corner that pass `take` and are joined to the seeds through
+// pixels that pass it too: the seeds are the two inner sides of the square (far) or the
+// two outer ones.
+function joined(n, take, far) {
+  const seen = new Uint8Array(n * n), q = []
+  const push = (u, v) => { const k = v * n + u; if (seen[k] || !take(u, v, k)) return; seen[k] = 1; q.push(k) }
+  for (let i = 0; i < n; i++) if (far) { push(n - 1, i); push(i, n - 1) } else { push(0, i); push(i, 0) }
+  while (q.length) {
+    const k = q.pop(), u = k % n, v = (k - u) / n
+    if (u > 0) push(u - 1, v)
+    if (u < n - 1) push(u + 1, v)
+    if (v > 0) push(u, v - 1)
+    if (v < n - 1) push(u, v + 1)
+  }
+  return seen
+}
+
+// How many pixels of what lies outside the glass a circle of radius R leaves showing in a
+// corner. Outside is everything joined to the square's two outer sides without crossing
+// the glass: the ring, and the bezel where it curves into the rectangle. Not a lit icon
+// inside a dark button, which is the app's and is shut in by the glass. The old reading
+// left over 1,400 of these pixels showing in every corner of a real ProMax frame.
+function shownOf(n, glass, R) {
+  const ring = joined(n, (u, v, k) => !glass[k], false)
+  let shown = 0
+  const m = Math.min(n, Math.ceil(R))
+  for (let v = 0; v < m; v++) {
+    for (let u = 0; u < m; u++) {
+      const cx = u + 0.5, cy = v + 0.5
+      if (cx >= R || cy >= R || (R - cx) ** 2 + (R - cy) ** 2 > R * R) continue
+      if (ring[v * n + u]) shown++
+    }
+  }
+  return shown
+}
 
 /**
  * How round the glass is, read off the same ring the rectangle was.
@@ -358,45 +439,82 @@ const CORNER_MAX = 0.25
  * The screen is a rounded rectangle and the rectangle measured above is its bounding
  * box, so each corner of that box holds a crescent of the Simulator's own bezel. A crop
  * to the box keeps the crescents, and inside Fetch's phone they read as a second bezel
- * peeking out (.context/survey/st-taste.md, section 5). No radius per device type: the
- * art changes with Xcode, and the ring is right here in the pixels.
+ * peeking out (.context/survey/st-taste.md, section 5). The ring is right here in the
+ * pixels, so the corner is read off them; the device's own radius only checks it.
  *
- * Walking down from each corner, the ring's inner edge sits d pixels in from the glass's
- * side on the row t pixels from its top. The circle that hides that bezel pixel passes
- * through (d, t + 0.5) from the corner, which is R = d + t' + sqrt(2 d t'). The largest
- * over a corner's rows is the smallest circle that hides every one of them: Apple's
- * corner is a continuous curve with a long tail, and a circle fitted to its middle
- * leaves one pixel of ring along that tail. A corner whose rows never come back to the
- * side is an app dark to its own edge, not glass, and is left out; of the rest the
- * smallest is taken, since an app can only push a corner inward, never out.
+ * The glass in each corner is the lit pixels joined to the rest of the glass. It used to
+ * be the first lit pixel after a run of dark, walking in from the side, and in a recording
+ * that is the bezel: what was clear round the window is black there, so the bezel's own
+ * grey edge, which curves into the rectangle's corner, sits after a run of dark exactly as
+ * the glass does. That read a ProMax's corner at 37.7 pixels where it is 111.4. The ring
+ * lies between the bezel and the glass all the way round, so nothing of the bezel is
+ * joined to the glass, in a recording or a capture.
  *
- * Returns { px, share } with share the radius over the glass's short side, which is the
- * same number whatever size the glass is drawn at and whichever way up, or null.
+ * Walking down from each corner, the glass starts d pixels in from its side on the row t
+ * pixels from its top. The circle that hides the pixel before it passes through
+ * (d, t + 0.5) from the corner, which is R = d + t' + sqrt(2 d t'). The largest over a
+ * corner's rows is the smallest circle that hides every one of them: Apple's corner is a
+ * continuous curve with a long tail, and a circle fitted to its middle leaves one pixel of
+ * ring along that tail. A corner whose rows never come back to the side is an app dark to
+ * its own edge, not glass, and is left out.
+ *
+ * Then its own check, and a reading that fails it is refused, never returned. The
+ * squarest corner and at least one other must agree to within CORNER_AGREE (an app dark
+ * into a corner makes it read rounder, never squarer), the largest of the agreeing ones is
+ * taken so that the ring is hidden in each of them, and in every one of them nothing
+ * outside the glass may show inside the circle (shownOf).
+ *
+ * Returns {ok, value:{px, share, corners} | null} with share the radius over the glass's
+ * short side, the same number whatever size the glass is drawn at and whichever way up,
+ * and null for a square screen; or {ok:false, reason}.
  */
-function cornerOf(row, x0, x1, px) {
-  const reach = Math.floor(Math.min(px.w, px.h) * CORNER_MAX)
+function cornerOf(row, px) {
+  const n = Math.floor(Math.min(px.w, px.h) * CORNER_MAX)
   const each = []
   for (const top of [true, false]) {
     for (const left of [true, false]) {
+      const at = cornerAt(row, px, top, left)
+      const glass = joined(n, (u, v) => at(u, v) === 2, true)
       let R = 0, closed = false
-      for (let t = 0; t < reach; t++) {
-        const e = ringEdge(row(top ? px.y + t : px.y + px.h - 1 - t), x0, x1, left)
-        if (e == null) break
-        const d = left ? e - px.x : px.x + px.w - 1 - e
-        if (d <= 0) { closed = true; break }
+      for (let t = 0; t < n; t++) {
+        let d = -1
+        for (let u = 0; u < n; u++) if (glass[t * n + u]) { d = u; break }
+        if (d < 0) break
+        if (d === 0) { closed = true; break }
         const tp = t + 0.5
         R = Math.max(R, d + tp + Math.sqrt(2 * d * tp))
       }
-      if (closed) each.push(R)
+      each.push({ glass, R: closed ? R : null })
     }
   }
-  if (!each.length) return null
-  const R = Math.min(...each)
+  const corners = each.map(c => (c.R == null ? null : Math.round(c.R * 100) / 100))
+  const shut = each.filter(c => c.R != null).sort((a, b) => a.R - b.R)
+  if (shut.length < 2) {
+    return { ok: false, reason: 'fewer than two corners of the glass came back to its sides, which is what an app dark into its corners looks like, so no corner is read off this frame.' }
+  }
+  // The roundest reading an app can cause is unbounded and the squarest is the glass's
+  // own, so the squarest corner has to be one of the ones that agree. Three dark corners
+  // agreeing with each other and not with the fourth are an app, not the glass.
+  const low = shut[0].R
+  const group = shut.filter(o => o.R <= low + Math.max(1.5, low * CORNER_AGREE))
+  if (group.length < 2) {
+    return { ok: false, reason: `the squarest corner of the glass had no other corner agreeing with it (${shut.map(c => c.R.toFixed(1)).join(', ')} pixels), so no corner is read off this frame rather than one of them.` }
+  }
+  const R = Math.max(...group.map(c => c.R))
+  if (R >= n) {
+    return { ok: false, reason: `a corner of ${R.toFixed(1)} pixels is past a quarter of the glass's short side, which is an app dark across its corners and not the glass, so none is reported.` }
+  }
   // A square screen (an iPhone SE's) closes on its first row: no corner to hide.
-  if (!(R >= 1)) return null
+  if (!(R >= 1)) return { ok: true, value: null }
   // Rounded up, never down: a radius a hundredth short leaves the last ring pixel out.
   const up = Math.ceil(R * 100) / 100
-  return { px: up, share: Math.ceil(up / Math.min(px.w, px.h) * 1e4) / 1e4 }
+  for (const c of group) {
+    const shown = shownOf(n, c.glass, up)
+    if (shown) {
+      return { ok: false, reason: `a circle of ${up} pixels still shows ${shown} pixels of ring or bezel in a corner of the glass, so that is not the glass's corner and none is reported.` }
+    }
+  }
+  return { ok: true, value: { px: up, share: Math.ceil(up / Math.min(px.w, px.h) * 1e4) / 1e4, corners } }
 }
 
 // How far outside the stored rectangle the ring is looked for. The ring measured 13 to 15
@@ -416,10 +534,18 @@ const NEAR = 6
  * says they are, which corrects the fractions' rounding to the frame's own pixels, and
  * then the corner is read off the same ring by the same rule as a new capture's.
  *
- * Returns {ok, value:{px, share, rect}} or {ok:false, reason}. share is the number a
- * viewport's `corner` is. A square screen answers ok with no corner at all.
+ * A reading that has not passed its own check is refused, never returned, so nothing that
+ * writes what this answers onto a document can write a guess (cornerOf says what the
+ * check is). Handed the device's screen as `o.screen`, the reading is also held to that
+ * screen's own corner radius where this knows it (SCREEN_CORNERS), and refused outside
+ * the band.
+ *
+ * Returns {ok, value:{px, share, rect, corners}} or {ok:false, reason}. share is the
+ * number a viewport's `corner` is. A square screen answers ok with no corner at all.
+ * Where the viewport already carries a corner, value.stored says whether it is the one
+ * just read: {share, agrees}. One that does not agree is a wrong corner on the document.
  */
-function measureCorner(frame, viewport) {
+function measureCorner(frame, viewport, o = {}) {
   const f = frameOf(frame)
   if (!f) return { ok: false, reason: 'that is not a frame: the corner is read off a frame of the take as RGBA bytes with its own width and height.' }
   const v = viewport && viewport.value ? viewport.value : viewport
@@ -457,9 +583,46 @@ function measureCorner(frame, viewport) {
   if (Math.abs(px.x - gx) > 2 || Math.abs(px.y - gy) > 2 || Math.abs(px.x + px.w - gx - gw) > 2 || Math.abs(px.y + px.h - gy - gh) > 2) {
     return { ok: false, reason: 'the ring in this frame is not where the document says the glass is, so no corner is read off it.' }
   }
-  const corner = cornerOf(row, x0, x1, px)
-  return { ok: true, value: { px: corner ? corner.px : 0, share: corner ? corner.share : 0,
-    rect: { x: r4(px.x / f.w), y: r4(px.y / f.h), w: r4(px.w / f.w), h: r4(px.h / f.h) } } }
+  const corner = cornerOf(row, px)
+  if (!corner.ok) return corner
+  const share = corner.value ? corner.value.share : 0
+  const off = cornerOffScreen(share, o && o.screen)
+  if (off) return { ok: false, reason: `the corner read off this frame is not this device's: ${off}. Nothing is reported rather than that.` }
+  const had = num(v.corner && typeof v.corner === 'object' ? v.corner.share : v.corner)
+  return { ok: true, value: { px: corner.value ? corner.value.px : 0, share,
+    rect: { x: r4(px.x / f.w), y: r4(px.y / f.h), w: r4(px.w / f.w), h: r4(px.h / f.h) },
+    corners: corner.value ? corner.value.corners : [0, 0, 0, 0],
+    ...(had > 0 ? { stored: { share: had, agrees: sameCorner(had, share) } } : {}) } }
+}
+
+// Two shares of one glass that are the same corner: the four corners of one real frame
+// read within 2 percent of each other, so a stored corner further than CORNER_AGREE from a
+// fresh reading was not read off this glass by this rule.
+const sameCorner = (a, b) => a > 0 && b > 0 && Math.abs(a - b) <= Math.max(a, b) * CORNER_AGREE
+
+/**
+ * Why the corner a document already carries cannot be trusted, or null when nothing says
+ * so. The document holds a bare number with nothing to say how it was read, and before
+ * this rule an export wrote a third of the ProMax's corner onto its takes for good. So a
+ * stored corner is suspect when:
+ *
+ *  - it is not a share of the glass at all (0 or less, half or more), or
+ *  - the device's screen is one whose own corner radius is known (SCREEN_CORNERS) and the
+ *    stored corner is outside the band round it: 0.0535 on a ProMax is 23.5 points against
+ *    its 62, and is caught here without reading a frame.
+ *
+ * A screen this does not know cannot be judged from the number alone. Its corner is
+ * checked the other way: measureCorner on one of the take's own frames, whose
+ * value.stored.agrees says whether the stored corner is the one the frame shows.
+ * Something that draws with a suspect corner reads the corner again rather than trust it,
+ * and draws with none where that reading is refused.
+ */
+function cornerSuspect(viewport, screen) {
+  const v = viewport && viewport.value ? viewport.value : viewport
+  if (!v || v.corner == null) return null
+  const c = num(v.corner && typeof v.corner === 'object' ? v.corner.share : v.corner)
+  if (!(c > 0 && c < 0.5)) return `a stored corner of ${v.corner} is not a share of the glass`
+  return cornerOffScreen(c, screen)
 }
 
 // A measured glass, handed in as measureGlass returned it or as plain fractions, as the
@@ -768,7 +931,7 @@ function pointToFrame(sim, x, y) {
 module.exports = {
   parseDevices, parseRuntimes, parseDeviceTypes, deviceTypesFromRuntimes,
   parseProfile, profilePath, readProfiles,
-  measureGlass, measureCorner, glassOrient, glassViewport, viewport, density, densityNote, glassNote,
+  measureGlass, measureCorner, cornerSuspect, screenCorner, glassOrient, glassViewport, viewport, density, densityNote, glassNote,
   pointToFrame, orientOf, glassPoints,
   simulators, resolve, claim, titleSegments,
 }

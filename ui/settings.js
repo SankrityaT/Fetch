@@ -12,6 +12,115 @@
     return dir.startsWith(home) ? '~' + dir.slice(home.length) : dir
   }
 
+  // "Only the recorded app's sound" is a permission, not a pref: it is on exactly when
+  // macOS has given Fetch System Audio Recording, which is read without asking. Turning it
+  // on is the one thing in Fetch that asks. It cannot be taken back from here, since macOS
+  // keeps that in System Settings, so off opens that pane instead.
+  const APP_SOUND_SAID = {
+    granted: 'On. A window or simulator take hears only its own app or device. macOS keeps this in System Settings.',
+    denied: 'macOS was told no. Allow Fetch under System Audio Recording Only in System Settings.',
+    unknown: 'A window or simulator take hears its own app or device, never a notification or music. ' +
+      'Needs System Audio Recording, which macOS asks for once.',
+    unavailable: 'Needs Fetch\'s own recorder, which this build does not have.',
+  }
+  function paintAppSound(state) {
+    const input = $('onlyAppSound'), r = $('rowOnlyApp')
+    if (!input || !r) return
+    const on = state === 'granted'
+    input.checked = on
+    r.dataset.on = String(on)
+    input.disabled = state === 'unavailable'
+    const sub = r.querySelector('.opt-sub')
+    if (sub) sub.textContent = APP_SOUND_SAID[state] || APP_SOUND_SAID.unknown
+  }
+  function wireAppSound() {
+    const input = $('onlyAppSound')
+    if (!input) return
+    ipcRenderer.invoke('audio-access').then(a => paintAppSound(a && a.state)).catch(() => {})
+    input.onchange = async () => {
+      const want = input.checked
+      input.checked = !want            // shown as it is until macOS answers
+      const now = await ipcRenderer.invoke('audio-access').catch(() => null)
+      const state = now && now.state
+      if (!want || state === 'denied') {
+        // nothing here can take it back or ask again: that is System Settings' to do
+        paintAppSound(state)
+        ipcRenderer.invoke('open-privacy', 'audio')
+        return
+      }
+      const got = await ipcRenderer.invoke('audio-access-request').catch(() => null)
+      paintAppSound(got && got.state)
+      if (got && got.state === 'granted') toast('Takes of a window or a simulator now hear only that app or device')
+    }
+  }
+
+  // ── product guidelines ────────────────────────────────────────────────
+  // The person's side of ui/guidelines.js, through main.js 'guidelines'. Every rule shows
+  // its id, which is the handle an agent names it by.
+  const GUIDE_SECTIONS = [['name', 'Name'], ['audience', 'Audience'], ['never', 'Never on screen'], ['look', 'Look'], ['words', 'Words']]
+  const GUIDE_FROM = { screen: 'read off its screens', help: 'read off its help pages', code: 'read off its code', agent: 'from the agent' }
+  let guideProduct = ''
+  function guideHtml(g) {
+    const e = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+    const rules = GUIDE_SECTIONS.flatMap(([k, head]) => ((g.rules && g.rules[k]) || []).map(r =>
+      `<div class="guide-row"><span class="guide-id">${e(r.id)}</span><span class="guide-sec">${head}</span>` +
+      `<span class="guide-text">${e(r.text)}</span>` +
+      `<button class="btn btn-sm btn-ghost guide-x" data-forget="${e(r.id)}" aria-label="Remove ${e(r.id)}">Remove</button></div>`))
+    const drafts = (g.drafts || []).map(d =>
+      `<div class="guide-row guide-draft"><span class="guide-id">${e(d.id)}</span>` +
+      `<span class="guide-sec">${e((GUIDE_SECTIONS.find(([k]) => k === d.section) || [0, d.section])[1])}</span>` +
+      `<span class="guide-text">${e(d.text)}<span class="guide-src">${e(GUIDE_FROM[d.from] || 'from the agent')}` +
+      `${d.evidence ? ', ' + e(d.evidence) : ''}${d.replacing ? `. Would replace ${e(d.replaces)}: ${e(d.replacing)}` : ''}</span></span>` +
+      `<span class="guide-acts"><button class="btn btn-sm" data-yes="${e(d.id)}">Yes</button>` +
+      `<button class="btn btn-sm btn-ghost" data-no="${e(d.id)}">No</button></span></div>`)
+    const gaps = (g.gaps || []).map(x => e(x.ask)).join(' ')
+    return (drafts.length ? `<div class="acc-sub"><span class="acc-sub-title">Drafted by an agent, waiting for you</span>` +
+        `<p class="acc-sub-note">None of these is used until you say yes.</p></div><div class="guide-list">${drafts.join('')}</div>` : '') +
+      `<div class="acc-sub"><span class="acc-sub-title">Rules for ${e(g.product)}</span>` +
+      (gaps ? `<p class="acc-sub-note">Still to answer: ${gaps}</p>` : '') + '</div>' +
+      (rules.length ? `<div class="guide-list">${rules.join('')}</div>` : '<p class="acc-sub-note guide-none">No rules yet.</p>') +
+      `<form class="acc-add" id="guideAdd"><select id="guideSection">` +
+      GUIDE_SECTIONS.map(([k, head]) => `<option value="${k}">${head}</option>`).join('') + '</select>' +
+      '<input type="text" id="guideRule" placeholder="One rule, in your words" autocomplete="off">' +
+      '<button class="btn btn-sm" type="submit" id="guideAddBtn" disabled>Add</button></form>'
+  }
+  async function paintGuide() {
+    const body = $('guideBody')
+    if (!body) return
+    const list = await ipcRenderer.invoke('guidelines', { action: 'products' }).catch(() => null)
+    const dl = $('guideProducts')
+    if (dl) dl.innerHTML = ((list && list.products) || []).map(p => `<option value="${String(p).replace(/"/g, '&quot;')}">`).join('')
+    if (!guideProduct) { body.innerHTML = ''; return }
+    const g = await ipcRenderer.invoke('guidelines', { action: 'read', product: guideProduct }).catch(e => ({ ok: false, refused: { why: e.message } }))
+    body.innerHTML = g && g.ok ? guideHtml(g) : `<p class="acc-sub-note">${(g && g.refused && g.refused.why) || 'Those rules could not be read.'}</p>`
+    const input = $('guideRule'), add = $('guideAddBtn')
+    if (input && add) input.oninput = () => { add.disabled = !input.value.trim() }
+  }
+  function wireGuidelines() {
+    const form = $('guideProductForm'), body = $('guideBody')
+    if (!form || !body) return
+    form.onsubmit = e => { e.preventDefault(); guideProduct = $('guideProduct').value.trim(); paintGuide() }
+    body.addEventListener('submit', async e => {
+      if (e.target.id !== 'guideAdd') return
+      e.preventDefault()
+      const rule = $('guideRule').value.trim()
+      if (!rule) return
+      const r = await ipcRenderer.invoke('guidelines', { action: 'write', product: guideProduct, section: $('guideSection').value, rule })
+      const w = r && r.written && r.written[0]
+      if (w && !w.ok) toast(`Not added: ${(w.refused && w.refused.why) || 'that rule was refused'}`, 'bad')
+      paintGuide()
+    })
+    body.addEventListener('click', async e => {
+      const b = e.target.closest('[data-yes],[data-no],[data-forget]')
+      if (!b) return
+      const [action, id] = b.dataset.yes ? ['yes', b.dataset.yes] : b.dataset.no ? ['no', b.dataset.no] : ['forget', b.dataset.forget]
+      const r = await ipcRenderer.invoke('guidelines', { action, id, product: guideProduct }).catch(() => null)
+      if (action === 'yes' && !(r && r.ok)) toast(`${id} was not put in force: ${(r && r.refused && r.refused.why) || 'it could not be read'}`, 'bad')
+      paintGuide()
+    })
+    paintGuide()
+  }
+
   function row(id, iconName, title, sub, checkboxId, on) {
     return `
       <div class="set-row" id="${id}" data-on="${!!on}">
@@ -180,6 +289,9 @@
           ${row('rowCam', 'video-camera', 'Camera', 'Show the camera bubble by default', 'defCam', p.camera)}
           ${row('rowMic', 'microphone', 'Microphone', 'Record your voice by default', 'defMic', p.mic)}
           ${row('rowSys', 'speaker-high', 'System audio', 'Capture computer sound by default', 'defSys', p.systemAudio)}
+          ${row('rowOnlyApp', 'app-window', 'Only the recorded app\'s sound',
+            'A window or simulator take hears its own app or device, never a notification or music. ' +
+            'Needs System Audio Recording, which macOS asks for once.', 'onlyAppSound', false)}
           <div class="set-row">
             <div class="opt-ico">${ico('clock', 'icon-sm')}</div>
             <div class="opt-txt"><span class="opt-title">Countdown</span><span class="opt-sub">Time before recording starts</span></div>
@@ -279,6 +391,20 @@
             stops one an agent started, the same as your own.</span></p>
         </div>
 
+        <div class="card" id="guideCard">
+          <div class="card-head"><h3>Product guidelines</h3></div>
+          <p class="acc-lede">What an agent reads before it plans, records or styles anything for a product:
+            what it is called, who a demo is for, what must never be on screen, how its screenshots look,
+            and the words it avoids. What you write here is in force at once. What an agent drafts
+            waits here until you say yes.</p>
+          <form class="acc-add" id="guideProductForm">
+            <input type="text" id="guideProduct" list="guideProducts" placeholder="Product name, e.g. Yolk" autocomplete="off" spellcheck="false">
+            <datalist id="guideProducts"></datalist>
+            <button class="btn btn-sm" type="submit">Open</button>
+          </form>
+          <div id="guideBody"></div>
+        </div>
+
         <div class="card">
           <div class="card-head"><h3>Privacy</h3></div>
           ${row('rowTelemetry', 'paw-print', 'Count this install',
@@ -313,6 +439,8 @@
       else toast('Setup is unavailable in this build', 'bad')
     }
     if ($('openPrivacy')) $('openPrivacy').onclick = () => ipcRenderer.invoke('open-privacy', 'screen')
+    wireAppSound()
+    wireGuidelines()
 
     wireUpdater()
 

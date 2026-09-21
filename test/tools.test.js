@@ -27,9 +27,11 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'mcp', 'index.js'), 'utf8
 let n = 0
 const t = (name, fn) => { fn(); n++; console.log('ok', name) }
 
-// Ops the shim sends to the app and no model ever calls: who is driving, and whether
-// the app is up. Everything else is a thing Fetch can do and needs a tool on it.
-const PLUMBING = new Set(['hello', 'ping'])
+// Ops the shim sends to the app and no model ever calls: who is driving, whether the
+// app is up, and that a call its client cancelled should stop where it runs (the MCP
+// server sends job.cancel itself, keyed by the job it minted for that call). Everything
+// else is a thing Fetch can do and needs a tool on it.
+const PLUMBING = new Set(['hello', 'ping', 'job.cancel'])
 
 // The one tool the in-app pane deliberately does not get, with the reason, so the
 // exception is a decision somebody made rather than a list that drifted. Anything
@@ -160,7 +162,7 @@ async function main() {
     }
     // and the ones named by a plain English word, which no pattern picks out of prose:
     // listed here so a rename breaks this rather than the sentence
-    for (const name of ['direct', 'review', 'remember', 'ask', 'propose']) {
+    for (const name of ['direct', 'review', 'remember', 'ask', 'propose', 'guidelines']) {
       assert.ok(registered.includes(name), `the instructions say to call ${name}, which is not registered`)
       assert.ok(new RegExp(`\\b${name}\\b`).test(say), `${name} is listed here and the instructions no longer name it`)
     }
@@ -1199,6 +1201,285 @@ async function main() {
         assert.strictEqual(agentChat.busy(), false, 'the pane is still busy after Stop')
       })
     } finally { connect.binFor = was }
+  })()
+
+  // ── this round: rules before acting, a sample to try, an export that stops ──
+  // Three things the pieces built that no agent could reach until they were wired here:
+  // a product's rules (ui/guidelines.js), the sample library (ui/sample.js) and a cancel
+  // that reaches a running export (ui/job-queue.js). Each is held both ways, like the
+  // rest of the surface: the tool exists, and what it promises really happens.
+  t('the rules and the sample are on the surface, and the pane has them', () => {
+    assert.deepStrictEqual(source.find(s => s.name === 'guidelines').ops, ['memory.guidelines'])
+    assert.deepStrictEqual(source.find(s => s.name === 'sample').ops, ['sample.do'])
+    for (const name of ['guidelines', 'sample']) assert.ok(bare.includes(name), name + ' is not in the pane')
+    const say = server.server._instructions || ''
+    assert.match(say, /guidelines before you plan, capture or style/, 'an outside agent is not told to read the rules first')
+    // a draft is the agent's, and the description says it is nothing until the person says yes
+    const g = String(server._registeredTools.guidelines.description)
+    assert.match(g, /show that text to the person, and adopt only the ids they said yes to/)
+  })
+
+  t('a cancelled call stops its export where it runs', () => {
+    // job.cancel is the server's own and no model's, so it is plumbing and has no tool
+    assert.ok(typeof bridge.ops['job.cancel'] === 'function')
+    assert.ok(!registered.includes('job_cancel'))
+    const chunk = SRC.split("'export',")[1] || ''
+    assert.ok(/stoppable\(job => drive\('edit\.export', \{ \.\.\.args, job \}/.test(chunk.slice(0, 9000)),
+      'export does not hand the app a key to stop it by')
+    const build = SRC.slice(SRC.indexOf('const stoppable'), SRC.indexOf('server.registerTool('))
+    assert.ok(/addEventListener\('abort', stop/.test(build) && /drive\('job\.cancel', \{ job \}\)/.test(build),
+      'a client\'s cancel never reaches the app')
+    assert.ok(/did not answer/.test(build), 'an export this side gave up on is left running')
+  })
+
+  // The three behaviours, against the real queue, the real rulebook and a real sample
+  // folder, with only the processor and the window stood in.
+  await (async () => {
+    const Q = require('../ui/job-queue')
+    const FD = require('../ui/fetchdoc')
+    const Sample = require('../ui/sample')
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-round-'))
+    const root = path.join(home, 'Fetch Sample')
+    fs.mkdirSync(root)
+    fs.writeFileSync(path.join(root, Sample.MARK), '{}\n')
+    const title = 'Biscuit\'s Pantry · Adding a recipe'
+    const take = path.join(root, title, 'Original', title + '.mp4')
+    fs.mkdirSync(path.dirname(take), { recursive: true })
+    fs.writeFileSync(take, '')
+    const theirs = path.join(home, 'Theirs.mp4')
+    fs.writeFileSync(theirs, '')
+    // Outside Electron the bridge's own memory folder is tmpdir. Put back whatever was
+    // there, so a regression that files the sample's rules there does not outlive the run.
+    const theirMemory = path.join(os.tmpdir(), 'memory.json')
+    const memoryWas = fs.existsSync(theirMemory) ? fs.readFileSync(theirMemory) : null
+    let docs = new Map(), wrote = [], exported = [], stopped = 0
+    let texts = []
+    const stub = {
+      probeMeta: async () => ({ duration: 10 }),
+      readDoc: p => docs.get(p) || FD.normalize({}, p, 10),
+      writeDoc: (p, d) => { wrote.push({ p, d }); docs.set(p, d) },
+      findOnScreen: async (p, at) => {
+        const all = texts.map((t, i) => ({ id: 'E' + (i + 1), text: t, kind: 'text', box: { x: 0.1, y: 0.1 * (i + 1), w: 0.3, h: 0.05 },
+          background: {}, confidence: 1 }))
+        return { image: '/tmp/none.jpg', at, width: 1000, height: 1000, found: all.length, elements: all, all }
+      },
+    }
+    const win = { isDestroyed: () => false, isVisible: () => true, webContents: { send: () => {}, executeJavaScript: async () => null } }
+    // an export as main.js submits one, whose work only ends when it is stopped
+    const exportDoc = (src, opts) => Q.submit({ id: 'agent:export:' + Date.now() + Math.random(), op: 'export',
+      run: () => new Promise((resolve, reject) => {
+        exported.push({ src, opts })
+        if (opts && opts.hold === false) return resolve({ file: null })
+        Q.onCancel(() => { stopped++; reject(Object.assign(new Error('cancelled'), { cancelled: true })) })
+      }) })
+    let hold = true, personSays = true, asked = []
+    bridge.start({ getWindow: () => win, proc: stub, isRecording: () => false,
+      confirmRules: async (product, texts) => { asked.push({ product, texts }); return personSays },
+      exportDoc: (src, opts, key) => exportDoc(src, { ...opts, hold }, key) })
+    try {
+      // the rules: what the person says is in force at once, and kept with the sample
+      const w = await bridge.ops['memory.guidelines']({ path: take,
+        rules: [{ rule: 'Never show the admin panel', section: 'never', from: 'person' },
+          { rule: 'Avoid "simply", say "just"', section: 'words', from: 'person' },
+          { rule: 'Screenshots sit on a warm cream background', section: 'look', from: 'screen', evidence: 'the landing page' }] })
+      t('a rule the person gives is in force, and one the agent read off the product is a draft', () => {
+        assert.strictEqual(w.ok, true)
+        const by = Object.fromEntries(w.written.map(x => [x.section, x]))
+        assert.strictEqual(by.never.draft, false)
+        assert.strictEqual(by.look.draft, true, 'a rule read off a screen went into force without the person')
+        assert.match(w.guidelines.text, /Rules for Biscuit's Pantry/)
+      })
+      t('a rule sent as the person\'s is put to the person in Fetch, word for word, before it is in force', () => {
+        assert.deepStrictEqual(asked.map(a => a.texts), [['Never show the admin panel', 'Avoid "simply", say "just"']])
+      })
+      // the person says no: nothing goes into force on the agent's word alone
+      personSays = false
+      const vouched = await bridge.ops['memory.guidelines']({ path: take,
+        rules: [{ rule: 'Never show the billing page', section: 'never', from: 'person' }] })
+      const shown = await bridge.ops['memory.guidelines']({ path: take, action: 'show' })
+      const forced = await bridge.ops['memory.guidelines']({ path: take, action: 'adopt', ids: shown.drafts.map(d => d.id), seal: shown.seal })
+      t('a rule the person did not confirm is a draft, and an adopt they did not confirm is refused', () => {
+        assert.strictEqual(vouched.written[0].draft, true, 'the agent\'s word put a rule in force')
+        assert.match(vouched.unconfirmed, /kept as drafts/)
+        assert.strictEqual(forced.ok, false)
+        assert.strictEqual(forced.refused.kind, 'person')
+        const inForce = require('../ui/guidelines').read({ root, product: 'Biscuit\'s Pantry' }).rules
+        assert.ok(!Object.values(inForce).flat().some(r => /billing page/.test(r.text)), 'the unconfirmed rule is in force')
+      })
+      personSays = true
+      t('what is kept about the sample is kept in the sample, and never in the person\'s memory', () => {
+        assert.ok(fs.existsSync(path.join(root, 'memory.json')), 'the sample\'s rules were not kept in the sample')
+        const mine = path.join(os.tmpdir(), 'memory.json')
+        const txt = fs.existsSync(mine) ? fs.readFileSync(mine, 'utf8') : ''
+        assert.ok(!/admin panel/.test(txt), 'a rule about the made up product went into the person\'s own memory')
+      })
+      texts = ['Recipes', 'Admin panel', 'Settings']
+      const seen = await bridge.ops.find({ path: take, at: 1 })
+      texts = ['Recipes', 'Settings']
+      const clean = await bridge.ops.find({ path: take, at: 1 })
+      t('a thing the rules keep off screen is named the moment an agent looks at it', () => {
+        assert.ok(seen.never_on_screen && seen.never_on_screen.some(h => h.label === 'Admin panel' && h.id === 'E2'),
+          JSON.stringify(seen.never_on_screen))
+        assert.match(seen.rule, /must never be on screen/)
+        assert.strictEqual(clean.never_on_screen, undefined, 'a clean picture was said to break a rule')
+      })
+      const guard = await bridge.ops['memory.guidelines']({ path: take, action: 'check', text: 'Simply tap Save' })
+      t('the words an edit uses are held to the words the product avoids', () => {
+        assert.strictEqual(guard.clean, false)
+        assert.strictEqual(guard.words[0].instead, 'just')
+      })
+
+      // a corner stored wrong is not drawn, and is taken off the document
+      docs.set(theirs, FD.normalize({ viewport: { x: 0.05, y: 0.05, w: 0.9, h: 0.9, corner: 0.0535 },
+        device: { name: 'iPhone 16 Pro Max', screen: { w: 1320, h: 2868, scale: 3 } } }, theirs, 10))
+      hold = false
+      await bridge.ops['edit.export']({ path: theirs })
+      t('a stored corner that fails the check is not drawn and not kept', () => {
+        const drawn = exported[exported.length - 1].opts
+        assert.ok(drawn.viewport && !(+drawn.viewport.corner > 0), 'the export drew a third of the real corner: ' + JSON.stringify(drawn.viewport))
+        // dropped where the document is read (ui/fetchdoc.js cleanViewport), so no reader
+        // is ever handed it again, the person's own export and the editor included
+        assert.ok(docs.get(theirs).viewport && docs.get(theirs).viewport.corner == null, 'the wrong corner is still on the document as read')
+        const last = wrote.filter(x => x.p === theirs).pop()
+        assert.ok(!last || !last.d.viewport || last.d.viewport.corner == null, 'a wrong corner was written back')
+      })
+      docs.set(theirs, FD.normalize({ viewport: { x: 0.05, y: 0.05, w: 0.9, h: 0.9, corner: 0.1578 },
+        device: { name: 'iPhone 16 Pro Max', screen: { w: 1320, h: 2868, scale: 3 } } }, theirs, 10))
+      await bridge.ops['edit.export']({ path: theirs })
+      t('a stored corner that passes is drawn as it is', () => {
+        assert.strictEqual(+exported[exported.length - 1].opts.viewport.corner, 0.1578)
+      })
+
+      // leaving the sample stops an export of a sample take, and never one of the person's
+      hold = true
+      const within = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(`still running ${ms} ms after the stop`)), ms))])
+      {
+        const inSample = bridge.ops['edit.export']({ path: take }); inSample.catch(() => {})
+        const mine = bridge.ops['edit.export']({ path: theirs }); mine.catch(() => {})
+        for (let i = 0; i < 40 && Q.jobs().running.length + Q.jobs().queued.length < 2; i++) await new Promise(r => setTimeout(r, 10))
+        const hit = bridge.stopSampleJobs(root)
+        const [a, b] = await Promise.allSettled([within(inSample, 2000), within(mine, 300)])
+        t('leaving the sample stops an agent\'s export of a sample take, and not one of the person\'s', () => {
+          assert.strictEqual(hit.length, 1, JSON.stringify(hit))
+          assert.ok(a.status === 'rejected' && /stopped before it finished/.test(a.reason.message), a.status)
+          assert.ok(b.status === 'rejected' && !/stopped before it finished/.test(String(b.reason && b.reason.message)), 'the person\'s export was stopped too')
+        })
+        bridge.stopAgentJobs()
+        await within(mine, 2000).catch(() => {})
+        stopped = 0
+      }
+
+      // an export the client cancels stops, and says so in words
+      hold = true
+      const running = bridge.ops['edit.export']({ path: theirs, job: 'k1' })
+      running.catch(() => {})
+      for (let i = 0; i < 40 && Q.jobs().running.length === 0; i++) await new Promise(r => setTimeout(r, 10))
+      const t0 = Date.now()
+      const c = await bridge.ops['job.cancel']({ job: 'k1' })
+      // bounded, so a cancel that does not reach the work fails here rather than hanging
+      let err = null
+      try { await within(running, 2000) } catch (e) { err = e }
+      const again = await bridge.ops['job.cancel']({ job: 'k1' })
+      t('a cancelled export is stopped where it runs, and the agent is told in a sentence', () => {
+        assert.strictEqual(c.cancelled, true)
+        assert.ok(err && /stopped before it finished/.test(err.message), err && err.message)
+        assert.strictEqual(stopped, 1, 'the work was never told to stop')
+        assert.ok(Date.now() - t0 < 1000)
+        assert.strictEqual(again.cancelled, false, 'a finished key still cancels something')
+      })
+      // Esc: every export an agent has running or queued
+      const a = bridge.ops['edit.export']({ path: theirs, job: 'k2' }); a.catch(() => {})
+      const b = bridge.ops['edit.export']({ path: theirs, job: 'k3' }); b.catch(() => {})
+      for (let i = 0; i < 40 && Q.jobs().running.length === 0; i++) await new Promise(r => setTimeout(r, 10))
+      bridge.forgetConsent()
+      const out = await Promise.allSettled([within(a, 2000), within(b, 2000)])
+      t('Esc stops every export an agent started, running or queued', () => {
+        assert.ok(out.every(o => o.status === 'rejected' && /stopped before it finished/.test(o.reason.message)),
+          JSON.stringify(out.map(o => o.status)))
+        assert.deepStrictEqual(Q.jobs().queued, [])
+      })
+    } finally {
+      bridge.stop()
+      fs.rmSync(home, { recursive: true, force: true })
+      if (memoryWas) fs.writeFileSync(theirMemory, memoryWas)
+      else fs.rmSync(theirMemory, { force: true })
+    }
+  })()
+
+  // While the sample is open, a fact that names no take and no product is the sample's:
+  // written to the person's memory it would reach every real product's briefing later.
+  await (async () => {
+    const Sample = require('../ui/sample')
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-unplaced-'))
+    const root = path.join(home, 'Fetch Sample')
+    fs.mkdirSync(root)
+    fs.writeFileSync(path.join(root, Sample.MARK), '{}\n')
+    const theirMemory = path.join(os.tmpdir(), 'memory.json')
+    const memoryWas = fs.existsSync(theirMemory) ? fs.readFileSync(theirMemory) : null
+    let open = root
+    bridge.start({ proc: { probeMeta: async () => ({}) }, isRecording: () => false, sampleRoot: () => open })
+    try {
+      await bridge.ops['memory.remember']({ fact: 'The product is called Pantry Planner Plus', scope: 'product' })
+      const txt = f => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '')
+      t('a fact with no take and no product, said while the sample is open, is kept in the sample', () => {
+        assert.match(txt(path.join(root, 'memory.json')), /Pantry Planner Plus/)
+        assert.ok(!/Pantry Planner Plus/.test(txt(theirMemory)), 'the made up product went into the person\'s own memory')
+      })
+      open = null
+      await bridge.ops['memory.remember']({ fact: 'Demos are for the finance team at Acme', scope: 'product', about: 'Ledgerly' })
+      t('and once it is closed, facts are the person\'s again', () => {
+        assert.match(txt(theirMemory), /finance team at Acme/)
+        assert.ok(!/finance team/.test(txt(path.join(root, 'memory.json'))))
+      })
+    } finally {
+      bridge.stop()
+      fs.rmSync(home, { recursive: true, force: true })
+      if (memoryWas) fs.writeFileSync(theirMemory, memoryWas)
+      else fs.rmSync(theirMemory, { force: true })
+    }
+  })()
+
+  // One device's run, driven without a device: a Delete tapped, the id retried off the
+  // older picture, and a late search of an older picture handing out a number.
+  await (async () => {
+    const T = require('../ui/targets')
+    const R = bridge.deviceRun
+    R.reset()
+    const w = (text, x, y, ww, h = 0.02) => ({ text, conf: 1, box: { x, y, w: ww, h }, bg: '#FFFFFF' })
+    const F = texts => ({ width: 1290, height: 2796, texts })
+    const list = names => F([w('Recipes', 0.4, 0.08, 0.2, 0.03), ...names.flatMap((n, i) => [w(n, 0.1, 0.2 + i * 0.08, 0.3), w('Delete', 0.75, 0.2 + i * 0.08, 0.12)])])
+    const sim = { udid: 'RUN-1', name: 'Test phone', screen: { points: { w: 390, h: 844 } }, viewport: { x: 0, y: 0, w: 1, h: 1 } }
+    // S0: ready. S1: the tap's screen after Shakshuka was deleted.
+    const s0 = T.elementsFrom(list(['Shakshuka', 'Pancakes', 'Oats']))
+    R.see(sim.udid, '/run/s0.png'); R.joinRun(sim.udid, '/run/s0.png', null, s0); R.noteFound('/run/s0.png', 0, s0, s0)
+    const p1 = R.runPrior(sim.udid)
+    const s1 = T.elementsFrom(list(['Pancakes', 'Oats']), p1)
+    R.see(sim.udid, '/run/s1.png'); R.joinRun(sim.udid, '/run/s1.png', p1, s1); R.noteFound('/run/s1.png', 0, s1, s1)
+    const del = (l, name) => { const n = l.find(e => e.text === name); return l.find(e => e.text === 'Delete' && Math.abs(e.box.y - n.box.y) < 0.01).id }
+    const gone = del(s0, 'Shakshuka')
+    let refused = null
+    try { await R.simPoint(sim, { element: gone, path: '/run/s0.png' }) } catch (e) { refused = e.message }
+    t('an id retried with an older picture\'s path is refused when the newest screen lacks it', () => {
+      assert.ok(refused && /not on Test phone's newest screen/.test(refused), refused)
+      assert.ok(!/Send that picture's path/.test(refused), 'the refusal still tells the agent to send the older path')
+    })
+    const kept = del(s0, 'Pancakes')
+    const aimed = await R.simPoint(sim, { element: kept, path: '/run/s0.png' })
+    const box = s1.find(e => e.id === kept).box
+    t('an id held from an older picture is aimed at its box on the newest screen', () => {
+      assert.strictEqual(kept, del(s1, 'Pancakes'))
+      assert.ok(Math.abs(aimed.y - (box.y + box.h / 2) * 844) < 1, JSON.stringify(aimed))
+    })
+    // a late search of the older picture: a control only it shows is numbered past the run
+    const late = T.elementsFrom(F([...list(['Pancakes', 'Oats']).texts, w('Undo', 0.4, 0.9, 0.2)]), R.runPrior(sim.udid))
+    R.joinRun(sim.udid, '/run/s0.png', R.runPrior(sim.udid), late)
+    const undo = late.find(e => e.text === 'Undo').id
+    const s2 = T.elementsFrom(F([...list(['Pancakes', 'Oats']).texts, w('Saved', 0.4, 0.95, 0.2)]), R.runPrior(sim.udid))
+    t('a late search of an older picture moves the run\'s count on, so the next screen never reuses its number', () => {
+      assert.ok(+undo.slice(1) > s1.seq, `${undo} against ${s1.seq}`)
+      assert.ok(!s2.some(e => e.id === undo), `${undo} was handed to ${(s2.find(e => e.id === undo) || {}).text}`)
+    })
+    R.reset()
   })()
 
   fs.rmSync(dir, { recursive: true, force: true })

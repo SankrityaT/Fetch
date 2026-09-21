@@ -447,5 +447,63 @@ t('a product that was renamed is one fact, and the old name is not printed as cu
   assert.strictEqual(both.store.facts.length, 2)
 })
 
+// ── rules (ui/guidelines.js is the rulebook; these are the drawer's half) ──
+
+t('a rule is a product fact that survives a round trip, and a file from before rules reads the same', () => {
+  const r = M.add(M.empty(), { fact: 'never show the admin panel', rule: 'never', about: 'Songscription',
+    from: 'person' }, NOW)
+  const back = M.normalize(JSON.parse(JSON.stringify(r.store)))
+  assert.strictEqual(back.facts[0].rule, 'never')
+  assert.strictEqual(back.facts[0].from, 'person')
+  assert.strictEqual(back.facts[0].pin, true, 'a rule in force is pinned')
+  // an old row has no rule fields at all, not nulls, so an old file writes back unchanged
+  const old = M.normalize({ facts: [{ id: 'F1', scope: 'product', text: 'the audience is piano teachers' }] })
+  assert.deepStrictEqual(Object.keys(old.facts[0]).filter(k => ['rule', 'draft', 'from', 'evidence', 'replaces', 'shownAt'].includes(k)), [])
+  // a rule outside the product drawer is only a fact, and an unknown section is no rule
+  assert.strictEqual(M.normalize({ facts: [{ scope: 'global', rule: 'never', text: 'never show my inbox' }] }).facts[0].rule, undefined)
+  assert.strictEqual(M.normalize({ facts: [{ scope: 'product', rule: 'vibes', text: 'never show my inbox' }] }).facts[0].rule, undefined)
+})
+
+t('naming a rule files it with the product even when the sentence sounds like the person', () => {
+  const r = M.add(M.empty(), { fact: 'I never want my inbox on screen', rule: 'never', about: 'Songscription' }, NOW)
+  assert.strictEqual(r.fact.scope, 'product')
+  assert.strictEqual(r.fact.id, 'F1')
+})
+
+t('evidence carrying a secret is dropped, never stored', () => {
+  const key = 'ghp' + '_aBcDeFgHiJkLmNoPqRsTuVwXyZ01234'
+  const r = M.add(M.empty(), { fact: 'never show the tokens page', rule: 'never', draft: true, about: 'S',
+    from: 'screen', evidence: `Settings, next to ${key}` }, NOW)
+  assert.ok(r.fact)
+  assert.strictEqual(r.fact.evidence, undefined)
+  assert.ok(!JSON.stringify(r.store).includes('aBcDeFgHiJkLmNoP'))
+})
+
+t('a draft is kept out of recall, counted, and never rewrites what is in force', () => {
+  let s = M.add(M.empty(), { fact: 'the product is called Songscription', about: 'S' }, NOW).store
+  const d = M.add(s, { fact: 'it is called Lyricly now', rule: 'name', draft: true, about: 'S', from: 'screen' }, NOW + 1)
+  s = d.store
+  assert.strictEqual(d.fact.replaces, 'F1')
+  assert.strictEqual(s.facts.find(f => f.id === 'F1').text, 'the product is called Songscription')
+  const r = M.recall([s], { about: 'S' })
+  assert.ok(!r.text.includes('Lyricly'))
+  assert.strictEqual(r.drafts, 1)
+  assert.strictEqual(r.total, 1, 'total still counts the facts it could print')
+  // settle puts it in force on the row that already had the id
+  const done = M.settle(s, d.fact.id, NOW + 2, 'person')
+  assert.strictEqual(done.id, 'F1')
+  assert.strictEqual(done.rule, 'name')
+  assert.strictEqual(s.facts.length, 1)
+  assert.strictEqual(M.settle(s, 'F1', NOW + 3), null, 'only a draft settles')
+})
+
+t('a memory with no rules prints exactly what it printed before', () => {
+  const s = store('the product is called Songscription', 'never show the admin panel')
+  const r = M.recall([s], { about: 'Songscription' })
+  assert.deepStrictEqual(r.lines, ['About the product:', 'F2 · never show the admin panel', 'F1 · the product is called Songscription'])
+  assert.deepStrictEqual(r.rules, [])
+  assert.strictEqual(r.drafts, 0)
+})
+
 fs.rmSync(dir, { recursive: true, force: true })
 console.log(`\n${n} memory tests passed`)

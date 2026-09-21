@@ -737,6 +737,11 @@ console.log('old takes and plain exports lose their crescents too')
   is('and a corner the document has wins over one read again',
     Math.abs(at({ viewport: { ...old, corner: 0.15 } }, measured).device.screen.r - 0.15 * read.device.screen.w) < 1, true)
   is('a reading that is not a share is ignored', JSON.stringify(at({}, { glass: { corner: 0.9 } }).device), JSON.stringify(bare.device))
+  // a stored corner a frame disagreed with, on a screen whose radius is not known, gives way
+  is('a stored corner a frame refuted gives way to the reading',
+    Math.abs(at({ viewport: { ...old, corner: 0.0535 } }, { glass: { corner: 0.1578, replaces: 0.0535 } }).device.screen.r - 0.1578 * read.device.screen.w) < 1, true)
+  is('and one refuted with no corner read is drawn with none',
+    JSON.stringify(at({ viewport: { ...old, corner: 0.0535 } }, { glass: { corner: 0, replaces: 0.0535 } }).device), JSON.stringify(bare.device))
   // The plain export: nothing behind the take, and square it kept the Simulator's grey
   // highlight and ring in all four corners. Masked, the corner is black, which the ring
   // there already was.

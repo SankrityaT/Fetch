@@ -1,0 +1,34 @@
+{
+ "v": 1,
+ "product": "Biscuit's Pantry",
+ "about": "A recipe planner made up for the sample. It exists only in these three files.",
+ "items": [
+  {
+   "id": "recipe",
+   "kind": "take",
+   "platform": "Mac",
+   "title": "Biscuit's Pantry · Adding a recipe",
+   "file": "pantry-recipe.mp4",
+   "sidecars": { ".pointer.json": "pantry-recipe.pointer.json" },
+   "try": "Zoom in on the New recipe sheet while the name is typed, and export it."
+  },
+  {
+   "id": "phone",
+   "kind": "take",
+   "platform": "Phone",
+   "title": "Biscuit's Pantry · Ticking off the list",
+   "file": "pantry-phone.mp4",
+   "sidecars": { ".pointer.json": "pantry-phone.pointer.json", ".fetchdoc.json": "pantry-phone.fetchdoc.json" },
+   "try": "Put this in a phone frame on a warm background and export it for the store."
+  },
+  {
+   "id": "card",
+   "kind": "shot",
+   "platform": "Mac",
+   "title": "Biscuit's Pantry · Recipe card",
+   "file": "pantry-card.png",
+   "sidecars": {},
+   "try": "Style this screenshot on a soft gradient and number the three steps."
+  }
+ ]
+}

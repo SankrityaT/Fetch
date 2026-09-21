@@ -94,11 +94,18 @@ const CROPS_CHROME = Look.CROPS_CHROME
 // the glass's short side. cleanBox keeps the rectangle alone, and a corner dropped here
 // never reaches the plan, which then masks with the window's small radius and leaves a
 // crescent of Simulator bezel in each corner of the phone.
-function cleanViewport(v) {
+//
+// A stored corner the device's own screen says is wrong (ui/simulator.js cornerSuspect)
+// is dropped here, on read, so every reader draws as if there were none and reads it again
+// off the take with the checked rule: the person's own export, the editor, review and an
+// agent alike. The old rule read a third of a ProMax's corner (0.0535 against 0.1578) and
+// wrote it onto takes for good.
+function cleanViewport(v, screen) {
   const box = Targets.cleanBox(v)
   if (!box) return null
   const corner = +v.corner
-  return corner > 0 && corner < 0.5 ? { ...box, corner } : box
+  if (!(corner > 0 && corner < 0.5)) return box
+  return require('./simulator').cornerSuspect({ corner }, screen) ? box : { ...box, corner }
 }
 
 function cleanDevice(d) {
@@ -354,8 +361,9 @@ function normalize(doc, src, dur) {
   }
   out.v = 2
   for (const k of LEGACY) delete out[k]
-  out.viewport = cleanViewport(doc.viewport)
+  // the device first, so the viewport's corner is judged against its screen
   out.device = cleanDevice(doc.device)
+  out.viewport = cleanViewport(doc.viewport, out.device && out.device.screen)
   // The page's place arriving for the first time crops the chrome off, once: a crop
   // the person or an agent later changes or clears stays theirs.
   if (out.viewport && !doc.viewportApplied) {

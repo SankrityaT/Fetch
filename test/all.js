@@ -16,9 +16,9 @@ const path = require('path')
 
 const SUITES = [
   'simulator', 'policy', 'simctl', 'fetchdoc', 'shot-doc', 'look', 'levels', 'timeline',
-  'plan', 'fit', 'director', 'review', 'memory', 'trackedit', 'focus', 'beats', 'naming',
+  'plan', 'fit', 'director', 'review', 'memory', 'guidelines', 'trackedit', 'focus', 'beats', 'naming',
   'zoom', 'overlays', 'zoomview', 'motion', 'stage-pick', 'targets', 'lasso', 'pointer',
-  'touch', 'chat', 'assist', 'takes', 'recorder', 'library',
+  'touch', 'chat', 'assist', 'takes', 'recorder', 'library', 'sample',
   ['engine', '/tmp/fetch-test/test.webm'],
   'formats', 'tools', 'shot', 'shot-stage', 'sizes', 'history', 'brake',
 ]

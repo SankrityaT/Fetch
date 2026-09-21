@@ -1,6 +1,8 @@
 import AppKit
 import AVFoundation
+import CoreAudio
 import CoreMedia
+import Darwin
 import Foundation
 import ScreenCaptureKit
 
@@ -39,6 +41,12 @@ struct Options {
     // (TestSource below). "lead=2.3,gap=4.5-5.5": sound starts 2.3 s after the picture
     // and stalls for a second, the two things a capture stream really does.
     var testSource: String?
+    // Which simulator a take of Simulator.app's window is for. The device's own sound
+    // comes from its guest processes, which belong to no app with a window, so the
+    // window alone does not say whose sound to tap once two devices are booted.
+    var soundDevice: String?
+    // The whole Mac's sound even where one app's could be tapped
+    var wholeMacSound = false
 }
 
 func parseArgs() -> Options {
@@ -58,6 +66,8 @@ func parseArgs() -> Options {
         case "--no-cursor": o.showsCursor = false
         case "--bitrate":   if let v = it.next(), let n = Int(v) { o.bitrate = n }
         case "--test-source": o.testSource = it.next() ?? ""
+        case "--sound-device": o.soundDevice = it.next()
+        case "--whole-mac-sound": o.wholeMacSound = true
         default: break
         }
     }
@@ -90,6 +100,16 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     // A window take's sound, on a stream of its own (see start)
     var soundStream: SCStream?
     private var soundFilter: SCContentFilter?
+    // Or one app's sound, through a Core Audio tap (AppSound), where SoundPlan allows it
+    private var tapPlan: SoundPlan?
+    private var fallbackDisplay: SCDisplay?
+    private var appSound: AnyObject?
+    // What the take's system sound is: "app", "device" or "mac", and for "mac" why a
+    // narrower one was not had. Said on started and on stopped, so no take has to be
+    // guessed at.
+    private var soundScope = "mac"
+    private var soundWhy: String?
+    private var soundFrom: [String] = []
     var writer: AVAssetWriter!
     var videoIn: AVAssetWriterInput!
     var sysAudioIn: AVAssetWriterInput?
@@ -209,8 +229,21 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // thread. Leaving the other apps out cost the whole Mac its screen capture
             // for up to 20 minutes at a time. So a window take with sound hears what the
             // display plays, the same as a display take does.
-            if opts.systemAudio, let d = content.displays.first(where: { $0.frame.intersects(win.frame) }) ?? content.displays.first {
-                soundFilter = SCContentFilter(display: d, excludingWindows: [])
+            //
+            // Unless the one app's sound can be tapped (SoundPlan, AppSound below). A Core
+            // Audio process tap is served by coreaudiod, not replayd, and needs no stream
+            // at all, so where it is allowed the take opens no sound stream in replayd.
+            // Where it is not, the display's sound is the honest fallback, and the take
+            // says which it got.
+            if opts.systemAudio {
+                let plan = SoundPlan.decide(owner: win.owningApplication?.processID,
+                                            ownerBundle: win.owningApplication?.bundleIdentifier,
+                                            device: opts.soundDevice, wholeMac: opts.wholeMacSound)
+                if plan.scope == .mac { soundWhy = plan.why } else { tapPlan = plan }
+                if let d = content.displays.first(where: { $0.frame.intersects(win.frame) }) ?? content.displays.first {
+                    if tapPlan == nil { soundFilter = SCContentFilter(display: d, excludingWindows: []) }
+                    else { fallbackDisplay = d }
+                }
             }
             // A window's frame is in points. Derive the backing scale from the display
             // it sits on by comparing that display's pixel mode against its point size,
@@ -280,6 +313,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             if let id = opts.micDeviceID, !id.isEmpty { cfg.microphoneCaptureDeviceID = id }
         }
 
+        if opts.systemAudio && opts.windowID == nil { soundWhy = "display" }
         setUpWriter(width: width, height: height)
         config = cfg
 
@@ -290,6 +324,12 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         // Stop can land while either one is still starting. finish() waits for this to
         // return, and this stops whatever it opened, each awaited, sound first, before
         // it does: a stream is never left starting or running under an exit.
+        //
+        // A tap that will not start falls back to the display's sound, once, and says
+        // why: the take asked for sound and a narrower scope is not worth a silent one.
+        if let plan = tapPlan, !openAppSound(plan), let d = fallbackDisplay {
+            soundFilter = SCContentFilter(display: d, excludingWindows: [])
+        }
         if let sf = soundFilter { await openSoundStream(sf) }
         if isFinished() { await stopSound(); return }
         let s: SCStream
@@ -313,7 +353,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
               "startedAt": Int(Date().timeIntervalSince1970 * 1000),
               "width": width, "height": height, "fps": Int(opts.fps),
               "codec": opts.hevc ? "hevc" : "h264",
-              "systemAudio": opts.systemAudio, "mic": opts.mic])
+              "systemAudio": opts.systemAudio, "mic": opts.mic,
+              "soundScope": soundScopeFacts()])
     }
 
     private func setUpWriter(width: Int, height: Int) {
@@ -538,11 +579,15 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     // hiding it in a clean file
     private func soundReport() -> [[String: Any]] {
         let ms = { (s: Double?) in Int(((s ?? 0) * 1000).rounded()) }
+        let scope = soundScopeFacts()
         return soundNext.keys.sorted().map { k in
             let g = soundGaps[k] ?? (0, 0)
-            return ["track": k == SCStreamOutputType.audio.rawValue ? "system" : "mic",
+            var r: [String: Any] = ["track": k == SCStreamOutputType.audio.rawValue ? "system" : "mic",
                     "leadMs": ms(soundLead[k]), "gaps": g.n, "gapMs": ms(g.s),
                     "lostMs": ms(soundLost[k]), "tailMs": ms(soundTail[k]), "trimMs": ms(soundTrim[k])]
+            // the system track says whose sound it is, so the result can
+            if k == SCStreamOutputType.audio.rawValue { r.merge(scope) { a, _ in a } }
+            return r
         }
     }
 
@@ -694,11 +739,45 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    // The sound stream stopped and let go of, so nothing stops it a second time
+    // The sound stream stopped and let go of, so nothing stops it a second time. A tap
+    // is stopped the same way, first, and let go of the same way.
     private func stopSound() async {
+        if #available(macOS 14.4, *), let a = appSound as? AppSound {
+            appSound = nil
+            a.stop()
+            soundFrom = a.heardFrom
+        }
         let s = soundStream
         soundStream = nil
         await stop(s, "sound", outputs: [.audio])
+    }
+
+    // One app's or one device's sound, through a Core Audio tap. Its buffers come in on
+    // sampleQueue and take the same road as a stream's, so the file cannot tell them
+    // apart except by what is in them. False, with why written down, when it will not
+    // start; the caller then takes the display's sound instead.
+    private func openAppSound(_ plan: SoundPlan) -> Bool {
+        guard #available(macOS 14.4, *) else { soundWhy = "macos"; return false }
+        let a = AppSound(plan: plan, queue: sampleQueue) { [weak self] sb in self?.route(sb, .audio) }
+        if let failed = a.start() {
+            FileHandle.standardError.write("no tap of one app's sound, so the whole Mac's: \(failed)\n".data(using: .utf8)!)
+            soundWhy = "tap failed: \(failed)"
+            return false
+        }
+        appSound = a
+        soundScope = plan.scope.rawValue
+        soundWhy = nil
+        soundFrom = a.heardFrom
+        return true
+    }
+
+    private func soundScopeFacts() -> [String: Any] {
+        guard opts.systemAudio else { return ["scope": "none"] }
+        if #available(macOS 14.4, *), let a = appSound as? AppSound { soundFrom = a.heardFrom }
+        var f: [String: Any] = ["scope": soundScope]
+        if let w = soundWhy { f["why"] = w }
+        if !soundFrom.isEmpty { f["from"] = soundFrom }
+        return f
     }
 
     // What openStream added, so exactly that comes off again
@@ -905,10 +984,460 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             exit(1)
         }
         emit(["event": "stopped", "file": opts.out, "frames": f, "dropped": d,
-              "stillMs": Int((stillMax * 1000).rounded()), "sound": soundReport(),
+              "stillMs": Int((stillMax * 1000).rounded()), "sound": soundReport(), "soundScope": soundScopeFacts(),
               "stoppedAt": Int(Date().timeIntervalSince1970 * 1000)])
         stdoutQueue.sync {}
         exit(0)
+    }
+}
+
+// ---------- one app's sound ----------
+// A window take's sound used to be the display's, everything this Mac plays, because the
+// only way ScreenCaptureKit narrows sound is a filter that names apps, and that filter is
+// what took replayd down (see start). A Core Audio process tap narrows it without
+// ScreenCaptureKit: coreaudiod mixes the named processes' output into an input stream of
+// a private aggregate device, and that device is read here like any other. No stream is
+// opened in replayd for it, so it is never on the path that crashed.
+//
+// What it needs, all of it checked before anything is created (SoundPlan.decide):
+//   macOS 14.4 or later. The calls are 14.2, and taps before 14.4 are not trusted here.
+//   The person's yes to System Audio Recording, which is its own permission (TCC's
+//     kTCCServiceAudioCapture, the "System Audio Recording Only" list in Privacy &
+//     Security), separate from Screen Recording. A tap made without it does not fail: it
+//     delivers silence and asks the person in a dialog. So it is looked up first and a take
+//     never asks: without the yes the take has the whole Mac's sound and says why.
+//   Somebody whose sound it is. A window's app, and every process it started or is
+//     responsible for (a browser plays from helper processes, Safari from WebKit's). A
+//     simulator's device, whose guest app is a host process of its own under that
+//     device's launchd_sim, with no window and no app to name.
+//
+// The tap is private and unmuted: nobody else sees it, and the person hears what they
+// heard before. Nothing is played. It lives and dies with this process.
+
+enum SoundScope: String { case app, device, mac }
+
+struct SoundPlan {
+    var scope: SoundScope
+    var why: String?            // for .mac: why nothing narrower
+    var owner: pid_t?           // .app: the window's app
+    var sim: pid_t?             // .device: that device's launchd_sim
+    var device: String?         // .device: its UDID, where the caller named it
+
+    static let simulatorApp = "com.apple.iphonesimulator"
+    // CoreSimulator's own audio service, which a device's audio can pass through. It
+    // serves simulators and nothing else, and every booted one at once, so a device take
+    // hears it only while that device is the one booted (target refuses otherwise).
+    static let simAudioService = "com.apple.CoreSimulator.SimAudioProcessorService"
+
+    static func mac(_ why: String) -> SoundPlan { SoundPlan(scope: .mac, why: why) }
+
+    static func decide(owner: pid_t?, ownerBundle: String?, device: String?, wholeMac: Bool) -> SoundPlan {
+        if wholeMac { return mac("asked") }
+        guard #available(macOS 14.4, *) else { return mac("macos") }
+        let access = AudioAccess.state()
+        guard access == "granted" else { return mac("permission \(access)") }
+        return target(owner: owner, ownerBundle: ownerBundle, device: device)
+    }
+
+    // Whose sound, without the permission: kept apart so it can be asked on its own
+    static func target(owner: pid_t?, ownerBundle: String?, device: String?) -> SoundPlan {
+        if device != nil || ownerBundle == simulatorApp {
+            let sims = Procs.all().filter { Procs.name($0) == "launchd_sim" }
+            if let udid = device, !udid.isEmpty {
+                guard let s = sims.first(where: { Procs.argsContain($0, udid) }) else { return mac("device not booted") }
+                // CoreSimulator's audio service serves every booted device at once, so with
+                // two booted, what passes through it could be the other one's. Saying
+                // "only the device's own sound" then would be the guess the "which device"
+                // refusal exists to stop, so the take hears the Mac and says why.
+                guard sims.count == 1 else { return mac("shared service") }
+                return SoundPlan(scope: .device, sim: s, device: udid)
+            }
+            // Simulator.app's window with no device named: only one booted device is
+            // unambiguous, and a guess between two is somebody else's sound
+            guard sims.count == 1 else { return mac(sims.isEmpty ? "device not booted" : "which device") }
+            return SoundPlan(scope: .device, sim: sims[0])
+        }
+        guard let o = owner, o > 0 else { return mac("no owner") }
+        return SoundPlan(scope: .app, owner: o)
+    }
+
+    // Whether a process's sound is this take's
+    func owns(_ pid: pid_t, bundle: String) -> Bool {
+        if pid == getpid() { return false }
+        switch scope {
+        case .mac: return false
+        case .app:
+            guard let o = owner else { return false }
+            return pid == o || Procs.ancestors(pid).contains(o) || Procs.responsible(pid) == o
+        case .device:
+            if bundle.hasPrefix(SoundPlan.simAudioService) { return true }
+            if let s = sim, Procs.ancestors(pid).contains(s) { return true }
+            if let d = device, let p = Procs.path(pid), p.contains("/Devices/\(d)/") { return true }
+            return false
+        }
+    }
+
+    // The Core Audio process objects that are this take's, read now
+    func members() -> [(id: AudioObjectID, pid: pid_t, bundle: String)] {
+        CoreAudioProcs.list().filter { owns($0.pid, bundle: $0.bundle) }
+    }
+}
+
+// The System Audio Recording permission, looked up without asking. There is no public
+// call for this: TCC's own preflight is what a tap's first start consults, and it is read
+// here so a take never raises the dialog. "granted", "denied", or "unknown" (never asked,
+// or TCC could not be read, which is treated as no).
+enum AudioAccess {
+    static let service = "kTCCServiceAudioCapture" as CFString
+    private static let tcc = dlopen("/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC", RTLD_NOW)
+
+    static func state() -> String {
+        typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int
+        guard let h = tcc, let f = dlsym(h, "TCCAccessPreflight") else { return "unknown" }
+        switch unsafeBitCast(f, to: Preflight.self)(service, nil) {
+        case 0: return "granted"
+        case 1: return "denied"
+        default: return "unknown"
+        }
+    }
+
+    // Asks the person. Only ever from --audio-access request, which the app runs when
+    // the person turns the setting on, never from a take.
+    static func request(_ done: @escaping (Bool) -> Void) {
+        typealias Request = @convention(c) (CFString, CFDictionary?, @escaping @convention(block) (Bool) -> Void) -> Void
+        guard let h = tcc, let f = dlsym(h, "TCCAccessRequest") else { done(false); return }
+        unsafeBitCast(f, to: Request.self)(service, nil, done)
+    }
+}
+
+// Other processes, read from the kernel. Nothing here signals or touches them.
+enum Procs {
+    private static func info(_ pid: pid_t) -> kinfo_proc? {
+        var k = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &k, &size, nil, 0) == 0, size > 0 else { return nil }
+        return k
+    }
+
+    static func all() -> [pid_t] {
+        let n = proc_listallpids(nil, 0)
+        guard n > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(n) + 64)
+        let got = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+        return Array(pids.prefix(max(0, Int(got)))).filter { $0 > 0 }
+    }
+
+    static func name(_ pid: pid_t) -> String {
+        guard var k = info(pid) else { return "" }
+        return withUnsafePointer(to: &k.kp_proc.p_comm) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXCOMLEN) + 1) { String(cString: $0) }
+        }
+    }
+
+    static func parent(_ pid: pid_t) -> pid_t? { info(pid).map { $0.kp_eproc.e_ppid } }
+
+    // Every process above this one, nearest first, up to launchd
+    static func ancestors(_ pid: pid_t) -> [pid_t] {
+        var out: [pid_t] = []
+        var p = pid
+        for _ in 0..<64 {
+            guard let up = parent(p), up > 1, up != p else { break }
+            out.append(up); p = up
+        }
+        return out
+    }
+
+    static func path(_ pid: pid_t) -> String? {
+        var buf = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        return proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 ? String(cString: buf) : nil
+    }
+
+    // Whether a process's arguments or environment carry a string (a device's UDID, for
+    // launchd_sim, which is started with that device's directory)
+    static func argsContain(_ pid: pid_t, _ s: String) -> Bool {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return false }
+        var buf = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return false }
+        let text = String(decoding: buf.prefix(size).map { $0 == 0 ? 10 : $0 }, as: UTF8.self)
+        return text.contains(s)
+    }
+
+    // The process macOS holds responsible for this one: Safari for its WebKit processes,
+    // an app for the XPC services it started. Read through the same call Activity
+    // Monitor's attribution uses; absent, only the process tree is used.
+    static func responsible(_ pid: pid_t) -> pid_t? {
+        typealias Responsible = @convention(c) (pid_t) -> pid_t
+        guard let f = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_get_pid_responsible_for_pid") else { return nil }
+        let r = unsafeBitCast(f, to: Responsible.self)(pid)
+        return r > 0 ? r : nil
+    }
+}
+
+// Core Audio's process objects: every process connected to the audio system
+enum CoreAudioProcs {
+    static func address(_ sel: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: sel, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    }
+
+    static func list() -> [(id: AudioObjectID, pid: pid_t, bundle: String)] {
+        var a = address(kAudioHardwarePropertyProcessObjectList)
+        var size: UInt32 = 0
+        let sys = AudioObjectID(kAudioObjectSystemObject)
+        guard AudioObjectGetPropertyDataSize(sys, &a, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(sys, &a, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids.prefix(Int(size) / MemoryLayout<AudioObjectID>.size).compactMap { id in
+            var pa = address(kAudioProcessPropertyPID)
+            var pid: pid_t = 0
+            var ps = UInt32(MemoryLayout<pid_t>.size)
+            guard AudioObjectGetPropertyData(id, &pa, 0, nil, &ps, &pid) == noErr, pid > 0 else { return nil }
+            return (id, pid, bundle(id))
+        }
+    }
+
+    static func bundle(_ id: AudioObjectID) -> String {
+        var a = address(kAudioProcessPropertyBundleID)
+        var ref: Unmanaged<CFString>?
+        var s = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(id, &a, 0, nil, &s, &ref) == noErr, let r = ref else { return "" }
+        return r.takeRetainedValue() as String
+    }
+}
+
+@available(macOS 14.4, *)
+final class AppSound {
+    let plan: SoundPlan
+    let queue: DispatchQueue
+    let sink: (CMSampleBuffer) -> Void
+    private var tapID = AudioObjectID(kAudioObjectUnknown)
+    private var aggID = AudioObjectID(kAudioObjectUnknown)
+    private var procID: AudioDeviceIOProcID?
+    private var desc: CATapDescription?
+    private var fmt: CMAudioFormatDescription?
+    private var asbd = AudioStreamBasicDescription()
+    private var tapped: [AudioObjectID] = []
+    // The aggregate's input list starts with the clock device's own input streams (the
+    // microphone of AirPods, a USB headset or an interface) and the tap's come after them.
+    // Where the tap's begin, and how many buffers it is, read once at start.
+    private var skip = 0
+    private var tapBuffers = 1
+    private var misread = false
+    private var listener: AudioObjectPropertyListenerBlock?
+    // Retargets happen here, never on sampleQueue: setting a tap's description waits on
+    // coreaudiod, and the IOProc delivers on sampleQueue
+    private let watch = DispatchQueue(label: "fetch.recorder.tap.watch")
+    private var pending = false
+    private var stopped = false
+    private let lock = NSLock()
+    private var names: [String] = []
+
+    // Who was heard: the bundle ids (or paths) of every process ever in the tap
+    var heardFrom: [String] { lock.lock(); defer { lock.unlock() }; return names }
+
+    init(plan: SoundPlan, queue: DispatchQueue, sink: @escaping (CMSampleBuffer) -> Void) {
+        self.plan = plan; self.queue = queue; self.sink = sink
+    }
+
+    // nil when running, or what stopped it
+    func start() -> String? {
+        let now = plan.members()
+        tapped = now.map { $0.id }
+        note(now)
+        let d = CATapDescription(stereoMixdownOfProcesses: tapped)
+        d.uuid = UUID()
+        d.name = "Fetch take"
+        d.isPrivate = true
+        d.muteBehavior = .unmuted        // the person keeps hearing it
+        desc = d
+        var st = AudioHardwareCreateProcessTap(d, &tapID)
+        guard st == noErr, tapID != kAudioObjectUnknown else { return "the tap was refused (\(st))" }
+
+        var fa = CoreAudioProcs.address(kAudioTapPropertyFormat)
+        var fs = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        st = AudioObjectGetPropertyData(tapID, &fa, 0, nil, &fs, &asbd)
+        guard st == noErr, asbd.mFormatID == kAudioFormatLinearPCM, asbd.mBytesPerFrame > 0, asbd.mSampleRate > 0 else {
+            stop(); return "the tap's format could not be read (\(st))"
+        }
+        guard CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil,
+                                             magicCookieSize: 0, magicCookie: nil, extensions: nil,
+                                             formatDescriptionOut: &fmt) == noErr else {
+            stop(); return "the tap's format was not one the writer takes"
+        }
+
+        // The aggregate is clocked by the output device the Mac already plays through, as
+        // Apple's own tap sample does. Nothing is written to its output: the IOProc leaves
+        // the output buffers alone, and the HAL plays nothing from them.
+        guard let output = defaultOutputUID() else { stop(); return "no output device to clock the tap" }
+        skip = inputBuffers(of: output)
+        tapBuffers = asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0 ? Int(asbd.mChannelsPerFrame) : 1
+        let agg: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "Fetch take sound",
+            kAudioAggregateDeviceUIDKey: UUID().uuidString,
+            kAudioAggregateDeviceMainSubDeviceKey: output,
+            kAudioAggregateDeviceIsPrivateKey: true,
+            kAudioAggregateDeviceIsStackedKey: false,
+            // not waiting for the first sound: a take of an app that stays quiet must not
+            // hold the start up
+            kAudioAggregateDeviceTapAutoStartKey: false,
+            kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: output]],
+            kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: d.uuid.uuidString, kAudioSubTapDriftCompensationKey: true]],
+        ]
+        st = AudioHardwareCreateAggregateDevice(agg as CFDictionary, &aggID)
+        guard st == noErr, aggID != kAudioObjectUnknown else { stop(); return "the aggregate device was refused (\(st))" }
+
+        st = AudioDeviceCreateIOProcIDWithBlock(&procID, aggID, queue) { [weak self] _, input, inputTime, _, _ in
+            self?.deliver(input, inputTime)
+        }
+        guard st == noErr, procID != nil else { stop(); return "the tap's reader was refused (\(st))" }
+        st = AudioDeviceStart(aggID, procID)
+        guard st == noErr else { stop(); return "the tap would not start (\(st))" }
+
+        // A process that starts playing after the take began (the app launched after
+        // record_start, a device's guest app opening its audio) joins the tap
+        let l: AudioObjectPropertyListenerBlock = { [weak self] _, _ in self?.retargetSoon() }
+        var la = CoreAudioProcs.address(kAudioHardwarePropertyProcessObjectList)
+        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &la, watch, l) == noErr { listener = l }
+        return nil
+    }
+
+    private func note(_ procs: [(id: AudioObjectID, pid: pid_t, bundle: String)]) {
+        lock.lock(); defer { lock.unlock() }
+        for p in procs {
+            let n = p.bundle.isEmpty ? (Procs.path(p.pid).map { ($0 as NSString).lastPathComponent } ?? "pid \(p.pid)") : p.bundle
+            if !names.contains(n) { names.append(n) }
+        }
+    }
+
+    // Coalesced: the process list changes in bursts, and each change is one set on the tap
+    private func retargetSoon() {
+        guard !pending else { return }
+        pending = true
+        watch.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.retarget() }
+    }
+
+    private func retarget() {
+        pending = false
+        lock.lock(); let done = stopped; lock.unlock()
+        guard !done, let d = desc else { return }
+        let now = plan.members()
+        let ids = now.map { $0.id }
+        guard Set(ids) != Set(tapped) else { return }
+        note(now)
+        d.processes = ids
+        var a = CoreAudioProcs.address(kAudioTapPropertyDescription)
+        var ref = d
+        let st = withUnsafeMutablePointer(to: &ref) {
+            AudioObjectSetPropertyData(tapID, &a, 0, nil, UInt32(MemoryLayout<CATapDescription>.size), $0)
+        }
+        if st == noErr { tapped = ids }
+        else { FileHandle.standardError.write("the tap could not take a new process (\(st))\n".data(using: .utf8)!) }
+    }
+
+    // On sampleQueue: the buffer is copied into a sample on the host clock, which is the
+    // clock ScreenCaptureKit stamps its pictures with, and routed like a stream's sound
+    //
+    // Only the tap's own buffers are read. The aggregate's first buffers are the clock
+    // device's inputs, so reading the first one recorded the room microphone of a headset
+    // under the tap's format and called it the window's sound. A buffer whose channel
+    // count is not the tap's is never read as the tap: that buffer is dropped, and the
+    // track is padded with silence and says so, rather than filled with the wrong sound.
+    private func deliver(_ input: UnsafePointer<AudioBufferList>, _ time: UnsafePointer<AudioTimeStamp>) {
+        guard let fmt, time.pointee.mFlags.contains(.hostTimeValid) else { return }
+        let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
+        let per = tapBuffers > 1 ? 1 : Int(asbd.mChannelsPerFrame)
+        guard list.count >= skip + tapBuffers,
+              (skip..<(skip + tapBuffers)).allSatisfy({ Int(list[$0].mNumberChannels) == per }) else {
+            if !misread {
+                misread = true
+                FileHandle.standardError.write("the tap's buffers were not where the aggregate should put them (\(list.count) buffers, \(skip) before the tap), so none was read\n".data(using: .utf8)!)
+            }
+            return
+        }
+        let first = list[skip]
+        guard first.mDataByteSize > 0 else { return }
+        let frames = Int(first.mDataByteSize / asbd.mBytesPerFrame)
+        guard frames > 0 else { return }
+        // the tap's buffers alone, as their own list
+        let own = AudioBufferList.allocate(maximumBuffers: tapBuffers)
+        defer { free(own.unsafeMutablePointer) }
+        for i in 0..<tapBuffers { own[i] = list[skip + i] }
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: CMTimeScale(asbd.mSampleRate)),
+                                        presentationTimeStamp: CMClockMakeHostTimeFromSystemUnits(time.pointee.mHostTime),
+                                        decodeTimeStamp: .invalid)
+        var sb: CMSampleBuffer?
+        guard CMSampleBufferCreate(allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false,
+                                   makeDataReadyCallback: nil, refcon: nil, formatDescription: fmt,
+                                   sampleCount: frames, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+                                   sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sb) == noErr,
+              let sb,
+              CMSampleBufferSetDataBufferFromAudioBufferList(sb, blockBufferAllocator: kCFAllocatorDefault,
+                                                            blockBufferMemoryAllocator: kCFAllocatorDefault,
+                                                            flags: 0, bufferList: own.unsafePointer) == noErr else { return }
+        sink(sb)
+    }
+
+    // How many input buffers a device presents, which is how many come before the tap's
+    // in an aggregate it clocks. None for a device with no input (built-in speakers).
+    private func inputBuffers(of uid: String) -> Int {
+        var ta = CoreAudioProcs.address(kAudioHardwarePropertyTranslateUIDToDevice)
+        var cf = uid as CFString
+        var dev = AudioObjectID(kAudioObjectUnknown)
+        var ds = UInt32(MemoryLayout<AudioObjectID>.size)
+        let got = withUnsafePointer(to: &cf) {
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &ta, UInt32(MemoryLayout<CFString>.size), $0, &ds, &dev)
+        }
+        guard got == noErr, dev != kAudioObjectUnknown else { return 0 }
+        var ca = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+                                            mScope: kAudioObjectPropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(dev, &ca, 0, nil, &size) == noErr, size > 0 else { return 0 }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(dev, &ca, 0, nil, &size, raw) == noErr else { return 0 }
+        return Int(raw.assumingMemoryBound(to: AudioBufferList.self).pointee.mNumberBuffers)
+    }
+
+    private func defaultOutputUID() -> String? {
+        var a = CoreAudioProcs.address(kAudioHardwarePropertyDefaultSystemOutputDevice)
+        var dev = AudioObjectID(kAudioObjectUnknown)
+        var s = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, &s, &dev) == noErr,
+              dev != kAudioObjectUnknown else { return nil }
+        var ua = CoreAudioProcs.address(kAudioDevicePropertyDeviceUID)
+        var ref: Unmanaged<CFString>?
+        var us = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(dev, &ua, 0, nil, &us, &ref) == noErr, let r = ref else { return nil }
+        return r.takeRetainedValue() as String
+    }
+
+    // Everything it made, taken down in the reverse order, each once. Safe to call from a
+    // start that got part of the way.
+    func stop() {
+        lock.lock()
+        if stopped { lock.unlock(); return }
+        stopped = true
+        lock.unlock()
+        if let l = listener {
+            var la = CoreAudioProcs.address(kAudioHardwarePropertyProcessObjectList)
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &la, watch, l)
+            listener = nil
+        }
+        if aggID != kAudioObjectUnknown {
+            if let p = procID {
+                AudioDeviceStop(aggID, p)
+                AudioDeviceDestroyIOProcID(aggID, p)
+                procID = nil
+            }
+            AudioHardwareDestroyAggregateDevice(aggID)
+            aggID = AudioObjectID(kAudioObjectUnknown)
+        }
+        if tapID != kAudioObjectUnknown {
+            AudioHardwareDestroyProcessTap(tapID)
+            tapID = AudioObjectID(kAudioObjectUnknown)
+        }
     }
 }
 
@@ -1029,6 +1558,57 @@ final class TestSource {
 }
 
 // ---------- main ----------
+// Two questions answered without recording anything. Neither makes a tap or opens a
+// capture, so neither touches replayd or coreaudiod's audio path.
+//
+//   --audio-access            {"event":"audioAccess","state":"granted"|"denied"|"unknown"}
+//   --audio-access request    asks the person, once, for System Audio Recording. Only for
+//                             the app to run when the person turns one app's sound on.
+//   --sound-plan --pid N [--bundle ID] [--sound-device UDID]
+//                             whose sound a take of that app (or device) would get, why,
+//                             and the processes that would be heard right now
+let argv = Array(CommandLine.arguments.dropFirst())
+func argAfter(_ flag: String) -> String? {
+    guard let i = argv.firstIndex(of: flag), i + 1 < argv.count else { return nil }
+    return argv[i + 1]
+}
+if argv.contains("--audio-access") {
+    if argAfter("--audio-access") == "request" {
+        let done = DispatchSemaphore(value: 0)
+        var said = false
+        AudioAccess.request { yes in said = yes; done.signal() }
+        done.wait()
+        emit(["event": "audioAccess", "asked": true, "granted": said, "state": AudioAccess.state()])
+    } else {
+        emit(["event": "audioAccess", "state": AudioAccess.state()])
+    }
+    stdoutQueue.sync {}
+    exit(0)
+}
+if argv.contains("--sound-plan") {
+    let pidArg = argAfter("--pid")
+    let pid: pid_t? = pidArg == "self" ? getpid() : pidArg.flatMap { pid_t($0) }
+    let bundle = argAfter("--bundle"), device = argAfter("--sound-device")
+    var out: [String: Any] = ["event": "soundPlan", "access": AudioAccess.state()]
+    if #available(macOS 14.4, *) { out["macos"] = true } else { out["macos"] = false }
+    let decided = SoundPlan.decide(owner: pid, ownerBundle: bundle, device: device, wholeMac: argv.contains("--whole-mac-sound"))
+    out["scope"] = decided.scope.rawValue
+    if let w = decided.why { out["why"] = w }
+    // who would be heard if the permission were there, so the choosing can be checked
+    // on a Mac where it is not
+    var target = SoundPlan.target(owner: pid, ownerBundle: bundle, device: device)
+    if pidArg == "self", target.scope == .app { target.owner = getpid() }
+    out["target"] = target.scope.rawValue
+    if let w = target.why { out["targetWhy"] = w }
+    let heard = CoreAudioProcs.list().filter { p in
+        pidArg == "self" && p.pid == getpid() ? true : target.owns(p.pid, bundle: p.bundle)
+    }
+    out["members"] = heard.map { ["pid": Int($0.pid), "bundle": $0.bundle] }
+    emit(out)
+    stdoutQueue.sync {}
+    exit(0)
+}
+
 // SCContentFilter(desktopIndependentWindow:) talks to the window server, and a plain
 // command line tool has no connection to it: without this it aborts inside
 // CGS_REQUIRE_INIT the moment you capture a window rather than a display. Touching

@@ -152,6 +152,16 @@ is('the description does not promise a track, it promises a default',
   /on by default/.test(Opts.SIM_AUDIO_SAID) && /What actually landed is on the result/.test(Opts.SIM_AUDIO_SAID), true)
 is('and the argument says where the default differs',
   /Default off, and on for a simulator take/.test(Opts.SYS_AUDIO_ARG_SAID), true)
+// record_start's description said the default was on, full stop. audioFor() lets the
+// person's own Settings switch turn it off, so an agent that read "on by default" and
+// passed nothing got a silent take it was told it would not get.
+is('record_start\'s description names the person\'s switch beside the default',
+  /on by default for a simulator take, unless the person turned System audio off/.test(Opts.SIM_AUDIO_SAID), true)
+is('and so does the argument', /unless the person turned System audio off/.test(Opts.SYS_AUDIO_ARG_SAID), true)
+is('and that is what the code does', sim({}, off).systemAudio === false && /unless/.test(Opts.SIM_AUDIO_SAID), true)
+// system_audio false with mic true still lands a track
+is('it no longer says system_audio false records a take silent', /record it silent/.test(Opts.SIM_AUDIO_SAID), false)
+is('it says the microphone still records', /microphone is still recorded if mic is true/.test(Opts.SIM_AUDIO_SAID), true)
 
 // A default that never reaches the recorder is a comment. These pin the two lines
 // between audioFor() and a track in the file: main.js builds the argv, Recorder.swift
@@ -168,6 +178,88 @@ is('and turns it into a capture and a track',
 // stream, and a failure there is written down and stepped over.
 is('a sound stream that will not open does not take the picture with it',
   /catch \{[\s\S]{0,160}no system audio for this window/.test(rec), true)
+
+// ── one app's sound, through a tap and not through replayd ───────────────
+// A window take's sound became everything the Mac plays when the app-naming filter came
+// out. A Core Audio process tap narrows it again without ScreenCaptureKit. It needs macOS
+// 14.4 and the person's yes to System Audio Recording, and a take must never ask for that.
+console.log('\nwhose sound a take has, and saying so')
+const say = (scope, planned) => Opts.takeAudio(planned || planOn, { hasAudio: true, audioTracks: 1 }, { sound: scope })
+const macSaid = say([{ track: 'system', scope: 'mac', why: 'permission unknown', tailMs: 40 }])
+is('a whole-Mac take says it is one', macSaid.scope, 'mac')
+is('and names what else is in it', /music, a notification or a call/.test(macSaid.heard), true)
+is('and why nothing narrower', /System Audio Recording/.test(macSaid.heard) && /never asks/.test(macSaid.heard), true)
+const devSaid = say({ scope: 'device', from: ['com.fetch.demo'] })
+is('a device take says only the device was heard', devSaid.scope === 'device' && /only the device's own sound/.test(devSaid.heard), true)
+is('and whose it was', /com\.fetch\.demo/.test(devSaid.heard), true)
+is('an app take says only the app and what it answers for',
+  /only the window's app/.test(say({ scope: 'app' }, mac({ system_audio: true })).heard), true)
+is('a display take says why it is the whole Mac', /whole display/.test(say({ scope: 'mac', why: 'display' }).heard), true)
+is('a tap that would not start says so', /would not start \(the tap was refused/.test(say({ scope: 'mac', why: 'tap failed: the tap was refused (-1)' }).heard), true)
+is('with no report, nothing is claimed', say(null).scope, undefined)
+is('a mic-only take claims no system scope', Opts.takeAudio(mac({ mic: true }), { hasAudio: true, audioTracks: 1 }, { sound: { scope: 'app' } }).scope, undefined)
+is('an unknown scope is not repeated', Opts.scopeOf({ scope: 'everything' }), null)
+is('the scope is read off the system track only', Opts.scopeOf([{ track: 'mic', scope: 'app' }, { track: 'system', scope: 'mac', why: 'display' }]).why, 'display')
+is('the start says the tap exists and what it needs', /System Audio Recording \(macOS 14\.4 or later\)/.test(startSim.note), true)
+is('and the description says the same, still saying the whole Mac first',
+  /everything this Mac plays/.test(Opts.SIM_AUDIO_SAID) && /only the device's own sound is taken instead/.test(Opts.SIM_AUDIO_SAID), true)
+// the bridge hands the recorder's report to takeAudio (agent-bridge afterTake), so the
+// promise is kept, and record_stop's result carries the scope
+is('the description says record_stop says which, now the bridge passes it', /record_stop says which/.test(Opts.SIM_AUDIO_SAID), true)
+is('and the bridge does pass the recorder\'s report', /const sound = \(r && r\.sound\) \|\| \(deps\.takeSound \? deps\.takeSound\(\) : null\)[\s\S]{0,120}Opts\.takeAudio\(heard, meta, \{ \.\.\.level, sound \}\)/.test(at('ui/agent-bridge.js')), true)
+// every sentence that promises the default sound also says the person's switch, which
+// audioFor obeys, or it promises a track the take does not get
+for (const [k, v] of Object.entries({ SIM_LIST_SAID: Opts.SIM_LIST_SAID, READY_NEXT_SAID: Opts.READY_NEXT_SAID, SIM_AUDIO_SAID: Opts.SIM_AUDIO_SAID })) {
+  is(`${k} says the person can turn the default off`, /turned (System audio|it) off in Fetch's Settings/.test(v), true)
+}
+// at start, the scope the recorder started with is said as it said it
+const startTap = Opts.startedAudio({ ...sim({}), scope: { scope: 'device' } })
+is('a take that started tapped says the device\'s own sound at start', [startTap.scope, /only the device's own sound/.test(startTap.note), /everything this Mac plays/.test(startTap.note)], ['device', true, false])
+const startWide = Opts.startedAudio({ ...mac({ system_audio: true }), scope: { scope: 'mac', why: 'permission unknown' } })
+is('and one that started wide says why', [startWide.scope, /System Audio Recording/.test(startWide.note)], ['mac', true])
+is('two booted devices sharing the audio service is said in words', /more than one simulator is booted, and the audio service they share/.test(
+  Opts.takeAudio({ systemAudio: true, simulator: true }, { hasAudio: true, audioTracks: 1 }, { sound: { scope: 'mac', why: 'shared service' } }).heard || ''), true)
+for (const t of [macSaid.heard, devSaid.heard]) is('no em dash in what was heard', /\u2014/.test(t), false)
+
+console.log('\nthe tap in the recorder')
+const tapSrc = rec.slice(rec.indexOf('// ---------- one app\'s sound ----------'), rec.indexOf('// ---------- a generated take ----------'))
+is('it is a Core Audio process tap', /AudioHardwareCreateProcessTap\(d, &tapID\)/.test(tapSrc), true)
+is('it is private, and the person keeps hearing what they heard', /d\.isPrivate = true/.test(tapSrc) && /d\.muteBehavior = \.unmuted/.test(tapSrc), true)
+is('it never waits for the first sound to start', /kAudioAggregateDeviceTapAutoStartKey: false/.test(tapSrc), true)
+is('it only runs on macOS 14.4 or later', /guard #available\(macOS 14\.4, \*\) else \{ return mac\("macos"\) \}/.test(tapSrc) &&
+  /@available\(macOS 14\.4, \*\)\s*final class AppSound/.test(tapSrc), true)
+is('it looks the permission up and takes the whole Mac without it',
+  /guard access == "granted" else \{ return mac\("permission/.test(tapSrc), true)
+// A tap made without the permission delivers silence and raises a dialog, so a take
+// must only ever look, never ask
+const askAt = [...rec.matchAll(/AudioAccess\.request\b/g)].map(m => m.index)
+is('only --audio-access request asks, never a take',
+  askAt.length === 1 && rec.lastIndexOf('if argAfter("--audio-access") == "request"', askAt[0]) > rec.indexOf('// ---------- main ----------'), true)
+is('two booted devices and none named is not guessed', /sims\.count == 1 else \{ return mac\(/.test(tapSrc), true)
+is('with two booted, a named device is not said to be heard alone through the service they share',
+  /guard sims\.count == 1 else \{ return mac\("shared service"\) \}/.test(tapSrc), true)
+// the aggregate's first buffers are the clock device's own inputs (a headset's microphone)
+is('the tap\'s buffers are read past the clock device\'s inputs, never the first buffer', /let first = list\[skip\]/.test(tapSrc) &&
+  !/list\.first/.test(tapSrc) && /skip = inputBuffers\(of: output\)/.test(tapSrc) && /kAudioObjectPropertyScopeInput/.test(tapSrc), true)
+is('only the tap\'s own buffers go into the sample', /bufferList: own\.unsafePointer/.test(tapSrc) && !/bufferList: input\)/.test(tapSrc), true)
+is('a buffer of the wrong channel count is never read as the tap', /mNumberChannels\) == per/.test(tapSrc), true)
+is('main.js names the device a simulator take is for', /args\.push\('--sound-device', String\(soundDevice\)\)/.test(at('main.js')), true)
+is('a device\'s sound is its launchd_sim\'s processes', /Procs\.ancestors\(pid\)\.contains\(s\)/.test(tapSrc) && /launchd_sim/.test(tapSrc), true)
+is('an app\'s sound is it, its children and what it answers for',
+  /pid == o \|\| Procs\.ancestors\(pid\)\.contains\(o\) \|\| Procs\.responsible\(pid\) == o/.test(tapSrc), true)
+is('its buffers go through the same road as a stream\'s', /AppSound\(plan: plan, queue: sampleQueue\) \{ \[weak self\] sb in self\?\.route\(sb, \.audio\) \}/.test(rec), true)
+is('on the host clock the pictures are stamped with', /CMClockMakeHostTimeFromSystemUnits\(time\.pointee\.mHostTime\)/.test(tapSrc), true)
+is('everything it made is taken down', ['AudioDeviceStop', 'AudioDeviceDestroyIOProcID', 'AudioHardwareDestroyAggregateDevice',
+  'AudioHardwareDestroyProcessTap', 'AudioObjectRemovePropertyListenerBlock'].every(k => tapSrc.includes(k + '(')), true)
+const stSrc = rec.slice(rec.indexOf('func start() async'), rec.indexOf('private func setUpWriter'))
+is('with a tap there is no sound stream in replayd at all',
+  /if tapPlan == nil \{ soundFilter = SCContentFilter\(display: d, excludingWindows: \[\]\) \}/.test(stSrc), true)
+is('a tap that will not start falls back to the display\'s sound, once',
+  /if let plan = tapPlan, !openAppSound\(plan\), let d = fallbackDisplay \{\s*soundFilter = SCContentFilter\(display: d, excludingWindows: \[\]\)\s*\}\s*if let sf = soundFilter \{ await openSoundStream\(sf\) \}/.test(stSrc), true)
+is('and the tap is stopped first, with the sound', /func stopSound\(\) async \{\s*if #available\(macOS 14\.4, \*\), let a = appSound as\? AppSound \{\s*appSound = nil\s*a\.stop\(\)/.test(rec), true)
+is('started says whose sound it is', /"soundScope": soundScopeFacts\(\)\]\)/.test(stSrc), true)
+is('and so does stopped, on its own and on the system track',
+  /"soundScope": soundScopeFacts\(\)/.test(rec.slice(rec.indexOf('func finish() async'))) && /r\.merge\(scope\)/.test(rec), true)
 
 // ── never the thing that takes replayd down ──────────────────────────────
 // replayd, the daemon behind all screen capture on a Mac, crashed 25 times between Sep 18
@@ -203,7 +295,7 @@ is('a start that finds the take stopped stops what it opened, the sound first',
   /openSoundStream\(sf\) \}\s*if isFinished\(\) \{ await stopSound\(\); return \}/.test(st) &&
   /if isFinished\(\) \{\s*await stopSound\(\)\s*await stop\(s, "picture"/.test(st), true)
 is('the sound stream is let go of when it is stopped, so it is never stopped twice',
-  /func stopSound\(\) async \{\s*let s = soundStream\s*soundStream = nil/.test(rec), true)
+  /func stopSound\(\) async \{[\s\S]{0,300}?let s = soundStream\s*soundStream = nil/.test(rec), true)
 // recover() used to reopen the window's stream up to six times, 0.5 s apart, every failure
 // swallowed, and the likeliest reason the stream stopped was replayd going down.
 const rv = rec.slice(rec.indexOf('private func recover(from'), rec.indexOf('static func serviceGone'))
@@ -266,6 +358,19 @@ async function measured() {
       setTimeout(() => { if (!timer) timer = setTimeout(() => p.stdin.write('stop\n'), 0) }, ms + 20000)
       p.on('close', () => resolve(buf.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l) } catch { return {} } }).find(e => e.event === 'stopped')))
     })
+    // Whose sound a take would get, asked of the built recorder. No tap is made and no
+    // capture opened: this reads the permission (without asking) and Core Audio's list
+    // of processes, and nothing else.
+    const plan = (...a) => { try { return JSON.parse(execFileSync(bin, ['--sound-plan', ...a], { encoding: 'utf8', timeout: 20000 }).trim().split('\n').pop()) } catch (e) { return { error: e.message } } }
+    const own = plan('--pid', 'self')
+    is('the plan says what the permission is, without asking', ['granted', 'denied', 'unknown'].includes(own.access), true)
+    is('and never a narrow scope without it', own.access === 'granted' || own.scope === 'mac', true)
+    is('and why, when it is the whole Mac', own.scope !== 'mac' || typeof own.why === 'string', true)
+    is('an app is found in Core Audio\'s process list by its pid', own.target === 'app' && own.members.some(m => m.pid > 0), true)
+    const ghost = plan('--bundle', 'com.apple.iphonesimulator', '--sound-device', '00000000-0000-0000-0000-00000000F4C3')
+    is('a device that is not booted is not guessed at', [ghost.target, ghost.targetWhy, ghost.members.length], ['mac', 'device not booted', 0])
+    is('the whole Mac can be asked for by name', plan('--pid', 'self', '--whole-mac-sound').why, 'asked')
+
     const stopped = await take('lead=2.3,gap=4.5-5.5', 9000)
     const flashes = () => {
       const r = spawnSync(FF, ['-hide_banner', '-nostdin', '-i', out, '-map', '0:v:0', '-vf', 'signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-', '-f', 'null', '-'], { encoding: 'utf8', maxBuffer: 1 << 26 })

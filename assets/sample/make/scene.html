@@ -1,0 +1,333 @@
+<!doctype html>
+<!--
+  The sample library's three pieces, drawn. Biscuit's Pantry is a recipe planner that
+  exists only here: made up for the sample, so nothing in it belongs to anybody.
+
+  Nothing moves on its own. draw(t) puts every element where it is at second t, so the
+  same second always draws the same picture and make.js can take the frames in any order.
+  ?scene=mac is the window take, ?scene=phone the simulator take, ?scene=shot the still.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: Geist; src: url(../../fonts/Geist-400.woff2); font-weight: 400; }
+  @font-face { font-family: Geist; src: url(../../fonts/Geist-500.woff2); font-weight: 500; }
+  @font-face { font-family: Geist; src: url(../../fonts/Geist-600.woff2); font-weight: 600; }
+  @font-face { font-family: Geist; src: url(../../fonts/Geist-700.woff2); font-weight: 700; }
+  @font-face { font-family: Bricolage; src: url(../../fonts/BricolageGrotesque-800.woff2); font-weight: 800; }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  body { font-family: Geist, sans-serif; color: #2B2620; -webkit-font-smoothing: antialiased; }
+  .scene { display: none; position: absolute; inset: 0; }
+  body[data-scene="mac"] #mac, body[data-scene="shot"] #mac, body[data-scene="phone"] #phone { display: block; }
+
+  /* ── the Mac window ─────────────────────────────────────────── */
+  #mac { background: #FBF7F0; overflow: hidden; }
+  .bar { height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 14px;
+    background: #F3EDE3; border-bottom: 1px solid #E6DDD0; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: #D8CFC2; }
+  .bar .title { flex: 1; text-align: center; font-size: 13px; font-weight: 600; color: #6E6458; margin-right: 52px; }
+  .body { position: absolute; top: 38px; left: 0; right: 0; bottom: 0; display: flex; }
+  .side { width: 220px; background: #F3EDE3; padding: 18px 12px; border-right: 1px solid #E6DDD0; }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px 18px; font-family: Bricolage; font-weight: 800; font-size: 18px; letter-spacing: -.02em; }
+  .brand i { width: 26px; height: 26px; border-radius: 8px; background: #3F7D4E; display: block; position: relative; }
+  .brand i::after { content: ''; position: absolute; inset: 7px; border-radius: 50%; background: #FBF7F0; }
+  .nav { display: flex; align-items: center; justify-content: space-between; padding: 9px 10px; border-radius: 9px;
+    font-size: 14px; font-weight: 500; color: #5A5046; margin-bottom: 2px; }
+  .nav.on { background: #E4EFE3; color: #24502F; font-weight: 600; }
+  .nav b { font-weight: 500; font-size: 12px; color: #8F8579; }
+  .nav.on b { color: #3F7D4E; }
+  .main { flex: 1; padding: 26px 30px; position: relative; }
+  .head { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+  .head h1 { font-family: Bricolage; font-weight: 800; font-size: 30px; letter-spacing: -.03em; flex: 1; }
+  .search { width: 240px; height: 36px; border-radius: 10px; background: #fff; border: 1px solid #E6DDD0;
+    font-size: 13px; color: #9D9387; display: flex; align-items: center; padding: 0 12px; }
+  .btn { height: 36px; padding: 0 16px; border-radius: 10px; background: #3F7D4E; color: #fff; font-size: 14px;
+    font-weight: 600; display: inline-flex; align-items: center; gap: 8px; }
+  .btn.ghost { background: #EFE8DD; color: #4A4037; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .card { background: #fff; border-radius: 14px; border: 1px solid #EDE5D9; overflow: hidden; position: relative; }
+  .card .pic { height: 128px; position: relative; }
+  .card .pic::before { content: ''; position: absolute; left: 50%; top: 50%; width: 78px; height: 78px; margin: -39px 0 0 -39px;
+    border-radius: 50%; background: rgba(255,255,255,.85); }
+  .card .pic::after { content: ''; position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px 0 0 -23px;
+    border-radius: 50%; background: var(--dish); }
+  .card .txt { padding: 12px 14px 14px; }
+  .card .name { font-size: 15px; font-weight: 600; }
+  .card .meta { font-size: 12px; color: #8F8579; margin-top: 4px; }
+  .card.new { box-shadow: 0 0 0 3px #9BC7A5; }
+  .sheet { position: absolute; top: 0; right: 0; bottom: 0; width: 400px; background: #fff;
+    border-left: 1px solid #E6DDD0; box-shadow: -24px 0 60px rgba(60,40,20,.10); padding: 28px; }
+  .sheet h2 { font-family: Bricolage; font-weight: 800; font-size: 24px; letter-spacing: -.03em; margin-bottom: 22px; }
+  .lbl { font-size: 12px; font-weight: 600; color: #8F8579; margin: 18px 0 8px; letter-spacing: .01em; }
+  .field { height: 42px; border-radius: 10px; border: 1px solid #E6DDD0; display: flex; align-items: center; padding: 0 12px;
+    font-size: 15px; }
+  .field.focus { border-color: #3F7D4E; box-shadow: 0 0 0 3px #E4EFE3; }
+  .caret { display: inline-block; width: 2px; height: 18px; background: #3F7D4E; margin-left: 1px; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { height: 32px; padding: 0 14px; border-radius: 999px; background: #F3EDE3; font-size: 13px; font-weight: 500;
+    display: inline-flex; align-items: center; color: #5A5046; }
+  .chip.on { background: #3F7D4E; color: #fff; }
+  .row { display: flex; align-items: center; justify-content: space-between; margin-top: 22px; font-size: 14px; font-weight: 500; }
+  .switch { width: 44px; height: 26px; border-radius: 999px; background: #DCD3C6; position: relative; }
+  .switch i { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; }
+  .switch.on { background: #3F7D4E; }
+  .switch.on i { left: 21px; }
+  .sheet .foot { position: absolute; left: 28px; right: 28px; bottom: 28px; display: flex; gap: 10px; justify-content: flex-end; }
+  .toast { position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%); background: #2B2620; color: #FBF7F0;
+    height: 42px; padding: 0 18px; border-radius: 999px; display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 500; }
+  .toast i { width: 18px; height: 18px; border-radius: 50%; background: #7DBE8B; display: block; }
+
+  /* the recipe, for the still */
+  .recipe { display: none; }
+  body[data-scene="shot"] .grid, body[data-scene="shot"] .head { display: none; }
+  body[data-scene="shot"] .recipe { display: grid; grid-template-columns: 340px 1fr; gap: 30px; }
+  .hero { height: 300px; border-radius: 16px; background: #F4E3B5; position: relative; }
+  .hero::before { content: ''; position: absolute; left: 50%; top: 50%; width: 200px; height: 200px; margin: -100px 0 0 -100px; border-radius: 50%; background: #fff; }
+  .hero::after { content: ''; position: absolute; left: 50%; top: 50%; width: 130px; height: 130px; margin: -65px 0 0 -65px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #F7D774 0 18%, #E9C25A 19% 40%, #7FA86B 41% 48%, #E9C25A 49%); }
+  .kicker { font-size: 12px; font-weight: 600; color: #3F7D4E; letter-spacing: .04em; text-transform: uppercase; }
+  .recipe h1 { font-family: Bricolage; font-weight: 800; font-size: 34px; letter-spacing: -.03em; margin: 8px 0 10px; }
+  .facts { display: flex; gap: 8px; margin-bottom: 22px; }
+  .recipe h3 { font-size: 13px; font-weight: 700; margin: 18px 0 10px; }
+  .ing { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; font-size: 14px; max-width: 420px; }
+  .ing span:nth-child(even) { color: #8F8579; text-align: right; }
+  .steps { font-size: 14px; line-height: 1.55; color: #4A4037; max-width: 460px; }
+  .steps div { display: flex; gap: 12px; margin-bottom: 8px; }
+  .steps b { width: 22px; height: 22px; border-radius: 50%; background: #E4EFE3; color: #24502F; font-size: 12px; flex: none;
+    display: inline-flex; align-items: center; justify-content: center; }
+
+  /* ── the phone ──────────────────────────────────────────────── */
+  #phone { background: #000; }
+  .bezel { position: absolute; left: 0; top: 0; width: 414px; height: 868px; border-radius: 66px; background: #16161A; }
+  .glass { position: absolute; left: 12px; top: 12px; width: 390px; height: 844px; border-radius: 55px; overflow: hidden; background: #FBF7F0; }
+  .status { height: 50px; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 30px 6px;
+    font-size: 15px; font-weight: 600; }
+  .status .bat { width: 25px; height: 12px; border-radius: 3px; border: 1.5px solid #2B2620; position: relative; }
+  .status .bat::after { content: ''; position: absolute; inset: 1.5px 5px 1.5px 1.5px; background: #2B2620; border-radius: 1px; }
+  .island { position: absolute; left: 50%; top: 18px; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: #111; }
+  .ptop { padding: 18px 22px 8px; }
+  .ptop h1 { font-family: Bricolage; font-weight: 800; font-size: 32px; letter-spacing: -.03em; }
+  .ptop p { font-size: 14px; color: #8F8579; margin-top: 4px; }
+  .items { margin: 10px 16px; background: #fff; border-radius: 16px; border: 1px solid #EDE5D9; }
+  .it { height: 56px; display: flex; align-items: center; gap: 14px; padding: 0 16px; border-bottom: 1px solid #F1EBE1; font-size: 16px; font-weight: 500; }
+  .it:last-child { border-bottom: 0; }
+  .it .box { width: 24px; height: 24px; border-radius: 50%; border: 2px solid #CFC5B7; flex: none; position: relative; }
+  .it.done .box { background: #3F7D4E; border-color: #3F7D4E; }
+  .it.done .box::after { content: ''; position: absolute; left: 7px; top: 3px; width: 5px; height: 10px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+  .it .nm { flex: 1; }
+  .it.done .nm { color: #A89E92; text-decoration: line-through; }
+  .it .q { font-size: 14px; color: #8F8579; }
+  .pfoot { position: absolute; left: 16px; right: 16px; bottom: 40px; }
+  .pbtn { height: 54px; border-radius: 16px; background: #3F7D4E; color: #fff; font-size: 17px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center; }
+  .home { position: absolute; left: 50%; bottom: 9px; width: 134px; height: 5px; margin-left: -67px; border-radius: 999px; background: #2B2620; }
+  .dim { position: absolute; inset: 0; background: #1A140E; }
+  .psheet { position: absolute; left: 0; right: 0; bottom: 0; height: 330px; background: #fff; border-radius: 26px 26px 0 0; padding: 12px 20px; }
+  .grab { width: 38px; height: 5px; border-radius: 999px; background: #DCD3C6; margin: 0 auto 16px; }
+  .psheet h2 { font-family: Bricolage; font-weight: 800; font-size: 22px; letter-spacing: -.02em; margin-bottom: 12px; }
+  .opt { height: 58px; display: flex; align-items: center; gap: 14px; font-size: 16px; font-weight: 500; border-bottom: 1px solid #F1EBE1; }
+  .opt i { width: 36px; height: 36px; border-radius: 11px; background: #E4EFE3; display: block; }
+  .ptoast { position: absolute; left: 50%; bottom: 112px; transform: translateX(-50%); background: #2B2620; color: #FBF7F0;
+    height: 40px; padding: 0 18px; border-radius: 999px; display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 500; white-space: nowrap; }
+  .ptoast i { width: 16px; height: 16px; border-radius: 50%; background: #7DBE8B; display: block; }
+</style>
+</head>
+<body>
+
+<div class="scene" id="mac">
+  <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="title">Biscuit's Pantry</span></div>
+  <div class="body">
+    <div class="side">
+      <div class="brand"><i></i>Biscuit's Pantry</div>
+      <div class="nav on" id="navRecipes">Recipes <b id="nRecipes">6</b></div>
+      <div class="nav">This week <b id="nWeek">3</b></div>
+      <div class="nav">Shopping list <b>7</b></div>
+      <div class="nav">Favourites <b>2</b></div>
+    </div>
+    <div class="main">
+      <div class="head"><h1>Recipes</h1><div class="search">Search recipes</div><div class="btn" id="newBtn">+ New recipe</div></div>
+      <div class="grid" id="grid"></div>
+      <div class="recipe">
+        <div class="hero"></div>
+        <div>
+          <div class="kicker">This week · Thursday</div>
+          <h1>Lemon and herb pasta</h1>
+          <div class="facts"><span class="chip on">20 min</span><span class="chip">Serves 2</span><span class="chip">Vegetarian</span></div>
+          <h3>Ingredients</h3>
+          <div class="ing">
+            <span>Spaghetti</span><span>200 g</span>
+            <span>Lemon, zest and juice</span><span>1</span>
+            <span>Parsley, chopped</span><span>a handful</span>
+            <span>Parmesan, grated</span><span>40 g</span>
+            <span>Garlic, sliced</span><span>2 cloves</span>
+          </div>
+          <h3>Method</h3>
+          <div class="steps">
+            <div><b>1</b><span>Cook the spaghetti in well salted water until it still has a little bite.</span></div>
+            <div><b>2</b><span>Warm the garlic in olive oil, then add the lemon zest and juice.</span></div>
+            <div><b>3</b><span>Toss the pasta through with a splash of its water, the parmesan and the parsley.</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="sheet" id="sheet">
+        <h2>New recipe</h2>
+        <div class="lbl">NAME</div>
+        <div class="field focus" id="nameField"><span id="nameText"></span><span class="caret" id="caret"></span></div>
+        <div class="lbl">TIME</div>
+        <div class="chips"><span class="chip">10 min</span><span class="chip" id="chip20">20 min</span><span class="chip">45 min</span><span class="chip">An hour</span></div>
+        <div class="lbl">TAGS</div>
+        <div class="chips"><span class="chip">Vegetarian</span><span class="chip">Quick</span><span class="chip">Batch cook</span></div>
+        <div class="row">Add to this week <span class="switch" id="weekSwitch"><i></i></span></div>
+        <div class="foot"><span class="btn ghost">Cancel</span><span class="btn" id="saveBtn">Save recipe</span></div>
+      </div>
+      <div class="toast" id="toast"><i></i>Added to This week</div>
+    </div>
+  </div>
+</div>
+
+<div class="scene" id="phone">
+  <div class="bezel"></div>
+  <div class="glass" id="glass">
+    <div class="status"><span>10:08</span><span class="bat"></span></div>
+    <div class="island"></div>
+    <div class="ptop"><h1>Shopping list</h1><p id="left">For this week · 7 to get</p></div>
+    <div class="items" id="items"></div>
+    <div class="pfoot"><div class="pbtn" id="shareBtn">Share list</div></div>
+    <div class="dim" id="dim"></div>
+    <div class="psheet" id="psheet">
+      <div class="grab"></div>
+      <h2>Share the list</h2>
+      <div class="opt" id="optCopy"><i></i>Copy as text</div>
+      <div class="opt"><i></i>Send to someone</div>
+      <div class="opt"><i></i>Print</div>
+    </div>
+    <div class="ptoast" id="ptoast"><i></i>Copied 4 things to get</div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<script>
+const scene = new URLSearchParams(location.search).get('scene') || 'mac'
+document.body.dataset.scene = scene
+const $ = id => document.getElementById(id)
+
+// easing and a 0..1 ramp between two seconds
+const ease = x => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3)
+const ramp = (t, a, b) => ease((t - a) / (b - a))
+
+// ── the Mac take ──────────────────────────────────────────────────
+const DISHES = [
+  ['Tomato soup', '30 min', '#F2C9B8', '#D9553B'], ['Green curry', '35 min', '#D6E7C8', '#6E9E4F'],
+  ['Oat pancakes', '15 min', '#F4E3B5', '#D9A441'], ['Lentil salad', '25 min', '#E6DCCB', '#9A7B4F'],
+  ['Miso noodles', '20 min', '#EAD7C0', '#B07A45'], ['Berry crumble', '50 min', '#E8CFE0', '#9C4E86'],
+]
+const NEW = ['Lemon and herb pasta', '20 min', '#F4E3B5', '#E9C25A']
+const NAME = NEW[0]
+// When each thing happens, in seconds of the take. make.js reads these to write the
+// pointer track, so the drawn pointer lands on the click the picture shows.
+const MAC = { dur: 10, open: 1.6, typeFrom: 2.2, typeTo: 4.0, chip: 4.8, toggle: 5.8, save: 6.9, toastOff: 9.3 }
+function card([name, time, bg, dish], isNew) {
+  return `<div class="card${isNew ? ' new' : ''}"><div class="pic" style="background:${bg};--dish:${dish}"></div>
+    <div class="txt"><div class="name">${name}</div><div class="meta">${time}${isNew ? ' · This week' : ''}</div></div></div>`
+}
+function drawMac(t) {
+  const saved = t >= MAC.save + 0.1
+  $('grid').innerHTML = (saved ? [NEW, ...DISHES.slice(0, 5)] : DISHES).map((d, i) => card(d, saved && i === 0)).join('')
+  $('nRecipes').textContent = saved ? 7 : 6
+  $('nWeek').textContent = saved ? 4 : 3
+  // the sheet slides in from the right after the click and out after Save
+  const inAt = ramp(t, MAC.open + 0.05, MAC.open + 0.4)
+  const outAt = ramp(t, MAC.save + 0.05, MAC.save + 0.35)
+  const x = (1 - inAt + outAt) * 440
+  $('sheet').style.transform = `translateX(${x}px)`
+  $('sheet').style.display = x >= 440 ? 'none' : 'block'
+  const typed = Math.round(NAME.length * Math.min(1, Math.max(0, (t - MAC.typeFrom) / (MAC.typeTo - MAC.typeFrom))))
+  $('nameText').textContent = NAME.slice(0, typed)
+  $('caret').style.opacity = t < MAC.typeTo || Math.floor(t * 2) % 2 === 0 ? 1 : 0
+  $('chip20').className = 'chip' + (t >= MAC.chip + 0.05 ? ' on' : '')
+  $('weekSwitch').className = 'switch' + (t >= MAC.toggle + 0.05 ? ' on' : '')
+  $('newBtn').style.filter = Math.abs(t - MAC.open) < 0.12 ? 'brightness(.88)' : ''
+  $('saveBtn').style.filter = Math.abs(t - MAC.save) < 0.12 ? 'brightness(.88)' : ''
+  const toast = saved && t < MAC.toastOff ? ramp(t, MAC.save + 0.3, MAC.save + 0.6) * (1 - ramp(t, MAC.toastOff - 0.3, MAC.toastOff)) : 0
+  $('toast').style.opacity = toast
+  $('toast').style.transform = `translateX(-50%) translateY(${(1 - toast) * 16}px)`
+}
+function drawShot() {
+  $('sheet').style.display = 'none'
+  $('toast').style.opacity = 0
+  $('navRecipes').className = 'nav'
+  document.querySelectorAll('.nav')[1].className = 'nav on'
+  $('nRecipes').textContent = 7
+  $('nWeek').textContent = 4
+}
+
+// ── the simulator take ────────────────────────────────────────────
+const ITEMS = [['Spaghetti', '500 g'], ['Lemons', '2'], ['Parsley', '1 bunch'], ['Parmesan', '100 g'],
+  ['Garlic', '1 head'], ['Olive oil', '1 bottle'], ['Chilli flakes', '1 jar']]
+const PHONE = { dur: 8, ticks: [[1.2, 1], [2.3, 2], [3.4, 4]], share: 4.7, copy: 6.1 }
+function drawPhone(t) {
+  const done = new Set(PHONE.ticks.filter(([at]) => t >= at + 0.05).map(([, i]) => i))
+  $('items').innerHTML = ITEMS.map(([n, q], i) =>
+    `<div class="it${done.has(i) ? ' done' : ''}" id="it${i}"><span class="box"></span><span class="nm">${n}</span><span class="q">${q}</span></div>`).join('')
+  $('left').textContent = `For this week · ${ITEMS.length - done.size} to get`
+  const up = ramp(t, PHONE.share + 0.05, PHONE.share + 0.4) * (1 - ramp(t, PHONE.copy + 0.05, PHONE.copy + 0.35))
+  $('psheet').style.transform = `translateY(${(1 - up) * 340}px)`
+  $('psheet').style.display = up > 0 ? 'block' : 'none'
+  $('dim').style.opacity = up * 0.35
+  $('dim').style.display = up > 0 ? 'block' : 'none'
+  $('shareBtn').style.filter = Math.abs(t - PHONE.share) < 0.12 ? 'brightness(.88)' : ''
+  const toast = ramp(t, PHONE.copy + 0.3, PHONE.copy + 0.55)
+  $('ptoast').style.opacity = t >= PHONE.copy ? toast : 0
+  $('ptoast').style.transform = `translateX(-50%) translateY(${(1 - toast) * 12}px)`
+}
+
+// Where a thing is at second t, as fractions of the whole picture
+function at(id, t) {
+  draw(t)
+  const r = $(id).getBoundingClientRect()
+  return { x: (r.left + r.width / 2) / innerWidth, y: (r.top + r.height / 2) / innerHeight }
+}
+const r4 = n => Math.round(n * 10000) / 10000
+const pt = (t, p, click) => ({ t, x: r4(p.x), y: r4(p.y), ...(click ? { click: true } : {}) })
+
+// The pointer an agent would have left, one point per thing it did. The Fetch cursor
+// glides between them itself (ui/pointer.js plan), so nothing is baked into the pixels.
+function pointerTrack() {
+  if (scene === 'mac') {
+    const out = [
+      pt(0.2, { x: 0.52, y: 0.62 }),
+      pt(MAC.open, at('newBtn', MAC.open), true),
+      pt(3.2, at('nameField', 3.2)),
+      pt(MAC.chip, at('chip20', MAC.chip), true),
+      pt(MAC.toggle, at('weekSwitch', MAC.toggle), true),
+      pt(MAC.save, at('saveBtn', MAC.save), true),
+      pt(8.4, { x: 0.46, y: 0.44 }),
+    ]
+    draw(0)
+    return out
+  }
+  if (scene === 'phone') {
+    const out = [pt(0.3, { x: 0.5, y: 0.55 })]
+    for (const [t, i] of PHONE.ticks) out.push(pt(t, at('it' + i, t - 0.01), true))
+    out.push(pt(PHONE.share, at('shareBtn', PHONE.share), true))
+    out.push(pt(PHONE.copy, at('optCopy', PHONE.copy - 0.01), true))
+    draw(0)
+    return out
+  }
+  return []
+}
+// The glass, as fractions of the picture, and its corner as a share of its own width
+function glass() {
+  const r = $('glass').getBoundingClientRect()
+  return { x: r4(r.left / innerWidth), y: r4(r.top / innerHeight), w: r4(r.width / innerWidth), h: r4(r.height / innerHeight),
+    corner: r4(55 / r.width) }
+}
+function draw(t) { if (scene === 'phone') drawPhone(t); else if (scene === 'shot') drawShot(); else drawMac(t) }
+window.SAMPLE = { draw, pointerTrack, glass, dur: scene === 'phone' ? PHONE.dur : scene === 'mac' ? MAC.dur : 0 }
+draw(0)
+</script>
+</body>
+</html>

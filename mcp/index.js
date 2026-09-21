@@ -51,7 +51,7 @@ const INSTRUCTIONS = [
     'the Fetch app on the person\'s own machine; these tools are its hands.',
   '',
   'A screenshot is a take of one frame: take_shot captures one, and every tool that styles, aims at, marks ' +
-    'or exports a recording takes a shot too, type included.',
+    'or exports a recording takes a shot too.',
   '',
   'How a job goes, every time:',
   '- See the whole take with contact_sheet before you change it.',
@@ -63,13 +63,16 @@ const INSTRUCTIONS = [
   '- Write down with remember anything the person tells you that will still be true next week: what ' +
     'their product is called, who a demo is for, what must never be on screen.',
   '',
+  'Read a product\'s rules with guidelines before you plan, capture or style for it. A rule you draft ' +
+    'counts only once the person says yes to it.',
+  '',
   'Aim at a box, never at a coordinate: call find_on_screen at that moment in the person\'s own words ' +
     'and send the id it hands back. A zoom or a mark placed from numbers read off a picture lands on ' +
-    'the wrong thing, and the result will say so after the fact.',
+    'the wrong thing.',
   '',
-  'Decide rather than ask: a default they can see and undo beats a question. The exception is narrow and ' +
-    'is what ask is for, a request with two readings that would touch different parts of the take. A change ' +
-    'that is wide or awkward to take back, show with propose before it lands rather than after.',
+  'Decide rather than ask: a default they can see and undo beats a question. ask is for a request with two ' +
+    'readings that would touch different parts of the take. Show a change that is wide or awkward to take ' +
+    'back with propose before it lands.',
   '',
   'Every result carries the state it changed: the plan that is left, how far the edit is from the brief, ' +
     'a frame of it, and what is wrong with it. Read that rather than calling again to find out.',
@@ -93,6 +96,30 @@ export function build() {
   const drive = (op, args, opts) => {
     try { setClient(server.server.getClientVersion()?.name) } catch {}
     return call(op, args, opts)
+  }
+
+  // A long call its client can take back. The app is handed a key for the work it
+  // starts (args.job), and a cancel from the client, or this side giving up on the
+  // answer, sends job.cancel with that key so the work stops where it runs. The call
+  // itself still answers: the app says in words that the work was stopped.
+  let jobSeq = 0
+  const stoppable = async (work, extra) => {
+    const job = `${process.pid}-${Date.now().toString(36)}-${++jobSeq}`
+    const signal = extra && extra.signal
+    let sent = false
+    const stop = () => { if (sent) return; sent = true; drive('job.cancel', { job }).catch(() => {}) }
+    if (signal) {
+      if (signal.aborted) throw new Error('cancelled before it started')
+      signal.addEventListener('abort', stop, { once: true })
+    }
+    try {
+      return await work(job)
+    } catch (e) {
+      if (/did not answer/.test(String(e && e.message))) stop()
+      throw e
+    } finally {
+      if (signal) signal.removeEventListener('abort', stop)
+    }
   }
 
   server.registerTool(
@@ -162,7 +189,11 @@ export function build() {
         'working with every tool, and list_recordings shows the new one. ' +
         'audio on the result is read off the written file rather than off what was asked for, so a take ' +
         'that came out silent says so here instead of leaving transcribe to break the news, and one whose ' +
-        'sound stopped part way says for how long the end is silence (audio.sync.silent_end_ms). A device take ' +
+        'sound stopped part way says for how long the end is silence (audio.sync.silent_end_ms). Where the ' +
+        'take had system audio, audio.scope says whose sound it is, off the recorder\'s own report: app (only ' +
+        'the window\'s app), device (only the simulator\'s own sound) or mac (everything this Mac played, ' +
+        'music, a notification or a call included), and audio.heard says it in words, with the reason for mac. ' +
+        'Tell the person when it is mac. A device take ' +
         'also puts back everything Fetch changed on the device and writes the device screen rectangle onto ' +
         'the edit, and a brief directed before the take existed becomes the job on it.',
       inputSchema: z.object({}),
@@ -283,8 +314,9 @@ export function build() {
         'The iOS simulators on this Mac, and the few things Fetch does to one. Recording a simulator ' +
         'is record_start with simulator, and a screenshot of one is take_shot with simulator: the ' +
         'window is captured where it sits and nothing is ever brought to the front. A take of it ' +
-        'carries sound by default, where a capture of the device framebuffer has no audio track at all, ' +
-        'and that sound is everything this Mac plays while it records, the device among it.\n' +
+        'carries sound by default, where a capture of the device framebuffer has no audio track at all. ' +
+        'That sound is the device\'s own where the person has given Fetch System Audio Recording, and ' +
+        'otherwise everything this Mac plays while it records, the device among it; record_stop says which.\n' +
         'list: every device, its state, its own screen in pixels and points, and its window if one is ' +
         'on screen. Where a picture of that window has been taken it also carries the screen rectangle ' +
         'inside it and density, the captured pixels per pixel the device really has: under 1 the window ' +
@@ -867,6 +899,49 @@ export function build() {
     },
     async args => text(await drive('memory.remember', args)))
 
+  // The rules a product's work is held to, read before anything is planned, captured or
+  // styled. Built on the memory above: a rule is a product fact with a section.
+  server.registerTool(
+    'guidelines',
+    {
+      description:
+        'A product\'s rules, read before you plan, capture or style anything for it: name (what it is called ' +
+        'and how it is said), audience (who a demo is for), never (what must never be on screen), look (how ' +
+        'its screenshots look) and words (the words it avoids, and what it says instead). read gives the rules ' +
+        'in force by section, the drafts waiting, and each gap as the question to ask the person. write adds ' +
+        'rules: with from person, the person\'s own words, which Fetch puts to the person in a question before they ' +
+        'are in force (kept as drafts if they do not confirm); with from screen, help or code, a ' +
+        'draft you read off the product itself, with evidence saying where. A draft is in no briefing and ' +
+        'checks nothing until the person says yes: show gives the drafts word for word with a seal, show that ' +
+        'text to the person, and adopt only the ids they said yes to, with that seal and any rewording they ' +
+        'made in edits. Fetch asks the person to confirm an adopt too, so your word alone never puts a rule in force. reject drops a draft; a rule in force goes with remember forget. check holds text (a ' +
+        'caption, a title) and labels (find_on_screen\'s element texts) to the rules in force. Rules belong ' +
+        'to one product: name it, or pass the path of one of its takes. The rules in force also open the ' +
+        'memory block that direct, apply_edit, apply_look, take_shot and record_start hand back, and ' +
+        'find_on_screen and review say when a picture or an edit breaks one.',
+      inputSchema: z.object({
+        action: z.enum(['read', 'write', 'show', 'adopt', 'reject', 'check']).optional()
+          .describe('Default read, or write when rules are sent.'),
+        product: z.string().optional().describe('The product, when no path names it.'),
+        path: z.string().optional().describe('Absolute path to one of the product\'s takes or shots, which names it.'),
+        rules: z.array(z.object({
+          rule: z.string().describe('The rule, one sentence. In the person\'s own words when from is person.'),
+          section: z.enum(['name', 'audience', 'never', 'look', 'words']).optional()
+            .describe('Worked out from the sentence when left out; a sentence that fits none is refused.'),
+          from: z.enum(['person', 'screen', 'help', 'code']).optional()
+            .describe('person puts it in force once the person confirms it in Fetch. Anything else, or nothing, makes it a draft.'),
+          evidence: z.string().optional().describe('Where a draft was read: a screen, a help page URL.'),
+        })).max(20).optional().describe('write: the rules to add.'),
+        ids: z.array(z.string()).optional().describe('show, adopt, reject: which drafts, e.g. ["F4"]. show with none shows every draft.'),
+        seal: z.string().optional().describe('adopt: the seal show handed back for exactly these drafts.'),
+        edits: z.record(z.string(), z.string()).optional()
+          .describe('adopt: the person\'s rewording of a draft on the way in, by id, e.g. {"F4": "..."}.'),
+        text: z.string().optional().describe('check: words to hold to the rules, a caption or a title.'),
+        labels: z.array(z.string()).optional().describe('check: texts read off a picture, e.g. find_on_screen element texts.'),
+      }),
+    },
+    async args => text(await drive('memory.guidelines', args)))
+
   server.registerTool(
     'can_loop',
     {
@@ -965,7 +1040,9 @@ export function build() {
             'the file written is the deliverable.'),
       }),
     },
-    async args => text(await drive('edit.export', args, { timeoutMs: 20 * 60 * 1000 })))
+    // An export runs for minutes. When the client cancels this call, or it runs out of
+    // time, the export is stopped in the app too, rather than left to finish for nobody.
+    async (args, extra) => text(await stoppable(job => drive('edit.export', { ...args, job }, { timeoutMs: 20 * 60 * 1000 }), extra)))
 
   server.registerTool(
     'rename_recording',
@@ -1330,10 +1407,31 @@ export function build() {
         '(an unedited MP4 made on stopping when Convert to MP4 is on; not an export) and ' +
         'versions (working files such as a dead-air cut). Shots are listed here too, with kind "shot": ' +
         'the kind is read off what was captured and never off what was exported, so styling a shot never ' +
-        'makes it a take.',
+        'makes it a take. While the sample is open, this lists the sample and nothing else, each entry ' +
+        'marked sample, as the Library does.',
       inputSchema: z.object({}),
     },
     async () => text(await drive('recordings.list')))
+
+  // Trying Fetch with nothing recorded. The sample is Fetch's own: two takes and a shot
+  // of a product made up for it, laid out as real takes in a folder of their own.
+  server.registerTool(
+    'sample',
+    {
+      description:
+        'The sample library: two takes and a screenshot of a made up product, so a person can try every tool ' +
+        'without recording anything. open lays it out as real takes in a folder of its own and shows it in ' +
+        'the Library in place of theirs; close deletes it and puts their library back. Their own takes, ' +
+        'folders and settings are never touched either way, and close says whether they changed while it ' +
+        'was open. The result lists each piece with its path and one job to try on it. Every other tool ' +
+        'works on these paths as on any take, an export lands inside the sample, and what you remember ' +
+        'about the made up product is kept in the sample and goes with it. Open it when the person wants ' +
+        'to see what Fetch does and has nothing recorded, or asks for it. status says whether it is open.',
+      inputSchema: z.object({
+        action: z.enum(['status', 'open', 'close']).optional().describe('Default status.'),
+      }),
+    },
+    async args => text(await drive('sample.do', args, { timeoutMs: 60000 })))
 
   server.registerTool(
     'probe',

@@ -77,17 +77,36 @@ function frameRGBA(src, at, W, H) {
 
 // The glass's corner on a take whose document has none, read off the take itself. The
 // middle frame first; a dark screen there (an app black to its own edge) refuses, so a
-// quarter and three quarters are tried, and nothing past that.
-async function glassCorner(src, viewport, W, H, dur) {
+// quarter and three quarters are tried, and nothing past that. The screen goes in so the
+// reading is held to the band round its own radius where that is known.
+//
+// A document that already carries a corner on a screen whose radius is not known (every
+// iPad, any screen not in ui/simulator.js SCREEN_CORNERS) cannot be judged from the number
+// alone, so one frame is read and the stored corner checked against it. One that does not
+// agree comes back as { corner, replaces }: the reading, and the number it replaces. One
+// that agrees, or a frame that gives no reading, leaves the stored corner as it is.
+async function glassCorner(src, viewport, W, H, dur, screen) {
   const Sim = require('../simulator')
+  const had = +(viewport && viewport.corner) > 0 ? +viewport.corner : 0
   const times = dur > 0.2 ? [0.5, 0.25, 0.75].map(k => k * dur) : [0]
   for (const t of times) {
     const frame = await frameRGBA(src, t, W, H)
     if (!frame) continue
-    const r = Sim.measureCorner(frame, viewport)
-    if (r.ok) return r.value.share > 0 ? { corner: r.value.share, at: +t.toFixed(3) } : null
+    const r = Sim.measureCorner(frame, viewport, { screen })
+    if (!r.ok) continue
+    if (had) {
+      const st = r.value.stored
+      return st && st.agrees === false ? { corner: r.value.share, at: +t.toFixed(3), replaces: had } : null
+    }
+    return r.value.share > 0 ? { corner: r.value.share, at: +t.toFixed(3) } : null
   }
   return null
+}
+// Whether a device take's corner is read off its frames: where the document has none, or
+// has one on a screen whose own radius is not known and so has to be checked on a frame.
+const glassWanted = (v, screen) => {
+  if (!(+v.corner > 0)) return true
+  try { return require('../simulator').screenCorner(screen) == null } catch { return false }
 }
 const sameBox = (a, b) => !!a && !!b && ['x', 'y', 'w', 'h'].every(k => Math.abs(+a[k] - +b[k]) <= 0.002)
 
@@ -133,8 +152,8 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
     const tasks = {}
 
     const v = opts.viewport
-    if (opts.screen && v && !(+v.corner > 0) && sameBox(crop, v)) {
-      tasks.glass = memo(`gl|${id}|${JSON.stringify(v)}`, () => glassCorner(seek.src, v, W, H, dur))
+    if (opts.screen && v && glassWanted(v, opts.screen) && sameBox(crop, v)) {
+      tasks.glass = memo(`gl|${id}|${JSON.stringify(v)}|${JSON.stringify(opts.screen)}`, () => glassCorner(seek.src, v, W, H, dur, opts.screen))
     }
 
     if (opts.backdrop) {
@@ -266,17 +285,18 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
 /**
  * The corner prepareRender reads for a device take whose document has none, from the
  * same cache, so a caller that writes it onto the document (agent-bridge export) does not
- * read the take a second time. Null where the document has a corner, the crop is not the
- * glass, or no frame gave one.
+ * read the take a second time. Null where the document has a corner it can keep, the crop
+ * is not the glass, or no frame gave one. { corner, replaces } where a stored corner on a
+ * screen of unknown radius disagreed with the frame.
  */
 async function glassFor(src, doc, meta) {
   const v = doc && doc.viewport, crop = doc && doc.crop
   const screen = doc && doc.device && doc.device.screen
-  if (!src || !fs.existsSync(src) || !screen || !v || +v.corner > 0 || !sameBox(crop, v)) return null
+  if (!src || !fs.existsSync(src) || !screen || !v || !glassWanted(v, screen) || !sameBox(crop, v)) return null
   if (!(meta && meta.width > 0 && meta.height > 0)) return null
   const st = fs.statSync(src)
   const id = `${src}#${st.mtimeMs}#${st.size}`
-  return memo(`gl|${id}|${JSON.stringify(v)}`, () => glassCorner(src, v, meta.width, meta.height, meta.duration || 0))
+  return memo(`gl|${id}|${JSON.stringify(v)}|${JSON.stringify(screen)}`, () => glassCorner(src, v, meta.width, meta.height, meta.duration || 0, screen))
 }
 
 module.exports = { prepareRender, glassFor }

@@ -40,6 +40,7 @@ const updater = require('./ui/updater')
 const telemetry = require('./ui/telemetry')
 const agentBridge = require('./ui/agent-bridge')
 const jobQueue = require('./ui/job-queue')
+let agentJobSeq = 0      // one id per agent job, for the queue and the processor alike
 const activity = require('./ui/activity-log')
 const chatLog = require('./ui/chat-log')
 const agentChat = require('./ui/agent-chat')
@@ -280,15 +281,22 @@ app.whenReady().then(() => {
     // ffmpeg processes each threading across every core.
     // Any other edit job an agent asks for (remove dead air, enhance audio) goes
     // through the same queue as export, for the same reason.
-    runOp: (op, src, opts) => jobQueue.submit({
-      id: `agent:${op}:` + Date.now(), op,
-      run: () => {
-        const p = require('./processor'), jid = `agent-${op}-` + Date.now()
-        if (op === 'silence') return p.removeSilence(src, opts || {}, null, jid)
-        if (op === 'enhance') return p.enhanceAudio(src, opts || {}, null, jid)
-        throw new Error('unknown op ' + op)
-      },
-    }),
+    // One id for the queue and the processor, from a counter (two jobs in one millisecond
+    // shared an id when it was the clock), so the brake, the person's Cancel and
+    // processor.cancel all reach the same job. The work registers its own stop.
+    runOp: (op, src, opts) => {
+      const id = `agent:${op}:` + (++agentJobSeq)
+      return jobQueue.submit({
+        id, op,
+        run: () => {
+          const p = require('./processor')
+          jobQueue.onCancel(() => p.cancel(id))
+          if (op === 'silence') return p.removeSilence(src, opts || {}, null, id)
+          if (op === 'enhance') return p.enhanceAudio(src, opts || {}, null, id)
+          throw new Error('unknown op ' + op)
+        },
+      })
+    },
     setQuiet: (on, agent) => { quietTake = !!on; agentTake = !!agent },
     // The one app Fetch ever opens on somebody's Mac, and only inside a `ready` they
     // asked for: `simctl boot` is headless and puts no window on screen, so the boot
@@ -306,10 +314,12 @@ app.whenReady().then(() => {
       if (control && !control.isDestroyed()) control.webContents.send('prefs-changed', patch)
     },
     // the compositor when it can draw the edit, the classic renderer otherwise (ui/render-host.js)
-    exportDoc: (src, opts) => jobQueue.submit({
-      id: 'agent:export:' + Date.now(), op: 'export',
-      run: () => require('./ui/render-host').exportEdit(src, opts, null, 'agent-export-' + Date.now()),
-    }),
+    // `key` is the bridge's own name for the call ('agent:export:<job>'), so the queue, the
+    // processor and the bridge's job.cancel all hold one id
+    exportDoc: (src, opts, key) => {
+      const id = key || 'agent:export:' + (++agentJobSeq)
+      return jobQueue.submit({ id, op: 'export', run: () => require('./ui/render-host').exportEdit(src, opts, null, id) })
+    },
     // whether the person has stopped agents with Esc, for a question whose answer lands
     // after the stop: a late yes must not act for an agent that was stopped
     held: () => !!brake.held,
@@ -317,6 +327,11 @@ app.whenReady().then(() => {
     clientGone: agentGone,
     // the recorder's own account of the take that just stopped, and only that one
     takeSound: () => (lastTakeSound && Date.now() - lastTakeSound.at < 10 * 60e3 ? lastTakeSound.sound : null),
+    // where the sample is, while it is open (ui/sample.js), so list_recordings and memory
+    // read it without asking the window
+    sampleRoot: () => sampleOpen(),
+    // and whose sound the take under way is taking, as its started event said
+    takeScope: () => (nativeRec && nativeRec.started && nativeRec.started.soundScope) || null,
   })
   brakeAgentOps()
   // a chat turn ending, however it ends, can end the driving
@@ -753,6 +768,9 @@ function stopAgent(how) {
   hideAgentCursor()
   // a yes given "until Fetch quits" was given to an agent the person has just stopped
   if (agentBridge.forgetConsent) agentBridge.forgetConsent()
+  // and every job an agent has queued or running (an export, dead air, enhance audio),
+  // including any the bridge does not track. A person's jobs are ext: or a number.
+  jobQueue.cancelWhere(id => String(id).startsWith('agent:'))
   // no by: a person did this
   activity.record({ op: 'agent.stop', title: `Stopped ${who}`, detail: how, ok: true })
   driveChanged(); paintBrake()
@@ -1306,6 +1324,7 @@ const PRIVACY_PANES = {
   screen: 'Privacy_ScreenCapture',
   mic: 'Privacy_Microphone',
   camera: 'Privacy_Camera',
+  audio: 'Privacy_AudioCapture',
 }
 ipcMain.handle('open-privacy', (e, which) => {
   const pane = PRIVACY_PANES[which] || PRIVACY_PANES.screen
@@ -1336,6 +1355,27 @@ function recorderPath() {
   }
   return null
 }
+
+// System Audio Recording, which one app's or one device's sound needs (a Core Audio
+// process tap, Recorder.swift AppSound). A take never asks for it: a tap made without it
+// records silence and raises macOS's dialog mid take. So it is read here without asking,
+// for Settings, and asked for only when the person turns on "Only the recorded app's
+// sound" there. Until it is given, window and simulator takes hear the whole Mac and say so.
+function audioAccess(request) {
+  const bin = recorderPath()
+  if (!bin) return Promise.resolve({ state: 'unavailable' })
+  return new Promise(resolve => {
+    require('child_process').execFile(bin, request ? ['--audio-access', 'request'] : ['--audio-access'],
+      { timeout: request ? 120000 : 5000 }, (err, out) => {
+        let state = 'unknown'
+        try { state = JSON.parse(String(out || '').trim().split('\n').pop()).state || 'unknown' } catch {}
+        resolve({ state, ...(err && state === 'unknown' ? { error: err.message } : {}) })
+      })
+  })
+}
+ipcMain.handle('audio-access', () => audioAccess(false))
+// the one place in the app that can put the dialog up, and only from the person's click
+ipcMain.handle('audio-access-request', () => audioAccess(true))
 
 let nativeRec = null      // { proc, out, started, resolveStop }
 // What the recorder said about the last take's sound (leadMs, gaps, lostMs per track),
@@ -1406,6 +1446,12 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
     } catch (err) { console.error('exclusion list failed:', err.message) }
   }
   if (opts.systemAudio) args.push('--system-audio')
+  // Which simulator the take is for, so the recorder taps that device's sound alone
+  // rather than refusing to guess between two booted ones (Recorder.swift SoundPlan).
+  // The bridge knows it for an agent's take; the renderer may pass one for the person's.
+  const agentTaking = !!(agentBridge.startingAgentTake && agentBridge.startingAgentTake())
+  const soundDevice = opts.soundDevice || (agentTaking && agentBridge.takeSoundDevice ? agentBridge.takeSoundDevice() : null)
+  if (opts.systemAudio && soundDevice) args.push('--sound-device', String(soundDevice))
   if (opts.mic) { args.push('--mic'); if (opts.micDeviceId) args.push('--mic-device', opts.micDeviceId) }
   if (opts.hevc) args.push('--hevc')
   // An agent's take never shows the Mac's own pointer: that belongs to the person at
@@ -1806,7 +1852,61 @@ function tidySaveFolders() {
   }
 }
 
-ipcMain.handle('list-recordings', () => { tidySaveFolders(); return proc.listRecordings() })
+// The sample library (ui/sample.js), while it is open: the Library, the agent's
+// list_recordings and memory all read the sample and nothing of the person's. The renderer
+// says where it is on the way in and clears it on the way out; a folder that no longer
+// carries the sample's marker is never taken for it.
+let sampleRoot = null
+const sampleOpen = () => {
+  try { return sampleRoot && require('./ui/sample').isSample(sampleRoot) ? sampleRoot : null } catch { return null }
+}
+ipcMain.handle('sample-root', (e, r) => {
+  const was = sampleOpen()
+  sampleRoot = r ? String(r) : null
+  // the sample's rows in the activity log go with it (ui/activity-log.js)
+  activity.sampleOpen(!!sampleRoot)
+  // leaving: whatever an agent still has running on a sample take stops before the folder
+  // goes, so a late export cannot write into a folder that is being deleted
+  if (was && !sampleRoot) {
+    try { if (agentBridge.stopSampleJobs) agentBridge.stopSampleJobs(was) } catch {}
+  }
+  return true
+})
+// The Guidelines card in Settings: the person reading and writing their products' rules
+// (ui/guidelines.js). This is the person acting in Fetch itself, so what they write is in
+// force at once and their Yes on a draft is the yes an agent can only ask for. While the
+// sample is open its rules are the sample's, as an agent's are.
+ipcMain.handle('guidelines', (e, args = {}) => {
+  const G = require('./ui/guidelines'), Memory = require('./ui/memory')
+  const root = sampleOpen() || app.getPath('userData')
+  const product = args.product ? String(args.product).trim() : ''
+  const at = { root, ...(product ? { product } : {}) }
+  const known = () => {
+    const seen = new Map()
+    for (const f of Memory.read(root).facts) if (f.scope === 'product' && f.about) seen.set(Memory.slug(f.about), f.about)
+    return [...seen.values()]
+  }
+  switch (args.action) {
+    case 'products': return { products: known() }
+    case 'read': return G.read(at)
+    case 'write': return G.write(at, [{ rule: args.rule, section: args.section, from: 'person' }])
+    // the person's Yes: shown to them in the card, so shown here, and adopted in the same breath
+    case 'yes': {
+      const shown = G.show(at, { ids: [args.id] })
+      return G.adopt(at, { ids: [args.id], seal: shown.seal, ...(args.edit ? { edits: { [args.id]: args.edit } } : {}) })
+    }
+    case 'no': return G.reject(at, [args.id])
+    case 'forget': return Memory.forget({ root, about: product }, { id: args.id })
+    default: throw new Error('unknown guidelines action')
+  }
+})
+
+ipcMain.handle('list-recordings', () => {
+  const s = sampleOpen()
+  if (s) return require('./ui/sample').list(s, proc)
+  tidySaveFolders()
+  return proc.listRecordings()
+})
 ipcMain.handle('probe', (e, src) => proc.probeMeta(src))
 
 // ---- the lasso: the person points at an area of their own video ----------
@@ -1993,8 +2093,10 @@ ipcMain.handle('cancel-job', (e, id) => {
   // lane; otherwise cancelling something tenth in line would wait for the nine ahead.
   // A job sent with its own jobId runs as ext:<jobId> (edit-job namespaces it), so the
   // editor's Cancel, which knows only its jobId, has to be looked up the same way.
-  const dropped = jobQueue.dropIfQueued(id) || jobQueue.dropIfQueued('ext:' + id)
-  return proc.cancel(id) || proc.cancel('ext:' + id) || dropped
+  // One path for a person's cancel and an agent's: the queue stops a job queued or
+  // running by its own id (its work's stop hooks included), then the processor's children.
+  const queued = jobQueue.cancel(id) || jobQueue.cancel('ext:' + id)
+  return proc.cancel(id) || proc.cancel('ext:' + id) || queued
 })
 ipcMain.handle('queue-stats', () => jobQueue.stats())
 ipcMain.handle('formats', () => proc.formatList())

@@ -86,10 +86,14 @@ async function main() {
   }
   {
     fake({ pixels: [[40, 4608], [200, 4608]], hang: 30000 })
+    // The stand-in is a node script, and on a loaded Mac (load 14, npm test running the
+    // suites one after another) starting node alone took longer than the 400 ms this gave
+    // it, so it was given up on before it wrote a pixel and the suite failed one check in
+    // four runs. 2 s is still a fifteenth of the take's 30 s hang.
     const t0 = Date.now()
-    const r = await within(8000, Levels.measure('take.mov', { timeout: 400 }))
+    const r = await within(8000, Levels.measure('take.mov', { timeout: 2000 }))
     is('a take that never ends is given up on', r, { lo: 40 / 255, hi: 200 / 255 })
-    is('and gives up when it said it would', Date.now() - t0 < 3000, true)
+    is('and gives up when it said it would', Date.now() - t0 < 5000, true)
   }
   {
     proc.FFMPEG = path.join(dir, 'no-ffmpeg-here')

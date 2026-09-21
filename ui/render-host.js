@@ -24,13 +24,17 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const proc = require('../processor')
+const jobQueue = require('./job-queue')
 const Plan = require('./compositor/plan')
 const Prepare = require('./compositor/prepare')
 const Sinks = require('./compositor/sinks')
 
 const IDLE_MS = 3 * 60 * 1000
 let win = null, ready = null, idleTimer = null
-const jobs = new Map()          // id -> { resolve, reject, onProgress, pids, stopped }
+const jobs = new Map()          // id -> { resolve, reject, onProgress, pids, stopped, ended }
+// Window jobs that were cancelled and given up on before the window answered. A pid the
+// window reports for one of them after that is killed, not ignored (id -> when)
+const abandoned = new Map()
 let seq = 0
 
 // ---- cancel ----------------------------------------------------------------
@@ -97,11 +101,22 @@ function cancelGuard(jobId) {
 
 // The answer the caller waits for: the work's own, or "cancelled" the moment one comes
 // in. The work itself is kept stopped by the guard until it has actually settled.
+//
+// Work that runs inside a queued job (ui/job-queue.js) can also be stopped by the queue's
+// id, which is the only id an agent's export has anyone holding: main.js makes the jobId
+// passed here a moment after the queue's and keeps neither. A cancel through the queue
+// is the same processor.cancel(jobId) a person's Cancel is, so it kills the same
+// children, leaves the same tombstone, and keeps the same sweep going.
 function guarded(jobId, work) {
   const g = cancelGuard(jobId)
+  const unhook = jobId == null ? () => {} : jobQueue.onCancel(() => proc.cancel(jobId))
   let p
   try { p = Promise.resolve(work(g)) } catch (e) { p = Promise.reject(e) }
-  p.then(g.release, g.release)
+  const done = () => { unhook(); g.release() }
+  p.then(done, done)
+  // the queue's lane is held on the work itself, not on the race, so a cancelled export
+  // keeps it until its children have stopped
+  jobQueue.working(p)
   return Promise.race([p, g.stopped])
 }
 
@@ -131,7 +146,7 @@ function renderWindow() {
   ready.catch(() => { if (win === w) { try { w.destroy() } catch {} win = null; ready = null } })
   // a crash fails whatever it was drawing; the next export starts a fresh window
   w.webContents.on('render-process-gone', (_e, d) => {
-    for (const [id, j] of jobs) { jobs.delete(id); j.reject(new Error('the compositor stopped: ' + d.reason)) }
+    for (const [id, j] of jobs) { jobs.delete(id); j.end(); j.reject(new Error('the compositor stopped: ' + d.reason)) }
     if (win === w) { win = null; ready = null }
   })
   w.on('closed', () => { if (win === w) { win = null; ready = null } })
@@ -153,7 +168,9 @@ ipcMain.on('render:progress', (_e, m) => {
 })
 ipcMain.on('render:pid', (_e, m) => {
   const j = jobs.get(m.id)
-  if (!j) return
+  // a window starved past its grace can still start an ffmpeg for a job it was told to
+  // stop: that one was left running for good, writing a picture nobody would collect
+  if (!j) { if (abandoned.has(m.id)) { try { process.kill(m.pid, 'SIGKILL') } catch {} } return }
   j.pids.add(m.pid)
   // an ffmpeg the window started just before the cancel reached it
   if (j.stopped) { try { process.kill(m.pid, 'SIGKILL') } catch {} }
@@ -163,6 +180,7 @@ ipcMain.on('render:done', (_e, m) => {
   if (!j) return
   jobs.delete(m.id)
   clearTimeout(j.grace)
+  j.end()
   if (m.error) j.reject(Object.assign(new Error(m.error), { cancelled: !!m.cancelled }))
   else j.resolve(m.stats)
 })
@@ -176,6 +194,10 @@ async function drawInWindow(msg, onProgress, jobId, guard) {
   if (guard) guard.check()
   const id = ++seq
   const entry = { onProgress, pids: new Set(), stopped: false, grace: null }
+  // settles when the window's work on this job is really over, not when its caller was
+  // answered: what the export cleans up after a cancel waits on this
+  entry.ended = new Promise(resolve => { entry.end = resolve })
+  if (guard) guard.drawn = entry.ended
   // processor.cancel(jobId) kills every child registered under the job: this one stands
   // for the window's work, and kills its ffmpegs too in case the window is busy. It
   // answers "cancelled" at once and gives the window GRACE_MS to say it has stopped; a
@@ -192,6 +214,10 @@ async function drawInWindow(msg, onProgress, jobId, guard) {
         if (jobs.get(id) !== entry) return
         jobs.delete(id)
         for (const pid of entry.pids) { try { process.kill(pid, 'SIGKILL') } catch {} }
+        const now = Date.now()
+        for (const [k, t] of abandoned) if (now - t > SWEEP_CAP_MS) abandoned.delete(k)
+        abandoned.set(id, now)
+        entry.end()
         if (win === w && !jobs.size) { console.warn('[render] the window did not stop, closing it'); closeWindow() }
       }, GRACE_MS)
     },
@@ -247,9 +273,24 @@ function moveInto(from, to) {
   try { fs.renameSync(from, to) } catch { fs.copyFileSync(from, to); try { fs.unlinkSync(from) } catch {} }
 }
 
-async function classic(src, opts, onProgress, jobId, why) {
-  const r = await proc.applyEdit(src, opts, onProgress, jobId)
-  return { ...r, engine: 'classic', why }
+// The classic renderer writes its partial beside where it is told to and renames it in
+// the moment its ffmpeg exits. A cancel that lands in the last instant of that ffmpeg
+// found a clean exit, and the deliverable was replaced after the caller had been told
+// "cancelled". So it is told a staging name beside the deliverable, and the file is
+// moved in here, after the same last check the compositor's export makes.
+async function classic(src, opts, onProgress, jobId, why, guard = null) {
+  const fmt = proc.FORMATS[opts.format || 'mp4'] || proc.FORMATS.mp4
+  const dest = opts.dest || proc.exportDest(src, fmt.ext)
+  const staged = path.join(path.dirname(dest), `.${path.parse(dest).name}.staged${path.extname(dest) || '.' + fmt.ext}`)
+  try {
+    const r = await proc.applyEdit(src, { ...opts, dest: staged }, onProgress, jobId)
+    if (guard) guard.check()
+    fs.renameSync(staged, dest)
+    const mb = +(fs.statSync(dest).size / 1e6).toFixed(1)
+    return { ...r, file: dest, mb, engine: 'classic', why }
+  } finally {
+    try { fs.unlinkSync(staged) } catch {}
+  }
 }
 
 /**
@@ -273,7 +314,7 @@ async function exportWith(src, opts, onProgress, jobId, guard) {
       `compositor and this export cannot use it: ${pick.why.join(', ')}. Export it without size, or fix what ` +
       'is named here and ask again.')
   }
-  if (pick.engine !== 'gl') return classic(src, opts, onProgress, jobId, pick.why)
+  if (pick.engine !== 'gl') return classic(src, opts, onProgress, jobId, pick.why, guard)
   try {
     return await glExport(src, opts, onProgress, jobId, pick.why, guard)
   } catch (e) {
@@ -281,7 +322,7 @@ async function exportWith(src, opts, onProgress, jobId, guard) {
     if (store) throw e
     guard.check()
     console.warn('[render] compositor failed, using the classic renderer:', e && e.message)
-    return classic(src, opts, onProgress, jobId, [...pick.why, 'the compositor failed: ' + (e && e.message)])
+    return classic(src, opts, onProgress, jobId, [...pick.why, 'the compositor failed: ' + (e && e.message)], guard)
   }
 }
 
@@ -329,7 +370,8 @@ async function glExport(src, opts, onProgress, jobId, why, guard) {
   // format rather than a second encode of what the compositor already drew
   const vext = gif ? 'gif' : fmtId === 'webm' ? 'webm' : 'mp4'
   const video = path.join(os.tmpdir(), `${tag}.${vext}`), audio = path.join(os.tmpdir(), `${tag}.m4a`)
-  const tmp = [video, audio, out]
+  // and the music bed mixed beside out, which a cancel mid-mix would otherwise leave there
+  const tmp = [video, audio, out, path.join(path.dirname(out), `.${path.parse(out).name}.music.${fmt.ext}`)]
   const t0 = Date.now()
   let written = null
   try {
@@ -395,7 +437,18 @@ async function glExport(src, opts, onProgress, jobId, why, guard) {
       ...(written ? { written } : {}),
     }
   } finally {
-    for (const f of tmp) { try { fs.unlinkSync(f) } catch {} }
+    const sweep = files => { for (const f of files) { try { fs.unlinkSync(f) } catch {} } }
+    sweep(tmp)
+    // A cancel answers before the window has stopped, and a starved window's ffmpeg is
+    // only killed when its pid arrives, so the picture can be written for a moment after
+    // this. The scratch files are swept again once the window's job has ended, and once
+    // more at the cap. Only the scratch: out is beside the deliverable, and a re-export
+    // started meanwhile writes the same name.
+    if (guard.cancelled) {
+      if (guard.drawn) guard.drawn.then(() => sweep([video, audio]))
+      const late = setTimeout(() => sweep([video, audio]), SWEEP_CAP_MS)
+      if (late.unref) late.unref()
+    }
   }
 }
 

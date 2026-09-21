@@ -1300,6 +1300,17 @@ t('review is pure on a capture too, and never throws on a document with nothing 
   assert.ok(R.review({ doc: { kind: 'shot' } }).items.length >= 0)
 })
 
+t('a word the product\'s rules avoid is a finding of review\'s own, and holds the verdict', () => {
+  const clean = run(doc(), brief())
+  const said = run(doc(), brief(), { rules: { words: [{ term: 'simply', rule: 'Avoid "simply", say "just"', instead: 'just' }] } })
+  const it = said.items.find(i => i.rule === 'rule-words')
+  assert.ok(it && it.severity === 'should', JSON.stringify(said.items.map(i => i.rule)))
+  assert.match(it.what, /"simply" \(say "just"\)/)
+  assert.ok(said.score < clean.score || clean.verdict !== 'ready' || said.verdict === 'nearly')
+  assert.strictEqual(run(doc(), brief(), { rules: { words: [{ term: 'simply' }] }, declined: ['rule-words'] })
+    .items.find(i => i.rule === 'rule-words').declined, true)
+})
+
 t('no em dashes anywhere a person or a model reads', () => {
   const all = JSON.stringify([
     run(doc(), brief({ must_hide: ['x'], must_keep: ['thing'] }), { levels: { lo: 0.01, hi: 0.5 } }),

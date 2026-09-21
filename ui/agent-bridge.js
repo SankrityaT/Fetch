@@ -133,6 +133,9 @@ const TITLES = {
   'voice.list': 'Listed the voices',
   'voice.speak': 'Generated a voiceover',
   'memory.remember': 'Remembered something',
+  'memory.guidelines': 'Read the product\'s rules',
+  'sample.do': 'Worked with the sample library',
+  'job.cancel': 'Stopped its export',
   'shot.take': 'Took a screenshot',
   'sim.do': 'Worked with a simulator',
   'edit.versions': 'Read the version history',
@@ -208,11 +211,13 @@ const ops = {
     // simctl offers cannot, and every transcript-spine feature Fetch has reads that
     // track. Can, and now does: system audio was off by default on every path, so what
     // an agent actually got was the silent file this sentence said it would not be
-    // (ui/recorder-opts.js). What lands on it is everything this Mac plays while it
-    // records, the device's sound among it: a window take's sound is taken from the
-    // display with no app named, because a filter naming apps is what took replayd, and
-    // with it every screen capture on the Mac, down (Recorder.swift start). Nothing is
-    // brought to the front to do it.
+    // (ui/recorder-opts.js). What lands on it is one of two things, and the result says
+    // which off the recorder's own report: the device's own sound, through a Core Audio
+    // process tap that replayd never sees, where the person has already given Fetch
+    // System Audio Recording on macOS 14.4 or later; otherwise everything this Mac plays,
+    // the device among it, taken from the display with no app named, because a capture
+    // filter naming apps is what took replayd, and with it every screen capture on the
+    // Mac, down (Recorder.swift SoundPlan). Nothing is brought to the front to do it.
     let sim = args.simulator != null ? await simTarget(args.simulator) : null
     if (sim) args = { ...args, window: String(sim.window.id) }
 
@@ -264,7 +269,8 @@ const ops = {
     takeSim = sim ? { sim, bar } : null
 
     try {
-      // A simulator take gets system audio. The sound is the only thing recording the
+      // A simulator take gets system audio, the device's own or the whole Mac's (above).
+      // The sound is the only thing recording the
       // window buys over capturing the device's framebuffer, and it was off by default,
       // so the take an agent actually got was the silent file three descriptions said it
       // would not be (ui/recorder-opts.js carries the rule and its measurements).
@@ -300,17 +306,24 @@ const ops = {
 
       // What was wired, on the result. What actually landed is record_stop's to say, off
       // the written file, because at this moment there is no file to read.
-      const audio = Opts.startedAudio(takeHeard)
+      // with the scope the recorder started with, where main.js has it (its started event)
+      const audio = Opts.startedAudio({ ...takeHeard, scope: deps.takeScope ? deps.takeScope() : null })
+      // The product's rules, on the first result of the take, so what must never be on
+      // screen is read while there is still time to stop. The product is the one the
+      // take's name gives, where it gives one.
+      const about = args.name ? require('./memory').productOf(args.name) : null
+      const rules = memoryState(null, about) || {}
       // say which window was picked, so an agent that meant another can stop and name it
       if (sim && started && typeof started === 'object') {
         // What is on the glass, off the picture that measured it, so the first tap of the
         // take is the next call rather than a shot and a search.
         const screen = await simScreen(sim, { since: measuredAt })
-        return { ...started, audio, simulator: simFacts(sim, bar), ...(screen ? { screen } : {}) }
+        const seen = screen ? neverSeen(screen.path, screen.elements, about) : null
+        return { ...started, audio, simulator: simFacts(sim, bar), ...(screen ? { screen } : {}), ...(seen || {}), ...rules }
       }
       return front && started && typeof started === 'object'
-        ? { ...started, audio, recording: { window: String(front.id), app: front.app, title: front.title || '', chosen: 'the app in front' } }
-        : (started && typeof started === 'object' ? { ...started, audio } : started)
+        ? { ...started, audio, recording: { window: String(front.id), app: front.app, title: front.title || '', chosen: 'the app in front' }, ...rules }
+        : (started && typeof started === 'object' ? { ...started, audio, ...rules } : started)
     } catch (e) {
       // Nothing is left dressed for a take that never started, which is what the comment
       // above the dressing has always claimed and what this makes true.
@@ -570,6 +583,8 @@ const ops = {
       do_next: 'direct writes what the picture is for, apply_look styles it, find_on_screen names what is on it, ' +
         'apply_edit places marks and the headline on it, review checks it and export writes the PNG. ' +
         'The capture in Original/ is never touched.',
+      // the product's rules before the picture is styled: its look and what must not be on it
+      ...memoryState(file),
     }
   },
 
@@ -742,7 +757,8 @@ const ops = {
     // The plan, and the step this call closes. Applying a look is a step of a job like
     // any other, and this was the one change tool that could not close one, so closing
     // it cost a direct call that did nothing else.
-    Object.assign(out, jobState(args.path, doc, args.step, await takeShape(args.path)))
+    // and the product's rules, since how its pictures look is one of them
+    Object.assign(out, jobState(args.path, doc, args.step, await takeShape(args.path)), memoryState(args.path))
     return out
   },
 
@@ -767,12 +783,12 @@ const ops = {
   // Renders the recording's current edit, exactly what the editor's Export would.
   // Reads the saved document rather than asking the window, so it works whether or
   // not the clip is open, which is the point of doing it without the app.
-  async 'edit.export'(args = {}) {
+  async 'edit.export'(args = {}, ctx) {
     if (!args.path) throw new Error('path is required')
     if (isShot(args.path)) return await exportShot(args)
     const FD = require('./fetchdoc')
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
-    const doc = deps.proc.readDoc(args.path, meta && meta.duration)
+    const doc = cornerTrusted(deps.proc.readDoc(args.path, meta && meta.duration))
     if (!doc.clips.length) {
       // a recording nobody has edited has no clips yet; export all of it
       doc.clips = [{ id: 'C1', start: 0, end: (meta && meta.duration) || doc.dur }]
@@ -852,7 +868,16 @@ const ops = {
       opts.box = { ...want.box }
       opts.fps = want.fps.out
     }
-    const r = await deps.exportDoc(args.path, opts)
+    // Kept by the key the caller cancels with, so the MCP server can stop it when its
+    // client does, and a socket that closes takes its exports with it. A stop answers
+    // at once and says so in words, and the file that was there is left as it was.
+    let r
+    try {
+      r = await tracked(args.job, ctx, () => deps.exportDoc(args.path, opts, args.job ? 'agent:export:' + args.job : undefined), args.path)
+    } catch (e) {
+      if (e && e.cancelled) throw new Error(STOPPED_SAID)
+      throw e
+    }
     await cornerOntoDoc(args.path, meta)
     const mb = r && r.file && require('fs').existsSync(r.file)
       ? +(require('fs').statSync(r.file).size / 1e6).toFixed(1) : null
@@ -869,7 +894,7 @@ const ops = {
     try {
       const Review = require('./review')
       const c = Review.review({ doc: withCues(args.path, doc), ...briefAndBeats(args.path, meta), path: args.path,
-        looks: require('./look').list(looksDir()), levels: lv })
+        looks: require('./look').list(looksDir()), levels: lv, rules: wordsAgainstRules(args.path, doc) })
       checked = { verdict: c.verdict, score: c.score, summary: c.summary, blocking: Review.blocking(c), look_at: c.look_at }
     } catch {}
     // A clip meant to autoplay on a page is judged by its wrap, and the person is
@@ -945,7 +970,7 @@ const ops = {
     const run = chainOf.get(args.path) || null
     const before = foundBy.get(args.path) || null
     const at = shot ? SHOT_AT : args.at
-    const prior = run ? simChain.get(run) || null
+    const prior = run ? runPrior(run)
       : before && before.all && Math.abs((+before.at || 0) - (+at || 0)) <= 1 ? before.all : null
     const r = await deps.proc.findOnScreen(args.path, at, { crop, query: args.query, limit: args.limit, prior })
     // only boxes measured in apply_edit's frame (after the crop) can be named there
@@ -959,7 +984,12 @@ const ops = {
     const noLift = crop || args.cropped !== false
       ? noteFound(args.path, r.at, r.elements, all, { aspect })
       : liftNotes(r.elements, all, aspect)
+    // Everything read off the frame, held to the product's never-on-screen rules, so a
+    // thing the person said must not be seen is named the moment an agent looks at it
+    // rather than after the export.
+    const seen = neverSeen(args.path, (all || []).map(e => ({ id: e.id, text: e.text })).filter(e => e.text))
     return {
+      ...(seen || {}),
       image: r.image, at: r.at, cropped: !!crop, query: args.query || null,
       found: r.found, shown: r.elements.length,
       elements: r.elements.map(e => ({
@@ -988,7 +1018,7 @@ const ops = {
     // args.doc is a whole document to draw in place of the saved one, which is how a
     // proposal shows an edit that has not been applied. No tool takes it: nothing is
     // written either way, so the only caller is chat.propose.
-    let doc = args.doc || deps.proc.readDoc(args.path, meta && meta.duration)
+    let doc = cornerTrusted(args.doc || deps.proc.readDoc(args.path, meta && meta.duration))
     // a look to try, drawn without saving it
     if (args.look && typeof args.look === 'object') doc = require('./fetchdoc').mergeDoc(doc, { look: args.look })
     // several moments in one call: the start of a move and its middle are both checked
@@ -1145,14 +1175,18 @@ const ops = {
     if (isShot(args.path)) return await reviewShot(args)
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
     const doc = withCues(args.path, deps.proc.readDoc(args.path, meta && meta.duration))
-    return require('./review').review({
+    const words = wordsAgainstRules(args.path, doc)
+    const r = require('./review').review({
       doc, ...briefAndBeats(args.path, meta), path: args.path,
       looks: require('./look').list(looksDir()),
+      // the words the product avoids, as a finding of review's own
+      rules: words,
       // a finding the agent judged and wrote down stops holding the verdict at "nearly"
       declined: args.declined,
       // the take's own ends, so the rule about a ground a take sinks into can run at all
       levels: await takeLevels(args.path, doc, meta),
     })
+    return words ? { ...r, rules: words } : r
   },
 
   // Can this clip play round again with no visible jump, and what is stopping it?
@@ -1408,7 +1442,8 @@ const ops = {
   // up holding two facts that disagree.
   async 'memory.remember'(args = {}) {
     const Memory = require('./memory')
-    const where = { root: app ? app.getPath('userData') : require('os').tmpdir(),
+    await sampleRoot()
+    const where = { root: memRoot(args.path, args.about),
       take: args.path || null, about: args.about }
     if (args.forget) {
       // an id says which drawer it came out of; anything else is a key, and a key
@@ -1423,6 +1458,101 @@ const ops = {
     }
     if (!args.fact) throw new Error('fact is required: the sentence to write down, or forget with an id from the memory block')
     return Memory.remember(where, args)
+  },
+
+  // ── the product's rules ────────────────────────────────────────────────
+  // What a product is called, who a demo of it is for, what must never be on screen, how
+  // its screenshots look and the words it avoids (ui/guidelines.js). The person's words
+  // are in force at once; an agent's are drafts until the person has been shown them word
+  // for word and said yes, which is what show and adopt with its seal are for. The rules
+  // in force already open the memory block every briefing carries; this is where they are
+  // read whole, written and checked.
+  //
+  // Nothing an agent sends proves a person said yes: a seal only proves the words did not
+  // change after show. So a rule goes into force from here only once the person has said
+  // so in Fetch itself, in a question that shows them the rules word for word. A rule sent
+  // as the person's own (from: person) that they do not confirm is kept as a draft; an
+  // adopt they do not confirm is refused and the drafts wait. The Guidelines panel in the
+  // app is the person acting, and needs no question.
+  async 'memory.guidelines'(args = {}) {
+    await sampleRoot()
+    const about = args.product || args.about || null
+    const where = { root: memRoot(args.path, about), take: args.path || null, ...(about ? { about } : {}) }
+    const G = require('./guidelines')
+    const action = args.action || (args.rules || args.rule ? 'write' : 'read')
+    const product = G.place({ ...where, ...(args.product ? { product: args.product } : {}) }).product
+    if (action === 'write' && product) {
+      const list = [].concat(args.rules != null ? args.rules : args.rule != null ? [args] : [])
+      const theirs = list.filter(r => r && typeof r === 'object' && r.from === 'person')
+      if (theirs.length) {
+        const yes = await rulesConfirmed(product, theirs.map(r => String(r.rule != null ? r.rule : r.text || '')))
+        if (!yes) {
+          const out = G.op(where, { ...args, rules: list.map(r => (r && r.from === 'person' ? { ...r, from: 'agent' } : r)) })
+          return { ...out, unconfirmed: 'The person did not confirm these in Fetch, so they were kept as drafts and are in no ' +
+            'briefing. Show them with show, and adopt only once they say yes.' }
+        }
+      }
+    }
+    if (action === 'adopt' && product) {
+      const ids = new Set([].concat(args.ids || []).map(x => String(x).trim().toUpperCase()))
+      const edits = args.edits && typeof args.edits === 'object' ? args.edits : {}
+      const drafts = G.read(where).drafts || []
+      const texts = drafts.filter(d => ids.has(d.id)).map(d => String(edits[d.id] != null ? edits[d.id] : d.text))
+      if (texts.length && !(await rulesConfirmed(product, texts))) {
+        return { ok: false, adopted: [], refused: { keep: false, kind: 'person',
+          why: 'the person did not say yes to these in Fetch, so none went into force. The drafts are still waiting.' } }
+      }
+    }
+    return G.op(where, args)
+  },
+
+  // ── the sample ─────────────────────────────────────────────────────────
+  // Three things Fetch made of a product nobody makes (assets/sample/), laid out as real
+  // takes in a folder of their own, so someone can try every tool without recording
+  // anything. While it is open list_recordings lists the sample and nothing else, and
+  // what is remembered about it is kept in it and goes with it. The person's own takes,
+  // folders and settings are never touched, and leaving measures that they were not.
+  async 'sample.do'(args = {}) {
+    const action = args.action || 'status'
+    if (!['status', 'open', 'close'].includes(action)) throw new Error('action is one of status, open, close')
+    const win = deps.getWindow ? deps.getWindow() : null
+    const inWindow = async js => {
+      if (!win || win.isDestroyed()) throw new Error('Fetch is not running, and the sample opens in its Library')
+      return await win.webContents.executeJavaScript(js)
+    }
+    const state = async () => {
+      const s = await inWindow("(() => { const S = require('./ui/sample'); return S.active() ? " +
+        '{ root: S.root(), product: S.product(), items: S.items() } : null })()')
+      return s
+    }
+    const said = s => s ? {
+      open: true, product: s.product, root: s.root,
+      items: (s.items || []).map(i => ({ title: i.title, kind: i.kind, platform: i.platform, path: i.path, try: i.try })),
+      note: 'These are the sample\'s own takes, of a product made up for it. Every tool works on them, and an export ' +
+        'lands inside the sample. The person\'s own library is set aside, not touched.',
+    } : { open: false }
+    if (action === 'status') return said(await state())
+    if (action === 'open') {
+      if (deps.isRecording && deps.isRecording()) throw new Error('a take is recording; the sample opens once it has stopped')
+      await inWindow("require('./ui/sample').enter().then(() => true)")
+      const s = await state()
+      sampleAt = s && Sample.isSample(s.root) ? s.root : null
+      return said(s)
+    }
+    const r = await inWindow("require('./ui/sample').leave()")
+    sampleAt = null
+    return { open: false, left: !!(r && r.left), removed: !!(r && r.removed),
+      ...(r && r.left ? { untouched: !!r.untouched } : { note: 'the sample was not open' }),
+      ...(r && r.left && !r.untouched ? { note: 'the person\'s own folders changed while the sample was open; the sample did not change them, and nothing was undone' } : {}) }
+  },
+
+  // Sent by the MCP server, never by a model: the call it minted `job` for was cancelled
+  // by its client, or ran out of time. Stops that export, queued or running.
+  async 'job.cancel'(args = {}, ctx) {
+    const key = args.job != null ? String(args.job) : ''
+    if (!key) throw new Error('job is required')
+    const hit = stopJobs((k, j) => k === key && (!ctx || !j.ctx || j.ctx === ctx))
+    return { cancelled: hit.length > 0 }
   },
 
   // ── voiceover ──────────────────────────────────────────────────────────
@@ -1475,7 +1605,10 @@ const ops = {
   async 'recordings.list'() {
     // Through the app, never through processor directly: listRecordings falls back to
     // a different, empty library index outside Electron and ignores the saveDir pref.
-    const list = deps.proc.listRecordings()
+    // While the sample is open the Library shows the sample and nothing else, and so does
+    // this: an agent that counts takes says the number the person sees.
+    const inSample = await sampleRoot()
+    const list = inSample ? Sample.list(inSample, deps.proc) : deps.proc.listRecordings()
     // One entry per take, grouped exactly as the Library groups them (groupTakes in
     // ui/app.js), so an agent that counts them says the number the person sees. A
     // flat file list read "13 recordings" beside a Library of 8 takes. path is the raw
@@ -1511,6 +1644,7 @@ const ops = {
         ...(g.deliverable && g.deliverable !== o ? { deliverable: g.deliverable.path } : {}),
         ...(g.copy && g.copy !== o ? { copy: g.copy.path } : {}),
         ...(versions.length ? { versions } : {}),
+        ...(inSample ? { sample: true } : {}),
       } })
     }
     return takes.sort((a, b) => b.mtime - a.mtime).map(t => t.entry)
@@ -1780,6 +1914,20 @@ const sessionAllowed = new Set()
 // answer that arrives after the deadline lands on a promise nobody holds: this call
 // already refused and will not capture anything on the strength of a late yes.
 const ASK_WAIT_MS = 60000
+// The person's yes to rules going into force, in Fetch, with the words in front of them.
+// deps.confirmRules stands in for the question where there is no window (the tests). A
+// question that cannot be asked is a no.
+async function rulesConfirmed(product, texts) {
+  try {
+    if (typeof deps.confirmRules === 'function') return (await deps.confirmRules(product, texts)) === true
+    const n = texts.length
+    const answer = await askPerson(`Put ${n === 1 ? 'this rule' : `these ${n} rules`} in force for ${product}?`,
+      texts.map(t => `\u2022 ${t}`).join('\n') + '\n\nThe agent will read ' + (n === 1 ? 'it' : 'them') +
+      ' before it plans, records or styles anything for this product.', null, false, 'Put in force')
+    return answer === 'once' || answer === 'session'
+  } catch { return false }
+}
+
 async function askPerson(message, detail, sessionLabel, still = false, allowLabel = null, sessionFirst = false) {
   const { dialog } = require('electron')
   // Driving somebody's device is not recording it, so the button says which it is.
@@ -2097,9 +2245,16 @@ const simSeen = new Map()
 // last list as its prior, so the same control keeps the same id from ready to
 // record_start to every tap, and anything new is numbered past every id the run has
 // handed out (ui/targets.js carryIds). An id held from any screen in the run means the
-// same control on the newest one, or is not on it and is refused. The one case carryIds
-// cannot tell apart is the same words at the same size and place on a screen the device
-// went on to (a Done in the same corner), which it carries as the same control.
+// same control on the newest one, or is not on it and is refused. A control repeated
+// down a list (a Delete per row) takes its id from its own row's words and nothing else,
+// so when a row is deleted its Delete's id dies with it and never passes to the next
+// row's. A row with no words of its own ("Untitled" on every row, "Step 1", a bare
+// thumbnail) carries nothing, and a heading replaced in place starts a new screen with
+// nothing carried. The cases carryIds cannot tell apart are the same words at the same
+// size and place on a screen the device went on to (a Done in the same corner), and two
+// controls that each appear once on a one-row screen whose label changed below a heading
+// that stayed ("Shakshuka [Edit] [Delete]" becoming "Pancakes [Edit] [Delete]" under
+// "Recipes"), which vouch for each other. Both are carried as the same controls.
 //
 // That holds only while the carry really happens, so it is checked on every pass
 // (carriedOn) rather than assumed: a pass that came back numbered from E1 again starts
@@ -2136,17 +2291,39 @@ function carriedOn(prior, all) {
 // the run too, but it does not become the run's newest list: the next screen of the
 // device is matched against the screen before it, not against an older one searched late.
 // One that did not carry leaves the run on its own and takes nothing else with it.
+//
+// Every pass in the run moves the run's count on, the late search of an older picture
+// included: a control only it saw was numbered past the run's top, and the next screen
+// of the device must be numbered past that too, or the same E-number would name two
+// different controls on one device.
 function joinRun(udid, file, prior, all) {
   const on = !!prior && carriedOn(prior, all)
   const newest = simSeen.get(udid) === file || !simChain.has(udid)
+  const num = e => +String(e && e.id).slice(1) || 0
+  const top = Math.max(+(all && all.seq) || 0, 0, ...(Array.isArray(all) ? all.map(num) : []))
   if (!newest) {
-    if (on) chainOf.set(file, udid); else chainOf.delete(file)
+    if (on) { chainOf.set(file, udid); runTop.set(udid, Math.max(runTop.get(udid) || 0, top)) } else chainOf.delete(file)
     return on
   }
   if (!on) for (const [p, u] of chainOf) if (u === udid) chainOf.delete(p)
+  runTop.set(udid, on ? Math.max(runTop.get(udid) || 0, top) : top)
   simChain.set(udid, all)
   chainOf.set(file, udid)
   return on
+}
+const runTop = new Map()        // udid -> the highest id number handed out in the run
+
+// The run's newest list as the prior for the next pass, counting from the run's top
+// rather than from that list's own, which a late search of an older picture may have
+// passed. The list's seq and frame are read-only, so a copy carries the higher count.
+function runPrior(udid) {
+  const l = simChain.get(udid) || null
+  const top = runTop.get(udid) || 0
+  if (!l || !(top > (+l.seq || 0))) return l
+  const c = l.slice()
+  Object.defineProperty(c, 'seq', { value: top })
+  Object.defineProperty(c, 'frame', { value: l.frame })
+  return c
 }
 
 /**
@@ -2169,7 +2346,7 @@ async function simScreen(sim, o = {}) {
     // No crop: a tap is aimed through the glass rectangle and that arithmetic starts in
     // the whole frame, so the boxes have to be measured there too.
     // The device's last screen as the prior, so a button that has not moved keeps its id
-    const prior = simChain.get(sim.udid) || null
+    const prior = runPrior(sim.udid)
     const r = await deps.proc.findOnScreen(file, 0, { limit: Math.max(1, Math.min(24, +o.limit || 12)), prior })
     noteFound(file, 0, r.elements, r.all, { aspect: r.width > 0 && r.height > 0 ? r.width / r.height : 0 })
     simSeen.set(sim.udid, file)
@@ -2307,14 +2484,45 @@ async function cornerOntoDoc(src, meta) {
   try {
     if (!src || !fs.existsSync(src) || isShot(src)) return
     const m = meta && meta.width > 0 ? meta : await deps.proc.probeMeta(src).catch(() => null)
-    const doc = deps.proc.readDoc(src, m && m.duration)
+    // A corner already stored is kept only while it passes the check a new one has to:
+    // the old rule read a third of the real corner off a recording (0.0535 against
+    // 0.1578) and wrote it here for good, so every later export inherited it. A suspect
+    // one is read again, and taken off where the new reading is refused, so the take
+    // draws with no corner rather than a wrong one, and is read again next time.
+    // ui/fetchdoc.js drops a suspect corner on read, so readDoc never hands one back.
+    // On a screen whose radius is not known, glassFor checks a stored corner against one
+    // frame and says what it replaces where the two disagree.
+    const doc = cornerTrusted(deps.proc.readDoc(src, m && m.duration))
     const g = await require('./compositor/prepare').glassFor(src, doc, m)
-    if (!g || !(g.corner > 0 && g.corner < 0.5)) return
+    const ok = g && g.corner > 0 && g.corner < 0.5 &&
+      !Sim.cornerSuspect({ corner: g.corner }, doc.device && doc.device.screen)
     // read again at the moment of writing, so nothing written while the frame was read is lost
     const now = deps.proc.readDoc(src, m && m.duration)
-    if (!now.viewport || +now.viewport.corner > 0) return
-    deps.proc.writeDoc(src, { ...now, viewport: { ...now.viewport, corner: g.corner } })
+    if (!now.viewport) return
+    const stored = +now.viewport.corner > 0
+    const suspect = stored && !!Sim.cornerSuspect(now.viewport, now.device && now.device.screen)
+    // a stored corner a frame disagreed with, and still the one the frame was checked against
+    const refuted = stored && !!g && g.replaces != null && Math.abs(+now.viewport.corner - g.replaces) < 1e-6
+    if (stored && !suspect && !refuted) return
+    if (ok) deps.proc.writeDoc(src, { ...now, viewport: { ...now.viewport, corner: g.corner } })
+    else if (suspect || refuted) {
+      const { corner, ...rest } = now.viewport
+      deps.proc.writeDoc(src, { ...now, viewport: rest })
+    }
   } catch (e) { console.warn('[bridge] the glass corner was not written onto the edit:', e && e.message) }
+}
+
+// The document with a stored corner it cannot trust taken off, in memory only, so what is
+// drawn from it reads the corner again with the checked rule (compositor/prepare.js reads
+// one off the take wherever the viewport has none). A corner that passes is left alone.
+function cornerTrusted(doc) {
+  try {
+    const v = doc && doc.viewport
+    if (!v || !(+v.corner > 0)) return doc
+    if (!Sim.cornerSuspect(v, doc.device && doc.device.screen)) return doc
+    const { corner, ...rest } = v
+    return { ...doc, viewport: rest }
+  } catch { return doc }
 }
 
 // What a capture of a device writes onto its document. The rectangle is the same object
@@ -2611,12 +2819,18 @@ async function simPoint(sim, args) {
     // ids: an id off it is the same control on the newest screen, or is not there.
     const inRun = !!seenHere && !!lastFoundOn && lastFoundOn !== seenHere &&
       chainOf.get(lastFoundOn) === sim.udid && chainOf.get(seenHere) === sim.udid
-    if (!args.path && inRun && !holds(foundBy.get(seenHere), id)) {
+    // A path that names an older picture in the same run is aimed on the newest screen
+    // too: the device is showing the newest one, and a box read off an older picture
+    // lands on whatever sits there now (the next row's Delete, after a delete).
+    const older = !!args.path && !!seenHere && args.path !== seenHere &&
+      chainOf.get(args.path) === sim.udid && chainOf.get(seenHere) === sim.udid
+    if ((older || (!args.path && inRun)) && !holds(foundBy.get(seenHere), id)) {
       throw new Error(`${id} is not on ${sim.name}'s newest screen. Ids carry from screen to screen on one device, ` +
-        'so it was on an earlier screen and that control has gone, or it was new on the picture find_on_screen ' +
-        'last read. Send that picture\'s path to tap it there, or pick an id off the newest screen.')
+        'so that control has gone from the device, or Fetch could not be sure it is the same one. The device ' +
+        'shows its newest screen, so a tap is only ever aimed there: pick an id off the newest screen, or call ' +
+        'find_on_screen on it in the person\'s own words.')
     }
-    const on = args.path || (seenHere && (seenHere === lastFoundOn || inRun) ? seenHere : null)
+    const on = older ? seenHere : args.path || (seenHere && (seenHere === lastFoundOn || inRun) ? seenHere : null)
     if (!on && seenHere) {
       throw new Error('a tap on an element needs path here: find_on_screen has named another picture since ' +
         `${sim.name}'s last screen, and an id off that picture can name something else on this one, so ${id} ` +
@@ -2749,9 +2963,14 @@ async function afterTake(r) {
   // transcribe on the take this result told the agent to narrate over instead.
   const atFloor = level.floor === true || (typeof level.meanDb === 'number' && level.meanDb <= Opts.SILENT_DB)
   if (src && atFloor) heardSilent.add(src)
-  let audio = heard && meta ? Opts.takeAudio(heard, meta, level) : null
+  // The recorder's own account of the take: where each track's sound sits, and whose
+  // sound the system track is (soundScope, on the track itself). Handed to takeAudio so
+  // the result says one app's sound or the whole Mac's off what the recorder did, not
+  // off what was hoped for. A recorder that said nothing gets nothing claimed.
+  const sound = (r && r.sound) || (deps.takeSound ? deps.takeSound() : null)
+  let audio = heard && meta ? Opts.takeAudio(heard, meta, { ...level, sound }) : null
   if (audio && audio.track) {
-    const sync = soundSync(await withAudioEnd(src, meta), (r && r.sound) || (deps.takeSound ? deps.takeSound() : null))
+    const sync = soundSync(await withAudioEnd(src, meta), sound)
     if (sync) audio = { ...audio, sync }
   }
   return { ...out,
@@ -3783,6 +4002,7 @@ async function reviewShot(args) {
     doc: shot, brief, path: args.path, declined: args.declined,
     looks: require('./look').list(looksDir()),
     levels: await shotLevels(shot),
+    rules: wordsAgainstRules(args.path, shot),
   })
 }
 
@@ -3903,13 +4123,153 @@ async function takeShape(file) {
 // results an agent reads before it decides anything. An outside client never sees the
 // in-app system prompt, so without this the store is written by one agent and read by
 // none. The block only, never the fact objects: ids and text, not payloads.
-function memoryState(file) {
+//
+// The block opens with the product's rules (ui/guidelines.js through Memory.recall), so
+// the same call is how "never on screen" and the house look reach an agent before it
+// captures or styles anything. `about` names the product where there is no take yet:
+// record_start has only the name it was given.
+function memoryState(file, about) {
   try {
     const Memory = require('./memory')
-    const r = Memory.recallFor({ root: app ? app.getPath('userData') : require('os').tmpdir(), take: file || null })
+    const r = Memory.recallFor({ root: memRoot(file, about), take: file || null,
+      ...(about ? { about } : {}) })
     return r && r.text ? { memory: r.text } : null
   } catch { return null }
 }
+
+// Every word the edit puts on the picture (the texts, the captions, the marks' labels)
+// held to the words the product's rules avoid, each with what to say instead where the
+// rule names it. Null when the words are clean or there are no rules to hold them to.
+function wordsAgainstRules(file, doc) {
+  try {
+    const said = []
+    for (const k of ['texts', 'cues', 'marks']) {
+      for (const it of (doc && doc[k]) || []) {
+        for (const f of ['text', 'title', 'label', 'sub']) if (it && typeof it[f] === 'string' && it[f].trim()) said.push(it[f])
+      }
+    }
+    if (!said.length) return null
+    const r = require('./guidelines').check({ root: memRoot(file), take: file || null }, { text: said.join('\n') })
+    if (!r || !r.ok || !r.words || !r.words.length) return null
+    return { words: r.words.map(w => ({ term: w.term, rule: w.rule, ...(w.instead ? { instead: w.instead } : {}) })),
+      note: `${r.product}'s rules avoid ${r.words.map(w => `"${w.term}"`).join(', ')}, and the words on this edit use it. ` +
+        'Change them before this is exported, or say in your reply why not.' }
+  } catch { return null }
+}
+
+// ── the sample library, as the agent sees it ─────────────────────────────
+// The sample (ui/sample.js) lives in the renderer: the Library's chip opens it and its
+// session is held there. main.js is meant to be told where it is ('sample-root', handed
+// here as deps.sampleRoot); until it is, the window is asked, which is the same module
+// the chip opened, since the renderer requires it from the same file.
+const Sample = require('./sample')
+// The root last seen open, so the synchronous paths (memoryState) can tell without a
+// round trip. Only trusted while the folder still carries the sample's own marker, so a
+// sample that was closed is never mistaken for an open one.
+let sampleAt = null
+async function sampleRoot() {
+  let r = null
+  if (typeof deps.sampleRoot === 'function') {
+    try { r = deps.sampleRoot() } catch {}
+  } else {
+    const win = deps.getWindow ? deps.getWindow() : null
+    if (win && !win.isDestroyed()) {
+      r = await Promise.race([
+        win.webContents.executeJavaScript("(() => { try { return require('./ui/sample').root() } catch (e) { return null } })()"),
+        new Promise(res => setTimeout(() => res(null), 1500)),
+      ]).catch(() => null)
+    }
+  }
+  sampleAt = r && Sample.isSample(r) ? r : null
+  return sampleAt
+}
+// The sample a file belongs to, read off the file's own folders: a sample take is
+// <root>/<Take>/Original/<Take>.ext, and only the root carries the marker.
+function sampleOf(file) {
+  if (!file || typeof file !== 'string') return null
+  let d = path.dirname(file)
+  for (let i = 0; i < 4; i++) {
+    if (Sample.isSample(d)) return d
+    const up = path.dirname(d)
+    if (up === d) break
+    d = up
+  }
+  return null
+}
+// Where a fact or a rule is kept. Anything about the sample, its takes or its made up
+// product, goes into the sample's own folder and is deleted with it, so trying Fetch
+// never leaves a product nobody makes in the person's memory. While the sample is open,
+// so does anything that names no take and no product: "the product is called Biscuit's
+// Pantry" with no path was written to the person's own memory as a fact about nothing in
+// particular, and those belong to whoever asks, so the made up name reached the briefing
+// for every real product after they left. Only a fact about one of the person's own
+// takes, or naming a product that is not the sample's, is theirs while it is open.
+function memRoot(file, about) {
+  const own = sampleOf(file)
+  if (own) return own
+  const theirs = app ? app.getPath('userData') : require('os').tmpdir()
+  if (!sampleAt || !Sample.isSample(sampleAt)) return theirs
+  if (file) return theirs
+  if (!about) return sampleAt
+  try {
+    const Memory = require('./memory')
+    return Memory.sameSubject(about, Sample.manifest().product) ? sampleAt : theirs
+  } catch { return sampleAt }
+}
+
+// What the product's rules say about labels read off a picture: anything a never-rule
+// names that is on it. Null when nothing is, when there are no rules, or when no product
+// can be told, so a picture with nothing wrong costs the result nothing.
+function neverSeen(file, labels, about) {
+  try {
+    if (!labels || !labels.length) return null
+    const where = { root: memRoot(file, about), take: file || null, ...(about ? { about } : {}) }
+    const r = require('./guidelines').check(where, { labels })
+    if (!r || !r.ok || !r.onScreen || !r.onScreen.length) return null
+    return {
+      never_on_screen: r.onScreen,
+      rule: `${r.product}'s rules say ${[...new Set(r.onScreen.map(h => h.thing))].join(', ')} must never be on screen, ` +
+        'and it is on this picture. Blur it, crop it out or go to another screen before this is used, and tell the person.',
+    }
+  } catch { return null }
+}
+
+// ── an export an agent can stop ──────────────────────────────────────────
+// main.js submits an agent's export to the queue under an id of its own and hands this
+// file nothing back, so the id is read off the queue the moment the job is submitted:
+// submit is synchronous up to the push, and nothing else can submit in between. `key` is
+// what the caller will cancel by (the MCP server mints one per call and sends it as
+// args.job); ctx is the socket, so a client that goes away takes its exports with it.
+const agentJobs = new Map()    // key -> { queue id, ctx }
+function queueIds() {
+  try { const j = require('./job-queue').jobs(); return [...j.queued, ...j.running] } catch { return [] }
+}
+let untracked = 0
+function tracked(key0, ctx, submit, src) {
+  // an export sent with no key is still held, under one of the bridge's own, so Esc, a
+  // client going away and leaving the sample all reach it
+  const key = key0 != null && key0 !== '' ? String(key0) : 'bridge:' + (++untracked)
+  const before = new Set(queueIds())
+  const p = submit()
+  const id = queueIds().find(x => !before.has(x) && /^agent:/.test(String(x))) || null
+  if (id) agentJobs.set(key, { id, ctx: ctx || null, src: src || null })
+  const done = () => agentJobs.delete(key)
+  return Promise.resolve(p).finally(done)
+}
+// Stop exports an agent started: one by its key, every one a client started, or all of
+// them. Returns the queue ids it stopped.
+function stopJobs(match) {
+  const Q = require('./job-queue')
+  const hit = []
+  for (const [key, j] of [...agentJobs]) {
+    if (!match(key, j)) continue
+    if (Q.cancel(j.id)) hit.push(j.id)
+    agentJobs.delete(key)
+  }
+  return hit
+}
+// The export's own error, said as a sentence. The queue's is the word "cancelled".
+const STOPPED_SAID = 'The export was stopped before it finished. Nothing was written: the file that was there before is still there.'
 
 // `facts` is passed where the caller has already worked them out, which is how a shot
 // is measured on its shape alone rather than on a length it does not have.
@@ -4346,7 +4706,11 @@ function start(d) {
     })
     sock.on('error', () => {})
     // an agent whose socket closed is done, so main.js can stop holding the brake for it
-    sock.on('close', () => { try { if (deps.clientGone) deps.clientGone(ctx) } catch {} })
+    // and nobody is left to collect what it was exporting, so that stops too
+    sock.on('close', () => {
+      try { stopJobs((k, j) => j.ctx === ctx) } catch {}
+      try { if (deps.clientGone) deps.clientGone(ctx) } catch {}
+    })
   })
   server.on('error', err => console.error('agent bridge:', err.message))
   server.listen(sp, () => {
@@ -4396,10 +4760,27 @@ module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEnde
   // whether a pass kept on numbering from the list it was handed, which is what lets an
   // id off one screen of a device stand on the next (simScreen, find, simPoint)
   carriedOn,
+  // one device's run of screens, driven by test/tools.test.js without a device: how a pass
+  // joins the run, the prior the next pass is handed, and where a tap on an id is aimed
+  deviceRun: { joinRun, runPrior, simPoint, noteFound, see: (udid, file) => simSeen.set(udid, file),
+    reset: () => { simSeen.clear(); simChain.clear(); chainOf.clear(); runTop.clear(); foundBy.clear(); lastFoundOn = null } },
   // the two rules that are code rather than prose, exercised by test/lasso.test.js
   withElements, aimZooms,
   // the person's answer to a question or a proposal. main.js does not call it: the
   // pane's reply is picked up here. test/tools.test.js does, to answer one for real.
   settleWait,
-  // an Esc from the person takes back every "until Fetch quits" they gave (main.js stopAgent)
-  forgetConsent: () => sessionAllowed.clear() }
+  // an Esc from the person takes back every "until Fetch quits" they gave (main.js stopAgent),
+  // and stops every export an agent has queued or running: Esc stops the agent, and an
+  // export it started is the agent still at work on the person's machine
+  // the device an agent's take of a simulator is for, so native-start can name it to the
+  // recorder (--sound-device) and the tap hears that device alone with two booted
+  takeSoundDevice: () => (takeSim && takeSim.sim && takeSim.sim.udid) || null,
+  forgetConsent: () => {
+    sessionAllowed.clear()
+    try { stopJobs(() => true) } catch {}
+  },
+  // the same stop on its own, for a caller that wants it by name
+  stopAgentJobs: () => stopJobs(() => true),
+  // every export an agent has running on a take inside the sample, stopped before the
+  // sample's folder is deleted (main.js 'sample-root'), and nothing of the person's
+  stopSampleJobs: root => stopJobs((k, j) => !!(root && j.src && Sample.within(root, j.src))) }

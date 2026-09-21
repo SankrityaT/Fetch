@@ -23,6 +23,12 @@
 // this file's whole job is the three refusals that keep the store worth reading: a
 // secret, a passing remark, and a fact that is already in there in other words.
 //
+// A product fact can also be a rule: one of the product's standing orders, filed under
+// what it governs (its name, its audience, what never goes on screen, the house look,
+// the words it avoids). ui/guidelines.js is the rulebook and decides who may write one;
+// this file only has to keep a rule in its drawer, keep a draft out of every briefing
+// until the person has said yes to it, and print the rules ahead of the facts.
+//
 // Pure apart from the handful of functions at the bottom that touch the disk, so
 // test/memory.test.js runs the rules under plain node with no Electron.
 
@@ -51,6 +57,20 @@ const CAP = { global: 24, product: 40, take: 16 }
 // characters rather than in rows: memory that costs a page is memory an agent learns to
 // skip.
 const BUDGET = 1200
+
+// What a rule governs. The order is the order a briefing reads them in: what the thing
+// is called before who it is for, and what must never be seen before how it should look.
+const RULES = ['name', 'audience', 'never', 'look', 'words']
+// Where a rule came from. Only the person's own words go straight into force; the rest
+// are the agent reading the product, and wait to be shown.
+const SOURCES = ['person', 'screen', 'help', 'code', 'agent']
+const MAX_EVIDENCE = 120
+// Rules are read before anything is planned, so they are printed first and get their
+// own room: a drawer full of facts must never push "never show the admin panel" out of
+// the briefing.
+const RULE_BUDGET = 900
+// Drafts are proposals, and a proposal nobody answered is not worth keeping forever.
+const DRAFT_CAP = 20
 
 const now0 = () => Date.now()
 
@@ -171,7 +191,11 @@ const PASSING = [
 // Keep or refuse, and why. Default is keep: the agent already decided this was worth
 // writing down, and second-guessing every sentence would make the tool useless. The
 // refusals are the three ways a store goes bad, not a taste test.
-function judge(raw) {
+//
+// A rule is standing by definition: the section it is filed under already says it is an
+// order about the product, so `standing` skips the passing-remark test. It never skips
+// the secret test, and never the one that says a word is not a sentence.
+function judge(raw, opts = {}) {
   // The whole line is scanned, not the part that fits: truncating first would leave the
   // first half of a key in a sentence that then reads as clean.
   const full = clean(raw, 4000)
@@ -188,7 +212,7 @@ function judge(raw) {
       instead: without(full, hit),
     }
   }
-  if (DURABLE.some(re => re.test(text))) return { keep: true, kind: 'standing' }
+  if (opts.standing || DURABLE.some(re => re.test(text))) return { keep: true, kind: 'standing' }
   if (ORDER.test(text) && AT_THE_EDIT.test(text)) {
     return { keep: false, kind: 'passing', why: 'an instruction about this edit, which the job file already holds' }
   }
@@ -295,7 +319,23 @@ function normalizeFact(raw, scope) {
     at,
     updated: Number.isFinite(+f.updated) ? +f.updated : at,
     seen: Math.max(1, Math.round(+f.seen || 1)),
+    ...ruleFields(f, sc),
   }
+}
+
+// The fields only a rule carries, repaired the same way as the rest: a rule outside the
+// product drawer is a fact, and evidence that carries a secret is dropped rather than
+// kept, the way a key or a product name is.
+function ruleFields(f, sc) {
+  if (sc !== 'product' || !RULES.includes(f.rule)) return {}
+  const out = { rule: f.rule }
+  if (f.draft === true) out.draft = true
+  if (SOURCES.includes(f.from)) out.from = f.from
+  const ev = clean(f.evidence, MAX_EVIDENCE)
+  if (ev && !secretIn(ev)) out.evidence = ev
+  if (typeof f.replaces === 'string' && /^F\d+$/.test(f.replaces)) out.replaces = f.replaces
+  if (Number.isFinite(+f.shownAt) && +f.shownAt > 0) out.shownAt = +f.shownAt
+  return out
 }
 
 // A file that will not parse, or one an agent hand-edited, must never lose the facts it
@@ -356,10 +396,20 @@ function weakest(facts) {
 // it gets superseded; a take's facts go when the take does. What does happen is that a
 // drawer fills, and then the least used fact in it leaves.
 function prune(store, scope, about, keep) {
-  const cap = CAP[scope] || CAP.product
   const dropped = []
+  // Drafts fill their own drawer, oldest out first. A pile of proposals nobody answered
+  // must never evict a fact the person actually said.
   for (;;) {
-    const mine = store.facts.filter(f => f.scope === scope && (scope !== 'product' || sameSubject(f.about, about)))
+    const drafts = store.facts.filter(f => f.draft && f.scope === scope && sameSubject(f.about, about))
+    if (drafts.length <= DRAFT_CAP) break
+    const out = drafts.filter(f => f.id !== keep).sort((a, b) => a.updated - b.updated)[0]
+    if (!out) break
+    store.facts = store.facts.filter(f => f !== out)
+    dropped.push(out.id)
+  }
+  const cap = CAP[scope] || CAP.product
+  for (;;) {
+    const mine = store.facts.filter(f => !f.draft && f.scope === scope && (scope !== 'product' || sameSubject(f.about, about)))
     if (mine.length <= cap) break
     // The fact just written is never the one that falls out. A drawer full of restated
     // facts would otherwise swallow every new one and report success.
@@ -377,25 +427,93 @@ function add(store, input, at = now0()) {
   const s = normalize(store)
   const raw = typeof input === 'string' ? { fact: input } : (input && typeof input === 'object' ? input : {})
   const given = clean(raw.fact != null ? raw.fact : raw.text, 4000)
-  const call = judge(given)
+  const scope0 = SCOPES.includes(raw.scope) ? raw.scope : null
+  // A rule is a product's, so naming one files the fact in the product drawer whatever
+  // the sentence sounds like: "never show my inbox" reads as the person, and is the
+  // product's order all the same.
+  const rule = RULES.includes(raw.rule) && (!scope0 || scope0 === 'product') ? raw.rule : null
+  const call = judge(given, { standing: !!rule })
   if (!call.keep) return { store: s, fact: null, was: null, same: false, changed: false, refused: call, dropped: [] }
 
   const text = clean(given)
-  const scope = SCOPES.includes(raw.scope) ? raw.scope : inferScope(text)
+  const scope = rule ? 'product' : scope0 || inferScope(text)
   // A key or a product name is a label, so a secret in one is a mistake rather than a
   // reason to refuse the fact. It is dropped and the fact stands.
   const about = scope === 'product' && !secretIn(raw.about) ? (clean(raw.about, MAX_ABOUT) || null) : null
   const key = (secretIn(raw.key) ? '' : slug(raw.key)) || null
-  const pin = raw.pin === true
   const by = clean(raw.by, 40) || null
+  const draft = !!rule && raw.draft === true
+  // A rule in force is pinned: it is an order, and an order does not fall out of the
+  // drawer because the person mentioned five other things this week.
+  const pin = raw.pin === true || (!!rule && !draft)
+  const extra = rule ? ruleFields({ rule, draft, from: raw.from, evidence: raw.evidence }, 'product') : {}
 
   const mine = s.facts.filter(f => f.scope === scope && (scope !== 'product' || sameSubject(f.about, about)))
   // The key is the handle the agent chose, so it wins. Without one, a restatement is
   // found by the words, which is what stops five spellings of the same fact piling up.
-  const prior = (key && mine.find(f => f.key === key)) ||
-    mine.find(f => flat(f.text) === flat(text)) ||
-    mine.find(f => similarity(f.text, text) >= SAME) ||
-    mine.find(f => sameName(f.text, text)) || null
+  const match = pool => (key && pool.find(f => f.key === key)) ||
+    pool.find(f => flat(f.text) === flat(text)) ||
+    pool.find(f => similarity(f.text, text) >= SAME) ||
+    pool.find(f => sameName(f.text, text)) || null
+
+  // A draft may refine an earlier draft, but it never rewrites what is in force: that
+  // would put a sentence nobody was shown into every briefing. A draft that would change
+  // a fact or a rule sits beside it, naming what it would replace, until it is adopted.
+  if (draft) {
+    const standing = match(mine.filter(f => !f.draft))
+    if (standing && flat(standing.text) === flat(text)) {
+      standing.seen += 1
+      standing.updated = at
+      if (!standing.rule) Object.assign(standing, { rule, pin: true })
+      s.updated = at
+      return { store: s, fact: { ...standing }, was: null, same: true, changed: true, refused: null, dropped: [] }
+    }
+    const earlier = match(mine.filter(f => f.draft && (!standing || !f.replaces || f.replaces === standing.id)))
+    let fact, was = null, same = false
+    if (earlier) {
+      same = flat(earlier.text) === flat(text)
+      if (!same) {
+        was = earlier.text
+        earlier.was = earlier.text
+        earlier.text = text
+        // what was shown is no longer what would be adopted
+        delete earlier.shownAt
+      }
+      Object.assign(earlier, extra, { key: key || earlier.key, by: by || earlier.by,
+        seen: earlier.seen + 1, updated: at })
+      if (standing) earlier.replaces = standing.id
+      fact = earlier
+    } else {
+      fact = { id: mint(s, scope), scope, about, key, text, was: null, pin: false, by, at, updated: at, seen: 1,
+        ...extra, ...(standing ? { replaces: standing.id } : {}) }
+      s.facts.push(fact)
+    }
+    const dropped = prune(s, scope, about, fact.id)
+    s.updated = at
+    return { store: s, fact: { ...fact }, was, same, changed: true, refused: null, dropped }
+  }
+
+  // A draft is never settled from here. Only the person's yes in Fetch puts a draft in
+  // force (ui/guidelines.js adopt, behind the bridge's question or the Guidelines panel).
+  // A remember used to match any sentence half like a draft, rewrite the draft with it and
+  // put it in force: "Always show the customer emails page first" went into force under
+  // "Never on screen", unshown. A sentence that is the draft word for word leaves the draft
+  // waiting and says so; anything else is a fact of its own.
+  // A rule written as the person's own (guidelines write with from: person, which the
+  // bridge sends only after the person confirmed it in Fetch) that is a draft word for
+  // word is that yes, and settles it.
+  const prior = match(mine.filter(f => !f.draft))
+  const waiting = !prior && mine.find(f => f.draft && flat(f.text) === flat(text))
+  if (waiting && rule) {
+    const fact = settle(s, waiting.id, at)
+    Object.assign(fact, extra.from ? { from: extra.from } : {})
+    const dropped = prune(s, scope, about, fact.id)
+    s.updated = at
+    return { store: s, fact: { ...fact }, was: fact.was || null, same: !fact.was, changed: true, refused: null, dropped }
+  }
+  if (waiting) {
+    return { store: s, fact: { ...waiting }, was: null, same: true, changed: false, refused: null, dropped: [], waiting: true }
+  }
 
   let fact, was = null, same = false
   if (prior) {
@@ -407,14 +525,42 @@ function add(store, input, at = now0()) {
     prior.by = by || prior.by
     prior.seen += 1
     prior.updated = at
+    if (rule) Object.assign(prior, extra)
     fact = prior
   } else {
-    fact = { id: mint(s, scope), scope, about, key, text, was: null, pin, by, at, updated: at, seen: 1 }
+    fact = { id: mint(s, scope), scope, about, key, text, was: null, pin, by, at, updated: at, seen: 1, ...extra }
     s.facts.push(fact)
   }
   const dropped = prune(s, scope, about, fact.id)
   s.updated = at
   return { store: s, fact: { ...fact }, was, same, changed: true, refused: null, dropped }
+}
+
+// A draft goes into force. If it was drafted as a change to something already there,
+// that row takes the new words and keeps its id, because the id is the handle an agent
+// may already hold, and the draft's own row goes. Returns the row now in force, or null
+// for an id that is not a draft. Who said yes is the caller's business, not this one's.
+function settle(store, id, at = now0(), by = null) {
+  const d = store.facts.find(f => f.id === id && f.draft)
+  if (!d) return null
+  const target = d.replaces && store.facts.find(f => f.id === d.replaces && !f.draft)
+  let out = d
+  if (target) {
+    if (flat(target.text) !== flat(d.text)) { target.was = target.text; target.text = d.text }
+    Object.assign(target, { rule: d.rule, pin: true, updated: at, seen: target.seen + 1 })
+    if (d.from) target.from = d.from
+    if (d.evidence) target.evidence = d.evidence
+    store.facts = store.facts.filter(f => f !== d)
+    out = target
+  }
+  delete out.draft
+  delete out.shownAt
+  delete out.replaces
+  out.pin = true
+  out.updated = at
+  if (by) out.by = clean(by, 40)
+  store.updated = at
+  return out
 }
 
 // Drop by id, by key within a drawer, or a whole drawer at once. An agent that wrote
@@ -457,8 +603,50 @@ const HEAD = {
 // bin: pinned, restated, recent.
 const strength = (a, b) => (b.pin - a.pin) || (b.seen - a.seen) || (b.updated - a.updated)
 
+const RULE_HEAD = { name: 'name', audience: 'audience', never: 'never on screen', look: 'look', words: 'words' }
+const ruleOrder = (a, b) => RULES.indexOf(a.rule) - RULES.indexOf(b.rule) || strength(a, b)
+
+// The rules for one product, as the lines a briefing prints. Rules are printed only for
+// the product the conversation is about, because two products do not share rules. With
+// no product named, one product's rules are still printed when it is the only one that
+// has any, headed by its name so nobody reads them as general; with two or more the
+// block says which products have rules and prints none of them.
+function ruleLines(rules, drafts, about, budget) {
+  const lines = []
+  const bySlug = new Map(rules.filter(f => f.about).map(f => [slug(f.about), f.about]))
+  let pick = null
+  if (about != null) pick = bySlug.get(slug(about)) || about
+  else if (bySlug.size === 1) pick = [...bySlug.values()][0]
+  if (about == null && bySlug.size > 1) {
+    lines.push(`Rules are kept for ${[...bySlug.values()].join(', ')}. None is printed until the conversation names its product.`)
+    return { lines, kept: [], left: 0 }
+  }
+  const mine = rules.filter(f => pick != null && sameSubject(f.about, pick)).sort(ruleOrder)
+  const kept = []
+  let spent = 0
+  for (const f of mine) {
+    const cost = f.id.length + 3 + RULE_HEAD[f.rule].length + 2 + f.text.length + 1
+    if (kept.length && spent + cost > budget) break
+    kept.push(f)
+    spent += cost
+  }
+  if (kept.length) {
+    lines.push(`Rules for ${pick}, before planning, capturing or styling anything:`)
+    for (const f of kept) lines.push(`${f.id} · ${RULE_HEAD[f.rule]}: ${f.text}`)
+  }
+  const left = mine.length - kept.length
+  if (left > 0) lines.push(`(${left} more ${left === 1 ? 'rule' : 'rules'} not shown)`)
+  const waiting = drafts.filter(f => pick != null && sameSubject(f.about, pick))
+  if (waiting.length) {
+    lines.push(`(${waiting.length} drafted ${waiting.length === 1 ? 'rule waits' : 'rules wait'} for the person: ` +
+      `${waiting.map(f => f.id).join(', ')}. Not in force until they say yes.)`)
+  }
+  return { lines, kept, left }
+}
+
 // The block a new conversation opens with. Ids are printed because the id is the handle:
-// a fact the person says is wrong has to be nameable in the same breath.
+// a fact the person says is wrong has to be nameable in the same breath. Rules come
+// first, in their own room; a draft is never in it, only counted.
 function recall(store, opts = {}) {
   const stores = Array.isArray(store) ? store : [store]
   const scopes = opts.scope ? [].concat(opts.scope).filter(s => SCOPES.includes(s)) : ORDERED
@@ -466,9 +654,17 @@ function recall(store, opts = {}) {
   let all = []
   for (const st of stores) all = all.concat(normalize(st).facts)
   all = all.filter(f => scopes.includes(f.scope))
+  const drafts = all.filter(f => f.draft)
+  const rules = all.filter(f => f.rule && !f.draft)
+  all = all.filter(f => !f.rule && !f.draft)
   // A product drawer holding another product's facts is noise in this conversation, but
   // facts written before any product was known belong to whoever asks.
   if (about != null) all = all.filter(f => f.scope !== 'product' || f.about == null || sameSubject(f.about, about))
+
+  const withRules = opts.rules !== false && scopes.includes('product')
+  const R = withRules
+    ? ruleLines(rules, drafts, about, Number.isFinite(+opts.ruleBudget) ? +opts.ruleBudget : RULE_BUDGET)
+    : { lines: [], kept: [], left: 0 }
 
   const ranked = all.slice().sort(strength)
   const budget = Number.isFinite(+opts.budget) ? +opts.budget : BUDGET
@@ -485,14 +681,17 @@ function recall(store, opts = {}) {
   const left = ranked.length - kept.length
 
   const shown = kept.slice().sort((a, b) => ORDERED.indexOf(a.scope) - ORDERED.indexOf(b.scope) || strength(a, b))
-  const lines = []
+  const lines = R.lines.slice()
   let head = null
   for (const f of shown) {
     if (f.scope !== head) { head = f.scope; lines.push(HEAD[head] + ':') }
     lines.push(`${f.id} · ${f.text}`)
   }
   if (left > 0) lines.push(`(${left} older ${left === 1 ? 'fact' : 'facts'} not shown)`)
-  return { facts: shown.map(f => ({ ...f })), lines, text: lines.join('\n'), left, total: ranked.length }
+  return {
+    facts: shown.map(f => ({ ...f })), lines, text: lines.join('\n'), left, total: ranked.length,
+    rules: R.kept.map(f => ({ ...f })), drafts: drafts.length,
+  }
 }
 
 // ── the files ────────────────────────────────────────────────────────────────
@@ -577,6 +776,8 @@ function remember(where, input, opts = {}) {
     dropped: r.dropped,
     refused: r.refused,
     file: r.changed ? file : null,
+    ...(r.waiting ? { waiting: `${r.fact.id} is a drafted rule waiting for the person's yes, and it stays a draft: ` +
+      'show it to them with guidelines action show, and adopt it only if they say yes.' } : {}),
     memory: recallFor(where, opts),
   }
 }
@@ -615,10 +816,11 @@ function forget(where, sel, opts = {}) {
 
 module.exports = {
   // rules
-  judge, secretIn, without, inferScope, productOf, similarity, slug, clean,
+  judge, secretIn, without, inferScope, productOf, similarity, slug, clean, sameSubject,
   // store
-  empty, normalize, normalizeFact, add, drop, prune, recall, mint, weakest,
+  empty, normalize, normalizeFact, add, drop, prune, recall, mint, weakest, settle,
   // disk
   storePath, takePath, read, write, readTake, writeTake, remember, recallFor, forget, place,
   V, SCOPES, PREFIX, CAP, BUDGET, SAME, MAX_TEXT, EXT, FILE, SIDE_DIR,
+  RULES, SOURCES, RULE_BUDGET, DRAFT_CAP, MAX_EVIDENCE,
 }

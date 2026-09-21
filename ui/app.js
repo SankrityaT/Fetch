@@ -894,7 +894,12 @@ async function refreshLibrary() {
   }
 }
 async function refreshLibraryOnce() {
-  const list = await ipcRenderer.invoke('list-recordings')
+  // main.js lists the sample while it is open ('sample-root'). Should it not have been told
+  // (the call failed), the grid still shows the sample and never the person's own takes
+  // under the sample's banner.
+  let list = await ipcRenderer.invoke('list-recordings')
+  const Sample = require('./ui/sample')
+  if (Sample.active() && !(list || []).some(e => e && e.sample)) list = Sample.current() || []
   const grid = $('libGrid')
   grid._cards = null                            // an empty state must not be re-dealt on resize
   const groups = groupTakes(list)

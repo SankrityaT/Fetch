@@ -466,11 +466,13 @@ console.log('the same control keeps the same id')
   // E-number, and the highest one of all, are never handed out again down the chain
   const NOAPPLE = { width: 1400, height: 2900, texts: [...toolbar, ...app.filter(t => t.text !== 'Privacy')] }
   const gone = T.elementsFrom(NOAPPLE, banner)
-  const back = T.elementsFrom({ ...NOAPPLE, texts: [...NOAPPLE.texts, words('Help', 0.6, 0.85, 0.08)] }, gone)
+  const back = T.elementsFrom({ ...NOAPPLE, texts: [...NOAPPLE.texts, words('Help', 0.6, 0.9, 0.08)] }, gone)
   is('an element that went takes its id with it', gone.some(e => e.id === idOf(banner, 'Privacy')), false)
+  // Help on a line of its own: put where Privacy was, Terms' row would be a row swapped
+  // for another, and Terms would be refused with it (the next block holds that case)
   is('a new one after it gets a number never used on this screen',
     [idOf(ready, 'Save screen'), idOf(banner, 'Check your email to finish signing up'), idOf(banner, 'Privacy')].includes(idOf(back, 'Help')), false)
-  is('even when the list only came back through JSON', idOf(T.elementsFrom({ ...NOAPPLE, texts: [...NOAPPLE.texts, words('Help', 0.6, 0.85, 0.08)] },
+  is('even when the list only came back through JSON', idOf(T.elementsFrom({ ...NOAPPLE, texts: [...NOAPPLE.texts, words('Help', 0.6, 0.9, 0.08)] },
     JSON.parse(JSON.stringify(banner))), 'Help'), 'E' + (Math.max(...banner.map(e => +e.id.slice(1))) + 1))
 
   // Two different buttons wrongly sharing an id is worse than one changing its id
@@ -520,7 +522,9 @@ console.log('the same control keeps the same id')
   const bare1 = T.elementsFrom(bare)
   const bare2 = T.elementsFrom({ ...bare, texts: bare.texts.map(t => ({ ...t, box: { ...t.box, y: t.box.y + 0.03 }, container: { ...t.container, y: t.container.y + 0.03 } })) }, bare1)
   is('repeated words half a row away are not matched by guess', bare2.carried, 0)
-  is('the same repeated words where they were are', T.elementsFrom(bare, bare1).map(e => e.id), bare1.map(e => e.id))
+  // nor where they were: a list longer than the screen with its first row deleted and the
+  // next scrolled in is this same picture, so the ids cannot be kept
+  is('the same repeated words where they were are not carried either', T.elementsFrom(bare, bare1).carried, 0)
 
   // a card says what it sits in by the ids the list now carries
   const card = (label, x, y) => ({ text: label, conf: 1, box: { x: x + 0.008, y: y + 0.015, w: 0.03, h: 0.014 }, bg: '#FCFBF7', bgShare: 1,
@@ -534,6 +538,205 @@ console.log('the same control keeps the same id')
   const kinds = l => ['panel', 'grid'].map(k => l.find(e => e.kind === k).id)
   is('a panel and a grid whose words changed inside are still themselves', kinds(pane2), kinds(pane1))
   is('and a card in it points at the carried grid', pane2.find(e => e.text === 'KEY').in, pane1.find(e => e.kind === 'grid').id)
+}
+
+console.log('an id never lands on the wrong element')
+// The judged failure: a list row was deleted, the rows below closed up, and each Delete
+// took the id of the Delete from the row above. An agent holding Morning oats' Delete
+// would have deleted Shakshuka. The one promise an id makes: on any later picture it is
+// the same element, or it is nothing.
+{
+  const w = (text, x, y, ww, h = 0.02) => ({ text, conf: 1, box: { x, y, w: ww, h }, bg: '#FFFFFF' })
+  const chip = (text, x, y, ww, h = 0.02, p = 0.01) => ({ ...w(text, x, y, ww, h),
+    container: { x: x - p, y: y - p, w: ww + 2 * p, h: h + 2 * p }, bg: '#222222' })
+  const F = texts => ({ width: 1290, height: 2796, texts })
+  // What each element really is, which the pictures do not say: a row's control is the
+  // one in its row, so it is named by the words level with it and its place among its like
+  const CONTROLS = new Set(['Delete', 'Remove', 'Share', '•••', ''])
+  const truth = l => new Map(l.map(e => {
+    if (keyOf(e) && !CONTROLS.has(e.text)) return [e.id, e.text]
+    const row = l.filter(o => o !== e && l.filter(q => q.text === o.text).length === 1 &&
+      Math.abs((o.box.y + o.box.h / 2) - (e.box.y + e.box.h / 2)) < 0.012).map(o => o.text).sort()
+    const mates = l.filter(o => o.text === e.text && o.kind === e.kind &&
+      Math.abs((o.box.y + o.box.h / 2) - (e.box.y + e.box.h / 2)) < 0.012).sort((a, b) => a.box.x - b.box.x)
+    return [e.id, `${e.text || e.kind} in [${row.join(', ')}] #${mates.indexOf(e)}`]
+  }))
+  function keyOf(e) { return String(e.text || '').trim() }
+  // every id the agent could be holding from `a` means the same thing on `b`, or nothing
+  const holds = (a, b) => {
+    const ta = truth(a), tb = truth(b)
+    return a.filter(e => tb.has(e.id) && tb.get(e.id) !== ta.get(e.id)).map(e => `${e.id}: ${ta.get(e.id)} -> ${tb.get(e.id)}`)
+  }
+  const idOf = (l, t) => (l.find(e => e.text === t) || {}).id
+  const inRow = (l, name, what = 'Delete') => {
+    const n = l.find(e => e.text === name)
+    return n && (l.find(e => e.text === what && Math.abs(e.box.y + e.box.h / 2 - (n.box.y + n.box.h / 2)) < 0.012) || {}).id
+  }
+
+  // the judge's screen: a title, a chip row, recipes with a Delete each, a button, tabs
+  const tabs = [chip('Home', 0.1, 0.93, 0.1), chip('Search', 0.4, 0.93, 0.12), chip('Profile', 0.7, 0.93, 0.12)]
+  const carousel = x0 => [chip('Quick', x0, 0.15, 0.1), chip('Vegan', x0 + 0.2, 0.15, 0.1), chip('Kids', x0 + 0.4, 0.15, 0.1)]
+  const recipes = (names, y0) => names.flatMap((n, i) => [w(n, 0.1, y0 + i * 0.08, 0.3), w('Delete', 0.75, y0 + i * 0.08, 0.12)])
+  const yolk = (names, { x0 = 0.1, y0 = 0.3, extra = [] } = {}) => F([w('Yolk', 0.44, 0.06, 0.12, 0.03), ...extra,
+    ...carousel(x0), ...recipes(names, y0), chip('Add recipe', 0.35, 0.82, 0.3), ...tabs])
+  const R3 = ['Morning oats', 'Shakshuka', 'French toast']
+  const a = T.elementsFrom(yolk(R3))
+  const b = T.elementsFrom(yolk(R3.slice(1)), a)
+  is('the judge\'s case: the first recipe deleted, no Delete takes another row\'s id', holds(a, b), [])
+  is('Morning oats\' Delete id is retired, not moved to Shakshuka\'s', b.some(e => e.id === inRow(a, 'Morning oats')), false)
+  is('Shakshuka\'s Delete keeps its own id, where it can be sure', inRow(b, 'Shakshuka'), inRow(a, 'Shakshuka'))
+  is('French toast\'s too', inRow(b, 'French toast'), inRow(a, 'French toast'))
+  is('and the still controls keep theirs', ['Yolk', 'Vegan', 'Add recipe', 'Profile'].map(t => idOf(b, t)),
+    ['Yolk', 'Vegan', 'Add recipe', 'Profile'].map(t => idOf(a, t)))
+  // the judge's other frames, where the old carry renumbered Deletes that never moved
+  const slid = T.elementsFrom(yolk(R3, { x0: -0.05 }), a)
+  is('a chip row sliding past keeps every Delete, and moves none', [holds(a, slid), R3.map(n => inRow(slid, n))], [[], R3.map(n => inRow(a, n))])
+  const up = T.elementsFrom(yolk(R3, { y0: 0.25 }), a)
+  is('the list scrolled up keeps every Delete on its own row', [holds(a, up), R3.map(n => inRow(up, n))], [[], R3.map(n => inRow(a, n))])
+  const toast = T.elementsFrom(yolk(R3, { extra: [chip('Saved', 0.4, 0.01, 0.1)] }), a)
+  is('a toast arriving at the top changes nothing below it', [holds(a, toast), R3.map(n => inRow(toast, n))], [[], R3.map(n => inRow(a, n))])
+
+  // the judge's device list, with no chips at all: every row deleted in turn
+  const devices = names => F([w('Devices', 0.4, 0.08, 0.2, 0.03),
+    ...names.flatMap((n, i) => [w(n, 0.08, 0.2 + i * 0.07, 0.3), w('Remove', 0.78, 0.2 + i * 0.07, 0.14)])])
+  const D4 = ['Kitchen iPad', 'Work Mac', 'Old iPhone', 'Car']
+  const d4 = T.elementsFrom(devices(D4))
+  for (const [where, gone] of [['first', 0], ['second', 1], ['third', 2], ['last', 3]]) {
+    const left = D4.filter((_, i) => i !== gone)
+    const d3 = T.elementsFrom(devices(left), d4)
+    is(`the ${where} device removed: every held id is the same Remove or nothing`, holds(d4, d3), [])
+    is(`  and the removed row's Remove id resolves to nothing`, d3.some(e => e.id === inRow(d4, D4[gone], 'Remove')), false)
+    is(`  and the rows that stayed where they were keep their Remove`,
+      left.filter((_, i) => i < gone).map(n => inRow(d3, n, 'Remove')), left.filter((_, i) => i < gone).map(n => inRow(d4, n, 'Remove')))
+  }
+  // two deleted at once, and then the list emptied
+  const one = T.elementsFrom(devices(['Old iPhone']), d4)
+  is('two rows deleted at once: nothing lands on the wrong row', holds(d4, one), [])
+  is('the last device alone keeps its Remove, since its own row says so', inRow(one, 'Old iPhone', 'Remove'), inRow(d4, 'Old iPhone', 'Remove'))
+  const none = T.elementsFrom(devices([]), d4)
+  is('an empty list hands no Remove id to anything', none.map(e => e.text), ['Devices'])
+
+  // rows reordered by a drag: Car to the top
+  const moved = T.elementsFrom(devices(['Car', 'Kitchen iPad', 'Work Mac', 'Old iPhone']), d4)
+  is('rows reordered: every held id is the same Remove or nothing', holds(d4, moved), [])
+  // and a row that swaps two neighbours
+  const swapped = T.elementsFrom(devices(['Work Mac', 'Kitchen iPad', 'Old iPhone', 'Car']), d4)
+  is('two rows swapped: the same', holds(d4, swapped), [])
+  is('  and the rows that did not move keep their Remove', ['Old iPhone', 'Car'].map(n => inRow(swapped, n, 'Remove')),
+    ['Old iPhone', 'Car'].map(n => inRow(d4, n, 'Remove')))
+
+  // a row whose words change: its Remove is a new one, the others are kept
+  const renamed = T.elementsFrom(devices(['Kitchen iPad', 'Work MacBook', 'Old iPhone', 'Car']), d4)
+  is('a row renamed: every held id is the same Remove or nothing', holds(d4, renamed), [])
+  is('  the renamed row\'s Remove gets a new id', d4.some(e => e.id === inRow(renamed, 'Work MacBook', 'Remove')), false)
+  is('  and every other row keeps its own', ['Kitchen iPad', 'Old iPhone', 'Car'].map(n => inRow(renamed, n, 'Remove')),
+    ['Kitchen iPad', 'Old iPhone', 'Car'].map(n => inRow(d4, n, 'Remove')))
+  // a row whose name went and another took its place: the one Remove left is not the one held
+  const single = T.elementsFrom(devices(['Kitchen iPad']))
+  const other = T.elementsFrom(devices(['Work Mac']), single)
+  is('a one-row list whose row became another: its only Remove is not carried', inRow(other, 'Work Mac', 'Remove') === inRow(single, 'Kitchen iPad', 'Remove'), false)
+  // a row with a second line that ticks over ("2 min ago" to "3 min ago") is a changed row
+  const stamped = (t, names = D4) => F([w('Devices', 0.4, 0.08, 0.2, 0.03), ...names.flatMap((n, i) =>
+    [w(n, 0.08, 0.2 + i * 0.07, 0.3), w(n === 'Car' ? t : `seen ${i}`, 0.45, 0.2 + i * 0.07, 0.15), w('Remove', 0.78, 0.2 + i * 0.07, 0.14)])])
+  const s1 = T.elementsFrom(stamped('2 min ago')), s2 = T.elementsFrom(stamped('3 min ago'), s1)
+  is('a row whose second line changed: nothing lands on the wrong row', holds(s1, s2), [])
+  is('  and the rest keep their Remove', ['Kitchen iPad', 'Work Mac'].map(n => inRow(s2, n, 'Remove')), ['Kitchen iPad', 'Work Mac'].map(n => inRow(s1, n, 'Remove')))
+
+  // two identical buttons in one toolbar, told apart by their order in it
+  const bar = (shares, { dy = 0, title = 'Notes' } = {}) => F([chip('Back', 0.04, 0.05 + dy, 0.1), w(title, 0.4, 0.05 + dy, 0.2),
+    ...shares.map(x => chip('Share', x, 0.05 + dy, 0.1)), w('First note', 0.1, 0.3, 0.3)])
+  const t2 = T.elementsFrom(bar([0.7, 0.85]))
+  const ids2 = l => l.filter(e => e.text === 'Share').sort((p, q) => p.box.x - q.box.x).map(e => e.id)
+  is('two Shares in a toolbar, the same picture again: each keeps its own id', ids2(T.elementsFrom(bar([0.7, 0.85]), t2)), ids2(t2))
+  is('the toolbar pushed down with the page: still each its own', ids2(T.elementsFrom(bar([0.7, 0.85], { dy: 0.04 }), t2)), ids2(t2))
+  const t1 = T.elementsFrom(bar([0.85]), t2)
+  is('one of the two gone: which one went cannot be said, so neither id is carried', ids2(t1).some(id => ids2(t2).includes(id)), false)
+  const t3 = T.elementsFrom(bar([0.55, 0.7, 0.85]), t2)
+  is('a third one arriving: the same', [holds(t2, t3), ids2(t3).some(id => ids2(t2).includes(id))], [[], false])
+  // and with no words in the toolbar at all
+  const blank = xs => F(xs.map(x => chip('•••', x, 0.05, 0.05)).concat([w('First note', 0.1, 0.3, 0.3)]))
+  const b2 = T.elementsFrom(blank([0.7, 0.85]))
+  const dots = l => l.filter(e => e.text === '•••').map(e => e.id)
+  is('two alike with no words about them are not carried, even on a still screen', dots(T.elementsFrom(blank([0.7, 0.85]), b2)).some(id => dots(b2).includes(id)), false)
+  const b1 = T.elementsFrom(blank([0.7]), b2)
+  is('and one of them gone carries neither', b1.filter(e => e.text === '•••').some(e => b2.some(o => o.id === e.id)), false)
+  const bup = T.elementsFrom(F([...[0.7, 0.85].map(x => chip('•••', x, 0.05, 0.05)), w('First note', 0.1, 0.25, 0.3)]), b2)
+  is('nor are they carried while the rest of the screen moves', bup.filter(e => e.text === '•••').some(e => b2.some(o => o.id === e.id)), false)
+
+  // repeated words with no row words of their own: the first of three deleted, the rest close up
+  const bare = n => F(Array.from({ length: n }, (_, i) => chip('Delete', 0.75, 0.3 + i * 0.06, 0.1)))
+  const bare3 = T.elementsFrom(bare(3)), bare2 = T.elementsFrom(bare(2), bare3)
+  is('three bare Deletes, one gone: none is carried, since any of them could be the one that went', bare2.carried, 0)
+
+  // thumbnails, which have no words, go with their row
+  const thumbs = names => F([w('Albums', 0.4, 0.05, 0.2, 0.03)].concat(names.map((n, i) => w(n, 0.3, 0.2 + i * 0.1 + 0.02, 0.3))),)
+  const thumbRects = n => Array.from({ length: n }, (_, i) => ({ box: { x: 0.08, y: 0.2 + i * 0.1, w: 0.12, h: 0.06 }, bg: '#333333', conf: 0.9 }))
+  const al = ['Blue', 'Red', 'Green']
+  const th3 = T.elementsFrom({ ...thumbs(al), rects: thumbRects(3) })
+  const th2 = T.elementsFrom({ ...thumbs(al.slice(1)), rects: thumbRects(2) }, th3)
+  const art = (l, name) => { const n = l.find(e => e.text === name); return l.find(e => e.kind === 'shape' && Math.abs(e.box.y + e.box.h / 2 - (n.box.y + n.box.h / 2)) < 0.02).id }
+  is('an album deleted: its artwork id is retired, the others keep theirs',
+    [th2.some(e => e.id === art(th3, 'Blue')), ['Red', 'Green'].map(n => art(th2, n))], [false, ['Red', 'Green'].map(n => art(th3, n))])
+
+  // a word that appears once, whose only row-mate was swapped for another, is refused too:
+  // it is the same shape as a one-row list whose recipe became a different recipe
+  const foot = x => T.elementsFrom(F([w('Terms', 0.3, 0.85, 0.08), w(x, 0.6, 0.85, 0.1)]))
+  const f1 = foot('Privacy'), f2 = T.elementsFrom(F([w('Terms', 0.3, 0.85, 0.08), w('Help', 0.6, 0.85, 0.1)]), f1)
+  is('a word whose only row-mate was swapped is given a new id, not guessed at', idOf(f2, 'Terms') === idOf(f1, 'Terms'), false)
+  const f3 = T.elementsFrom(F([w('Terms', 0.3, 0.85, 0.08)]), f1)
+  is('one whose row-mate only went keeps its own', idOf(f3, 'Terms'), idOf(f1, 'Terms'))
+
+  // A list longer than the screen, every row alike: the first row deleted and the tenth
+  // scrolls in. The same count sits in the same places, so nothing in the pixels says a row
+  // went, and a Delete kept by place would be the next note's Delete.
+  const notes = n => F([w('Notes', 0.4, 0.08, 0.2, 0.03), ...Array.from({ length: n }, (_, i) =>
+    [w('Untitled', 0.1, 0.2 + i * 0.08, 0.3), w('Delete', 0.75, 0.2 + i * 0.08, 0.12)]).flat()])
+  const n9 = T.elementsFrom(notes(9)), n9b = T.elementsFrom(notes(9), n9)
+  const dels = l => l.filter(e => e.text === 'Delete').map(e => e.id)
+  is('a long list of alike rows, one deleted and the next scrolled in: no Delete keeps an id', dels(n9b).some(id => dels(n9).includes(id)), false)
+  is('  and no Untitled either', n9b.filter(e => e.text === 'Untitled').some(e => n9.some(o => o.id === e.id)), false)
+  is('  the title that did not move keeps its own', idOf(n9b, 'Notes'), idOf(n9, 'Notes'))
+  // a cart of repeated Milk rows below one Eggs row: a Milk deleted below Eggs
+  const cart = names => F([w('Cart', 0.4, 0.08, 0.2, 0.03), ...names.flatMap((n, i) => [w(n, 0.1, 0.2 + i * 0.08, 0.3), w('Delete', 0.75, 0.2 + i * 0.08, 0.12)])])
+  const CART = ['Milk', 'Milk', 'Eggs', 'Milk', 'Milk', 'Milk', 'Milk', 'Milk', 'Milk', 'Milk']
+  const c1 = T.elementsFrom(cart(CART.slice(0, 9))), c2 = T.elementsFrom(cart(CART.slice(0, 3).concat(CART.slice(4, 10))), c1)
+  is('a cart of repeated rows, one deleted below the one unique row: only that row\'s Delete is kept',
+    [holds(c1, c2), dels(c2).filter(id => dels(c1).includes(id))], [[], [inRow(c1, 'Eggs')]])
+  // a grid of bare thumbnails, each with a Remove under it, longer than the screen
+  const grid = F([w('Photos', 0.4, 0.05, 0.2, 0.03), ...Array.from({ length: 12 }, (_, i) =>
+    w('Remove', 0.05 + (i % 3) * 0.31 + 0.08, 0.15 + Math.floor(i / 3) * 0.2 + 0.19, 0.12, 0.015))])
+  grid.rects = Array.from({ length: 12 }, (_, i) => ({ box: { x: 0.05 + (i % 3) * 0.31, y: 0.15 + Math.floor(i / 3) * 0.2, w: 0.28, h: 0.18 }, conf: 1, bg: '#888888' }))
+  const g1 = T.elementsFrom(grid), g2 = T.elementsFrom(grid, g1)
+  is('a grid of bare thumbnails: neither a thumbnail nor its Remove is kept by place', g2.carried, 1)
+
+  // A detail screen: deleting the recipe moved on to the next one, with the same toolbar.
+  // "Delete Recipe" appears once on both and did not move, and it now deletes Pancakes.
+  const detail = name => F([w('Recipes', 0.05, 0.06, 0.15), w(name, 0.35, 0.06, 0.3, 0.03), w('Serves 2', 0.1, 0.2, 0.2),
+    w('Edit', 0.1, 0.9, 0.1), w('Share', 0.4, 0.9, 0.1), w('Delete Recipe', 0.7, 0.9, 0.2)])
+  const sh = T.elementsFrom(detail('Shakshuka')), pa = T.elementsFrom(detail('Pancakes'), sh)
+  is('a heading replaced in place is another screen: its Delete is not the held one', idOf(pa, 'Delete Recipe') === idOf(sh, 'Delete Recipe'), false)
+  is('  nothing on it is carried', pa.carried, 0)
+  is('  the same screen again keeps them all', T.elementsFrom(detail('Shakshuka'), sh).carried, sh.length)
+  // a clock ticking over in the corner is not a new heading
+  const clocked = t => F([w(t, 0.05, 0.01, 0.08), w('Shakshuka', 0.35, 0.06, 0.3, 0.03), w('Delete Recipe', 0.7, 0.9, 0.2)])
+  const k1 = T.elementsFrom(clocked('9:41')), k2 = T.elementsFrom(clocked('9:42'), k1)
+  is('a clock ticking over keeps the rest', idOf(k2, 'Delete Recipe'), idOf(k1, 'Delete Recipe'))
+
+  // Labels that count a place: Step 1 deleted, and the old Step 2 is now called Step 1
+  const steps = n => F([w('Steps', 0.4, 0.08, 0.2, 0.03), ...Array.from({ length: n }, (_, i) =>
+    [w('Step ' + (i + 1), 0.1, 0.2 + i * 0.08, 0.2), w('Delete', 0.75, 0.2 + i * 0.08, 0.12)]).flat()])
+  const st4 = T.elementsFrom(steps(4)), st3 = T.elementsFrom(steps(3), st4)
+  is('rows named by their place: a step deleted carries no Delete, since which one went cannot be said', dels(st3).some(id => dels(st4).includes(id)), false)
+
+  // a chain of pictures: an id held from the first is right or gone on every one after
+  let prev = d4, first = d4, bad = []
+  for (const names of [['Work Mac', 'Old iPhone', 'Car'], ['Car', 'Work Mac', 'Old iPhone'], ['Car', 'Old iPhone'], ['Car', 'Old iPhone', 'iPad Air']]) {
+    const next = T.elementsFrom(devices(names), prev)
+    bad = bad.concat(holds(first, next), holds(prev, next))
+    is('ids on one picture are one each, down the chain', new Set(next.map(e => e.id)).size, next.length)
+    prev = next
+  }
+  is('an id held from the first picture never resolves to another element later on', bad, [])
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

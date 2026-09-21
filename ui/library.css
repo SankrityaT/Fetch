@@ -184,3 +184,32 @@
   display: grid; gap: 1px;
   margin: 5px -7px -4px; padding-top: 5px; border-top: var(--edge);
 }
+
+/* ── the sample library ────────────────────────────────────────────────────
+   The way in is a quiet chip at the end of the folder row, never gold: it is an offer,
+   not the thing to act on. Inside, one raised panel says what this is, offers three
+   jobs to hand the agent, and the way back. Tone, not a hairline, separates it. */
+.lib-try-sample { color: var(--text-1); }
+.lib-try-sample:hover { color: var(--text-0); }
+.lib-try-sample:disabled { opacity: .35; cursor: default; }
+
+.lib-sample {
+  display: flex; align-items: flex-start; gap: var(--s-3);
+  padding: 16px; border-radius: var(--r-md);
+  background: var(--ink-1); box-shadow: var(--shadow-1), var(--sheen);
+}
+.lib-sample-dog { width: 48px; height: 48px; flex: none; object-fit: contain; }
+.lib-sample-say { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.lib-sample-title {
+  font-family: var(--font-display); font-weight: 800; font-size: var(--t-15);
+  letter-spacing: -.03em; color: var(--text-0);
+}
+.lib-sample-say p { font-size: var(--t-12); color: var(--text-1); max-width: 70ch; }
+.lib-sample-asks { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: 4px; }
+.lib-sample-ask { max-width: 100%; }
+.lib-sample-ask span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-sample-ask .icon-sm { color: var(--fur-1); flex: none; }
+.lib-sample-leave { flex: none; }
+@media (prefers-reduced-motion: reduce) {
+  .lib-sample, .lib-sample-ask, .lib-try-sample { transition: none; }
+}

@@ -255,6 +255,14 @@ is('a corrupt array is dropped, not fatal', d.normalize({ clips: 'nope' }, '/a.m
   const FDc = require('../ui/fetchdoc')
   const v = FDc.normalize({ viewport: { x: 0.0554, y: 0.0896, w: 0.8892, h: 0.8929, corner: 0.1563 } }).viewport
   is('a viewport keeps its glass corner through normalize', v && v.corner, 0.1563)
+  // a corner the device's own screen says is wrong is dropped on read, so every reader
+  // (the person's export, the editor, review) reads it again off the take
+  const pro = { name: 'iPhone 16 Pro Max', screen: { w: 1320, h: 2868, scale: 3 } }
+  is('a ProMax corner stored at a third of its real size is dropped on read',
+    FDc.normalize({ viewport: { x: 0.05, y: 0.05, w: 0.9, h: 0.9, corner: 0.0535 }, device: pro }).viewport, { x: 0.05, y: 0.05, w: 0.9, h: 0.9 })
+  is('its real corner is kept', FDc.normalize({ viewport: { x: 0.05, y: 0.05, w: 0.9, h: 0.9, corner: 0.1578 }, device: pro }).viewport.corner, 0.1578)
+  is('a screen whose radius is not known keeps what it stored, to be checked on a frame',
+    FDc.normalize({ viewport: { x: 0.05, y: 0.05, w: 0.9, h: 0.9, corner: 0.0535 }, device: { name: 'iPad', screen: { w: 1640, h: 2360, scale: 2 } } }).viewport.corner, 0.0535)
   is('a corner out of range is dropped, the rectangle kept',
     FDc.normalize({ viewport: { x: 0.1, y: 0.1, w: 0.5, h: 0.5, corner: 0.7 } }).viewport, { x: 0.1, y: 0.1, w: 0.5, h: 0.5 })
   is('a square glass stays four keys', Object.keys(FDc.normalize({ viewport: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 } }).viewport).length, 4)

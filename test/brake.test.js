@@ -171,6 +171,100 @@ const continueItem = () => all().find(i => /Continue/.test(i.label || ''))
   deps.clientGone(tctx)
   is('with nothing at work, Esc is not claimed', globals.has('Escape'), false)
 
+  // An agent's jobs through main.js as it submits them: one id for the queue and the
+  // processor, the person's Cancel reaching them, and Esc stopping them.
+  {
+    const Q = require(path.join(ROOT, 'ui/job-queue'))
+    const P = require(path.join(ROOT, 'processor'))
+    const RH = require(path.join(ROOT, 'ui/render-host'))
+    const pending = new Map(), cancels = [], ids = []
+    const stoppable = id => new Promise((_res, rej) => pending.set(id, () => rej(Object.assign(new Error('cancelled'), { cancelled: true }))))
+    const realCancel = P.cancel, realSilence = P.removeSilence, realExport = RH.exportEdit
+    P.cancel = id => { cancels.push(id); const f = pending.get(id); if (f) { pending.delete(id); f() } return !!f }
+    P.removeSilence = (src, o, _p, id) => { ids.push(id); return stoppable(id) }
+    RH.exportEdit = (src, o, _p, id) => { ids.push(id); Q.onCancel(() => P.cancel(id)); return stoppable(id) }
+    const until = async fn => { for (let i = 0; i < 100 && !fn(); i++) await sleep(10) }
+    // bounded, so a stop that never comes fails here rather than leaving node to exit quietly
+    const settled = p => Promise.race([p.then(() => 'done', e => (e && e.cancelled ? 'cancelled' : 'failed: ' + (e && e.message))),
+      sleep(2000).then(() => 'still running after 2 s')])
+    try {
+      const ex = settled(deps.exportDoc('/tmp/none.mov', {}, 'agent:export:k9'))
+      await until(() => Q.jobs().running.includes('agent:export:k9'))
+      is('an agent export runs under the bridge\'s own key, in the queue and the processor alike', [Q.jobs().running, ids], [['agent:export:k9'], ['agent:export:k9']])
+      is('the person\'s Cancel reaches an agent\'s running export', await ipcHandle.get('cancel-job')({}, 'agent:export:k9'), true)
+      is('  and it stops', await ex, 'cancelled')
+      await until(() => !Q.jobs().stopping.length)
+      ids.length = 0
+      const op = settled(deps.runOp('silence', '/tmp/none.mov', {}))
+      await until(() => ids.length === 1)
+      is('dead air runs under one counted id for the queue and the processor', /^agent:silence:\d+$/.test(ids[0]) && Q.jobs().running.includes(ids[0]), true)
+      const ex2 = settled(deps.exportDoc('/tmp/none.mov', {}))
+      is('an export with no key is counted, never stamped with the clock', /^agent:export:\d{1,6}$/.test(Q.jobs().queued[0] || ''), true)
+      try { await bridge.ops['recordings.list']({}, { client: 'Claude Code' }) } catch {}
+      globals.get('Escape')()
+      is('Esc stops an agent\'s dead air mid run, through its own stop', [await op, cancels.includes(ids[0])], ['cancelled', true])
+      is('  and its queued export', await ex2, 'cancelled')
+      ipcOn.get('agent-release')()
+    } finally { P.cancel = realCancel; P.removeSilence = realSilence; RH.exportEdit = realExport }
+
+    // A cancelled job keeps its lane until the work behind the "cancelled" answer settles
+    let stop, started = false
+    const work = new Promise(r => { stop = r })
+    const a = Q.submit({ id: 'lane:a', op: 'export', run: () => { Q.working(work); return Promise.race([work, new Promise((_r, j) => Q.onCancel(() => j(Object.assign(new Error('cancelled'), { cancelled: true }))))]) } })
+    a.catch(() => {})
+    const b = Q.submit({ id: 'lane:b', op: 'export', onStart: () => { started = true }, run: async () => 'b' })
+    await sleep(5)
+    Q.cancel('lane:a')
+    is('a cancelled job answers at once', await settled(a), 'cancelled')
+    await sleep(20)
+    is('  but the next job does not start beside its work', [started, Q.jobs().stopping], [false, ['lane:a']])
+    stop()
+    is('  and starts the moment that work stops', await settled(b), 'done')
+  }
+
+  // The sample, as main.js holds it: the Library lists it and nothing else while it is open
+  {
+    const Sample = require(path.join(ROOT, 'ui/sample'))
+    const P = require(path.join(ROOT, 'processor'))
+    const realList = P.listRecordings
+    P.listRecordings = (dir) => dir ? realList(dir, []) : [{ path: path.join(tmp, 'Theirs.mov') }]
+    const sroot = path.join(tmp, 'Sample Here')
+    const s = Sample.open({ root: sroot, theirs: [path.join(tmp, 'Movies', 'Fetch')] })
+    try {
+      is('with no sample open the Library lists the person\'s own takes', (await ipcHandle.get('list-recordings')()).map(e => path.basename(e.path)), ['Theirs.mov'])
+      await ipcHandle.get('sample-root')({}, s.root)
+      const listed = await ipcHandle.get('list-recordings')()
+      is('while it is open, the sample and nothing else', [listed.length > 0, listed.every(e => e.sample && e.path.startsWith(s.root))], [true, true])
+      await ipcHandle.get('sample-root')({}, null)
+      is('after it closes, the person\'s own again', (await ipcHandle.get('list-recordings')()).map(e => path.basename(e.path)), ['Theirs.mov'])
+    } finally { P.listRecordings = realList; Sample.close(s.root, []) }
+  }
+
+  // The Guidelines card: the person writing rules and saying yes to an agent's draft
+  {
+    const G = require(path.join(ROOT, 'ui/guidelines'))
+    const g = (a) => ipcHandle.get('guidelines')({}, a)
+    const w = await g({ action: 'write', product: 'Yolk', section: 'never', rule: 'Never show the admin panel' })
+    is('a rule the person writes in Settings is in force at once', w.written[0].draft, false)
+    const d = G.write({ root: tmp, product: 'Yolk' }, { rule: 'Screenshots sit on cream', section: 'look', from: 'screen' }).written[0]
+    is('an agent\'s draft waits in the card', (await g({ action: 'read', product: 'Yolk' })).drafts.map(x => x.id), [d.id])
+    const yes = await g({ action: 'yes', product: 'Yolk', id: d.id })
+    is('the person\'s Yes puts it in force', [yes.ok, (await g({ action: 'read', product: 'Yolk' })).rules.look.map(r => r.id)], [true, [d.id]])
+    const d2 = G.write({ root: tmp, product: 'Yolk' }, { rule: 'Say planner, never app', section: 'words', from: 'help' }).written[0]
+    await g({ action: 'no', product: 'Yolk', id: d2.id })
+    is('and their No drops a draft', (await g({ action: 'read', product: 'Yolk' })).drafts.length, 0)
+    await g({ action: 'forget', product: 'Yolk', id: w.written[0].id })
+    is('a rule in force can be removed', (await g({ action: 'read', product: 'Yolk' })).rules.never.length, 0)
+    is('the products with rules are listed', (await g({ action: 'products' })).products, ['Yolk'])
+  }
+
+  // System Audio Recording is read without asking, and asked for from one place only
+  const access = await ipcHandle.get('audio-access')()
+  is('the permission one app\'s sound needs is read, never asked, for Settings', ['granted', 'denied', 'unknown', 'unavailable'].includes(access.state), true)
+  const setSrc = fs.readFileSync(path.join(ROOT, 'ui/settings.js'), 'utf8')
+  const asks = [...(fs.readFileSync(path.join(ROOT, 'ui/app.js'), 'utf8') + setSrc).matchAll(/'audio-access-request'/g)].length
+  is('only the person turning the Settings switch on asks for it', [asks, /if \(!want \|\| state === 'denied'\)[\s\S]{0,300}audio-access-request/.test(setSrc)], [1, true])
+
   // the renderer's fallback: Esc in Fetch's own window, for the whole armed stretch
   const appSrc = fs.readFileSync(path.join(ROOT, 'ui/app.js'), 'utf8')
   is('the window listens for Esc in the capture phase', /e\.key !== 'Escape'[\s\S]{0,120}brakeState\.driving[\s\S]{0,200}ipcRenderer\.send\('agent-stop', 'Esc'\)\n\}, true\)/.test(appSrc), true)
