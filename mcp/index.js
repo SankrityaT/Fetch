@@ -368,7 +368,8 @@ export function build() {
             'Not a bundle id.'),
         element: z.string().optional()
           .describe('tap: an element id (E12), off the screen the last ready or tap handed back, or from ' +
-            'find_on_screen. This is how a tap is aimed. An id, never the words on the button.'),
+            'find_on_screen. This is how a tap is aimed. An id, never the words on the button. It is checked ' +
+            'against the device\'s newest screen as the tap is sent, and refused if it names something else there.'),
         path: z.string().optional()
           .describe('tap: Absolute path to the shot or recording find_on_screen was called on, where that id was ' +
             'minted. Leave it out for an id off the last ready or tap on this device.'),
@@ -395,6 +396,8 @@ export function build() {
         'words on the picture as well as for lifts, loupes, arrows, numbered steps, redactions and ' +
         'blurs, find_on_screen to name what is on it, preview_frame to ' +
         'look at it, review to check it, and export to write the finished PNG. ' +
+        'The product\'s rules are held to the picture as soon as it exists and come back under guidelines; ' +
+        'export refuses a PNG that shows what a never-rule keeps off screen. ' +
         'The result carries a picture of what was captured, so there is nothing to call to see it. ' +
         'With simulator, the device is resolved to its window, the status bar is set to 9:41 for the one ' +
         'frame and put straight back, and the capture is measured to find where the device screen sits ' +
@@ -474,6 +477,9 @@ export function build() {
         'recording.\n' +
         'AIMING: before placing any zoom or mark, call find_on_screen at that moment with the ' +
         'person\'s words and send element: its E id (e.g. element: \'E12\'), or its box; never ' +
+        'send the words on it. Every id is checked as it is used against what it named when find_on_screen ' +
+        'handed it out, and one that no longer names that element is refused with the reason: call ' +
+        'find_on_screen again and use the id it hands back. Never ' +
         'work out x, y and scale yourself or place one from coordinates guessed off a ' +
         'picture (the result warns when a zoom is aimed by a centre point). Add only what was asked for: a zoom request is a zoom, not a ' +
         'zoom plus a spotlight. A new lift or spotlight takes the place of any it overlaps (the ' +
@@ -701,7 +707,11 @@ export function build() {
         'at with contact_sheet. Measures the output length and the shape against the brief (direct), dead ' +
         'air still in the edit, captions and whether they are burned in, how much the camera moves, marks ' +
         'the edit never draws, two highlights on one place, and the ground against the take\'s own ' +
-        'exposure. export runs it too, so its blocking items come back with the file. Fix what it names, ' +
+        'exposure. It also holds the edit to the product\'s rules (guidelines): the words it avoids, how its ' +
+        'name is written, how its pictures look, and what must never be on screen in every frame read with ' +
+        'find_on_screen, under guidelines, each finding with the call that fixes it and every rule it could not ' +
+        'check under unchecked, which has not passed. ' +
+        'export runs it too, so its blocking items come back with the file. Fix what it names, ' +
         'or tell the person why you did not. ' +
         'On a shot it is a rubric about a picture, measured off the same plan the compositor draws it from: ' +
         'whether anything says what to look at, whether what the brief called private is under a redaction or ' +
@@ -915,12 +925,17 @@ export function build() {
         'checks nothing until the person says yes: show gives the drafts word for word with a seal, show that ' +
         'text to the person, and adopt only the ids they said yes to, with that seal and any rewording they ' +
         'made in edits. Fetch asks the person to confirm an adopt too, so your word alone never puts a rule in force. reject drops a draft; a rule in force goes with remember forget. check holds text (a ' +
-        'caption, a title) and labels (find_on_screen\'s element texts) to the rules in force. Rules belong ' +
+        'caption, a title) and labels (find_on_screen\'s element texts) to the rules in force and returns ' +
+        'findings (each with the rule it breaks, what is wrong and the call that fixes it), unchecked (each rule ' +
+        'it could not hold them to, and why: never a pass), covered (never-rule things already under a ' +
+        'redaction) and a verdict: clean, fix, refuse or unchecked. gate is the same check answered as the yes ' +
+        'or no export and a still\'s save take: ok false, with refused saying why, when something a never-rule ' +
+        'keeps off screen is on the picture and not redacted. Rules belong ' +
         'to one product: name it, or pass the path of one of its takes. The rules in force also open the ' +
         'memory block that direct, apply_edit, apply_look, take_shot and record_start hand back, and ' +
         'find_on_screen and review say when a picture or an edit breaks one.',
       inputSchema: z.object({
-        action: z.enum(['read', 'write', 'show', 'adopt', 'reject', 'check']).optional()
+        action: z.enum(['read', 'write', 'show', 'adopt', 'reject', 'check', 'gate']).optional()
           .describe('Default read, or write when rules are sent.'),
         product: z.string().optional().describe('The product, when no path names it.'),
         path: z.string().optional().describe('Absolute path to one of the product\'s takes or shots, which names it.'),
@@ -936,8 +951,8 @@ export function build() {
         seal: z.string().optional().describe('adopt: the seal show handed back for exactly these drafts.'),
         edits: z.record(z.string(), z.string()).optional()
           .describe('adopt: the person\'s rewording of a draft on the way in, by id, e.g. {"F4": "..."}.'),
-        text: z.string().optional().describe('check: words to hold to the rules, a caption or a title.'),
-        labels: z.array(z.string()).optional().describe('check: texts read off a picture, e.g. find_on_screen element texts.'),
+        text: z.string().optional().describe('check, gate: words to hold to the rules, a caption or a title.'),
+        labels: z.array(z.string()).optional().describe('check, gate: texts read off a picture, e.g. find_on_screen element texts.'),
       }),
     },
     async args => text(await drive('memory.guidelines', args)))
@@ -985,7 +1000,10 @@ export function build() {
         'ffmpeg renderer, which leaves some look fields out, and look_warnings then names what it left ' +
         'out and what to export to get it. ' +
         'engine in the result says which one drew it. With the look\'s motion.loop set, the result also ' +
-        'carries loop, the same check can_loop runs, on the file you just made. The result also carries review, the same ' +
+        'carries loop, the same check can_loop runs, on the file you just made. Before anything is drawn the ' +
+        'edit is held to the product\'s rules, and something a never-rule keeps off screen that was read on a ' +
+        'frame and is not under a redaction refuses the export, naming the redaction that fixes it; the rest ' +
+        'of the rules come back under guidelines. The result also carries review, the same ' +
         'check the review tool runs, on the file you just made: the export happens either way, ' +
         'so read its blocking list and fix what it names before you say this is done. ' +
         'ON A SHOT (take_shot\'s path): the same call writes the finished picture beside its Original, as ' +
@@ -1110,11 +1128,14 @@ export function build() {
         '"Tonight") the best matches come first, scored on the words on the element, its ' +
         'colour and its kind. Look at the picture to check the first one is what the person meant; ' +
         'if not, pick another by its number or search again with other words. Name the ' +
-        'chosen one in apply_edit as element: \'E12\' (zooms[].element, marks[].element; ids ' +
-        'from the latest search on that recording), or send its box as it is: boxes are fractions of ' +
+        'chosen one in apply_edit as element: \'E12\' (zooms[].element, marks[].element, texts[].element), or send its box as it is: boxes are fractions of ' +
         'the frame after the edit\'s crop, the frame apply_edit places things in. ' +
         'A shot goes through the same pass on its one frame, so pointing at part of a screenshot is this ' +
-        'call and the E id it hands back, exactly as on a recording.',
+        'call and the E id it hands back, exactly as on a recording. An id names one element or nothing: ' +
+        'a second search of the same moment keeps the ids of what it finds again, a search of another moment ' +
+        'numbers past every id the recording has handed out, and an id is checked again as it is used. ' +
+        'Where Fetch could not be sure an old id still names what it did, that element takes a new id and ' +
+        'ids_retired says which; an action sent with the old one is refused.',
       inputSchema: z.object({
         path: z.string().describe('Absolute path to the recording, or to a shot.'),
         at: z.number().min(0).optional()

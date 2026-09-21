@@ -1323,7 +1323,12 @@ async function findOnScreen(srcArg, atSec, opts = {}) {
   const raw = JSON.parse(await runOut(elementsBin(), [f.file]))
   // opts.prior: the list an earlier pass on the same screen handed back. A control found
   // again keeps its id from it (Targets.carryIds); with none, ids are E1.. in reading order.
-  const all = Targets.elementsFrom(raw, opts.prior || null)
+  const read = Targets.elementsFrom(raw, opts.prior || null)
+  // opts.guard: the bridge's ledger (ui/guard.js), which holds every id it has shown to
+  // what it was first shown on, and gives a new id to anything the matcher handed an old
+  // one it does not match. Run before anything is ranked or drawn, so the numbers on the
+  // picture are the ids the agent is handed.
+  const all = typeof opts.guard === 'function' ? opts.guard(read, { width: raw.width, height: raw.height }) || read : read
   const query = String(opts.query || '').trim()
   const limit = Math.max(1, Math.min(60, +opts.limit || (query ? 8 : 40)))
   // `all` is in reading order. A carried id is not, so the order is read off the list

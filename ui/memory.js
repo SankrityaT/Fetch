@@ -290,6 +290,20 @@ const sameName = (a, b) => {
   return one != null && (one === '' || GENERIC.has(one))
 }
 
+// What a rule is about: its content words less the ones every rule of its kind says.
+// "never show customer phone numbers" and "never show card numbers" share half their
+// words (never, show, numbers) and are two rules, because what each keeps off screen is
+// different; "never show the customer phone numbers" is the first again. Two rules are
+// apart when neither's subject holds the other's.
+const RULE_WORDS = new Set(['never', 'show', 'shown', 'showing', 'appear', 'appears', 'screen', 'always', 'avoid',
+  'say', 'use', 'dont', 'not', 'no', 'instead', 'keep', 'off', 'visible', 'display', 'displayed', 'let', 'ever'])
+const ruleSubject = s => new Set([...content(s)].filter(w => !RULE_WORDS.has(w)))
+function rulesApart(a, b) {
+  const A = ruleSubject(a), B = ruleSubject(b)
+  if (!A.size || !B.size) return false
+  return ![...A].every(w => B.has(w)) && ![...B].every(w => A.has(w))
+}
+
 function similarity(a, b) {
   const A = content(a), B = content(b)
   if (!A.size || !B.size) return 0
@@ -453,7 +467,7 @@ function add(store, input, at = now0()) {
   // found by the words, which is what stops five spellings of the same fact piling up.
   const match = pool => (key && pool.find(f => f.key === key)) ||
     pool.find(f => flat(f.text) === flat(text)) ||
-    pool.find(f => similarity(f.text, text) >= SAME) ||
+    pool.find(f => similarity(f.text, text) >= SAME && !((rule || f.rule) && rulesApart(f.text, text))) ||
     pool.find(f => sameName(f.text, text)) || null
 
   // A draft may refine an earlier draft, but it never rewrites what is in force: that

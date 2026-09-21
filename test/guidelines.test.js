@@ -327,6 +327,184 @@ t('one entry point, the way a tool calls it', () => {
   assert.throws(() => G.op({ root, take: src }, { action: 'burn' }), /action is one of/)
 })
 
+// ── checks, not advice ──────────────────────────────────────────────────────
+// A rule an agent only reads is followed when the model remembers to. These hold the
+// work to the rules the way review does: what broke, where, and the call that fixes it,
+// and a rule that could not be checked is said to be unchecked, never passed.
+
+const B = "Biscuit's Pantry"
+const pantry = () => {
+  const where = { root: home(), product: B }
+  for (const [rule, section] of [
+    ["avoid 'simply', say 'just'", 'words'],
+    ["avoid 'dish', say 'recipe'", 'words'],
+    ['never show an email address', 'never'],
+    ['screenshots on warm cream', 'look'],
+    [`always "${B}" with the apostrophe`, 'name'],
+  ]) assert.ok(G.write(where, { rule, section, from: 'person' }).ok, rule)
+  return where
+}
+const rule = (where, section) => G.read(where).rules[section][0].id
+const still = (texts = [], look = {}, marks = []) => ({ kind: 'shot', src: '/tmp/pantry.png', w: 1600, h: 1000, look, texts, marks })
+
+t('a never-rule about a kind of thing finds the thing by its shape, not the words of the rule', () => {
+  const where = pantry()
+  const F = rule(where, 'never')
+  const frame = { elements: [
+    { id: 'E2', text: 'Email address', box: { x: 0.1, y: 0.1, w: 0.2, h: 0.04 } },
+    { id: 'E3', text: 'maya@biscuit.test', box: { x: 0.1, y: 0.16, w: 0.2, h: 0.04 } },
+  ] }
+  const r = G.check(where, { doc: still(), frames: [frame] })
+  const never = r.findings.filter(f => f.rule === 'rule-never')
+  assert.deepStrictEqual(never.map(f => [f.guideline, f.where.id, f.severity]), [[F, 'E3', 'blocking']],
+    'the address, not the field name')
+  assert.deepStrictEqual(never[0].fix, { tool: 'apply_edit', why: never[0].fix.why,
+    args: { path: '/tmp/pantry.png', doc: { marks: [{ kind: 'redact', element: 'E3' }] } } })
+  assert.ok(!JSON.stringify(r.findings).includes('maya@'), 'a check never repeats the thing it keeps off screen')
+  assert.strictEqual(r.verdict, 'refuse')
+  // the list find_on_screen already reads gets the address too, masked, beside the field
+  // name it already caught (a screen about email addresses is worth a word as it is looked at)
+  const seen = G.onScreen(frame.elements, G.read(where).rules.never)
+  assert.deepStrictEqual(seen.map(h => [h.id, h.label, h.kind || null]), [['E2', 'Email address', null], ['E3', 'an email address', 'email']])
+})
+
+t('what is under a redaction is covered; a blur is not enough for a card number, and one thing on five frames is one finding', () => {
+  const where = { root: home(), product: S }
+  G.write(where, { rule: 'keep phone numbers off screen', from: 'person' })
+  G.write(where, { rule: 'never show card numbers', from: 'person' })
+  const [phone, card] = G.read(where).rules.never.map(x => x.id)
+  const doc = { v: 2, src: '/t.mov', dur: 20, clips: [{ id: 'C1', start: 0, end: 20 }], look: {}, texts: [], cues: [], marks: [
+    { id: 'M1', kind: 'blur', x: 0.5, y: 0.5, w: 0.3, h: 0.1, start: 0, end: 20 },
+    { id: 'M2', kind: 'redact', x: 0, y: 0.8, w: 0.3, h: 0.1, start: 0, end: 20 },
+  ] }
+  const els = [
+    { id: 'E1', text: 'Call +44 20 7946 0958', box: { x: 0, y: 0, w: 0.2, h: 0.05 } },
+    { id: 'E2', text: '4242 4242 4242 4242', box: { x: 0.55, y: 0.52, w: 0.1, h: 0.04 } },
+    { id: 'E4', text: '(555) 010-4477', box: { x: 0.05, y: 0.82, w: 0.1, h: 0.04 } },
+    { id: 'E5', text: '2026-09-21 at 10:30, 1,234,567 views' },
+  ]
+  const r = G.check(where, { doc, frames: [2, 6, 10, 14, 18].map(at => ({ at, elements: els })) })
+  assert.deepStrictEqual(r.findings.map(f => [f.guideline, f.where.id]), [[phone, 'E1'], [card, 'E2']])
+  assert.deepStrictEqual(r.findings[0].where.frames, [2, 6, 10, 14, 18])
+  assert.deepStrictEqual(r.findings[0].fix.args.doc.marks, [{ kind: 'redact', element: 'E1', start: 0, end: 20 }])
+  assert.deepStrictEqual(r.findings[1].fix.args.doc.marks, [{ id: 'M1', kind: 'redact' }], 'the blur becomes a redaction')
+  assert.ok(r.covered.every(c => c.id === 'E4' && c.by === 'M2'))
+  assert.deepStrictEqual(r.unchecked, [], 'five frames four seconds apart read the whole take')
+})
+
+t('a never-rule that cannot be checked says so and does not pass', () => {
+  const where = { root: home(), product: S }
+  G.write(where, { rule: 'never show an email address', from: 'person' })
+  G.write(where, { rule: "never show customers' real names", from: 'person' })
+  const [email, names] = G.read(where).rules.never.map(x => x.id)
+  // nothing read off the picture
+  const blind = G.check(where, { doc: still() })
+  assert.strictEqual(blind.clean, false)
+  assert.strictEqual(blind.verdict, 'unchecked')
+  assert.ok(blind.unchecked.some(u => u.guideline === email && u.fix.tool === 'find_on_screen'))
+  // a kind with no shape
+  const u = blind.unchecked.find(x => x.guideline === names)
+  assert.ok(/no shape of its own/.test(u.why) && /has not passed/.test(u.why))
+  // a take read on two frames far apart: the stretches between them are named
+  const doc = { v: 2, src: '/t.mov', dur: 30, clips: [{ id: 'C1', start: 0, end: 30 }], look: {}, texts: [], cues: [], marks: [] }
+  const r = G.check(where, { doc, frames: [{ at: 2, elements: ['Library'] }, { at: 20, elements: ['Library'] }] })
+  const gaps = r.unchecked.find(x => x.where && x.where.gaps)
+  assert.deepStrictEqual(gaps.where.gaps, [[4, 18], [22, 30]])
+  assert.deepStrictEqual(gaps.fix, { tool: 'find_on_screen', args: { path: '/t.mov', at: 11 }, why: gaps.fix.why })
+})
+
+t('the gate refuses an export with a never-thing on it, and lets the rest travel with the yes', () => {
+  const where = pantry()
+  const frame = { elements: [{ id: 'E3', text: 'maya@biscuit.test', box: { x: 0.1, y: 0.16, w: 0.2, h: 0.04 } }] }
+  const no = G.gate(where, { doc: still([{ id: 'T1', text: 'Plan the week' }]), frames: [frame], for: 'still' })
+  assert.strictEqual(no.ok, false)
+  assert.strictEqual(no.refused.kind, 'never-on-screen')
+  assert.ok(/before this still is saved/.test(no.refused.why))
+  const hidden = still([{ id: 'T1', text: 'Plan the week' }], { background: { kind: 'solid', color: '#F3EADB' } },
+    [{ id: 'M1', kind: 'redact', x: 0.09, y: 0.15, w: 0.22, h: 0.06 }])
+  const yes = G.gate(where, { doc: hidden, frames: [frame], for: 'still' })
+  assert.strictEqual(yes.ok, true)
+  assert.deepStrictEqual(yes.findings, [])
+  assert.deepStrictEqual(yes.covered.map(c => [c.id, c.by]), [['E3', 'M1']])
+  assert.strictEqual(G.op(where, { action: 'gate', doc: hidden, frames: [frame] }).ok, true)
+})
+
+t("a name rule reads the name, and finds every other way of writing it", () => {
+  assert.deepStrictEqual(G.nameOf(`always "${B}" with the apostrophe`), { name: B, old: [] })
+  assert.deepStrictEqual(G.nameOf('the product is called Lyricly, never Lyrically'), { name: 'Lyricly', old: ['Lyrically'] })
+  assert.deepStrictEqual(G.nameOf('Songscription, formerly Scorely'), { name: 'Songscription', old: ['Scorely'] })
+  assert.strictEqual(G.nameOf('say it the way the founders do'), null)
+  const r = { id: 'F1', text: 'the product is called Songscription, formerly Scorely' }
+  const said = h => h.map(x => x.said)
+  assert.deepStrictEqual(said(G.misnamed('Song Scription, Songsciption, songscription and Scorely', r)),
+    ['Song Scription', 'Songsciption', 'songscription', 'Scorely'])
+  assert.deepStrictEqual(G.misnamed("Songscription's library, SONGSCRIPTION, Songscription", r), [], 'possessive, capitals and the name itself')
+  const fetch = { id: 'F2', text: "the product is called 'Fetch'" }
+  assert.deepStrictEqual(said(G.misnamed('fetch the file with Fetch, or FEtch', fetch)), ['FEtch'], 'a short ordinary word in lower case is a verb')
+})
+
+t('the words and the name are checked on the edit, and one call makes every rewrite', () => {
+  const where = pantry()
+  const texts = [{ id: 'T1', text: 'Biscuits Pantry keeps the week' }, { id: 'T2', text: 'Simply add your favourite dish' }]
+  const r = G.check(where, { doc: still(texts, { background: { kind: 'solid', color: '#F3EADB' } }), frames: [{ elements: ['Recipes'] }] })
+  assert.deepStrictEqual(r.findings.map(f => [f.rule, f.where.id]).sort(),
+    [['rule-name', 'T1'], ['rule-words', 'T2'], ['rule-words', 'T2']])
+  const fixes = new Set(r.findings.map(f => JSON.stringify(f.fix)))
+  assert.strictEqual(fixes.size, 1, 'the list is replaced whole, so every finding in it carries the same call')
+  const fixed = r.findings[0].fix.args.doc.texts
+  assert.deepStrictEqual(fixed.map(x => x.text), [`${B} keeps the week`, 'Just add your favourite recipe'])
+  const again = G.check(where, { doc: still(fixed, { background: { kind: 'solid', color: '#F3EADB' } }), frames: [{ elements: ['Recipes'] }] })
+  assert.strictEqual(again.clean, true, JSON.stringify(again))
+  // the judge's line, on a caption and on a mark's label
+  const cap = G.check(where, { doc: { ...still(), marks: [{ id: 'M4', kind: 'arrow', label: 'Biscuits Pantry keeps the week' }] } })
+  const m = cap.findings.find(f => f.rule === 'rule-name')
+  assert.deepStrictEqual(m.fix.args.doc.marks, [{ id: 'M4', label: `${B} keeps the week` }])
+})
+
+t('a name rule with no name in it is unchecked, not passed', () => {
+  const where = { root: home(), product: S }
+  G.write(where, { rule: 'the product is pronounced the way the founders say it', section: 'name', from: 'person' })
+  const r = G.check(where, { text: 'Songsciption is here' })
+  assert.deepStrictEqual(r.findings, [])
+  assert.strictEqual(r.unchecked[0].rule, 'rule-name')
+  assert.strictEqual(r.clean, false)
+})
+
+t("a look rule is read clause by clause into the look's own fields, and held to them", () => {
+  const w = G.lookWants('screenshots on warm cream, with the device frame, no shadow and square corners; 16:9; feels calm')
+  assert.deepStrictEqual(w.map(x => x.path || null), ['background', 'device.kind', 'frame.shadow', 'frame.radius', 'frame.aspect', null])
+  assert.ok(/feels calm/.test(w[5].unchecked))
+
+  const where = pantry()
+  const look = rule(where, 'look')
+  const bad = G.check(where, { doc: still([], {}) }).findings.find(f => f.rule === 'rule-look')
+  assert.strictEqual(bad.guideline, look)
+  assert.deepStrictEqual(bad.fix, { tool: 'apply_look', why: bad.fix.why,
+    args: { path: '/tmp/pantry.png', look: { background: { kind: 'solid', color: '#F3EADB' } } } })
+  const dusk = G.check(where, { doc: still([], { background: { kind: 'gradient', gradient: 'dusk' } }) })
+  assert.ok(dusk.findings.some(f => f.rule === 'rule-look' && /dusk/.test(f.what)))
+  const cream = G.check(where, { doc: still([], { background: { kind: 'solid', color: '#F5EBDC' } }) })
+  assert.ok(!cream.findings.some(f => f.rule === 'rule-look'))
+  // a picture's tone that is in its pixels is not guessed at
+  const img = G.check(where, { doc: still([], { background: { kind: 'image' } }) })
+  assert.ok(img.unchecked.some(u => u.rule === 'rule-look' && /pixels/.test(u.why)))
+  // a screenshot rule does not hold a video to it
+  const video = { v: 2, src: '/t.mov', dur: 5, clips: [], look: {}, texts: [], cues: [], marks: [] }
+  assert.ok(!G.check(where, { doc: video }).findings.some(f => f.rule === 'rule-look'))
+})
+
+t("a shape rule needs the take's own shape when the look keeps it, and says so without it", () => {
+  const where = { root: home(), product: S }
+  G.write(where, { rule: 'demos are 16:9 with captions at the bottom', section: 'look', from: 'person' })
+  assert.strictEqual(G.check(where, { look: { frame: { aspect: 'auto' } }, width: 1920, height: 1080 }).clean, true)
+  const tall = G.check(where, { look: { frame: { aspect: 'auto' } }, width: 1080, height: 1920 })
+  assert.deepStrictEqual(tall.findings.map(f => f.fix.args.look), [{ frame: { aspect: '16:9' } }])
+  const blind = G.check(where, { look: { frame: { aspect: 'auto' } } })
+  assert.ok(blind.unchecked.some(u => /width and height were not given/.test(u.why)))
+  const top = G.check(where, { look: { frame: { aspect: '16:9' }, captions: { position: 'top' } } })
+  assert.deepStrictEqual(top.findings.map(f => f.fix.args.look), [{ captions: { position: 'bottom' } }])
+})
+
 t('no em dash in the rulebook, its memory or this file', () => {
   const dash = String.fromCharCode(0x2014)
   for (const f of ['../ui/guidelines.js', '../ui/memory.js', __filename]) {

@@ -668,7 +668,10 @@ fails if they name a tool this server does not register. `get_frame` returns the
 `find_on_screen` reads a frame on device (Vision, `Elements.swift`) and returns its
 text, chips, buttons and cards as E1, E2... with boxes, ranked against the person's
 words ("the black chip"), plus the frame with them numbered; zooms and marks take that
-box, and Fetch picks the scale that frames it (`ui/targets.js`). Panels and card grids come back too (found from their hairline edges), each element says which one it is `in`, and a new lift or spotlight replaces any it lands on and is held to the part of its span where its element is on screen (a card that opens mid-sentence is not lifted before it opens); a lift needs room: one at or near the frame edge, or on a pane whose content is cut off at its foot, is refused, naming the card or grid inside it to lift instead (`find_on_screen` marks these `no_lift`; a spotlight is offered only when nothing inside can stand for it). Re-aiming a zoom lists under `alongside` the lifts and spotlights still playing with it, so one an earlier turn added unasked is named or removed. `apply_edit` stops taking an
+box, and Fetch picks the scale that frames it (`ui/targets.js`). Every action that uses an id
+re-checks it, at the moment it acts, against what it was minted for (`ui/guard.js`), and refuses
+when the element in front of it does not match; an id the matcher carried onto something else
+is renumbered before any list shows it, never shown on the wrong thing. Panels and card grids come back too (found from their hairline edges), each element says which one it is `in`, and a new lift or spotlight replaces any it lands on and is held to the part of its span where its element is on screen (a card that opens mid-sentence is not lifted before it opens); a lift needs room: one at or near the frame edge, or on a pane whose content is cut off at its foot, is refused, naming the card or grid inside it to lift instead (`find_on_screen` marks these `no_lift`; a spotlight is offered only when nothing inside can stand for it). Re-aiming a zoom lists under `alongside` the lifts and spotlights still playing with it, so one an earlier turn added unasked is named or removed. `apply_edit` stops taking an
 agent's aim on trust, in code rather than in a description (principle 4): a zoom given
 only a centre point is put on the element under that point, never on a bare line of text,
 and fitted to it; a zoom carrying a box is framed by that box whatever scale came beside
@@ -829,10 +832,19 @@ force sits beside it and takes its id on yes, so an id an agent holds never star
 something else. The rules reach the agent before it acts: they open the memory block, under
 their own budget, in the in-app system prompt and on `direct`, `apply_edit`, `apply_look`,
 `take_shot` and `record_start`, and the server's instructions tell an outside agent to read them
-before it plans, captures or styles anything. Two are checked by machine as well as read:
-`find_on_screen` names any label on the picture that a never-rule keeps off screen, the moment
-the agent looks, and `review` names the words on an edit that the product avoids as a finding
-of its own (`rule-words`), which holds the verdict at nearly until it is fixed or declined. Rules belong
+before it plans, captures or styles anything. They are checked by machine as well as read, where
+the work is (`ui/agent-bridge.js` `rulesCheck`, over `ui/guidelines.js` `check` and `gate`): the
+words it avoids, how its name is written, how its pictures look, and what must never be on screen,
+held to every frame an Elements pass has read off the take, the agent's and Fetch's own. `take_shot`
+reads the new picture once where there is a never-rule to hold it to and hands the findings back
+with the capture; `review` returns them under `guidelines` beside the rubric, each with the call
+that fixes it; and `export` holds the edit to them before a frame is drawn, and refuses a video or
+a PNG that shows what a never-rule keeps off screen and is not under a redaction, naming the
+redaction by element id. A rule that could not be checked (a frame nobody read, a person's name,
+which has no shape) comes back under `unchecked` and is never said to have passed, and refuses
+nothing. `find_on_screen` still names a label a never-rule keeps off screen the moment the agent
+looks, and `review` still holds the verdict at nearly on the words the product avoids (`rule-words`)
+until they are fixed or declined. Rules belong
 to one product, always named; a rule with no product is refused rather than filed for everyone.
 
 **The agent's own cursor** (`ui/pointer.js`). An agent's take is recorded without the
@@ -1025,10 +1037,15 @@ grid of bare thumbnails, or rows named only by their place ("Step 1", a price, a
 the first of twenty and the next scrolls in, or delete Step 1 and Step 2 is renamed, and the
 same count sits in the same places, so the id dies and the agent looks again. A heading replaced
 in place (the recipe's name became the next recipe's over the same toolbar) is another screen,
-and nothing on it is carried. The things it cannot tell apart are a control with the same
-words, size and place on a screen the device navigated to (a Done in the same corner), and two
+and nothing on it is carried; a name that changes under a taller nav title is a swapped heading
+too. A card, panel or grid keeps its id only by its words, numbers aside, and only when no
+other pane on the picture reads the same: cards that all read "Untitled Edit Delete" or "Step N"
+are never carried, and a panel is never carried by its place alone. The things it cannot tell apart are a control with the same
+words, size and place on a screen the device navigated to (a Done in the same corner), two
 controls that each appear once on a one-row screen whose label changed below a heading that
-stayed, which vouch for each other; both are carried as the same controls. A second
+stayed, which vouch for each other, and an item's name set below the top quarter (under a hero
+picture); all are carried as the same controls, and only the guard below, at the moment of
+acting, catches the last two. A second
 `find_on_screen` of the same moment keeps its ids the same way, and a search of an older
 picture in the run is numbered on from the run, and moves the run's count on, without becoming
 the screen the next picture is matched against. A tap is only ever aimed on the device's newest
@@ -1042,6 +1059,58 @@ the newest pass was another picture in the same run; an id off any other picture
 screen is only handed back from a capture the same call made. `processor.js findOnScreen`
 passes the earlier list through, and keeps the shown list in reading order rather than by the
 number in each id.
+
+**An id is checked as it is used, not only when it is carried** (`ui/guard.js`, wired in
+`ui/agent-bridge.js`). The matcher above guesses which element on a new picture an old id named,
+and two rounds of patching it case by case each found another case: a panel (a card holding Edit
+and Delete) carried by its place alone, so moving Pancakes to the top of a recipe list made every
+card id name a different recipe, and a detail screen whose taller nav title stayed carrying
+"Delete recipe" to the next recipe. So the matcher is no longer what keeps the promise. Every list
+an Elements pass hands back, the agent's and Fetch's own, is recorded in a ledger before it is
+ranked or drawn (the processor runs the bridge's hook), which writes down what each id is: its
+words, its kind and size, the card it sits in and that card's name, its row, its place among
+things that read the same, and the loose words of the screen round it. Anything the matcher
+handed an old id that it does not match takes a new id, the old one is spent, and
+`find_on_screen`, `ready` and every tap say which under `ids_retired`. Then, at the moment of
+acting, every place an id becomes an action goes through one door (`resolveElement`) that holds
+the element in front of it to what the id was minted for and refuses anything that does not
+match or cannot be told, in a sentence that says to look again: a simulator tap, every zoom,
+every kind of mark (lift, spotlight, loupe, arrow, redaction, blur, step), and every label and
+callout pinned to an element, on a recording and on a shot, and the proposal card's frame. The
+box it hands back is the judged element's own.
+
+What the guard holds an id to, after a round spent attacking it: a label's words as they are
+spelt (a verb may change form in place, "Delete" to "Deleting...", on a screen otherwise the
+same, but "Ann" is not "Anne" and "Note" is not "Notes"); a row's words exactly, with no new
+naming word ("Shakshuka" is not "Green shakshuka") and its numbered words figures and all
+("Order 1044  Wed" is not "Order 1045  Wed"); a card's first line's figures ("Maya Chen 1043"
+is not "1042"); and the screen's own words of any size, beside a time or in a small subtitle,
+where a name replaced in place, or a heading's number ("Invoice 1042" to "Invoice 1043"), means
+another item. Two rows that would each pass for an id's row refuse it.
+
+A tap is judged on a picture of the device taken after the person's yes and just before the
+touch, never on the list the agent holds, which can be a whole Allow dialog old: a sync that
+pushed every row down one while the dialog was open moves the finger with the row, and a device
+that cannot be read then is not tapped by id. An id off a still or a recording is refused once
+the device has handed back a screen of its own, since the order lists were searched in says
+nothing about when their pictures were taken. On a recording an id aims only inside the span it
+was read in, give or take a second: the recipe at y 0.27 at 2 s is another recipe at 8 s, so a
+redaction at 7 to 9 s with an id from 2 s is refused with the moment to read. Every id the agent
+was handed stays on the list it came in however many searches later, and an id its run ever
+handed out is never looked up in a pass Fetch ran for itself, which numbers from E1; what
+Fetch's own passes found reaches the agent by its words and box (a zoom's snap, a never-rule's
+fix), never by an id. `test/tools.test.js` holds the bridge to this the way it holds the tool lists to each
+other: only the door turns an id into a box, the door calls the guard before it returns one,
+every Elements pass is handed the hook, and every tool that takes an element id drives an op
+that reaches the door, so an op added later cannot quietly skip it. On one recording an id is
+never handed out twice: a search of another moment numbers past every id the recording has
+handed out rather than from E1, so an id held from the first search still aims at what it named
+there, and a matcher mistake costs one `find_on_screen` instead of the wrong row's data. What is
+left: an R id is an area the person drew, and aims at that area rather than at an element; a
+tap costs one more picture of the device; a screen still moving at the instant of the touch
+(mid scroll) can move between that picture and the finger; and a label renamed in place to
+another form of itself ("Bake" to "Baked") on a screen otherwise unchanged is taken for the
+same control, since no picture can say otherwise.
 
 **What it refuses, permanently.** The device framebuffer capture, which writes pixels
 that never passed the never-record check and makes a file with no audio track. A region

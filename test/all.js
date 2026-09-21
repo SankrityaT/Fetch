@@ -10,6 +10,7 @@
 //
 //   node test/all.js              every suite
 //   node test/all.js tools shot   only the suites whose names contain these words
+//   GUARD_SEEDS=20000 npm test    the guard's fuzz over the judge's full range (1500 by default)
 
 const { spawnSync } = require('child_process')
 const path = require('path')
@@ -17,7 +18,7 @@ const path = require('path')
 const SUITES = [
   'simulator', 'policy', 'simctl', 'fetchdoc', 'shot-doc', 'look', 'levels', 'timeline',
   'plan', 'fit', 'director', 'review', 'memory', 'guidelines', 'trackedit', 'focus', 'beats', 'naming',
-  'zoom', 'overlays', 'zoomview', 'motion', 'stage-pick', 'targets', 'lasso', 'pointer',
+  'zoom', 'overlays', 'zoomview', 'motion', 'stage-pick', 'targets', 'guard', 'guard-breaches', 'lasso', 'pointer',
   'touch', 'chat', 'assist', 'takes', 'recorder', 'library', 'sample',
   ['engine', '/tmp/fetch-test/test.webm'],
   'formats', 'tools', 'shot', 'shot-stage', 'sizes', 'history', 'brake',

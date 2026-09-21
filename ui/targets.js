@@ -204,12 +204,22 @@ function elementsFrom(raw, prior) {
 // place ("Step 1", a price, a time). Delete the first of twenty and the next scrolls in,
 // or delete Step 1 and Step 2 is renamed, and the same count sits in the same places.
 // The agent pays one find_on_screen for it. A heading replaced in place (the recipe's
-// name became another recipe's over the same toolbar) is another screen, and nothing on
-// it is carried.
+// name became another recipe's over the same toolbar, or under a taller nav title that
+// stayed) is another screen, and nothing on it is carried.
+//
+// A card, a panel or a grid is told by what it says, never by where it is. A card holding
+// Edit and Delete is a panel, and panels used to be matched by place alone: move Pancakes to
+// the top of a recipe list and every card id named the recipe now in its place. Now a pane
+// is carried only when the words inside it, numbers aside, are the ones it had and no other
+// pane of its sort on either picture reads the same. Cards that all read "Untitled Edit
+// Delete", or are named only by their place ("Step 5"), are never carried.
 //
 // What still cannot be told apart: a screen whose content changed with no heading to say
 // so, around controls that each appear once and only vouch for each other (a one-row
-// "Shakshuka [Edit] [Delete]" whose name changed below a title that stayed).
+// "Shakshuka [Edit] [Delete]" whose name changed below a title that stayed, or an item's
+// name set below the top quarter, under a hero picture). This matcher is not what keeps an
+// id safe there: whatever acts on an id checks, as it acts, that the element in front of it
+// reads as it did when the id was handed out.
 //
 // When the match is ambiguous the id dies rather than moves. An agent told "that
 // element is gone, find it again" loses one call; one whose Delete lands on the wrong
@@ -283,20 +293,25 @@ function rowsOf(arr) {
     keyOf(arr[j]) && home[j] === home[i] && level(e, arr[j])))
 }
 
-// The screen's heading: the largest words with letters in the top quarter of the
-// picture that appear once on it. Whether one of them went and new words of its size took
-// its place, which is a different item's screen (a delete that moved on to the next
-// recipe, a push to another page), however alike the rest of it looks. A clock ticking
-// over has no letters, and a heading that only grew or shrank (a large title collapsing
-// on scroll) kept its words, so neither counts.
+// The screen's heading: the words with letters in the top quarter of the picture that
+// appear once on it and are at least as tall as its body text. Whether one of them went
+// and new words of its size took its place, which is a different item's screen (a delete
+// that moved on to the next recipe, a push to another page), however alike the rest of it
+// looks. It used to be only the tallest words there, and a detail screen with a taller nav
+// title ("Recipes") above the item's name kept its heading while the name under it became
+// the next recipe's, so its "Delete recipe" was carried onto Pancakes. A clock ticking
+// over has no letters, a status line in small type is below body size, and a heading that
+// only grew or shrank (a large title collapsing on scroll) kept its words, so none counts.
 function headingSwapped(list, next) {
   const top = (arr) => {
     const counts = new Map()
     arr.forEach(e => { const k = keyOf(e); if (k) counts.set(k, (counts.get(k) || 0) + 1) })
-    const lettered = arr.filter(e => SORT[e.kind] === 'words' && /\p{L}/u.test(e.text || '') &&
-      counts.get(keyOf(e)) === 1 && faceOf(e).y + faceOf(e).h / 2 < 0.25)
-    const tall = Math.max(0, ...lettered.map(e => faceOf(e).h))
-    return lettered.filter(e => faceOf(e).h >= tall * 0.9)
+    const lettered = arr.filter(e => SORT[e.kind] === 'words' && /\p{L}/u.test(e.text || ''))
+    // body text is the middle height of the words on the picture
+    const hs = lettered.map(e => faceOf(e).h).sort((a, b) => a - b)
+    const body = hs.length ? hs[Math.floor((hs.length - 1) / 2)] : 0
+    return lettered.filter(e => counts.get(keyOf(e)) === 1 && faceOf(e).y + faceOf(e).h / 2 < 0.25 &&
+      faceOf(e).h >= body * 0.95)
   }
   const had = new Set(list.map(keyOf)), has = new Set(next.map(keyOf))
   const gone = top(list).filter(e => !has.has(keyOf(e)))
@@ -350,19 +365,24 @@ function carryIds(prior, next, frame) {
     const RP = rowsOf(list).map(r => r.filter(j => once(P, list, j) && !countP(j)))
     const RN = rowsOf(next).map(r => r.filter(j => once(N, next, j) && !countN(j)))
 
-    // 1. anchors: words that appear exactly once on both pictures
+    // 1. anchors: words that appear exactly once on both pictures, and that name
+    // something rather than count a place ("Step 5" and the card round it are the fifth
+    // row, whichever row that now is)
     const cand = []
     for (const [g, ns] of N) {
       const ps = P.get(g)
       if (!ps || ps.length !== 1 || ns.length !== 1 || !keyOf(next[ns[0]])) continue
+      if (countP(ps[0]) || countN(ns[0])) continue
       const p = list[ps[0]], n = next[ns[0]]
       if (alike(p, n)) cand.push({ pi: ps[0], ni: ns[0], d: moveOf(p, n) })
     }
     let anchors = cand.filter(c => anchored(c, cand, list, next))
     // A heading replaced in place is another screen: "Shakshuka" became "Pancakes" over
     // the same toolbar after a delete moved on to the next recipe, and that toolbar's
-    // Delete is now Pancakes' Delete. Nothing is carried from a screen that was swapped.
-    if (headingSwapped(list, next)) anchors = []
+    // Delete is now Pancakes' Delete. Nothing is carried from a screen that was swapped,
+    // by any step.
+    const swapped = headingSwapped(list, next)
+    if (swapped) anchors = []
     // Whether p's row is n's row, for something that does not name itself: every one of
     // p's row words was carried, into n's row, and n's row has no words of its own that
     // were not in p's. Returns the way the row moved, or null when it is not the same
@@ -404,14 +424,15 @@ function carryIds(prior, next, frame) {
     // is never in reach, and never more than 0.03 of the frame
     const reach = (p, n) => Math.min(0.03, Math.max(0.008, 0.4 * Math.min(faceOf(p).h, faceOf(n).h)))
     // 2. repeated words, and things with no words (a thumbnail), by the row they sit in.
-    // A panel or a grid with no words is never matched here: nothing names it.
+    // A panel or a grid is never matched here: one that repeats has nothing of its own
+    // to say which is which, and one with no words has nothing at all.
     const rowKey = (R, i, map) => R[i].filter(j => j !== i).map(j => map ? map.get(j) : j).sort((a, b) => a - b).join(',')
     const byX = arr => (a, b) => faceOf(arr[a]).x - faceOf(arr[b]).x || faceOf(arr[a]).y - faceOf(arr[b]).y
     for (const [g, ps0] of P) {
       const ns0 = N.get(g)
       if (!ns0) continue
       if (ps0.length === 1 && ns0.length === 1 && keyOf(list[ps0[0]])) continue   // an anchor, or refused as one
-      if (!keyOf(list[ps0[0]]) && (SORT[list[ps0[0]].kind] === 'panel' || SORT[list[ps0[0]].kind] === 'grid')) continue
+      if (SORT[list[ps0[0]].kind] === 'panel' || SORT[list[ps0[0]].kind] === 'grid') continue
       const ps = ps0.filter(i => !taken.has(i)), ns = ns0.filter(i => ids[i] == null)
       // the rows these sit in, by the next picture's indices of their words
       const rows = new Map()
@@ -448,15 +469,39 @@ function carryIds(prior, next, frame) {
       }
     }
 
-    // 3. a panel or a grid whose words changed (a stat inside it ticked over) is still
-    // the pane it was, when it sits where the screen says it should, nearly box for box.
-    // Where it should be is where its nearest anchor went.
+    // 3. a panel or a grid whose numbers changed (a stat inside it ticked over) is still
+    // the pane it was, when its words, numbers aside, are the ones it had, no other pane
+    // of its sort on either picture reads the same, and it sits where the screen says it
+    // should, nearly box for box. Where it should be is where its nearest anchor went.
+    // This pass used to go by place alone, and a card holding Edit and Delete is a panel:
+    // Pancakes moved to the top of a recipe list and every card's id named the recipe
+    // that now sat in its place. A pane with no words of its own, or whose words another
+    // pane shares ("Untitled Edit Delete" down a list), is never carried, and nothing is
+    // carried on a screen whose heading was swapped.
+    if (swapped) return finish()
+    // What a pane says is every word inside it, a card's included, in reading order: a
+    // details pane of stat cards has no words of its own, and is still told by its cards.
+    const said = arr => arr.map(e => e.kind !== 'panel' && e.kind !== 'grid' ? null : arr
+      .filter(o => o !== e && o.kind !== 'panel' && o.kind !== 'grid' && inside(faceOf(o), e.box))
+      .flatMap(o => tokens(o.text).filter(t => !/\p{N}/u.test(t))).join(' '))
+    const WP = said(list), WN = said(next)
+    const tally = (arr, W) => {
+      const m = new Map()
+      arr.forEach((e, i) => { if (W[i] != null) { const k = e.kind + '|' + W[i]; m.set(k, (m.get(k) || 0) + 1) } })
+      return m
+    }
+    const SP = tally(list, WP), SN = tally(next, WN)
+    const named = (pi, ni) => {
+      const s = WP[pi], k = list[pi].kind + '|' + s
+      return /\p{L}/u.test(s) && s === WN[ni] && SP.get(k) === 1 && SN.get(k) === 1
+    }
     const expect = p => {
       const c = centre(faceOf(p))
       const a = anchors.slice().sort((u, v) => apart(centre(faceOf(list[u.pi])), c) - apart(centre(faceOf(list[v.pi])), c))[0]
       return a ? { x: c.x + a.d.x, y: c.y + a.d.y } : c
     }
-    const pane = (p, n) => p.kind === n.kind && (p.kind === 'panel' || p.kind === 'grid') && alike(p, n)
+    const pane = (pi, ni) => { const p = list[pi], n = next[ni]
+      return p.kind === n.kind && (p.kind === 'panel' || p.kind === 'grid') && alike(p, n) && named(pi, ni) }
     const shifted = (pi, ni) => {
       const p = list[pi], e = expect(p), c = centre(p.box)
       const b = { ...p.box, x: p.box.x + e.x - c.x, y: p.box.y + e.y - c.y }
@@ -466,7 +511,7 @@ function carryIds(prior, next, frame) {
     const { ps, ns } = open()
     const pairs = []
     for (const ni of ns) {
-      const near = ps.filter(pi => pane(list[pi], next[ni])).map(pi => ({ pi, v: shifted(pi, ni) }))
+      const near = ps.filter(pi => pane(pi, ni)).map(pi => ({ pi, v: shifted(pi, ni) }))
         .filter(o => o.v <= 0.24).sort((a, b) => a.v - b.v)
       // one candidate in reach, and no second anywhere near it
       if (!near.length || near[0].v > 0.12 || (near[1] && near[1].v <= 0.24)) continue
@@ -477,9 +522,12 @@ function carryIds(prior, next, frame) {
     for (const p of pairs) count.set(p.pi, (count.get(p.pi) || 0) + 1)
     for (const p of pairs) if (count.get(p.pi) === 1) match(p.pi, p.ni)
   }
-  let seq = seq0
-  for (let i = 0; i < ids.length; i++) if (ids[i] == null) ids[i] = 'E' + (++seq)
-  return { ids, seq, carried: ids.length - (seq - seq0) }
+  return finish()
+  function finish() {
+    let seq = seq0
+    for (let i = 0; i < ids.length; i++) if (ids[i] == null) ids[i] = 'E' + (++seq)
+    return { ids, seq, carried: ids.length - (seq - seq0) }
+  }
 }
 
 const CONTAINERS = new Set(['card', 'panel', 'grid', 'chip'])

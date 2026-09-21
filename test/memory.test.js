@@ -497,6 +497,15 @@ t('a draft is kept out of recall, counted, and never rewrites what is in force',
   assert.strictEqual(M.settle(s, 'F1', NOW + 3), null, 'only a draft settles')
 })
 
+t('two never-rules about different things stay two rules, and a restatement of one is still one', () => {
+  const a = M.add(M.empty(), { fact: 'never show customer phone numbers', rule: 'never', about: 'Biscuit' }, NOW)
+  const b = M.add(a.store, { fact: 'never show card numbers', rule: 'never', about: 'Biscuit' }, NOW + 1)
+  assert.strictEqual(b.was, null, `"${b.was}" was replaced by a rule about something else`)
+  assert.deepStrictEqual(b.store.facts.map(f => f.text).sort(), ['never show card numbers', 'never show customer phone numbers'])
+  const c = M.add(b.store, { fact: 'never show the customer phone numbers', rule: 'never', about: 'Biscuit' }, NOW + 2)
+  assert.strictEqual(c.store.facts.length, 2, 'a restatement of a rule became a third')
+})
+
 t('a memory with no rules prints exactly what it printed before', () => {
   const s = store('the product is called Songscription', 'never show the admin panel')
   const r = M.recall([s], { about: 'Songscription' })

@@ -1311,6 +1311,32 @@ t('a word the product\'s rules avoid is a finding of review\'s own, and holds th
     .items.find(i => i.rule === 'rule-words').declined, true)
 })
 
+t('the product\'s rules reach review as findings of their own: name, look and never, and what went unchecked', () => {
+  const findings = [
+    { rule: 'rule-never', guideline: 'F3', severity: 'blocking', what: 'An email address is on screen at 4.2 s, and the rules keep it off.',
+      where: { at: 4.2 }, fix: { tool: 'apply_edit', args: { doc: { marks: [{ kind: 'redact', element: 'E2', start: 3.7, end: 4.7 }] } }, why: 'hide it' } },
+    { rule: 'rule-name', guideline: 'F5', severity: 'should', what: '"Biscuits Pantry" is not how the product is written.', where: { at: 0 },
+      fix: { tool: 'apply_edit', args: {}, why: 'spell it' } },
+    { rule: 'rule-look', guideline: 'F4', severity: 'should', what: 'The rule says "warm cream", and background is #1A1714.', where: { look: 'background' },
+      fix: { tool: 'apply_look', args: { look: {} }, why: 'the tone' } },
+  ]
+  const unchecked = [{ rule: 'rule-never', guideline: 'F3', section: 'never', why: '12 to 20 s of the kept take was not read' }]
+  const r = run(doc(), brief(), { rules: { words: [], findings, unchecked } })
+  const never = of(r, 'rule-never')
+  assert.ok(never && never.severity === 'blocking' && never.at === 4.2 && never.fix.tool === 'apply_edit', JSON.stringify(r.items))
+  assert.strictEqual(r.verdict, 'not ready')
+  assert.ok(of(r, 'rule-name') && of(r, 'rule-look'), JSON.stringify(rules(r)))
+  const note = r.items.find(i => i.severity === 'note' && /not read/.test(i.what))
+  assert.ok(note, 'what the rules could not check is not said')
+  // a never-rule is ranked with the redactions, and the agent cannot write it off
+  assert.ok(rules(r).indexOf('rule-never') < rules(r).indexOf('rule-name'))
+  const declined = run(doc(), brief(), { rules: { findings }, declined: ['rule-never'] })
+  assert.strictEqual(of(declined, 'rule-never').severity, 'blocking')
+  // and on a shot the same
+  const shot = see(styled(), shotBrief(), { rules: { findings, unchecked } })
+  assert.ok(of(shot, 'rule-never') && shot.items.some(i => i.severity === 'note' && /not read/.test(i.what)), JSON.stringify(rules(shot)))
+})
+
 t('no em dashes anywhere a person or a model reads', () => {
   const all = JSON.stringify([
     run(doc(), brief({ must_hide: ['x'], must_keep: ['thing'] }), { levels: { lo: 0.01, hi: 0.5 } }),

@@ -588,8 +588,8 @@ const workSeconds = (keeps, k) => r2(mergeSpans(keeps.map(w => [w.start, w.end])
 // made (what must be hidden, the shape, the words), then the length, then the clutter.
 // The picture's own rules are in the same list, in the same order of promise first: a
 // rule missing from it sorts above everything, which is not a ranking, it is a bug.
-const RANK = ['redactions', 'soft-redaction', 'aspect', 'group-unframed', 'captions', 'burn-in',
-  'must-keep', 'rule-words', 'clipped', 'length', 'dead-air', 'never-drawn', 'spans-a-cut', 'double-chrome',
+const RANK = ['redactions', 'rule-never', 'soft-redaction', 'aspect', 'group-unframed', 'captions', 'burn-in',
+  'must-keep', 'rule-words', 'rule-name', 'rule-look', 'rule-unchecked', 'clipped', 'length', 'dead-air', 'never-drawn', 'spans-a-cut', 'double-chrome',
   'device-fit', 'focus-share', 'focus-clash', 'subject', 'breathe', 'zoom-density', 'hand-aimed',
   'blank-bar', 'ground', 'resolution', 'no-zooms', 'no-brief']
 const WEIGHT = { blocking: 0, should: 1, note: 2 }
@@ -604,7 +604,7 @@ const WEIGHT = { blocking: 0, should: 1, note: 2 }
 // item declined drops to `should` and carries `lowered`, so the judgement counts for
 // something and the finding is still on the list. A redaction the brief asked for does
 // not move at all: it is the one failure that ships something private.
-const NEVER_DECLINED = ['redactions']
+const NEVER_DECLINED = ['redactions', 'rule-never']
 
 /**
  * The order, the verdict and the number, from the list alone. One function for a
@@ -612,15 +612,31 @@ const NEVER_DECLINED = ['redactions']
  * how "ready, 10" ends up said about a frame with two title bars in it. Sorts `items`
  * in place and returns what the summary is written from.
  */
-// The words the product's rules avoid, where the edit's own words use them (the bridge
-// reads them with ui/guidelines.js check and hands them in as input.rules). A finding
-// like any other, so it holds the verdict at nearly until it is fixed or declined.
+// The product's rules, held to the work (the bridge reads them with ui/guidelines.js
+// check and hands them in as input.rules). Each finding is a review item of its own, in
+// the shape check already gives it: a never-rule thing on screen is blocking and cannot
+// be declined, a misspelt name or a look off the rule holds the verdict at nearly. A
+// rule check could not hold the work to is said as a note, never passed in silence.
+// Where there are no findings, the words the rules avoid are one item, as before.
 function ruleWords(input, add, call) {
-  const w = input.rules && arr(input.rules.words)
-  if (!w || !w.length) return
-  const said = w.map(x => `"${x.term}"${x.instead ? ` (say "${x.instead}")` : ''}`).join(', ')
-  add('rule-words', 'should', `The product's rules avoid ${said}, and the words on this edit use ${w.length === 1 ? 'it' : 'them'}.`,
-    call('get_edit', {}, 'find the texts, captions and labels that use it, and change them with apply_edit'))
+  const rules = input.rules || {}
+  const found = arr(rules.findings).filter(f => f && f.rule && f.what)
+  const w = arr(rules.words)
+  if (w.length && !found.some(f => f.rule === 'rule-words')) {
+    const said = w.map(x => `"${x.term}"${x.instead ? ` (say "${x.instead}")` : ''}`).join(', ')
+    add('rule-words', 'should', `The product's rules avoid ${said}, and the words on this edit use ${w.length === 1 ? 'it' : 'them'}.`,
+      call('get_edit', {}, `find the texts, captions and labels that use ${w.length === 1 ? 'it' : 'them'}, and change them with apply_edit`))
+  }
+  for (const f of found) {
+    const at = f.where && Number.isFinite(+f.where.at) ? +f.where.at : null
+    add(f.rule, ['blocking', 'should', 'note'].includes(f.severity) ? f.severity : 'should', f.what,
+      f.fix || call('guidelines', { action: 'read' }, 'read the rule this breaks'), at)
+  }
+  for (const u of arr(rules.unchecked)) {
+    if (!u || !u.why) continue
+    add(u.rule || 'rule-unchecked', 'note', `Not checked against the product's rules (${u.guideline || u.section || 'a rule'}): ${u.why}.`.replace(/\.\.$/, '.'),
+      u.fix || call('guidelines', { action: 'read' }, 'read the rule that could not be checked'), null)
+  }
 }
 
 function settle(items, asked) {
@@ -1667,7 +1683,7 @@ function still(input = {}) {
     }
   }
 
-  ruleWords(input, (rule, sev, what, fix) => add(rule, sev, what, fix), call)
+  ruleWords(input, (rule, sev, what, fix, at) => add(rule, sev, what, fix, at != null ? { at } : {}), call)
   const { live, bad, should, off, verdict, score } = settle(items, input.declined)
   // What it is, in the numbers that decide it, and then what is left. A note is counted
   // out loud rather than swept under "nothing the rubric can name": a summary that says

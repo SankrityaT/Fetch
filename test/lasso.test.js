@@ -153,8 +153,13 @@ console.log('\nan area the person drew is a target like any other')
   AB.noteFound(TAKE, 30, later, later, { agent: false })
   is('a pass Fetch ran for itself leaves the agent\'s E ids where they were',
     AB.withElements(TAKE, { zooms: [{ start: 10, end: 13, element: 'E1' }] }).zooms[0].box, ELS[0].box)
-  is('and an id only that pass saw still resolves',
-    AB.withElements(TAKE, { zooms: [{ start: 10, end: 13, element: 'E9' }] }).zooms[0].box, later[1].box)
+  is('and an id only that pass saw still resolves, at the moment that pass read',
+    AB.withElements(TAKE, { zooms: [{ start: 29, end: 32, element: 'E9' }] }).zooms[0].box, later[1].box)
+  // and not at another: a recording moves, and what sat there at 10 s was never read
+  let early = ''
+  try { AB.withElements(TAKE, { zooms: [{ start: 10, end: 13, element: 'E9' }] }) } catch (e) { early = e.message }
+  is('an id read at 30 s is refused on a zoom at 10 s, with the moment to read',
+    early.includes('Call find_on_screen at that moment (at: 11.5)'), true)
 }
 
 console.log('\nan area is read in the crop the edit is in')

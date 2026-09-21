@@ -429,7 +429,7 @@ async function main() {
       assert.ok(/simScreen\([^)]*since/.test(body(fn)), `${fn} names a screen without saying which capture it must be off`)
     }
     // An id with no path falls back to the device's screen only while that is the newest pass.
-    assert.ok(/seenHere === lastFoundOn/.test(body('async function simPoint(')),
+    assert.ok(/seenHere === lastFoundOn/.test(body('function tapSource(')),
       'a tap by id with no path resolves against a frame an agent has since stopped reading')
     // record_stop writes the newest rectangle that passed, and says what it wrote.
     const stop = body('async function simAfterTake(')
@@ -1136,13 +1136,21 @@ async function main() {
         assert.strictEqual(idOf(second, 'Sign in with Apple'), 'E5', 'the button was renumbered by a line going above it')
         assert.ok(!second.elements.some(e => e.id === idOf(first, 'Save screen')), 'a gone element\'s id went to another')
       })
-      // a moment far off is another screen, and is numbered afresh as it always was
+      // A moment far off is another screen and carries nothing, and it is numbered past
+      // every id the recording has handed out: numbered afresh from E1, its E4 was the
+      // first search's E4 (Continue with Google) and an edit sent with that id got the
+      // other button's box.
       honour = true; raw = READY
-      await bridge.ops.find({ path: take, at: 2 })
+      const near = await bridge.ops.find({ path: take, at: 2 })
       raw = LATER
       const far = await bridge.ops.find({ path: take, at: 8 })
-      t('a search of another moment is not handed the earlier list', () => {
-        assert.strictEqual(idOf(far, 'Sign in with Apple'), 'E4')
+      t('a search of another moment is not handed the earlier list, and never reuses a number', () => {
+        const top = Math.max(...[first, second, near].flatMap(r => r.elements.map(e => +e.id.slice(1))))
+        assert.ok(far.elements.every(e => +e.id.slice(1) > top), JSON.stringify(far.elements.map(e => e.id)))
+        // and the id the first search gave Continue with Google still aims at it
+        const cont = idOf(first, 'Continue with Google')
+        const out = bridge.withElements(take, { zooms: [{ start: 1, end: 3, element: cont }] })
+        assert.deepStrictEqual(out.zooms[0].box, first.elements.find(e => e.id === cont).box)
       })
     } finally { bridge.stop(); fs.rmSync(home, { recursive: true, force: true }) }
   })()
@@ -1150,11 +1158,12 @@ async function main() {
   t('every picture of a device is handed the last one, and a tap trusts only a run that really carried', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
     const screen = src.slice(src.indexOf('async function simScreen('), src.indexOf('async function simScreen(') + 2400)
-    assert.ok(/findOnScreen\(file, 0, \{[^}]*prior \}\)/.test(screen), 'simScreen mints each device screen afresh')
+    assert.ok(/findOnScreen\(file, 0, \{[^}]*prior,\s*guard: guardHook\(/.test(screen), 'simScreen mints each device screen afresh, or past the guard')
     assert.ok(/joinRun\(sim\.udid, file, prior,/.test(screen), 'simScreen never checks the carry happened')
     const point = src.slice(src.indexOf('async function simPoint('), src.indexOf('function devicePoint('))
     assert.ok(/chainOf\.get\(lastFoundOn\) === sim\.udid/.test(point), 'a bare id is trusted off a picture outside the run')
-    assert.ok(/!holds\(foundBy\.get\(seenHere\), id\)/.test(point), 'an id the newest screen lacks is not refused by name')
+    assert.ok(/seenHere && !holds\(here, id\)/.test(point) && /const here = foundBy\.get\(aimOn\)/.test(point),
+      'an id the newest screen lacks is not refused by name')
     const find = src.slice(src.indexOf('  async find('), src.indexOf("  async 'edit.preview'("))
     assert.ok(/foundBy\.get\(args\.path\)/.test(find) && !/foundFor\.get\(args\.path\)/.test(find),
       'find is handed a background pass\'s list, which would carry ids the agent never saw')
@@ -1482,12 +1491,558 @@ async function main() {
     R.reset()
   })()
 
+
+  // ── every id an action uses goes through the guard ──────────────────────
+  // The matcher that carries ids from picture to picture (ui/targets.js carryIds) is
+  // not what keeps an id's promise: ui/guard.js is, at the moment of acting. These hold
+  // the bridge to that the same way the checks above hold the tool lists to each other,
+  // so a new op that turns an id into a box without the guard fails here, by name.
+  const BRIDGE_SRC = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+  // The bridge in named pieces: every top-level function, const and op, comments out.
+  const chunks = (() => {
+    const code = BRIDGE_SRC.split('\n').map(l => l.replace(/^\s*\/\/.*$/, '').replace(/\s\/\/ .*$/, ''))
+    const START = /^(?:async )?function\*? ?(\w+)\s*\(|^(?:const|let) (\w+) = |^ {2}(?:async )?'?([\w.]+)'?\((?:args|\)|sim|ctx)/
+    const out = new Map()
+    let name = null
+    for (const l of code) {
+      const m = l.match(START)
+      if (m) { name = m[1] || m[2] || m[3]; while (out.has(name)) name += '#'; out.set(name, '') }
+      if (name) out.set(name, out.get(name) + l + '\n')
+    }
+    return out
+  })()
+  const having = re => [...chunks].filter(([, b]) => re.test(b)).map(([n]) => n).sort()
+  const within = (names, allowed, what) => {
+    const extra = names.filter(n => !(n in allowed))
+    assert.deepStrictEqual(extra, [], `${extra.join(', ')} ${what}, and is not one of the places reviewed for it`)
+  }
+
+  t('no bridge op resolves an element id without passing through the guard', () => {
+    // 1. Where an id is looked up. Only resolveElement hands back an element's box, and
+    // the others each say why what they do is not that.
+    within(having(/\.boxes\b|boxInList\(|regionFor\(|\.all\.find\(/), {
+      resolveElement: 'the one door from an id to a box, and it is guarded',
+      holds: 'says whether a list holds an id, never hands back its box',
+      regionFor: 'an R id is an area the person drew with their own hand, not an element',
+      liftable: 'only ever refuses a lift, and hands back no box; apply_edit hands it marks already resolved',
+    }, 'looks an id up')
+    assert.ok(!/return [^\n]*box/.test(chunks.get('liftable')), 'liftable hands back a box')
+    // and apply_edit calls it only on what resolveElement handed back
+    assert.ok(/const aimed = it && it\.element \? resolveElement\([\s\S]*liftable\(seen \|\| mine, aimed\)/.test(chunks.get('withElements')),
+      'withElements judges a lift on something other than what the guard passed')
+    // 2. The door calls the guard before it returns any E id's box, and the guard throws
+    // the refusal rather than handing back something to aim at.
+    const door = chunks.get('resolveElement')
+    const checked = door.indexOf('guardCheck(')
+    assert.ok(checked > 0, 'resolveElement no longer calls the guard')
+    assert.ok(door.lastIndexOf('return {') > checked, 'resolveElement returns a box after the guard, and only then')
+    // and the box it returns is the box of the element the guard judged, never one looked
+    // up in some other list (the newest, say) that the guard never saw
+    assert.ok(/const el = guardCheck\(rec, id, o\.act\)\s*\n\s*return \{ \.\.\.rest, box: el\.box \}/.test(door),
+      'resolveElement hands back a box other than the judged element\'s own')
+    assert.strictEqual((door.match(/return \{/g) || []).length, 2, 'resolveElement has a way out other than the region and the guarded box')
+    assert.ok(/\.ledger\.check\(/.test(chunks.get('guardCheck')) && /throw new Error\(v\.say\)/.test(chunks.get('guardCheck')),
+      'guardCheck no longer refuses on the ledger\'s word')
+    // 3. Who reaches the door: every aim at an element, and nothing else
+    within(having(/resolveElement\(/).filter(n => n !== 'resolveElement'), {
+      withElements: 'every zoom, every kind of mark, and every pinned label and callout in an edit',
+      simPoint: 'a simulator tap',
+    }, 'resolves an id')
+    within(having(/withElements\(/).filter(n => n !== 'withElements'), {
+      'edit.apply': 'apply_edit on a recording', applyToShot: 'apply_edit on a shot',
+      proposedFrame: 'the frame on a proposal card, drawn off the same resolved patch Apply sends',
+    }, 'resolves an edit\'s ids')
+    // 4. What reads an element id off its arguments has to be one of those
+    within(having(/\.element\b/), {
+      withElements: 'hands each to resolveElement', simPoint: 'hands it to resolveElement',
+      tapSource: 'says which picture a tap\'s id was minted on, and aims nothing',
+      aimFresh: 'reads the device again before a tap, then hands the id to simPoint',
+      simArgs: 'checks it is shaped like an id, and aims nothing', guardCheck: 'the guard\'s own answer',
+      liftable: 'only ever refuses, as above',
+    }, 'reads an element id')
+    // 5. Every list an id can be resolved in is written down by the guard first: one
+    // place registers lists, it mints before it registers, and every Elements pass the
+    // bridge runs hands the processor the guard's hook.
+    within(having(/\? foundBy : foundFor\)\.set\(|found(By|For)\.set\(/), { noteFound: 'the one place' }, 'registers a list')
+    // and every piece that reads a registered list at all, by any means (a .filter, a
+    // destructuring, an alias), is one reviewed for it: a list read anywhere else is a
+    // way to a box that never met the guard
+    within(having(/\bfound(By|For)\b/), {
+      foundBy: 'the declaration', foundFor: 'the declaration', noteFound: 'registers, after the guard mints',
+      withElements: 'hands both lists to resolveElement', simPoint: 'picks the list the finger lands on and hands it to resolveElement',
+      find: 'the prior for the next search, never a box', lookNow: 'the prior for the picture before a tap, never a box',
+      elementsNear: 'a zoom aimed at a point: a point to the element under it, no id in', stop: 'clears them',
+    }, 'reads a registered list')
+    const note = chunks.get('noteFound')
+    assert.ok(note.indexOf('mint(') > 0 && note.indexOf('mint(') < note.indexOf('.set(path, rec)'), 'noteFound registers before it mints')
+    for (const n of having(/findOnScreen\(/)) {
+      for (const m of chunks.get(n).matchAll(/findOnScreen\(/g)) {
+        assert.ok(/guard: guardHook\(/.test(chunks.get(n).slice(m.index, m.index + 260)), `${n} runs an Elements pass without the guard's hook`)
+      }
+    }
+    // 6. The tool surface: every tool that takes an element id drives an op that
+    // reaches the door, found by walking what each piece calls.
+    const calls = new Map([...chunks].map(([n, b]) => [n, [...chunks.keys()].filter(k => k !== n && !k.endsWith('#') &&
+      (new RegExp(`[^\\w.'"]${k.replace(/\./g, '\\.')}\\(`).test(b) || b.includes(`ops['${k}'](`)))]))
+    const reaches = op => {
+      const seen = new Set([op]), todo = [op]
+      while (todo.length) for (const k of calls.get(todo.pop()) || []) if (!seen.has(k)) { seen.add(k); todo.push(k) }
+      return seen.has('resolveElement')
+    }
+    const aiming = SRC.split('server.registerTool(').slice(1)
+      .filter(c => /element: z\.|element: \\'E\d+/.test(c))
+      .map(c => ({ name: c.match(/^\s*'([a-z_]+)'/)[1], ops: [...new Set([...c.matchAll(/drive\('([a-z.]+)'/g)].map(m => m[1]))] }))
+    assert.deepStrictEqual(aiming.map(a => a.name).sort(), ['apply_edit', 'find_on_screen', 'simulator'])
+    for (const { name, ops } of aiming) {
+      if (name === 'find_on_screen') continue      // it mints ids; it aims nothing
+      for (const op of ops) assert.ok(reaches(op), `${name} drives ${op}, which never reaches the guarded door`)
+    }
+  })
+
+  // The judgement's panel case, end to end through the bridge: a recipe list whose
+  // cards hold Edit and Delete, Pancakes moved to the top, read by a matcher that goes by
+  // place alone (the worst there is, so the test does not lean on today's matcher). Every
+  // kind of thing an id aims is sent with the old ids, and the guard is watched.
+  await (async () => {
+    const T = require('../ui/targets')
+    const G = require('../ui/guard')
+    const R = bridge.deviceRun
+    R.reset()
+    const real = G.ledger, checks = []
+    G.ledger = () => {
+      const L = real(), check = L.check.bind(L)
+      L.check = (id, list, o = {}) => { const v = check(id, list, o); checks.push({ id, act: o.act, ok: v.ok, box: v.ok ? v.element.box : null }); return v }
+      return L
+    }
+    const W = (text, x, y, w, h, container) => ({ text, conf: 1, box: { x, y, w, h }, bg: container ? '#222222' : '#FFFFFF', ...(container ? { container } : {}) })
+    const chip = (text, x, y) => W(text, x, y, 0.1, 0.022, { x: x - 0.01, y: y - 0.008, w: 0.12, h: 0.038 })
+    const recipes = names => {
+      const texts = [W('Recipes', 0.35, 0.05, 0.3, 0.035)], rects = []
+      names.forEach((n, i) => {
+        const y = 0.2 + i * 0.07
+        rects.push({ box: { x: 0.04, y: y - 0.01, w: 0.92, h: 0.065 }, conf: 1, bg: '#EEEEEE', edges: true })
+        texts.push(W(n, 0.1, y, 0.04 + 0.012 * n.length, 0.022), chip('Edit', 0.62, y), chip('Delete', 0.76, y))
+      })
+      return { width: 1290, height: 2796, texts, rects }
+    }
+    const A = recipes(['Morning oats', 'Shakshuka', 'French toast', 'Pancakes'])
+    const B = recipes(['Pancakes', 'Morning oats', 'Shakshuka', 'French toast'])
+    // each element takes the id of whatever of its kind sat in its place, whatever it says
+    const iou = (a, b) => {
+      const w = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)), h = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y))
+      return w * h / (a.w * a.h + b.w * b.h - w * h)
+    }
+    const byPlace = (prior, raw) => {
+      const b = T.elementsFrom(raw)
+      if (!prior || !prior.length) return b
+      const used = new Set()
+      let seq = Math.max(+prior.seq || 0, ...prior.map(e => +e.id.slice(1)))
+      const out = b.map(e => {
+        const o = prior.find(p => p.kind === e.kind && !used.has(p.id) && iou(p.box, e.box) > 0.5)
+        if (o) { used.add(o.id); return { ...e, id: o.id } }
+        return { ...e, id: 'E' + (++seq) }
+      })
+      const ids = new Map(b.map((e, i) => [e.id, out[i].id]))
+      const list = out.map(e => e.in ? { ...e, in: ids.get(e.in) } : e)
+      Object.defineProperty(list, 'seq', { value: seq })
+      Object.defineProperty(list, 'frame', { value: { width: raw.width, height: raw.height } })
+      Object.defineProperty(list, 'carried', { value: used.size })
+      return list
+    }
+    let raw = A
+    const stub = {
+      probeMeta: async () => ({ duration: 10 }),
+      readDoc: () => ({}),
+      // what processor.findOnScreen does: the guard's hook before anything is ranked
+      findOnScreen: async (p, at, o = {}) => {
+        let all = byPlace(o.prior, raw)
+        if (o.guard) all = o.guard(all, { width: raw.width, height: raw.height }) || all
+        return { image: '/tmp/none.jpg', at, width: raw.width, height: raw.height, found: all.length, elements: all, all }
+      },
+    }
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-guard-'))
+    const take = path.join(home, 'Recipes.mov')
+    fs.writeFileSync(take, '')
+    const win = { isDestroyed: () => false, isVisible: () => true, webContents: { send: () => {}, executeJavaScript: async () => null } }
+    bridge.start({ getWindow: () => win, proc: stub, isRecording: () => false })
+    try {
+      const first = await bridge.ops.find({ path: take, at: 2 })
+      raw = B
+      const second = await bridge.ops.find({ path: take, at: 2.2 })
+      const panelOf = (r, name) => r.elements.find(e => e.kind === 'panel' && e.text.startsWith(name))
+      const deleteOf = (r, name) => { const p = panelOf(r, name); return r.elements.find(e => e.text === 'Delete' && e.in === p.id) }
+      const oldCard = panelOf(first, 'Shakshuka').id, oldDelete = deleteOf(first, 'Shakshuka').id
+      const card = panelOf(second, 'Shakshuka'), del = deleteOf(second, 'Shakshuka')
+      t('a reordered list of panels: the matcher\'s mistake is taken back before anyone sees it', () => {
+        assert.ok(second.ids_retired && second.ids_retired.ids.some(x => x.was === oldCard), JSON.stringify(second.ids_retired))
+        // no id shown twice names two different recipes
+        const named = r => new Map(r.elements.filter(e => e.kind === 'panel').map(e => [e.id, e.text]))
+        const a = named(first), b = named(second)
+        for (const [id, text] of b) assert.ok(!a.has(id) || a.get(id) === text, `${id} was "${a.get(id)}" and is "${text}"`)
+      })
+      // every kind of thing an id aims, sent with the old ids and then with the new ones
+      const AIMS = [
+        ['zooms', {}, 'zoom to'], ['marks', { kind: 'spotlight' }, 'spotlight'], ['marks', { kind: 'lift' }, 'lift'],
+        ['marks', { kind: 'loupe' }, 'magnify'], ['marks', { kind: 'arrow' }, 'point an arrow at'],
+        ['marks', { kind: 'redact' }, 'redact'], ['marks', { kind: 'blur' }, 'blur'],
+        ['marks', { kind: 'step' }, 'put a step on'], ['marks', { kind: 'highlight' }, 'highlight'],
+        ['marks', { kind: 'outline' }, 'outline'],
+        ['texts', { text: 'This one' }, 'pin a label to'], ['texts', { kind: 'callout', text: 'This one' }, 'pin a callout to'],
+      ]
+      t('every kind of mark the bridge names a verb for is sent with a dead id here', () => {
+        const kinds = [...BRIDGE_SRC.match(/const MARK_ACT = \{([^}]*)\}/)[1].matchAll(/(\w+):/g)].map(m => m[1])
+        const sent = AIMS.filter(([l]) => l === 'marks').map(([, x]) => x.kind)
+        assert.deepStrictEqual(kinds.filter(k => !sent.includes(k)), [], 'a mark kind no test sends a spent id with')
+      })
+      for (const [list, extra, act] of AIMS) {
+        const send = id => bridge.withElements(take, { [list]: [{ start: 1, end: 3, ...extra, element: id }] })
+        t(`an old id is refused by the guard, and the new one lands, for ${list === 'marks' ? extra.kind : list === 'texts' ? (extra.kind || 'label') : 'a zoom'}`, () => {
+          for (const old of [oldCard, oldDelete]) {
+            checks.length = 0
+            assert.throws(() => send(old), /names nothing now|names one element or nothing/, `${old} was let through`)
+            // the dead id's refusal is the guard's own, not a lookup that happened to miss
+            assert.ok(checks.some(c => c.id === old && c.act === act && !c.ok), JSON.stringify(checks))
+          }
+          checks.length = 0
+          const out = send(del.id)[list][0]
+          const want = del.box
+          if (list === 'texts') assert.deepStrictEqual(out.at, { x: +(want.x + want.w / 2).toFixed(4), y: +(want.y + want.h / 2).toFixed(4) })
+          else assert.deepStrictEqual(out.box, want)
+          assert.ok(checks.some(c => c.id === del.id && c.act === act && c.ok), `${del.id} reached its box without the guard`)
+          // the box used is the one of the element the guard passed
+          const judged = checks.filter(c => c.id === del.id && c.ok).pop().box
+          if (list === 'texts') assert.deepStrictEqual(out.at, { x: +(judged.x + judged.w / 2).toFixed(4), y: +(judged.y + judged.h / 2).toFixed(4) })
+          else assert.deepStrictEqual(out.box, judged)
+        })
+      }
+      raw = A
+      const later = await bridge.ops.find({ path: take, at: 8 })
+      checks.length = 0
+      const out = bridge.withElements(take, { zooms: [{ start: 1, end: 3, element: card.id }] })
+      t('a search of another moment leaves the ids of the first aiming where they did, through the guard', () => {
+        assert.ok(!later.elements.some(e => e.id === card.id), 'the far search reused a number')
+        assert.deepStrictEqual(out.zooms[0].box, card.box)
+        assert.ok(checks.some(c => c.id === card.id && c.ok))
+      })
+
+      // The simulator: the same reorder on a device's screens, and the tap.
+      const sim = { udid: 'GUARD-1', name: 'Test phone', screen: { points: { w: 390, h: 844 } }, viewport: { x: 0, y: 0, w: 1, h: 1 } }
+      const s0 = T.elementsFrom(A)
+      R.noteFound('/guard/s0.png', 0, s0, s0, { run: sim.udid }); R.see(sim.udid, '/guard/s0.png')
+      R.joinRun(sim.udid, '/guard/s0.png', null, s0)
+      const tapCard = s0.find(e => e.kind === 'panel' && e.text.startsWith('Shakshuka')).id
+      const p1 = R.runPrior(sim.udid)
+      const s1raw = byPlace(p1, B)
+      R.noteFound('/guard/s1.png', 0, s1raw, s1raw, { run: sim.udid }); R.see(sim.udid, '/guard/s1.png')
+      checks.length = 0
+      let refused = null
+      try { await R.simPoint(sim, { element: tapCard }) } catch (e) { refused = e.message }
+      t('a simulator tap on a panel id the reorder gave to another recipe is refused by the guard', () => {
+        assert.ok(refused && /names nothing now|names one element or nothing/.test(refused), refused)
+        assert.ok(checks.some(c => c.id === tapCard && c.act === 'tap' && !c.ok), JSON.stringify(checks))
+      })
+      // A picture older than the device's newest screen is not what is under the finger.
+      const shot = T.elementsFrom(B)
+      R.noteFound('/guard/old-shot.png', 0, shot, shot)
+      const s2 = T.elementsFrom(B, R.runPrior(sim.udid))
+      R.noteFound('/guard/s2.png', 0, s2, s2, { run: sim.udid }); R.see(sim.udid, '/guard/s2.png')
+      R.joinRun(sim.udid, '/guard/s2.png', R.runPrior(sim.udid), s2)
+      let stale = null
+      try { await R.simPoint(sim, { element: shot[5].id, path: '/guard/old-shot.png' }) } catch (e) { stale = e.message }
+      t('a tap aimed off a picture older than the device\'s newest screen is refused', () => {
+        assert.ok(stale && /older than the screen it shows now/.test(stale), stale)
+      })
+    } finally {
+      G.ledger = real
+      R.reset()
+      bridge.stop()
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })()
+
+
+  // ── the attacks on the guard, through the bridge ───────────────────────
+  // Each case is one the round that attacked the guard found letting an id through onto
+  // a different element (/tmp/majuro-attack, /tmp/atk-nav, /tmp/attack-guard). Each
+  // failed here before its fix.
+  await (async () => {
+    const T = require('../ui/targets')
+    const R = bridge.deviceRun
+    const W = (text, x, y, w, h, container) => ({ text, conf: 1, box: { x, y, w, h }, bg: container ? '#222222' : '#FFFFFF', ...(container ? { container } : {}) })
+    const chip = (text, x, y) => W(text, x, y, 0.1, 0.022, { x: x - 0.01, y: y - 0.008, w: 0.12, h: 0.038 })
+    const recipes = names => {
+      const texts = [W('Recipes', 0.35, 0.05, 0.3, 0.035)], rects = []
+      names.forEach((n, i) => {
+        const y = 0.2 + i * 0.07
+        rects.push({ box: { x: 0.04, y: y - 0.01, w: 0.92, h: 0.065 }, conf: 1, bg: '#EEEEEE', edges: true })
+        texts.push(W(n, 0.1, y, 0.04 + 0.012 * n.length, 0.022), chip('Edit', 0.62, y), chip('Delete', 0.76, y))
+      })
+      return { width: 1290, height: 2796, texts, rects }
+    }
+    // a recording whose screen at each moment is `byTime(at)`, read by the real matcher
+    let byTime = () => recipes(['Morning oats', 'Shakshuka', 'French toast', 'Pancakes'])
+    const stub = {
+      probeMeta: async () => ({ duration: 60 }), readDoc: () => ({}),
+      findOnScreen: async (p, at, o = {}) => {
+        const raw = byTime(at)
+        let all = T.elementsFrom(raw, o.prior)
+        if (o.guard) all = o.guard(all, { width: raw.width, height: raw.height }) || all
+        return { image: '/tmp/none.jpg', at, width: raw.width, height: raw.height, found: all.length, elements: all, all }
+      },
+    }
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-attack-'))
+    const win = { isDestroyed: () => false, isVisible: () => true, webContents: { send: () => {}, executeJavaScript: async () => null } }
+    bridge.start({ getWindow: () => win, proc: stub, isRecording: () => false })
+    const tryEdit = (take, doc) => { try { return bridge.withElements(take, doc) } catch (e) { return { refused: e.message } } }
+    try {
+      // 3 and 10. An id read at one moment, aimed at a span at another: the list reordered
+      // in between, so its old place holds another recipe.
+      {
+        const take = path.join(home, 'Reorder.mov')
+        fs.writeFileSync(take, '')
+        byTime = at => at < 5 ? recipes(['Morning oats', 'Shakshuka', 'French toast', 'Pancakes'])
+          : recipes(['Pancakes', 'Morning oats', 'Shakshuka', 'French toast'])
+        const a = await bridge.ops.find({ path: take, at: 2 })
+        const b = await bridge.ops.find({ path: take, at: 8 })
+        const shak = a.elements.find(e => e.text === 'Shakshuka')
+        const shakDel = a.elements.find(e => e.text === 'Delete' && Math.abs(e.box.y - shak.box.y) < 0.01)
+        const pan = b.elements.find(e => e.text === 'Pancakes')
+        t('an id read at 2 s is refused on a redaction, blur, zoom or arrow at 7 to 9 s, with the moment to read', () => {
+          for (const doc of [{ marks: [{ kind: 'redact', start: 7, end: 9, element: shak.id }] },
+            { marks: [{ kind: 'blur', start: 7, end: 9, element: shakDel.id }] },
+            { marks: [{ kind: 'arrow', start: 7, end: 10, element: shakDel.id }] },
+            { zooms: [{ start: 7, end: 10, element: shak.id }] }]) {
+            const out = tryEdit(take, doc)
+            assert.ok(out.refused && /Call find_on_screen at that moment/.test(out.refused), JSON.stringify(out))
+          }
+        })
+        t('... and one read at 8 s is refused at 0.5 to 1.5 s, the other way round', () => {
+          const out = tryEdit(take, { marks: [{ kind: 'redact', start: 0.5, end: 1.5, element: pan.id }] })
+          assert.ok(out.refused && /at that moment/.test(out.refused), JSON.stringify(out))
+        })
+        t('... while at the moment it was read it lands on its own box', () => {
+          assert.deepStrictEqual(tryEdit(take, { marks: [{ kind: 'redact', start: 1, end: 3, element: shak.id }] }).marks[0].box, shak.box)
+          assert.deepStrictEqual(tryEdit(take, { marks: [{ kind: 'redact', start: 7, end: 9, element: pan.id }] }).marks[0].box, pan.box)
+        })
+      }
+      // 4 and 14. The agent's list aged out behind a dozen later searches, and a pass Fetch
+      // ran for itself numbered its own E ids from E1 on the same take.
+      {
+        const take = path.join(home, 'Contacts.mov')
+        fs.writeFileSync(take, '')
+        const names = ['Alice Smith', 'Bob Jones', 'Carol King', 'Dan Wu', 'Eve Park', 'Finn Moss']
+        byTime = at => {
+          const k = Math.floor(at)
+          const texts = [W('Contacts', 0.35, 0.05, 0.3, 0.035)]
+          if (at >= 40) texts.push(W('Search', 0.1, 0.12, 0.3, 0.022))
+          names.forEach((n, i) => {
+            texts.push(W(names[(i + k) % 6], 0.1, 0.2 + i * 0.07, 0.3, 0.022),
+              W('Member ' + (100 + (i + k) % 6) + '-22-' + (3000 + (i + k) % 6), 0.55, 0.2 + i * 0.07, 0.3, 0.022))
+          })
+          return { width: 1920, height: 1080, texts, rects: [] }
+        }
+        const first = await bridge.ops.find({ path: take, at: 1 })
+        const ssn = first.elements.find(e => /^Member/.test(e.text))
+        for (let i = 0; i < 13; i++) await bridge.ops.find({ path: take, at: 3 + i * 3 })
+        await bridge.aimZooms(take, { zooms: [{ start: 50, end: 53, x: 0.5, y: 0.5 }] }, null)
+        const out = tryEdit(take, { marks: [{ kind: 'redact', start: 0.5, end: 1.5, element: ssn.id }] })
+        t('an id from a search fourteen searches ago still redacts what it named, not Fetch\'s own E id of that number', () => {
+          assert.deepStrictEqual(out.marks && out.marks[0].box, ssn.box, JSON.stringify(out))
+        })
+      }
+      // 13. A zoom aimed by a point on a moment the agent never searched: Fetch's own pass
+      // names what it snapped to, and that name must not be an id the agent holds for
+      // something else.
+      {
+        const take = path.join(home, 'Cards.mov')
+        fs.writeFileSync(take, '')
+        byTime = at => at < 4
+          ? { width: 1000, height: 1000, rects: [], texts: [W('Accounts', 0.35, 0.05, 0.3, 0.035), W('Alice Smith', 0.1, 0.3, 0.3, 0.03),
+            W('Bob Jones', 0.1, 0.4, 0.3, 0.03), W('Carol King', 0.1, 0.5, 0.3, 0.03), W('Dan Wu', 0.1, 0.6, 0.3, 0.03)] }
+          : { width: 1000, height: 1000, texts: [W('Payment', 0.35, 0.05, 0.3, 0.035), W('Card ending 4242', 0.45, 0.55, 0.45, 0.04)],
+            rects: [{ box: { x: 0.42, y: 0.5, w: 0.52, h: 0.14 }, conf: 1, bg: '#EEEEEE', edges: true }] }
+        await bridge.ops.find({ path: take, at: 2 })
+        const aim = await bridge.aimZooms(take, { zooms: [{ start: 5, end: 8, x: 0.67, y: 0.57 }] }, null)
+        t('what a point-aimed zoom snapped to is never named by an id the agent holds for something else', () => {
+          assert.ok(aim && aim.snapped.length === 1, JSON.stringify(aim))
+          const got = aim.snapped[0]
+          if (got.element) {
+            const out = tryEdit(take, { marks: [{ kind: 'redact', start: 5, end: 8, element: got.element }] })
+            assert.deepStrictEqual(out.marks && out.marks[0].box, got.box, `${got.element} redacts ${JSON.stringify(out)}, not the card`)
+          }
+        })
+      }
+
+      // The simulator. One device's run, driven without a device.
+      const sim = { udid: 'ATTACK-1', name: 'Test phone', screen: { points: { w: 390, h: 844 } }, viewport: { x: 0, y: 0, w: 1, h: 1 } }
+      const step = (file, raw) => {
+        const prior = R.runPrior(sim.udid)
+        const list = T.elementsFrom(raw, prior)
+        R.noteFound(file, 0, list, list, { run: sim.udid, frame: { width: raw.width, height: raw.height } })
+        R.see(sim.udid, file); R.joinRun(sim.udid, file, prior, list)
+        return list
+      }
+      const tapOf = async (args, look) => { try { return await (look ? R.aimFresh(sim, args, look) : R.simPoint(sim, args)) } catch (e) { return { refused: e.message } } }
+      const rowDelete = (l, name) => { const n = l.find(e => e.text === name); return l.find(e => e.text === 'Delete' && Math.abs(e.box.y - n.box.y) < 0.02) }
+      // 2. Order 1044 deleted, Order 1045 (also a Wednesday) scrolls into its place
+      {
+        R.reset()
+        const orders = rows => ({ width: 1290, height: 2796, rects: [], texts: [W('Orders', 0.35, 0.05, 0.3, 0.035),
+          ...rows.flatMap(([n, day], i) => { const y = 0.2 + i * 0.07; return [W('Order ' + n, 0.1, y, 0.2, 0.022), W(day, 0.42, y, 0.08, 0.022), chip('Delete', 0.76, y)] })] })
+        const s0 = step('/attack/o0.png', orders([['1042', 'Mon'], ['1043', 'Tue'], ['1044', 'Wed']]))
+        const del = rowDelete(s0, 'Order 1044').id
+        step('/attack/o1.png', orders([['1042', 'Mon'], ['1043', 'Tue'], ['1045', 'Wed']]))
+        const again = await tapOf({ element: del })
+        t('a retried tap on Order 1044\'s Delete is refused once Order 1045 sits in its place', () => {
+          assert.ok(again.refused, `tapped ${JSON.stringify(again)}, Order 1045's Delete`)
+        })
+      }
+      // 5 and 9. The screen moved between the list the agent holds and the touch: a sync
+      // added a recipe at the top while the Allow dialog was open, or the picture after the
+      // last tap failed. The tap is judged on a picture taken just before it.
+      {
+        R.reset()
+        const s0 = step('/attack/r0.png', recipes(['Morning oats', 'Shakshuka', 'French toast']))
+        const shakDel = rowDelete(s0, 'Shakshuka')
+        let looked = 0
+        const synced = async () => { looked++; return step('/attack/r1.png', recipes(['Granola', 'Morning oats', 'Shakshuka', 'French toast'])) }
+        const aimed = await tapOf({ element: shakDel.id }, synced)
+        t('a tap is aimed on a picture of the device taken just before the touch', () => {
+          assert.strictEqual(looked, 1)
+          assert.ok(!aimed.refused, aimed.refused)
+          const now = rowDelete(R.runPrior(sim.udid), 'Shakshuka')
+          assert.ok(Math.abs(aimed.y - (now.box.y + now.box.h / 2) * 844) < 1, `aimed at ${aimed.y}, Shakshuka's Delete is at ${(now.box.y + now.box.h / 2) * 844}`)
+        })
+        const blind = await tapOf({ element: shakDel.id }, async () => null)
+        t('a tap whose picture just before the touch could not be taken is refused, never aimed on an old one', () => {
+          assert.ok(blind.refused && /could not read Test phone's screen just before the tap/.test(blind.refused), JSON.stringify(blind))
+        })
+        const src = BRIDGE_SRC.slice(BRIDGE_SRC.indexOf('async function simTap('), BRIDGE_SRC.indexOf('const SCREEN_SETTLE_MS'))
+        t('simTap aims through that fresh picture, after the yes and before the touch', () => {
+          const ask = src.indexOf('simAsk('), fresh = src.indexOf('aimFresh('), touch = src.indexOf('simctl().tap(')
+          assert.ok(ask >= 0 && fresh > ask && touch > fresh, 'simTap touches the glass without reading it first')
+          // and nothing in the bridge aims a tap any other way
+          const callers = [...BRIDGE_SRC.matchAll(/^(?:async )?function (\w+)\([\s\S]*?\n\}\n/gm)]
+            .filter(m => m[1] !== 'simPoint' && /[^\w.]simPoint\(/.test(m[0])).map(m => m[1])
+          assert.deepStrictEqual(callers, ['aimFresh'], 'a tap is aimed without a picture taken just before it')
+        })
+      }
+      // 8 and 12. A still of the device, searched after a tap moved the device on
+      {
+        R.reset()
+        const s0 = step('/attack/k0.png', recipes(['Shakshuka', 'Pancakes', 'Morning oats']))
+        const still = T.elementsFrom(recipes(['Shakshuka', 'Pancakes', 'Morning oats']))
+        step('/attack/k1.png', recipes(['Pancakes', 'Morning oats']))
+        R.noteFound('/attack/still.png', 0, still, still)      // find_on_screen on the still, after the tap
+        const pick = rowDelete(still, 'Shakshuka')
+        const tap = await tapOf({ element: pick.id, path: '/attack/still.png' })
+        const tapFresh = await tapOf({ element: pick.id, path: '/attack/still.png' }, async () => step('/attack/k2.png', recipes(['Pancakes', 'Morning oats'])))
+        t('an id off a still searched after the device moved on is refused, never aimed at the device\'s new screen', () => {
+          assert.ok(tap.refused && /not one of Test phone's own screens/.test(tap.refused), JSON.stringify(tap))
+          assert.ok(tapFresh.refused, JSON.stringify(tapFresh))
+        })
+        void s0
+      }
+    } finally {
+      R.reset()
+      bridge.stop()
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })()
+
+  // ── the product's rules, as checks where the work is ─────────────────────
+  // ui/guidelines.js holds work to the rules; these check the bridge runs it where it
+  // matters: export refuses a file that shows what a never-rule keeps off screen, and
+  // review hands back every finding with the call that fixes it.
+  await (async () => {
+    const FD = require('../ui/fetchdoc')
+    const Sample = require('../ui/sample')
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-rulecheck-'))
+    const root = path.join(home, 'Fetch Sample')
+    fs.mkdirSync(root)
+    fs.writeFileSync(path.join(root, Sample.MARK), '{}\n')
+    const title = 'Biscuit\'s Pantry · Sharing a list'
+    const take = path.join(root, title, 'Original', title + '.mp4')
+    fs.mkdirSync(path.dirname(take), { recursive: true })
+    fs.writeFileSync(take, '')
+    const theirMemory = path.join(os.tmpdir(), 'memory.json')
+    const memoryWas = fs.existsSync(theirMemory) ? fs.readFileSync(theirMemory) : null
+    const docs = new Map(), exported = []
+    let texts = []
+    const stub = {
+      probeMeta: async () => ({ duration: 10, width: 1920, height: 1080 }),
+      readDoc: p => docs.get(p) || FD.normalize({}, p, 10),
+      writeDoc: (p, d) => docs.set(p, d),
+      findOnScreen: async (p, at) => {
+        const all = texts.map((t, i) => ({ id: 'E' + (i + 1), text: t, kind: 'text', box: { x: 0.1, y: 0.1 * (i + 1), w: 0.3, h: 0.05 },
+          background: {}, confidence: 1 }))
+        return { image: '/tmp/none.jpg', at, width: 1000, height: 1000, found: all.length, elements: all, all }
+      },
+    }
+    const win = { isDestroyed: () => false, isVisible: () => true, webContents: { send: () => {}, executeJavaScript: async () => null } }
+    bridge.start({ getWindow: () => win, proc: stub, isRecording: () => false,
+      confirmRules: async () => true,
+      exportDoc: async (src, opts) => { exported.push({ src, opts }); return { file: null } } })
+    try {
+      await bridge.ops['memory.guidelines']({ path: take,
+        rules: [{ rule: 'Never show an email address', section: 'never', from: 'person' },
+          { rule: 'Avoid "simply", say "just"', section: 'words', from: 'person' }] })
+      texts = ['Share with', 'maya@biscuit.test', 'Send']
+      await bridge.ops.find({ path: take, at: 1 })
+      t('the guidelines tool offers gate, and says what check hands back', () => {
+        const tool = SRC.split('server.registerTool(').find(c => /^\s*'guidelines'/.test(c))
+        assert.ok(/'check', 'gate'\]/.test(tool), 'gate is not an action the tool takes')
+        assert.ok(/findings[\s\S]*unchecked[\s\S]*covered[\s\S]*verdict/.test(tool), 'the description does not say what check returns')
+      })
+      const early = await bridge.ops['edit.review']({ path: take })
+      t('review\'s own verdict counts a never-rule finding, with its fix, and says what it could not check', () => {
+        const never = early.items.find(i => i.rule === 'rule-never')
+        assert.ok(never && never.severity === 'blocking', JSON.stringify(early.items.map(i => i.rule)))
+        assert.strictEqual(never.fix.tool, 'apply_edit')
+        assert.strictEqual(early.verdict, 'not ready')
+        assert.ok(early.items.some(i => i.severity === 'note' && /not read/.test(i.what)), JSON.stringify(early.items.map(i => i.what)))
+      })
+      let refused = null
+      try { await bridge.ops['edit.export']({ path: take }) } catch (e) { refused = e }
+      t('export refuses a take that shows what a never-rule keeps off screen, before a frame is drawn', () => {
+        assert.ok(refused, 'the export went ahead')
+        assert.match(refused.message, /off screen/)
+        assert.match(refused.message, /an email address/)
+        // the fix is the redaction, aimed at the element by its id
+        assert.match(refused.message, /apply_edit .*"kind":"redact".*"element":"E2"/)
+        assert.ok(!refused.message.includes('maya@biscuit.test'), 'the refusal repeats the address it keeps off screen')
+        assert.strictEqual(exported.length, 0, 'a frame was drawn')
+      })
+      // redacted over the moment it was read: the file goes, and says what it could not check
+      docs.set(take, FD.normalize({ marks: [{ id: 'M1', kind: 'redact', start: 0, end: 3, x: 0.1, y: 0.2, w: 0.3, h: 0.05 }],
+        texts: [{ id: 'T1', text: 'Simply share the list', start: 0, end: 2 }] }, take, 10))
+      const out = await bridge.ops['edit.export']({ path: take })
+      t('with it redacted the export goes ahead, and names the rest', () => {
+        assert.strictEqual(exported.length, 1)
+        assert.ok(out.guidelines, 'the export said nothing about the rules')
+        assert.ok(out.guidelines.findings.some(f => f.rule === 'rule-words' && f.fix && f.fix.tool === 'apply_edit'))
+        // what was not read is said, never passed
+        assert.ok(out.guidelines.unchecked.some(u => /not read/.test(u.why)), JSON.stringify(out.guidelines.unchecked))
+      })
+      const reviewed = await bridge.ops['edit.review']({ path: take })
+      t('review hands back the rules as checks beside the rubric', () => {
+        assert.ok(reviewed.guidelines && reviewed.guidelines.findings.some(f => f.rule === 'rule-words'))
+        assert.ok(reviewed.guidelines.covered && reviewed.guidelines.covered.some(c => c.by === 'M1'), 'a redaction that covers it is not said to')
+      })
+    } finally {
+      bridge.stop()
+      fs.rmSync(home, { recursive: true, force: true })
+      if (memoryWas) fs.writeFileSync(theirMemory, memoryWas)
+      else fs.rmSync(theirMemory, { force: true })
+    }
+  })()
+
   fs.rmSync(dir, { recursive: true, force: true })
   console.log(`\n${n} tool surface checks passed`)
 }
 
 main().catch(err => {
   fs.rmSync(dir, { recursive: true, force: true })
-  console.error(err && err.message ? err.message : err)
+  console.error(err && err.message ? err.message : err); if (process.env.TOOLS_STACK) console.error(err && err.stack)
   process.exit(1)
 })

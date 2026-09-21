@@ -37,6 +37,8 @@ const Sim = require('./simulator')
 // What a take listens to, and what its result may say it heard. Pure, and it carries the
 // reason and the measurements as well as the rule (ui/recorder-opts.js).
 const Opts = require('./recorder-opts')
+// What every id an action uses is held to, as it acts (ui/guard.js). Pure, like Sim.
+const Guard = require('./guard')
 
 let app, ipcMain
 try { ({ app, ipcMain } = require('electron')) } catch {}
@@ -570,7 +572,13 @@ const ops = {
     // in the job, and it was the one tool that handed back no image of it, so an agent
     // that cannot see the screen spent a second call looking at its own work.
     const p = shot ? await drawShot(shot, file, { width: 1280 }).catch(() => null) : null
+    // The product's rules held to the picture the moment it exists: one pass reads it
+    // where there is a never-rule to hold it to, and the look and the name are checked
+    // against the document as it stands.
+    if (shot) await readForRules(file, SHOT_AT, shot.crop)
+    const ruled = shot ? rulesCheck(file, shot, { width: shot.w, height: shot.h }) : null
     return {
+      ...(ruled ? { guidelines: ruled } : {}),
       path: file, name, kind: 'shot',
       captured: { ...cap,
         width: got.width, height: got.height, scale: got.scale,
@@ -793,6 +801,10 @@ const ops = {
       // a recording nobody has edited has no clips yet; export all of it
       doc.clips = [{ id: 'C1', start: 0, end: (meta && meta.duration) || doc.dur }]
     }
+    // The product's rules, before a frame is drawn: something a never-rule keeps off
+    // screen that was read on the take and is not under a redaction refuses the file.
+    const ruled = rulesCheck(args.path, doc, { gate: true, width: meta && meta.width, height: meta && meta.height })
+    if (ruled && ruled.refused) throw rulesRefusal(ruled)
     // An app preview: the deliverable's rectangle, its length, its frame rate, its codec
     // and its container, all decided before a frame is drawn (ui/sizes.js preview). Every
     // one of them is a rule the store measures the file against, and the named job ends
@@ -921,6 +933,7 @@ const ops = {
     }
     return { path: r && r.file, mb, seconds, ...engine,
       ...(store ? { store } : {}),
+      ...(ruled ? { guidelines: ruled } : {}),
       ...(lw.length ? { look_warnings: lw } : {}),
       ...(checked ? { review: checked } : {}),
       ...(loop ? { loop } : {}),
@@ -970,9 +983,19 @@ const ops = {
     const run = chainOf.get(args.path) || null
     const before = foundBy.get(args.path) || null
     const at = shot ? SHOT_AT : args.at
+    // A search of another moment carries nothing, and is numbered past every id this
+    // recording has handed out, so an id held from the first search never comes to name
+    // something on the second.
+    const top = pathTop.get(args.path) || 0
     const prior = run ? runPrior(run)
-      : before && before.all && Math.abs((+before.at || 0) - (+at || 0)) <= 1 ? before.all : null
-    const r = await deps.proc.findOnScreen(args.path, at, { crop, query: args.query, limit: args.limit, prior })
+      : before && before.all && Math.abs((+before.at || 0) - (+at || 0)) <= 1 ? before.all
+        : top > 0 ? countedFrom(top) : null
+    // held to the guard's ledger before it is ranked or drawn
+    const key = runKey(args.path, { run })
+    const reissued = []
+    const r = await deps.proc.findOnScreen(args.path, at, { crop, query: args.query, limit: args.limit, prior,
+      guard: guardHook(key, reissued) })
+    reissued.push(...settle(r, key))
     // only boxes measured in apply_edit's frame (after the crop) can be named there
     const all = r.all || r.elements
     if (run) joinRun(run, args.path, prior, all)
@@ -982,7 +1005,7 @@ const ops = {
     // cutEdges onto the x axis: an ultrawide and a portrait crop are not 16:9
     const aspect = r.width > 0 && r.height > 0 ? r.width / r.height : 0
     const noLift = crop || args.cropped !== false
-      ? noteFound(args.path, r.at, r.elements, all, { aspect })
+      ? noteFound(args.path, r.at, r.elements, all, { aspect, run, frame: { width: r.width, height: r.height } })
       : liftNotes(r.elements, all, aspect)
     // Everything read off the frame, held to the product's never-on-screen rules, so a
     // thing the person said must not be seen is named the moment an agent looks at it
@@ -990,6 +1013,7 @@ const ops = {
     const seen = neverSeen(args.path, (all || []).map(e => ({ id: e.id, text: e.text })).filter(e => e.text))
     return {
       ...(seen || {}),
+      ...(reissued.length ? { ids_retired: idsRetired(reissued) } : {}),
       image: r.image, at: r.at, cropped: !!crop, query: args.query || null,
       found: r.found, shown: r.elements.length,
       elements: r.elements.map(e => ({
@@ -1186,7 +1210,10 @@ const ops = {
       // the take's own ends, so the rule about a ground a take sinks into can run at all
       levels: await takeLevels(args.path, doc, meta),
     })
-    return words ? { ...r, rules: words } : r
+    // every rule in force held to the edit and to what was read off the take, each
+    // finding with its fix, and every rule that could not be checked said to be unchecked
+    const g = rulesCheck(args.path, doc, { width: meta && meta.width, height: meta && meta.height })
+    return { ...r, ...(words ? { rules: words } : {}), ...(g ? { guidelines: g } : {}) }
   },
 
   // Can this clip play round again with no visible jump, and what is stopping it?
@@ -2254,7 +2281,11 @@ const simSeen = new Map()
 // size and place on a screen the device went on to (a Done in the same corner), and two
 // controls that each appear once on a one-row screen whose label changed below a heading
 // that stayed ("Shakshuka [Edit] [Delete]" becoming "Pancakes [Edit] [Delete]" under
-// "Recipes"), which vouch for each other. Both are carried as the same controls.
+// "Recipes"), which vouch for each other. Both are carried as the same controls, and so
+// is a detail screen whose item name sits below the top quarter, under a hero picture:
+// "Delete recipe" carried from Shakshuka's page to Pancakes' (/tmp/q-taste/detail.js case
+// 2, E4 to E4). The guard (ui/guard.js), run on the picture simTap takes just before the
+// touch, is what refuses those; the matcher cannot, and is not asked to.
 //
 // That holds only while the carry really happens, so it is checked on every pass
 // (carriedOn) rather than assumed: a pass that came back numbered from E1 again starts
@@ -2346,9 +2377,14 @@ async function simScreen(sim, o = {}) {
     // No crop: a tap is aimed through the glass rectangle and that arithmetic starts in
     // the whole frame, so the boxes have to be measured there too.
     // The device's last screen as the prior, so a button that has not moved keeps its id
-    const prior = runPrior(sim.udid)
-    const r = await deps.proc.findOnScreen(file, 0, { limit: Math.max(1, Math.min(24, +o.limit || 12)), prior })
-    noteFound(file, 0, r.elements, r.all, { aspect: r.width > 0 && r.height > 0 ? r.width / r.height : 0 })
+    // (or, for a tap aimed off a still no run has taken on, that still's list)
+    const prior = o.prior || runPrior(sim.udid)
+    const key = runKey(file, { run: sim.udid }), reissued = []
+    const r = await deps.proc.findOnScreen(file, 0, { limit: Math.max(1, Math.min(24, +o.limit || 12)), prior,
+      guard: guardHook(key, reissued) })
+    reissued.push(...settle(r, key))
+    noteFound(file, 0, r.elements, r.all, { aspect: r.width > 0 && r.height > 0 ? r.width / r.height : 0,
+      run: sim.udid, frame: { width: r.width, height: r.height } })
     simSeen.set(sim.udid, file)
     const carries = joinRun(sim.udid, file, prior, r.all || r.elements)
     const kept = carries ? Math.max(0, +(r.all || []).carried || 0) : 0
@@ -2356,6 +2392,7 @@ async function simScreen(sim, o = {}) {
       path: file, found: r.found,
       elements: r.elements.map(e => ({ id: e.id, text: e.text, kind: e.kind, box: e.box, confidence: e.confidence })),
       ...(carries ? { kept_ids: kept } : {}),
+      ...(reissued.length ? { ids_retired: idsRetired(reissued) } : {}),
       how: carries
         ? 'these ids are what simulator tap takes as element. A control that was on this device\'s last screen ' +
           `keeps the id it had there (${kept} did), and anything new is numbered past every id handed out on ` +
@@ -2740,8 +2777,8 @@ async function simTap(sim, args, ctx) {
   // a capture belongs inside the yes rather than in front of it.
   await simAsk('tap', sim, ctx, {
     wants: 'wants to send a tap to', detail: 'The touch goes into the device\'s own input path. It never moves this ' +
-      'Mac\'s mouse and never presses its keyboard. Fetch takes a picture of that window to aim by and ' +
-      'another afterwards, to see what the tap did.',
+      'Mac\'s mouse and never presses its keyboard. Fetch takes a picture of that window just before the ' +
+      'touch to aim by, and another afterwards, to see what the tap did.',
     allow: 'Allow this tap', session: `Allow taps on ${sim.name}`, sessionFirst: true,
   })
   // Aimed through a measured rectangle or not at all. Where nothing has measured this
@@ -2749,7 +2786,8 @@ async function simTap(sim, args, ctx) {
   // the number, and the fit it used to fall back on put the finger 80 points above the
   // button near the top of the screen.
   if (!sim.viewport) sim = await simMeasured(sim)
-  const aimed = await simPoint(sim, args)
+  // Aimed on a picture taken now, after the yes, and never on the list the agent holds
+  const aimed = await aimFresh(sim, args)
   // A whole number of points, because both tools that send a touch take integers and one
   // refuses a float outright ("invalid int value: '218.6'"), which killed every tap aimed
   // at an element, since an element's middle is almost never whole. Rounded here, once,
@@ -2799,7 +2837,7 @@ const SCREEN_SETTLE_MS = 1200
 // Where on the glass, in the device's own points. Everything in between is the take's:
 // the element's box is measured in the frame the edit works in, so the crop goes back on
 // before the viewport comes off.
-async function simPoint(sim, args) {
+async function simPoint(sim, args, o = {}) {
   if (!sim.screen || !sim.viewport) {
     const why = glassWhyNot.get(glassKey(sim.window))
     throw new Error(`Fetch cannot tell where ${sim.name}'s own screen sits inside its window, so there is ` +
@@ -2810,45 +2848,37 @@ async function simPoint(sim, args) {
   }
   const pts = sim.glass || sim.screen.points
   if (args.element != null) {
-    // The picture the id was minted on. ready and the tap before this one each hand back
-    // the screen they left behind, so the common case is an id off the last call and no
-    // path to carry.
-    const seenHere = simSeen.get(sim.udid) || null
     const id = String(args.element).trim().toUpperCase()
-    // The last search was on another picture of this same device, in the same run of
-    // ids: an id off it is the same control on the newest screen, or is not there.
-    const inRun = !!seenHere && !!lastFoundOn && lastFoundOn !== seenHere &&
-      chainOf.get(lastFoundOn) === sim.udid && chainOf.get(seenHere) === sim.udid
-    // A path that names an older picture in the same run is aimed on the newest screen
-    // too: the device is showing the newest one, and a box read off an older picture
-    // lands on whatever sits there now (the next row's Delete, after a delete).
-    const older = !!args.path && !!seenHere && args.path !== seenHere &&
-      chainOf.get(args.path) === sim.udid && chainOf.get(seenHere) === sim.udid
-    if ((older || (!args.path && inRun)) && !holds(foundBy.get(seenHere), id)) {
+    // The picture the id was minted on (tapSource, which refuses what cannot be told),
+    // unless simTap already worked it out before it looked at the device again.
+    const on = o.from || tapSource(sim, args).on
+    const seenHere = simSeen.get(sim.udid) || null
+    // The device shows its newest screen, so that is where the finger lands and the only
+    // list a tap is ever aimed on. simTap reads it just before the touch.
+    const aimOn = seenHere || on
+    const here = foundBy.get(aimOn) || null
+    if (seenHere && !holds(here, id)) {
+      // one the device's run handed out and took back is said to be dead, in the guard's words
+      const v = here && here.ledger ? here.ledger.check(id, here.all, { frame: here.frame, act: 'tap' }) : null
+      if (v && !v.ok && v.reason === 'spent') throw new Error(v.say)
       throw new Error(`${id} is not on ${sim.name}'s newest screen. Ids carry from screen to screen on one device, ` +
         'so that control has gone from the device, or Fetch could not be sure it is the same one. The device ' +
         'shows its newest screen, so a tap is only ever aimed there: pick an id off the newest screen, or call ' +
         'find_on_screen on it in the person\'s own words.')
     }
-    const on = older ? seenHere : args.path || (seenHere && (seenHere === lastFoundOn || inRun) ? seenHere : null)
-    if (!on && seenHere) {
-      throw new Error('a tap on an element needs path here: find_on_screen has named another picture since ' +
-        `${sim.name}'s last screen, and an id off that picture can name something else on this one, so ${id} ` +
-        'without a path could be a different thing. Send the path the id was minted on.')
+    // the guard on the list the finger lands on, and the box of the element it judged
+    const box = resolveElement(aimOn, here, null, null, { element: args.element }, { act: 'tap' }).box
+    // An id minted on a picture outside the device's run (a still it was carried on from)
+    // is held to what it named there too: the run's own ledger never saw it minted.
+    const there = aimOn !== on ? foundBy.get(on) : null
+    if (there && there.ledger && here && there.ledger !== here.ledger) {
+      guardCheck({ ledger: there.ledger, all: here.all, frame: here.frame }, id, 'tap')
     }
-    if (!on) {
-      throw new Error('a tap on an element needs path as well: the shot or recording find_on_screen was ' +
-        'called on, which is where that id was minted. simulator with action ready hands back the screen ' +
-        'and the ids on it, and so does every tap.')
-    }
-    args = { ...args, path: on }
-    const seen = foundBy.get(args.path) || null, mine = foundFor.get(args.path) || null
-    const box = resolveElement(args.path, seen, mine, null, { element: args.element }).box
     // A scratch frame has no document and no crop: its boxes are the whole frame already.
-    const crop = simSeen.get(sim.udid) === args.path ? null : await cropOfTake(args.path)
+    const crop = seenHere === aimOn ? null : await cropOfTake(aimOn)
     const fx = crop ? crop.x + crop.w * (box.x + box.w / 2) : box.x + box.w / 2
     const fy = crop ? crop.y + crop.h * (box.y + box.h / 2) : box.y + box.h / 2
-    return { ...devicePoint(sim, fx, fy), aimed: `the middle of ${String(args.element).toUpperCase()}` }
+    return { ...devicePoint(sim, fx, fy), aimed: `the middle of ${id}` }
   }
   const x = +args.x, y = +args.y
   if (Number.isFinite(x) && Number.isFinite(y)) {
@@ -2860,6 +2890,76 @@ async function simPoint(sim, args) {
   throw new Error('a tap aims at a box, never at a coordinate: call find_on_screen on a shot of the device ' +
     'in the person\'s own words and send the id it hands back as element, with that shot\'s path. ' +
     'x and y in device points are taken where nothing on screen can be named, and are reported as hand aimed.')
+}
+
+/**
+ * Which picture a tap's element id was minted on, worked out before anything is taken:
+ * { on, id }, or the refusal that says why that cannot be told.
+ *
+ * With no path, the device's newest screen, while it is also the newest thing
+ * find_on_screen named (or the last search was on a picture in the same run). A path in
+ * the device's run is aimed on the newest screen. A path outside the run (a still, a
+ * recording) only while the device has not handed back a screen of its own: the order
+ * lists were searched in says nothing about when their pictures were taken, and a still
+ * searched after a tap is still a picture from before it.
+ */
+function tapSource(sim, args) {
+  const seenHere = simSeen.get(sim.udid) || null
+  const id = String(args.element).trim().toUpperCase()
+  // The last search was on another picture of this same device, in the same run of
+  // ids: an id off it is the same control on the newest screen, or is not there.
+  const inRun = !!seenHere && !!lastFoundOn && lastFoundOn !== seenHere &&
+    chainOf.get(lastFoundOn) === sim.udid && chainOf.get(seenHere) === sim.udid
+  const older = !!args.path && !!seenHere && args.path !== seenHere &&
+    chainOf.get(args.path) === sim.udid && chainOf.get(seenHere) === sim.udid
+  const on = older ? seenHere : args.path || (seenHere && (seenHere === lastFoundOn || inRun) ? seenHere : null)
+  if (!on && seenHere) {
+    throw new Error('a tap on an element needs path here: find_on_screen has named another picture since ' +
+      `${sim.name}'s last screen, and an id off that picture can name something else on this one, so ${id} ` +
+      'without a path could be a different thing. Send the path the id was minted on.')
+  }
+  if (!on) {
+    throw new Error('a tap on an element needs path as well: the shot or recording find_on_screen was ' +
+      'called on, which is where that id was minted. simulator with action ready hands back the screen ' +
+      'and the ids on it, and so does every tap.')
+  }
+  if (on !== seenHere && seenHere && chainOf.get(on) !== sim.udid) {
+    throw new Error(`${id} was minted on a picture that is not one of ${sim.name}'s own screens since its last ` +
+      'ready or tap, and may be older than the screen it shows now, so what it names may not be under the finger ' +
+      'and Fetch did not tap it. Use an id off the screen the last ready or tap handed back, or call simulator ' +
+      'with action ready for a new one.')
+  }
+  return { on, id }
+}
+
+/**
+ * Aim a tap on what the device shows at the moment of the touch. The id's list is
+ * chosen first (tapSource), then the device is read once more, after the person's yes
+ * and just before the touch, and the id is judged on that picture. The list the agent
+ * holds can be a whole Allow dialog old, or off a tap whose picture failed, and in that
+ * time a sync can push every row down one. A device that cannot be read now is not tapped
+ * by id. `look` reads the device (lookNow); test/tools.test.js hands in its own.
+ */
+async function aimFresh(sim, args, look = lookNow) {
+  if (args.element == null) return simPoint(sim, args)
+  const { on, id } = tapSource(sim, args)
+  const fresh = await look(sim, on)
+  if (!fresh) {
+    throw new Error(`Fetch could not read ${sim.name}'s screen just before the tap, so it cannot tell that ${id} ` +
+      'still names what it did, and did not tap it. Call simulator with action ready, or take_shot with ' +
+      'simulator and find_on_screen, and use an id off that.')
+  }
+  return simPoint(sim, args, { from: on })
+}
+
+// One picture of the device now, named on from the list the id came from: the device's
+// run, or a still of it that no run has taken on yet.
+async function lookNow(sim, on) {
+  const since = Date.now()
+  await readGlass(sim.window, null, sim.screen)
+  const from = foundBy.get(on)
+  const prior = chainOf.get(on) === sim.udid || !from ? null : from.all
+  return simScreen(sim, { since, limit: 24, ...(prior ? { prior } : {}) })
 }
 
 function devicePoint(sim, fx, fy) {
@@ -3146,8 +3246,8 @@ function withElements(src, doc, prev) {
   // and its geometry. An id the document has never seen is a new mark, and mergeMarks
   // pushes it through as one, so it has to answer for its box like any other.
   const known = new Set(((prev && prev.marks) || []).map(m => m && m.id).filter(Boolean))
-  const swap = list => !Array.isArray(list) ? list : list.map(it => {
-    const aimed = it && it.element ? resolveElement(src, seen, mine, crop, it) : it
+  const swap = (list, key) => !Array.isArray(list) ? list : list.map(it => {
+    const aimed = it && it.element ? resolveElement(src, seen, mine, crop, it, { past: true, act: actOf(key, it) }) : it
     if (aimed && (aimed.kind === 'lift' || aimed.kind === 'loupe' || aimed.kind === 'arrow')) {
       // a new lift, loupe or arrow with nothing but times raises nothing, magnifies
       // nothing and points at nothing, so say what to send. One that names an existing mark keeps that
@@ -3169,10 +3269,10 @@ function withElements(src, doc, prev) {
   const r4 = n => Math.round(n * 10000) / 10000
   const pin = list => !Array.isArray(list) ? list : list.map(it => {
     if (!it || !it.element) return it
-    const { box, ...rest } = resolveElement(src, seen, mine, crop, it)
+    const { box, ...rest } = resolveElement(src, seen, mine, crop, it, { past: true, act: actOf('texts', it) })
     return box ? { ...rest, at: { x: r4(box.x + box.w / 2), y: r4(box.y + box.h / 2) } } : rest
   })
-  return { ...doc, ...(doc.zooms ? { zooms: swap(doc.zooms) } : {}), ...(doc.marks ? { marks: swap(doc.marks) } : {}),
+  return { ...doc, ...(doc.zooms ? { zooms: swap(doc.zooms, 'zooms') } : {}), ...(doc.marks ? { marks: swap(doc.marks, 'marks') } : {}),
     ...(doc.texts ? { texts: pin(doc.texts) } : {}) }
 }
 
@@ -3189,7 +3289,7 @@ const boxInList = (found, id) => {
 }
 const holds = (found, id) => !!(found && (found.boxes.has(id) || boxInList(found, id)))
 
-function resolveElement(src, seen, mine, crop, it) {
+function resolveElement(src, seen, mine, crop, it, o = {}) {
   const { element, ...rest } = it
   const id = String(element).trim().toUpperCase()
   if (/^R\d+$/.test(id)) {
@@ -3201,16 +3301,162 @@ function resolveElement(src, seen, mine, crop, it) {
     return { ...rest, box: regionBox(region, crop) }
   }
   // An id from an earlier screen can be carried onto this one without being among the
-  // ones this pass showed, so the whole list is read too: same pass, same frame.
-  const box = (seen && seen.boxes.get(id)) || (mine && mine.boxes.get(id)) ||
-    boxInList(seen, id) || boxInList(mine, id)
-  if (!box) {
+  // ones this pass showed, so the whole list is read too: same pass, same frame. On a
+  // recording (o.past) an id from an earlier search of another moment is looked up on
+  // the list it was minted on, however many searches ago that was (idHome keeps every
+  // one): ids on one recording are never handed out twice, so an id off any of its lists
+  // names one element. A tap never looks back: the device shows its newest screen, and
+  // simPoint has already chosen the list that is.
+  //
+  // Fetch's own passes (a zoom's aim, the rules' read, the lasso) number from E1 each
+  // time, so their E4 is not the agent's E4. An id the agent's own run ever handed out,
+  // live or spent, is only ever looked up in the agent's lists, and one that is not
+  // there any more is refused rather than found in Fetch's.
+  const theirs = !!(seen && seen.ledger && seen.ledger.knows(id))
+  const inList = r => !!(r && (r.boxes.has(id) || boxInList(r, id)))
+  const home = o.past ? ((idHome.get(src) || new Map()).get(id) || null) : null
+  const rec = inList(seen) ? seen : inList(home) ? home : !theirs && inList(mine) ? mine : null
+  if (!rec) {
+    // an id this run handed out and has since taken back is said to be dead, in the
+    // guard's own words, rather than as a typo
+    const v = seen && seen.ledger ? seen.ledger.check(id, seen.all, { frame: seen.frame, act: o.act }) : null
+    if (v && !v.ok && v.reason !== 'unknown') throw new Error(v.say)
     const at = seen || mine
     throw new Error(`${element} is not in the last find_on_screen result for this recording` +
       (at ? ` (at ${at.at} s)` : '') + '. Call find_on_screen again and name one it lists, or send its box.')
   }
-  return { ...rest, box }
+  // The moment. A list names what was on screen at the moment it was read, and a
+  // recording moves: the recipe at y 0.27 at 2 s is another recipe at 8 s. An id aimed
+  // at a span it was not read inside (give or take a second) would land on whatever sits
+  // in its old place then, so it is refused with the moment to read instead.
+  if (o.past) atMoment(src, rec, id, rest, o.act)
+  // The guard, at the moment of acting: the element this list gives the id is held to
+  // what the id was minted for, and anything that does not match, or cannot be told, is
+  // refused. The box handed back is the judged element's own, never a lookup in some
+  // other list. There is no way to a box that does not come through here
+  // (test/tools.test.js).
+  const el = guardCheck(rec, id, o.act)
+  return { ...rest, box: el.box }
 }
+
+// How far either side of a zoom or mark's span the list its id came from may have been
+// read, in seconds: the same second a search of "that moment" is allowed to miss by.
+const MOMENT_SLACK = 1
+function atMoment(src, rec, id, it, act) {
+  if (isShot(src)) return
+  const at = +rec.at, a = +it.start, b = +it.end
+  if (!Number.isFinite(at) || !Number.isFinite(a) || !Number.isFinite(b)) return
+  if (at >= a - MOMENT_SLACK && at <= b + MOMENT_SLACK) return
+  const mid = Math.round((a + (b > a ? (b - a) / 2 : 0)) * 10) / 10
+  throw new Error(`${id} was read off the frame at ${at} s, and this runs from ${a} to ${b} s. What sits in its ` +
+    `place then was never read, and a recording moves, so Fetch did not ${act || 'act on'} it. Call ` +
+    `find_on_screen at that moment (at: ${mid}) and use the id it hands back.`)
+}
+
+// ── every id an action uses goes through the guard ─────────────────────────
+// ui/targets.js carryIds guesses which element on a new picture is the one an old id
+// named, and a guess always has another case. It is no longer what keeps the promise an
+// id makes (the same element, or nothing). Every list an agent or Fetch is handed is
+// recorded in a ledger (ui/guard.js) as it is minted, which writes down what each id is
+// and gives a new id to anything the matcher handed an old one it does not match; and
+// every action that turns an id into a box (a tap, a zoom, every kind of mark, a pinned
+// label or callout) calls guardCheck here as it acts. A matcher mistake then costs the
+// agent one find_on_screen, never the wrong row.
+//
+// One ledger per run of ids: a device's screens ('sim:' + udid), one recording or shot's
+// own searches ('take:' + path), and the passes Fetch runs for itself on it ('fetch:' +
+// path), which number from E1 each time and are kept apart from the agent's.
+const ledgers = new Map()      // run key -> Guard.ledger()
+const minted = new WeakSet()   // lists already held to their ledger
+const idHome = new Map()       // path -> Map(id -> the newest agent list holding it), never evicted
+const pathTop = new Map()      // path -> the highest id number handed out on it
+let mintSeq = 0                // the order lists were minted in
+
+function ledgerFor(key) {
+  let L = ledgers.get(key)
+  if (!L) ledgers.set(key, L = Guard.ledger())
+  return L
+}
+function runKey(file, { agent = true, run = null } = {}) {
+  if (!agent) return 'fetch:' + file
+  const udid = run || chainOf.get(file) || null
+  return udid ? 'sim:' + udid : 'take:' + file
+}
+
+/**
+ * Hold a list to its ledger before anyone sees it. `fresh` starts the run over, for
+ * Fetch's own passes, which are never handed a prior. Returns { list, reissued }.
+ */
+function mint(key, list, frame, { fresh = false } = {}) {
+  if (!Array.isArray(list) || minted.has(list)) return { list, reissued: [] }
+  const L = ledgerFor(key)
+  if (fresh) L.reset()
+  const r = L.record(list, frame && frame.width > 0 ? { frame } : {})
+  minted.add(r.list)
+  return r
+}
+// The same, as the hook processor.findOnScreen runs before it ranks and draws, so the
+// numbers on the picture are the ids the agent is handed. What it renamed lands in `got`.
+const guardHook = (key, got, o) => (list, frame) => {
+  const r = mint(key, list, frame, o)
+  got.push(...r.reissued)
+  return r.list
+}
+function renamed(list, reissued) {
+  if (!reissued.length || !Array.isArray(list)) return list
+  const to = new Map(reissued.map(x => [x.from, x.to]))
+  return list.map(e => {
+    if (!e) return e
+    const id = to.get(e.id), inn = e.in && to.get(e.in)
+    return id || inn ? { ...e, ...(id ? { id } : {}), ...(inn ? { in: inn } : {}) } : e
+  })
+}
+// A findOnScreen result held to its ledger, where the processor did not do it (a stand
+// in, or an older build): its shown list renamed to match. Returns what was renamed.
+function settle(r, key, o) {
+  if (!r) return []
+  const all = r.all || r.elements
+  if (!Array.isArray(all) || minted.has(all)) return []
+  const g = mint(key, all, { width: r.width, height: r.height }, o)
+  r.elements = r.elements === all ? g.list : renamed(r.elements, g.reissued)
+  if (r.all) r.all = g.list
+  return g.reissued
+}
+
+/**
+ * The check itself: the element `rec`'s list gives this id, held to what the id was
+ * minted for. Returns the element, or throws the guard's sentence.
+ */
+function guardCheck(rec, id, act) {
+  if (!rec || !rec.ledger) {
+    throw new Error(`${id} came from a list Fetch never wrote down, so what it names cannot be told and ` +
+      `Fetch did not ${act || 'act on'} it. Call find_on_screen again and use the id it hands back.`)
+  }
+  const v = rec.ledger.check(id, rec.all, { frame: rec.frame, act })
+  if (!v.ok) throw new Error(v.say)
+  return v.element
+}
+
+// An empty prior that only carries a count, so a fresh pass numbers on past it.
+function countedFrom(top) {
+  const c = []
+  Object.defineProperty(c, 'seq', { value: top })
+  Object.defineProperty(c, 'frame', { value: null })
+  return c
+}
+// What the ledger took back on this pass, said to the agent holding the old ids.
+function idsRetired(reissued) {
+  return { ids: reissued.map(x => ({ was: x.from, now: x.to })),
+    why: 'on this picture the matcher gave each old id to something that is not what it named before, so ' +
+      'that element takes the new id and the old one names nothing now. An action sent with an old one is refused.' }
+}
+
+// How the sentence names what was not done, per kind of thing an id aims.
+const MARK_ACT = { redact: 'redact', blur: 'blur', spotlight: 'spotlight', lift: 'lift', loupe: 'magnify',
+  arrow: 'point an arrow at', highlight: 'highlight', outline: 'outline', step: 'put a step on' }
+const actOf = (list, it) => list === 'zooms' ? 'zoom to'
+  : list === 'texts' ? `pin ${it && it.kind === 'callout' ? 'a callout' : 'a label'} to`
+    : MARK_ACT[it && it.kind] || `put a ${(it && it.kind) || 'mark'} on`
 
 // A region's box is fractions of the frame as it was cropped when the person drew the
 // rectangle. Move the crop and those same fractions point at a different part of the
@@ -3264,8 +3510,15 @@ function liftNotes(elements, all, aspect) {
  * `agent` false is a pass Fetch ran for itself, which is kept in its own map: its ids
  * resolve, but they never replace the ones the agent asked for and is still holding.
  */
-function noteFound(path, at, elements, all, { agent = true, aspect = 0 } = {}) {
-  const list = all || elements || []
+function noteFound(path, at, elements, all, { agent = true, aspect = 0, frame = null, run = null } = {}) {
+  // Held to its ledger first, where the search did not already do it, so no list is ever
+  // registered that an action could resolve an id in without the guard knowing the id.
+  let list = all || elements || []
+  if (!minted.has(list)) {
+    const g = mint(runKey(path, { agent, run }), list, frame, { fresh: !agent })
+    elements = elements === list ? g.list : renamed(elements, g.reissued)
+    list = g.list
+  }
   const notes = liftNotes(elements, list, aspect)
   const boxes = new Map((elements || []).map(e => [e.id, e.box]))
   // an element named only inside a refusal is still one the agent may aim at
@@ -3275,9 +3528,23 @@ function noteFound(path, at, elements, all, { agent = true, aspect = 0 } = {}) {
   }
   // the frame's own shape, kept so apply_edit judges a lift by the same ruler the search
   // did: a type-sized padding is square on the screen and not in fractions of the frame
-  ;(agent ? foundBy : foundFor).set(path, { at, boxes, all: list, aspect })
-  // Which picture the agent last had ids minted on. Ids restart at E1 on every pass, so
-  // a tap with no path may only fall back to the device's newest screen while that
+  const ledger = ledgerFor(runKey(path, { agent, run }))
+  const rec = { at, boxes, all: list, aspect, frame: frame && frame.width > 0 ? frame : (list.frame || null), ledger, seq: ++mintSeq }
+  if (agent) {
+    // every id stays reachable on the list it came in, for a zoom or mark aimed at the
+    // moment it was read, however many searches later: ids on a path are never reused
+    const homes = idHome.get(path) || new Map()
+    for (const e of list) if (e && e.id) homes.set(e.id, rec)
+    for (const b of notes.values()) for (const x of [b.instead, b.around]) if (x && x.id && !homes.has(x.id)) homes.set(x.id, rec)
+    idHome.set(path, homes)
+    const num = e => +String(e && e.id).slice(1) || 0
+    pathTop.set(path, Math.max(pathTop.get(path) || 0, +list.seq || 0, ...list.map(num)))
+  }
+  ;(agent ? foundBy : foundFor).set(path, rec)
+  // what was read off this moment, for the product's never-on-screen rules
+  noteFrame(path, at, list, agent)
+  // Which picture the agent last had ids minted on. Each picture numbers its own ids,
+  // so a tap with no path may only fall back to the device's newest screen while that
   // screen is also the newest pass: after a find_on_screen on anything else, E5 is that
   // other picture's E5.
   if (agent) lastFoundOn = path
@@ -3358,6 +3625,9 @@ function liftAdvice(b) {
 }
 // Every lift with a box is checked, including one being moved: the old guard let a
 // lift dragged onto the frame's edge by a bare box through without a word.
+// It only ever refuses, and never hands back a box to act on. From apply_edit it is
+// handed a mark whose element resolveElement has already turned into a box, through the
+// guard, so it matches by that box; an id is read only by a caller asking about a lift.
 function liftable(seen, m) {
   if (!seen || !seen.all) return
   const T = require('./targets')
@@ -3378,15 +3648,18 @@ const r2 = n => Math.round(n * 100) / 100
 async function elementsNear(src, at, crop) {
   for (const m of [foundBy, foundFor]) {
     const seen = m.get(src)
-    if (seen && seen.all && seen.all.length && Math.abs(seen.at - at) <= 0.75) return seen.all
+    if (seen && seen.all && seen.all.length && Math.abs(seen.at - at) <= 0.75) return { list: seen.all, agent: m === foundBy }
   }
   if (!deps.proc || !deps.proc.findOnScreen) return null
   try {
-    const r = await deps.proc.findOnScreen(src, at, { crop: crop && crop.w > 0 ? crop : null, limit: 40 })
+    const key = runKey(src, { agent: false })
+    const r = await deps.proc.findOnScreen(src, at, { crop: crop && crop.w > 0 ? crop : null, limit: 40,
+      guard: guardHook(key, [], { fresh: true }) })
+    settle(r, key, { fresh: true })
     // Fetch's own pass, so it does not renumber the E ids the agent is holding
     noteFound(src, r.at, r.elements, r.all, { agent: false,
-      aspect: r.width > 0 && r.height > 0 ? r.width / r.height : 0 })
-    return r.all || r.elements
+      aspect: r.width > 0 && r.height > 0 ? r.width / r.height : 0, frame: { width: r.width, height: r.height } })
+    return { list: r.all || r.elements, agent: false }
   } catch (e) {
     console.warn('[aim] could not read the frame at', at, e && e.message)
     return null
@@ -3416,7 +3689,7 @@ async function aimZooms(src, doc, prev) {
     const num = (v, alt) => Number.isFinite(+v) && v !== null ? +v : (old && Number.isFinite(+alt) ? +alt : null)
     const start = num(z.start, old && old.start), end = num(z.end, old && old.end)
     const mine = []
-    let box = T.cleanBox(z.box), el = null
+    let box = T.cleanBox(z.box), el = null, byId = false
     if (!box) {
       const x = num(z.x, old && old.x), y = num(z.y, old && old.y)
       // {start, end} alone still means 1.8x at the frame centre: nothing was aimed, so
@@ -3424,12 +3697,16 @@ async function aimZooms(src, doc, prev) {
       if (x == null && y == null || !(end > start)) continue
       const aim = r2(start + Math.min(1, (end - start) / 3))
       const found = await elementsNear(src, aim, crop)
-      el = found ? T.nearPoint({ x: x == null ? 0.5 : x, y: y == null ? 0.5 : y }, found) : null
+      el = found ? T.nearPoint({ x: x == null ? 0.5 : x, y: y == null ? 0.5 : y }, found.list) : null
       box = el ? T.cleanBox(el.box) : null
       if (!box) continue      // nothing under the point: the zoom stands, and handAimed says so
       z.box = box
-      const entry = { id: z.id || null, element: el.id, at: aim,
-        from: { x, y, scale: num(z.scale, old && old.scale) }, to: null, box }
+      // The element it went on, by id only where the id is one the agent was handed. A
+      // pass Fetch ran for itself numbers from E1, so its E4 is not the agent's E4, and
+      // an id said here is one the agent will aim with. Otherwise its words and its box.
+      byId = found.agent
+      const entry = { id: z.id || null, ...(byId ? { element: el.id } : { on: el.text ? `"${el.text}"` : `a ${el.kind}` }),
+        at: aim, from: { x, y, scale: num(z.scale, old && old.scale) }, to: null, box }
       out.snapped.push(entry); mine.push(entry)
     }
     // where the box lands the zoom: the one place a box becomes a zoom is normalize,
@@ -3451,7 +3728,7 @@ async function aimZooms(src, doc, prev) {
       out.refit.push(entry); mine.push(entry)
     }
     if (share < T.FIT_LOW) {
-      const entry = { id: z.id || null, what: el ? el.id : 'its box', share }
+      const entry = { id: z.id || null, what: el ? (byId ? el.id : el.text ? `"${el.text}"` : `a ${el.kind}`) : 'its box', share }
       out.warnings.push(entry); mine.push(entry)
     }
     // a new zoom has no id until the document mints one
@@ -3962,6 +4239,11 @@ async function exportShot(args) {
       'path of a recording.')
   }
   const shot = await shotOf(args.path)
+  // The product's rules, before the PNG is written: a still is one frame, so it is read
+  // here if nobody has read it, and anything a never-rule keeps off it refuses the file.
+  await readForRules(args.path, SHOT_AT, shot.crop)
+  const ruled = rulesCheck(args.path, shot, { gate: true, still: true, width: shot.w, height: shot.h })
+  if (ruled && ruled.refused) throw rulesRefusal(ruled)
   // An exact size the store measures, from the one table that holds those numbers
   // (ui/sizes.js). Refused before anything is drawn where the capture cannot fill it,
   // because a soft store asset is worse than no store asset.
@@ -3980,6 +4262,7 @@ async function exportShot(args) {
     original: 'the capture in Original/ is untouched, so this can be styled again from it',
     ...(checked ? { review: { verdict: checked.verdict, score: checked.score, summary: checked.summary,
       blocking: require('./review').blocking(checked) } } : {}),
+    ...(ruled ? { guidelines: ruled } : {}),
     ...jobState(args.path, null, null, null, shotFacts(shot)),
   }
 }
@@ -3998,12 +4281,16 @@ async function reviewShot(args) {
   const shot = args.shot || await shotOf(args.path)
   let brief = null
   try { brief = (require('./director').read(args.path) || {}).brief || null } catch {}
-  return require('./review').review({
+  const r = require('./review').review({
     doc: shot, brief, path: args.path, declined: args.declined,
     looks: require('./look').list(looksDir()),
     levels: await shotLevels(shot),
     rules: wordsAgainstRules(args.path, shot),
   })
+  // the product's rules as checks, beside the rubric: a still is read once if nobody has
+  await readForRules(args.path, SHOT_AT, shot.crop)
+  const g = rulesCheck(args.path, shot, { width: shot.w, height: shot.h })
+  return g ? { ...r, guidelines: g } : r
 }
 
 // The capture's own black and white points, so the rule about a ground it sinks into
@@ -4137,23 +4424,25 @@ function memoryState(file, about) {
   } catch { return null }
 }
 
-// Every word the edit puts on the picture (the texts, the captions, the marks' labels)
-// held to the words the product's rules avoid, each with what to say instead where the
-// rule names it. Null when the words are clean or there are no rules to hold them to.
+// The product's rules held to this edit, in the shape review takes as input.rules: every
+// word the edit puts on the picture (the texts, the captions, the marks' labels) against
+// the words the rules avoid and the product's name, the look against the look rules, and
+// what was read off the take against the never-rules (ui/guidelines.js check). `words`
+// is the words list as review has always read it; `findings` and `unchecked` are check's
+// own, each finding with its fix, so a name, a look or a never finding is an item of
+// review's and not a note beside it. Null when there is nothing to say or no rules.
 function wordsAgainstRules(file, doc) {
   try {
-    const said = []
-    for (const k of ['texts', 'cues', 'marks']) {
-      for (const it of (doc && doc[k]) || []) {
-        for (const f of ['text', 'title', 'label', 'sub']) if (it && typeof it[f] === 'string' && it[f].trim()) said.push(it[f])
-      }
-    }
-    if (!said.length) return null
-    const r = require('./guidelines').check({ root: memRoot(file), take: file || null }, { text: said.join('\n') })
-    if (!r || !r.ok || !r.words || !r.words.length) return null
-    return { words: r.words.map(w => ({ term: w.term, rule: w.rule, ...(w.instead ? { instead: w.instead } : {}) })),
-      note: `${r.product}'s rules avoid ${r.words.map(w => `"${w.term}"`).join(', ')}, and the words on this edit use it. ` +
-        'Change them before this is exported, or say in your reply why not.' }
+    const r = require('./guidelines').check({ root: memRoot(file), take: file || null },
+      { doc, path: file, frames: framesRead.get(file) || [] })
+    if (!r || !r.ok) return null
+    const words = (r.words || []).map(w => ({ term: w.term, rule: w.rule, ...(w.instead ? { instead: w.instead } : {}) }))
+    const findings = r.findings || [], unchecked = r.unchecked || []
+    if (!words.length && !findings.length && !unchecked.length) return null
+    return { words, findings, unchecked,
+      ...(words.length ? { note: `${r.product}'s rules avoid ${words.map(w => `"${w.term}"`).join(', ')}, and the words on ` +
+        `this edit use ${words.length === 1 ? 'it' : 'them'}. Change ${words.length === 1 ? 'it' : 'them'} before this is ` +
+        'exported, or say in your reply why not.' } : {}) }
   } catch { return null }
 }
 
@@ -4232,6 +4521,100 @@ function neverSeen(file, labels, about) {
         'and it is on this picture. Blur it, crop it out or go to another screen before this is used, and tell the person.',
     }
   } catch { return null }
+}
+
+// ── the product's rules, as checks ──────────────────────────────────────
+// A rule an agent only reads is a suggestion. ui/guidelines.js holds work to four of the
+// five sections (the words it avoids, what it is called, what must never be on screen,
+// how its pictures look) and says of any rule it could not hold the work to that it was
+// unchecked, never that it passed. Here is where that check runs: on take_shot, the
+// moment the picture exists; on review, beside the rubric; and at export, where anything
+// a never-rule keeps off screen that was seen and is not under a redaction refuses the
+// file before a frame is drawn. Nothing is refused for a rule that could not be checked.
+//
+// What is on screen is what was read: every list an Elements pass handed back for a file,
+// the agent's and Fetch's own, by moment. A later read of the same moment replaces the
+// earlier one, since it is the same picture read again.
+const framesRead = new Map()   // path -> [{ at, elements: [{ id, text, box }] }], by time
+const FRAMES_KEPT = 60
+function noteFrame(file, at, list, agent = true) {
+  if (!file || !Array.isArray(list)) return
+  const t = Number.isFinite(+at) ? +at : null
+  // Only the agent's own ids are kept: a finding's fix names the element by its id, and
+  // an id off Fetch's own pass is not one the agent holds (its E4 is the agent's E4 on
+  // another element). Those are fixed by box instead.
+  const els = list.filter(e => e && e.text).map(e => ({ ...(agent ? { id: e.id } : {}), text: e.text, box: e.box }))
+  const kept = (framesRead.get(file) || []).filter(f => t == null || f.at == null || Math.abs(f.at - t) > 0.25)
+  kept.push({ at: t, elements: els })
+  kept.sort((a, b) => (a.at || 0) - (b.at || 0))
+  framesRead.set(file, kept.slice(-FRAMES_KEPT))
+}
+
+// The rules a file's product has in force, or null when there is no product or no rule.
+function rulesInForce(file) {
+  try {
+    const r = require('./guidelines').read({ root: memRoot(file), take: file || null })
+    if (!r || !r.ok) return null
+    return Object.values(r.rules || {}).some(l => l && l.length) ? r : null
+  } catch { return null }
+}
+
+/**
+ * The product's rules held to this piece of work. `gate` asks the yes or no an export
+ * needs; without it this is the check review and take_shot report. Null when there is
+ * nothing to hold it to. The result carries the findings, each with the call that fixes
+ * it, and every rule left unchecked with why.
+ */
+function rulesCheck(file, doc, o = {}) {
+  if (!rulesInForce(file)) return null
+  try {
+    const G = require('./guidelines')
+    const where = { root: memRoot(file), take: file || null }
+    const args = { doc, path: file, frames: framesRead.get(file) || [],
+      ...(o.width > 0 && o.height > 0 ? { width: o.width, height: o.height } : {}),
+      ...(o.gate ? { for: o.still ? 'still' : 'export' } : {}) }
+    const r = o.gate ? G.gate(where, args) : G.check(where, args)
+    if (!r) return null
+    const refused = r.refused && r.refused.kind === 'never-on-screen' ? r.refused : null
+    if (!r.ok && !refused) return null
+    const findings = r.findings || [], unchecked = r.unchecked || []
+    if (!findings.length && !unchecked.length && !refused) return null
+    return { product: r.product, verdict: r.verdict, ...(refused ? { refused } : {}),
+      findings, unchecked, ...(r.covered && r.covered.length ? { covered: r.covered } : {}),
+      note: refused ? refused.why
+        : findings.length ? `${findings.length} thing${findings.length === 1 ? '' : 's'} here break${findings.length === 1 ? 's' : ''} ` +
+          `${r.product}'s rules. Each finding names the rule and the call that fixes it.`
+          : `Nothing here breaks ${r.product}'s rules that could be checked; the rules under unchecked were not ` +
+            'checked and have not passed.' }
+  } catch { return null }
+}
+
+// A picture no pass has read yet, read once for the never-rules, as Fetch's own pass so
+// no id the agent holds is renumbered. Only where the product has a never-rule to hold
+// it to, since it costs an Elements pass; a frame that cannot be read is left unchecked.
+async function readForRules(file, at, crop) {
+  const r0 = rulesInForce(file)
+  if (!r0 || !(r0.rules.never || []).length) return
+  if ((framesRead.get(file) || []).length || !deps.proc || !deps.proc.findOnScreen) return
+  try {
+    const key = runKey(file, { agent: false })
+    const r = await deps.proc.findOnScreen(file, at, { crop: crop && crop.w > 0 ? crop : null, limit: 60,
+      guard: guardHook(key, [], { fresh: true }) })
+    settle(r, key, { fresh: true })
+    noteFound(file, r.at, r.elements, r.all, { agent: false,
+      aspect: r.width > 0 && r.height > 0 ? r.width / r.height : 0, frame: { width: r.width, height: r.height } })
+  } catch (e) { console.warn('[rules] could not read', file, e && e.message) }
+}
+
+// The export refused, in the product's own words, with every finding and its fix.
+function rulesRefusal(g) {
+  const lines = [g.refused.why]
+  for (const f of g.findings.filter(x => x.severity === 'blocking')) {
+    lines.push(`${f.guideline}: ${f.what}` + (f.fix && f.fix.tool ? ` Fix: ${f.fix.tool} ${JSON.stringify(f.fix.args)}` : ''))
+  }
+  const err = new Error(lines.join('\n'))
+  err.guidelines = g
+  return err
 }
 
 // ── an export an agent can stop ──────────────────────────────────────────
@@ -4762,8 +5145,11 @@ module.exports = { start, stop, socketPath, VERSION, startingAgentTake, takeEnde
   carriedOn,
   // one device's run of screens, driven by test/tools.test.js without a device: how a pass
   // joins the run, the prior the next pass is handed, and where a tap on an id is aimed
-  deviceRun: { joinRun, runPrior, simPoint, noteFound, see: (udid, file) => simSeen.set(udid, file),
-    reset: () => { simSeen.clear(); simChain.clear(); chainOf.clear(); runTop.clear(); foundBy.clear(); lastFoundOn = null } },
+  deviceRun: { joinRun, runPrior, simPoint, aimFresh, tapSource, noteFound, see: (udid, file) => simSeen.set(udid, file),
+    reset: () => {
+      simSeen.clear(); simChain.clear(); chainOf.clear(); runTop.clear(); foundBy.clear(); lastFoundOn = null
+      ledgers.clear(); idHome.clear(); pathTop.clear(); framesRead.clear()
+    } },
   // the two rules that are code rather than prose, exercised by test/lasso.test.js
   withElements, aimZooms,
   // the person's answer to a question or a proposal. main.js does not call it: the

@@ -533,11 +533,14 @@ console.log('the same control keeps the same id')
     card('METER', 0.748, 0.622), card('LENGTH', 0.864, 0.622), card('RANGE', 0.748, 0.722), card('HANDS', 0.864, 0.722)],
     rects: [{ box: { x: 0.7363, y: 0.1852, w: 0.2488, h: 0.7905 }, bg: '#FCFBF7', conf: 0.9, edges: true }] }
   const pane1 = T.elementsFrom(PANE)
-  const pane2 = T.elementsFrom({ ...PANE, texts: [{ text: 'Now playing', conf: 1, box: { x: 0.75, y: 0.2, w: 0.1, h: 0.02 }, bg: '#FFFFFF', bgShare: 1 },
-    ...PANE.texts.map(t => t.text === 'TEMPO' ? { ...t, text: 'TEMPO 96' } : t)] }, pane1)
+  const pane2 = T.elementsFrom({ ...PANE, texts: PANE.texts.map(t => t.text === 'TEMPO' ? { ...t, text: 'TEMPO 96' } : t) }, pane1)
   const kinds = l => ['panel', 'grid'].map(k => l.find(e => e.kind === k).id)
-  is('a panel and a grid whose words changed inside are still themselves', kinds(pane2), kinds(pane1))
+  is('a panel and a grid whose numbers changed inside are still themselves', kinds(pane2), kinds(pane1))
   is('and a card in it points at the carried grid', pane2.find(e => e.text === 'KEY').in, pane1.find(e => e.kind === 'grid').id)
+  // words, not numbers: a line that came into the pane makes it one whose content changed
+  const pane3 = T.elementsFrom({ ...PANE, texts: [{ text: 'Now playing', conf: 1, box: { x: 0.75, y: 0.2, w: 0.1, h: 0.02 }, bg: '#FFFFFF', bgShare: 1 },
+    ...PANE.texts] }, pane1)
+  is('a panel whose words changed is not carried by its place', pane3.find(e => e.kind === 'panel').id === pane1.find(e => e.kind === 'panel').id, false)
 }
 
 console.log('an id never lands on the wrong element')
@@ -722,6 +725,20 @@ console.log('an id never lands on the wrong element')
   const k1 = T.elementsFrom(clocked('9:41')), k2 = T.elementsFrom(clocked('9:42'), k1)
   is('a clock ticking over keeps the rest', idOf(k2, 'Delete Recipe'), idOf(k1, 'Delete Recipe'))
 
+  // The same detail screen with a taller nav title above the item's name: the heading
+  // rule took only the tallest words, "Recipes" stayed, and "Delete recipe" was carried
+  // from Shakshuka's page to Pancakes'. Every lettered word of body size or more up top counts.
+  const navd = (name, time) => F([w('Recipes', 0.3, 0.05, 0.4, 0.04), w(name, 0.1, 0.14, 0.4, 0.028), w(time, 0.1, 0.19, 0.12, 0.018),
+    w('Ingredients', 0.1, 0.3, 0.3), chip('Edit', 0.1, 0.85, 0.2), chip('Delete recipe', 0.55, 0.85, 0.3)])
+  const nv1 = T.elementsFrom(navd('Shakshuka', '25 min')), nv2 = T.elementsFrom(navd('Pancakes', '15 min'), nv1)
+  is('a name replaced under a taller nav title is another screen', [idOf(nv2, 'Delete recipe') === idOf(nv1, 'Delete recipe'), nv2.carried], [false, 0])
+  is('  the same page again keeps everything', T.elementsFrom(navd('Shakshuka', '25 min'), nv1).carried, nv1.length)
+  // a small status line ticking over up top is below body size, and is not a heading
+  const synced = t => F([w('Recipes', 0.3, 0.05, 0.4, 0.04), w(t, 0.1, 0.1, 0.2, 0.012), w('Shakshuka', 0.1, 0.3, 0.3),
+    w('Pancakes', 0.1, 0.38, 0.3), chip('Delete recipe', 0.55, 0.85, 0.3)])
+  const sy1 = T.elementsFrom(synced('Synced 2 min ago')), sy2 = T.elementsFrom(synced('Synced 3 min ago'), sy1)
+  is('  a small status line changing up top keeps the rest', idOf(sy2, 'Delete recipe'), idOf(sy1, 'Delete recipe'))
+
   // Labels that count a place: Step 1 deleted, and the old Step 2 is now called Step 1
   const steps = n => F([w('Steps', 0.4, 0.08, 0.2, 0.03), ...Array.from({ length: n }, (_, i) =>
     [w('Step ' + (i + 1), 0.1, 0.2 + i * 0.08, 0.2), w('Delete', 0.75, 0.2 + i * 0.08, 0.12)]).flat()])
@@ -737,6 +754,109 @@ console.log('an id never lands on the wrong element')
     prev = next
   }
   is('an id held from the first picture never resolves to another element later on', bad, [])
+}
+
+console.log('a card holding chips is carried by what it says, never by where it is')
+// The judged hole: a card holding Edit and Delete chips is a panel, and panels were matched
+// by place alone. Pancakes favourited to the top of the list and every card id named the
+// recipe that now sat in its place, so a second tap on "the Shakshuka card" opened
+// Morning oats. Each element here carries a hidden identity the pictures do not show.
+{
+  const iouOf = (a, b) => { const x0 = Math.max(a.x, b.x), y0 = Math.max(a.y, b.y), x1 = Math.min(a.x + a.w, b.x + b.w), y1 = Math.min(a.y + a.h, b.y + b.h)
+    const i = Math.max(0, x1 - x0) * Math.max(0, y1 - y0); return i / (a.w * a.h + b.w * b.h - i) }
+  // a screen: an optional title and subtitle, rows (a name, a second line, buttons plain or
+  // as chips, a card round it, a thumbnail), and tabs. Returns the raw detections and the truth.
+  function render(scr) {
+    const texts = [], rects = [], truths = []
+    const W = (text, x, y, w, h, truth, container) => { const t = { text, conf: 1, box: { x, y, w, h }, bg: container ? '#222222' : '#FFFFFF' }
+      if (container) t.container = container; texts.push(t); truths.push({ box: container || t.box, truth }) }
+    const chip = (text, x, y, w, h, truth) => W(text, x, y, w, h, truth, { x: x - 0.01, y: y - 0.008, w: w + 0.02, h: h + 0.016 })
+    if (scr.title) W(scr.title, 0.35, 0.05, 0.3, 0.035, 'title:' + scr.title)
+    if (scr.sub) W(scr.sub, 0.1, 0.12, 0.3, 0.02, 'sub:' + scr.sub)
+    let y = scr.y0
+    for (const r of scr.rows) {
+      const h = r.h || 0.07
+      if (r.card) { const box = { x: 0.04, y: y - 0.01, w: 0.92, h: h - 0.005 }; rects.push({ box, conf: 1, bg: '#EEEEEE', edges: true }); truths.push({ box, truth: 'card:' + r.id }) }
+      if (r.name != null) W(r.name, 0.1, y, 0.04 + 0.012 * r.name.length, 0.022, 'name:' + r.id)
+      if (r.meta != null) W(r.meta, 0.45, y, 0.1, 0.018, 'meta:' + r.id)
+      ;(r.btns || []).forEach((b, k) => (r.chips ? chip : W)(b, 0.62 + k * 0.14, y, 0.1, 0.022, 'btn:' + r.id + ':' + b + ':' + k))
+      if (r.thumb) { const box = { x: 0.02, y, w: 0.06, h: 0.04 }; rects.push({ box, conf: 1, bg: '#888888' }); truths.push({ box, truth: 'thumb:' + r.id }) }
+      y += h
+    }
+    for (const [i, t] of (scr.tabs || []).entries()) chip(t, 0.1 + i * 0.3, 0.93, 0.1, 0.02, 'tab:' + t)
+    return { raw: { width: 1290, height: 2796, texts, rects }, truths }
+  }
+  const truthOf = (el, truths) => { let best = null, bv = 0.5; for (const t of truths) { const v = iouOf(el.box, t.box); if (v > bv) { bv = v; best = t.truth } } return best }
+  // every id held from A that is on B names the same thing, or the list of those that do not
+  const wrong = (A, B) => {
+    const ra = render(A), rb = render(B)
+    const a = T.elementsFrom(ra.raw), b = T.elementsFrom(rb.raw, a)
+    const ta = new Map(a.map(e => [e.id, truthOf(e, ra.truths)]))
+    return { a, b, bad: b.filter(e => ta.has(e.id) && ta.get(e.id) !== truthOf(e, rb.truths)).map(e => `${e.id} ${ta.get(e.id)} -> ${truthOf(e, rb.truths)} [${e.kind}]`) }
+  }
+  const card = (id, name) => ({ id, name, btns: ['Edit', 'Delete'], chips: true, card: true })
+  const A = { title: 'Recipes', y0: 0.2, rows: [card('oats', 'Morning oats'), card('shak', 'Shakshuka'), card('toast', 'French toast'), card('pan', 'Pancakes')], tabs: ['Home', 'Search', 'Profile'] }
+  const panels = l => l.filter(e => e.kind === 'panel')
+  const cardOf = (l, name) => (panels(l).find(e => e.text.startsWith(name)) || {}).id
+  is('each recipe card is a panel, since it holds two chips', panels(T.elementsFrom(render(A).raw)).length, 4)
+  const top = wrong(A, { ...A, rows: [A.rows[3], A.rows[0], A.rows[1], A.rows[2]] })
+  is('Pancakes moved to the top: no card id names another recipe', top.bad, [])
+  is('  and Shakshuka\'s card id is not handed to the card now in its place',
+    panels(top.b).some(e => e.id === cardOf(top.a, 'Shakshuka') && !e.text.startsWith('Shakshuka')), false)
+  is('Pancakes dragged up one: the same', wrong(A, { ...A, rows: [A.rows[0], A.rows[1], A.rows[3], A.rows[2]] }).bad, [])
+  const del = wrong(A, { ...A, rows: A.rows.slice(1) })
+  is('Morning oats deleted: no card id names another recipe', del.bad, [])
+  is('  and the cards that closed up keep their own ids, since their names say which is which',
+    ['Shakshuka', 'French toast', 'Pancakes'].map(n => cardOf(del.b, n)), ['Shakshuka', 'French toast', 'Pancakes'].map(n => cardOf(del.a, n)))
+  const U = { title: 'Notes', y0: 0.2, rows: [0, 1, 2].map(i => card('n' + i, 'Untitled')) }
+  const und = wrong(U, { ...U, rows: U.rows.slice(1) })
+  is('three Untitled cards, the first deleted: no card is carried, since none says which it is',
+    [und.bad, panels(und.b).some(e => und.a.some(o => o.id === e.id))], [[], false])
+  const still = wrong(U, U)
+  is('  not even on a screen that did not change', panels(still.b).some(e => still.a.some(o => o.id === e.id)), false)
+  // a card named only by its place ("Step 5") is the fifth row, whichever row that is now
+  const S = { y0: 0.2, rows: [1, 2, 3, 4, 5, 6].map(i => ({ id: 's' + i, name: 'Step ' + i, meta: 'Draft', btns: ['Delete'], card: true })) }
+  const ren = { ...S, rows: S.rows.filter(r => r.id !== 's5').map((r, i) => ({ ...r, name: 'Step ' + (i + 1) })) }
+  is('Step 5 deleted and the rest renumbered: neither a card nor its label moves to another step', wrong(S, ren).bad, [])
+
+  // The judge's fuzzer, on a fixed range of seeds: row styles (unique names, all Untitled,
+  // no names, Step N, mixed), buttons, chips or words, cards, thumbnails, second lines, and
+  // ten operations. Pictures identical to the pixel are left out: nothing can tell those apart.
+  let rnd = 1
+  const R = () => (rnd = (rnd * 16807) % 2147483647) / 2147483647
+  const pick = a => a[Math.floor(R() * a.length)]
+  const names = ['Morning oats', 'Shakshuka', 'French toast', 'Pancakes', 'Granola', 'Congee', 'Porridge', 'Waffles']
+  const fails = new Map()
+  let runs = 0
+  for (let seed = 1; seed <= 4000; seed++) {
+    rnd = seed * 7919 % 2147483647 || 1
+    const n = 2 + Math.floor(R() * 5)
+    const style = pick(['uniq', 'dupname', 'noname', 'counted', 'mixed'])
+    const btns = pick([['Delete'], ['Edit', 'Delete'], ['Share', 'Share'], ['Delete', 'Delete']])
+    const chips = R() < 0.5, card = R() < 0.4, thumb = R() < 0.3, meta = pick([null, 'count', 'same', 'uniq'])
+    const rows = Array.from({ length: n }, (_, i) => ({ id: 'r' + i,
+      name: style === 'uniq' ? names[i] : style === 'dupname' ? 'Untitled' : style === 'noname' ? null : style === 'counted' ? 'Step ' + (i + 1) : (i % 2 ? names[i] : 'Untitled'),
+      meta: meta === 'count' ? (i + 2) + ' min' : meta === 'same' ? 'Draft' : meta === 'uniq' ? ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][i] : null,
+      btns: btns.slice(), chips, card, thumb }))
+    const A = { title: pick(['Recipes', null]), sub: R() < 0.3 ? 'Breakfast' : null, y0: 0.2, rows, tabs: R() < 0.5 ? ['Home', 'Search', 'Profile'] : [] }
+    const op = pick(['delete', 'delete', 'insertTop', 'swap', 'scroll', 'rename', 'renumber', 'retitle', 'deleteLastScrollIn', 'moveToTop'])
+    const k = Math.floor(R() * n)
+    const B = JSON.parse(JSON.stringify(A))
+    if (op === 'delete') B.rows.splice(k, 1)
+    if (op === 'insertTop') B.rows.unshift({ ...B.rows[0], id: 'new', name: A.rows[0].name == null ? null : style === 'uniq' ? 'Brand new' : A.rows[0].name, meta: A.rows[0].meta })
+    if (op === 'swap' && n > 1) { const j = (k + 1) % n; [B.rows[k], B.rows[j]] = [B.rows[j], B.rows[k]] }
+    if (op === 'scroll') B.y0 -= pick([0.07, 0.035, 0.14, 0.01])
+    if (op === 'rename') B.rows[k].name = B.rows[k].name == null ? null : 'Renamed'
+    if (op === 'renumber') { B.rows.splice(k, 1); if (style === 'counted') B.rows.forEach((r, i) => { r.name = 'Step ' + (i + 1) }) }
+    if (op === 'retitle') { B.title = A.title ? 'Dinner' : null; B.rows = B.rows.map((r, i) => ({ ...r, id: 'o' + i })) }
+    if (op === 'deleteLastScrollIn') { B.rows.splice(k, 1); B.rows.push({ ...A.rows[n - 1], id: 'in', name: style === 'uniq' ? 'Waffles' : A.rows[n - 1].name }) }
+    if (op === 'moveToTop') { const [r] = B.rows.splice(k, 1); B.rows.unshift(r) }
+    if (JSON.stringify(render(A).raw) === JSON.stringify(render(B).raw)) continue
+    runs++
+    const { bad } = wrong(A, B)
+    if (bad.length) { const key = `${style}/${op}: ${bad[0]}`; if (!fails.has(key)) fails.set(key, seed) }
+  }
+  is(`${runs} seeded pairs of pictures: every id held from the first is the same element or nothing`, [...fails].slice(0, 5), [])
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
