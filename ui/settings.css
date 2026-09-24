@@ -6,18 +6,14 @@
 .set-head { margin-bottom:var(--s-1); }
 .set-head p { margin-top:2px; }
 
-.set-quick { border-color:rgba(240,169,60,.35); }
+/* The quick-record card is a card like the others. Its gold edge was gold as
+   decoration: the switch inside it already says whether it is on. */
 .set-quick .opt { border-top:0; }
 
-/* option rows inside settings cards get the icon avatar + text + control layout */
-.set-row { display:flex; align-items:center; gap:var(--s-3); padding:var(--s-3) 0; }
-.set-row + .set-row { border-top:1px solid var(--ink-2); }
-.set-row .opt-ico { width:32px; height:32px; flex:none; display:grid; place-items:center;
-  border-radius:50%; background:var(--ink-2); color:var(--text-1); border:var(--edge); }
-.set-row[data-on="true"] .opt-ico { background:rgba(240,169,60,.14); color:var(--fur-1); border-color:rgba(240,169,60,.35); }
-.set-row .opt-txt { min-width:0; flex:1; display:flex; flex-direction:column; gap:1px; }
-.set-row .opt-title { font-weight:500; font-size:var(--t-13); line-height:1.35; }
-.set-row .opt-sub { font-size:var(--t-11); color:var(--text-2); line-height:1.35; }
+/* A settings row is the shared option row (.opt in components.css): icon avatar, text,
+   control. It used to be a restyled copy here, and the copy drifted from the rows in
+   onboarding. Only what differs lives here: a row is not itself a click target. */
+.set-row { cursor:default; }
 
 .set-path { font-family:var(--font-mono); font-size:var(--t-11); color:var(--text-2);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -61,32 +57,23 @@
              opacity var(--dur-1) var(--ease-in);
 }
 .acc-chip:hover .acc-chip-x { opacity:1; color:var(--text-2); }
-.acc-chip-x:hover { background:rgba(255,68,56,.16); color:#FFB4AD; opacity:1; }
-.acc-chip-x svg { width:11px; height:11px; }
+/* neutral on hover: record red is for recording only, and taking an app off this list
+   is not a failure */
+.acc-chip-x:hover { background:var(--ink-3); color:var(--text-0); opacity:1; }
+/* the icon floor is 14px */
+.acc-chip-x svg { width:14px; height:14px; }
 
 .acc-empty { font-size:var(--t-12); color:var(--warn); line-height:1.5; }
 
-.acc-add { display:flex; gap:var(--s-2); margin-top:var(--s-3); }
-/* an app name is a short string, so the field is sized for one rather than
-   stretched to the card */
-.acc-add input {
-  width:240px; min-width:0; height:30px; padding:0 var(--s-3);
-  background:var(--ink-1); border:var(--edge); border-radius:var(--r-pill);
-  font-size:var(--t-12); color:var(--text-0);
-}
-.acc-add input::placeholder { color:var(--text-2); }
-.acc-add input:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
-
-/* the device picker, which is the same control as the field above it: a person does
-   not know their own simulator ids, so this offers the devices rather than asking
-   somebody to copy one out of a terminal */
-.acc-add select {
-  width:240px; min-width:0; height:30px; padding:0 var(--s-3);
-  background:var(--ink-1); border:var(--edge); border-radius:var(--r-pill);
-  font-size:var(--t-12); color:var(--text-0); appearance:none;
-}
-.acc-add select:disabled { opacity:.35; cursor:default; }
-.acc-add select:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
+/* A field and its button. The field and the picker are components.css's own .input and
+   .select at the small height, the same height as the button beside them; only their
+   width is decided here. An app name is a short string, so the field is sized for one
+   rather than stretched to the card, and shrinks before the button is pushed out. The
+   bottom margin keeps the next heading with its own list, not this field. */
+.acc-add { display:flex; align-items:center; gap:var(--s-2); margin-top:var(--s-3); margin-bottom:var(--s-6); }
+.acc-add .input, .acc-add .select { flex:0 1 240px; width:240px; min-width:0; }
+.acc-add .btn { flex:none; }
+.acc-add .select:disabled { opacity:.35; cursor:default; }
 
 /* the id under the name. A device is named by the person and the id is the thing the
    rule matches on, so both show: two devices called iPhone 16 are two machines. */
@@ -97,23 +84,24 @@
 
 /* the reassurance, set apart from the controls by a rule rather than a card,
    because a nested card inside a settings card is always wrong */
+/* The rule runs the card's full width like every divider above it; only the words
+   are held to a reading measure. */
 .acc-seen {
-  display:flex; gap:var(--s-2); align-items:flex-start;
-  margin-top:var(--s-5); padding-top:var(--s-4); border-top:1px solid var(--ink-2);
-  font-size:var(--t-11); color:var(--text-2); line-height:1.55; max-width:68ch;
+  margin-top:var(--s-3); padding-top:var(--s-4); border-top:1px solid var(--ink-2);
+  font-size:var(--t-11); color:var(--text-2); line-height:1.55;
 }
-.acc-seen svg { flex:none; margin-top:1px; color:var(--text-2); }
+.acc-seen > span { display:block; max-width:68ch; }
 .acc-seen kbd {
   display:inline-block; padding:1px 5px; margin:0 1px; border-radius:5px;
   background:var(--ink-2); border:var(--edge);
-  font:500 10px/1.5 var(--font-mono); color:var(--text-1);
+  font:500 var(--t-11)/1.5 var(--font-mono); letter-spacing:.04em; color:var(--text-1);
 }
 
 /* Product guidelines: a rule per line, its id first, so the handle an agent names it by
    is on screen. Drafts carry where they were read and wait for a Yes. */
 .guide-list { display:flex; flex-direction:column; gap:var(--s-1); margin-bottom:var(--s-3); }
 .guide-row { display:flex; align-items:baseline; gap:var(--s-3); padding:var(--s-2) var(--s-3);
-  border-radius:10px; background:var(--ink-2); }
+  border-radius:var(--r-sm); background:var(--ink-2); }
 .guide-id { font-family:var(--font-mono); font-size:var(--t-11); color:var(--text-2); flex:none; min-width:3ch; }
 .guide-sec { font-size:var(--t-11); color:var(--text-2); flex:none; min-width:14ch; }
 .guide-text { flex:1; font-size:var(--t-13); color:var(--text-0); line-height:1.45; max-width:70ch; }
@@ -123,5 +111,50 @@
 .guide-x { flex:none; opacity:.7; }
 .guide-row:hover .guide-x, .guide-x:focus-visible { opacity:1; }
 .guide-none { margin-bottom:var(--s-3); }
+#guideAdd .select { flex:0 0 18ch; width:18ch; }
+#guideAdd .input { flex:1 1 240px; }
+/* the last field in a card needs no gap under it: the card's own padding is the gap */
+#guideAdd, #phKeyForm { margin-bottom:0; }
 #guideProductForm { margin-bottom:var(--s-4); }
-#guideAdd select { flex:0 0 18ch; }
+
+/* ── photos (ui/unsplash-picker.js) ─────────────────────────────────────────
+   The backdrop photographs in the Look tab, each with who took it, and the Unsplash
+   search under them. Here because this sheet is the one besides components.css that
+   every view loads; the controls in it (the search field, the More button) are the
+   shared components, and only the grid and the credit line are drawn here. Thumbnails
+   are thumbnail insets, so radius 10, and the one in use carries the same gold ring as
+   a chosen look above it. */
+.ph { display:flex; flex-direction:column; gap:var(--s-2); }
+.ph-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:var(--s-3) var(--s-2); }
+.ph-tile { display:flex; flex-direction:column; gap:var(--s-1); min-width:0; }
+.ph-pick {
+  position:relative; display:block; width:100%; aspect-ratio:16/10; padding:0; border:0;
+  border-radius:var(--r-sm); background:var(--ink-2) center/cover no-repeat; cursor:pointer;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.05);
+  transition:box-shadow var(--dur-1) var(--ease-in), opacity var(--dur-1) var(--ease-in);
+}
+.ph-pick:hover { box-shadow:inset 0 0 0 1px var(--ink-4); }
+.ph-pick:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
+.ph-tile[aria-selected="true"] .ph-pick { box-shadow:0 0 0 2px var(--fur-1); }
+.ph-pick[aria-busy="true"] { opacity:.45; cursor:progress; }
+.ph-add { display:grid; place-items:center; color:var(--text-2); background:none;
+  box-shadow:inset 0 0 0 1px var(--ink-3); }
+.ph-add:hover { color:var(--text-0); }
+/* one line: the photographer shortens first, the source never does */
+.ph-cap { display:flex; align-items:baseline; gap:var(--s-1); min-width:0;
+  font-size:var(--t-11); line-height:1.3; color:var(--text-2); white-space:nowrap; }
+.ph-cap > * { flex:none; }
+.ph-cap > :first-child { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.ph-cap a { color:var(--text-1); text-decoration:none; border-radius:4px; }
+.ph-cap a:hover { color:var(--text-0); text-decoration:underline; text-underline-offset:2px; }
+.ph-tile[aria-selected="true"] .ph-cap > :first-child { color:var(--fur-0); }
+.ph-search { display:flex; }
+.ph-q::-webkit-search-decoration, .ph-q::-webkit-search-cancel-button { -webkit-appearance:none; appearance:none; }
+.ph-results { display:flex; flex-direction:column; gap:var(--s-2); padding-bottom:var(--s-2); }
+.ph-results:empty { display:none; }
+.ph-note { margin:0; font-size:var(--t-11); line-height:1.45; color:var(--text-2); }
+.ph-inline { padding:0; border:0; background:none; font:inherit; color:var(--text-1); cursor:pointer;
+  text-decoration:underline; text-underline-offset:2px; border-radius:4px; }
+.ph-inline:hover { color:var(--text-0); }
+.ph-more { align-self:flex-start; }
+@media (prefers-reduced-motion: reduce) { .ph-pick { transition:none; } }

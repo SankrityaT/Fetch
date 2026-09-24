@@ -458,7 +458,17 @@ const ASK_MS = 90000
 const PROPOSE_MS = 240000
 const MAX_CHOICES = 4              // the pane is 380px wide, and five readings is not a question
 const MAX_CHANGES = 12
-const trim = (v, n) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n)
+// A label cut mid-word reads as a typo rather than as a label that was too long, so a
+// cut falls back to the last word boundary and says it was cut with the one ellipsis
+// glyph the rest of Fetch uses (ui/fmt.js).
+const ELL = (() => { try { return require('./fmt').ELL } catch { return '\u2026' } })()
+function trim(v, n) {
+  const s = String(v == null ? '' : v).replace(/\s+/g, ' ').trim()
+  if (s.length <= n) return s
+  const cut = s.slice(0, n - 1)
+  const sp = cut.lastIndexOf(' ')
+  return (sp > n * 0.6 ? cut.slice(0, sp) : cut).replace(/[\s,.;:]+$/, '') + ELL
+}
 
 // Choice ids are the agent's own words for what it would do, so the result reads as
 // a decision ("choice: sidebar") rather than as an index into a list it has forgotten.

@@ -1,10 +1,19 @@
 /* Fetch custom components. Every control is rebuilt from scratch; no default
-   UA appearance survives. Each has rest / hover / active / focus-visible states. */
+   UA appearance survives. Each has rest / hover / active / focus-visible states.
+
+   This file is the only place a shared control gets its size, radius, font and
+   selected state. A panel may place a control (margin, width, flex, grid) but never
+   restyle it: no panel selector sets height, border-radius, font or the selected look
+   of .btn, .seg, .chip, .input, .select, .dd, .card, .modal or .popover. Where a panel
+   needs something different, a variant is added here and every panel gets it. */
+
+/* Control geometry (--ctl-h, --ctl-h-sm) and the popover layer (--z-pop) are set in
+   tokens.css with the other scales, and spent here. */
 
 /* ── buttons ─────────────────────────────────────────────────────────── */
 .btn {
   display:inline-flex; align-items:center; justify-content:center; gap:var(--s-2);
-  height:36px; padding:0 var(--s-4);
+  height:var(--ctl-h); padding:0 var(--s-4); flex:none;
   font:600 var(--t-13)/1 var(--font-ui); letter-spacing:-.01em;
   color:var(--text-0); background:var(--ink-2);
   border:var(--edge); border-radius:var(--r-pill);
@@ -17,16 +26,31 @@
 .btn:active:not(:disabled) { transform:translateY(1px); }
 .btn:disabled { opacity:.35; cursor:default; }
 
+/* The call to action: one per panel, gold (DESIGN: gold is the single primary action).
+   Every flow CTA is .btn .btn-primary .btn-lg (add .btn-block to fill the column); no
+   panel sizes a CTA itself (O4). */
 .btn-primary { background:var(--fur-1); border-color:var(--fur-1); color:#231703; }
 .btn-primary:hover:not(:disabled) { background:var(--fur-0); border-color:var(--fur-0); }
-.btn-ghost { background:transparent; border-color:transparent; color:var(--text-1); }
-.btn-ghost:hover:not(:disabled) { background:var(--ink-2); color:var(--text-0); border-color:transparent; }
+.btn:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; border-radius:var(--r-pill); }
+
+/* Ghost: no fill, no border, and no sheen. .btn's inset top highlight on a transparent
+   pill drew a stray 1px line along the top of every ghost button (K1). */
+.btn-ghost { background:transparent; border-color:transparent; color:var(--text-1); box-shadow:none; }
+.btn-ghost:hover:not(:disabled) { background:var(--ink-2); color:var(--text-0); border-color:transparent; box-shadow:var(--sheen); }
 .btn-danger { color:#FFB4AD; }
 .btn-danger:hover:not(:disabled) { background:rgba(255,68,56,.12); border-color:rgba(255,68,56,.4); color:#FFD5D1; }
-.btn-sm { height:28px; padding:0 var(--s-3); font-size:var(--t-12); }
+.btn-sm { height:var(--ctl-h-sm); padding:0 var(--s-3); font-size:var(--t-12); }
 .btn-lg { height:46px; padding:0 var(--s-5); font-size:var(--t-15); }
-.btn-icon { width:36px; padding:0; }
-.btn-icon.btn-sm { width:28px; }
+.btn-block { display:flex; width:100%; }
+/* icon-only controls are full circles (DESIGN, Space and shape) */
+.btn-icon { width:var(--ctl-h); padding:0; border-radius:50%; }
+.btn-icon.btn-sm { width:var(--ctl-h-sm); }
+
+/* Pressed: a toggle that is on. The same wash and edge a chosen chip wears, so a held
+   button and a selected chip read as one state and not two (K2). Panels ask for this
+   variant rather than writing the gold out again. */
+.btn[aria-pressed="true"] { background:var(--press-bg); border-color:var(--press-edge); color:var(--fur-0); }
+.btn[aria-pressed="true"]:hover:not(:disabled) { background:var(--press-bg-hover); }
 
 /* the one red thing in the app */
 .btn-record {
@@ -40,17 +64,37 @@
 .btn-record .dot { width:12px; height:12px; border-radius:50%; background:#fff; flex:none; }
 
 /* ── segmented control ───────────────────────────────────────────────── */
-.seg { display:inline-flex; padding:3px; gap:2px; background:var(--ink-1); border:var(--edge); border-radius:var(--r-pill); }
+/* One selected look for every "pick one of these": the gold tint a pressed .chip uses.
+   DESIGN makes gold the active state, and a grey seg sitting under gold chips ("Device"
+   over "Device tone") read as two different kinds of choice (K2). Selected is also
+   heavier, so the state is not colour alone. Takes aria-selected (tabs) or
+   aria-checked (radios), so the model picker's effort row is a plain .seg too. */
+.seg { display:inline-flex; max-width:100%; min-width:0; padding:3px; gap:2px; background:var(--ink-1); border:var(--edge); border-radius:var(--r-pill); }
 .seg button {
   /* centred both ways: a segment stretched to fill its row (the inspector's .lk-seg) left
      its label hard against the left edge of a wide pill */
   display:inline-flex; align-items:center; justify-content:center; gap:6px;
-  height:28px; padding:0 var(--s-3); border:0; border-radius:var(--r-pill);
-  font:600 var(--t-12)/1 var(--font-ui); color:var(--text-1); background:transparent; cursor:pointer;
-  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in);
+  flex:1 1 auto; min-width:0; white-space:nowrap;
+  height:var(--ctl-h-sm); padding:0 var(--s-3); border:0; border-radius:var(--r-pill);
+  font:500 var(--t-12)/1 var(--font-ui); color:var(--text-1); background:transparent; cursor:pointer;
+  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in), box-shadow var(--dur-1) var(--ease-in);
 }
+.seg button > span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .seg button:hover { color:var(--text-0); }
-.seg button[aria-selected="true"] { background:var(--ink-3); color:var(--text-0); box-shadow:var(--sheen); }
+.seg button:focus-visible { outline:2px solid var(--fur-1); outline-offset:1px; border-radius:var(--r-pill); }
+.seg button[aria-selected="true"], .seg button[aria-checked="true"] {
+  background:rgba(240,169,60,.14); color:var(--fur-0); font-weight:600;
+  box-shadow:inset 0 0 0 1px rgba(240,169,60,.55);
+}
+/* Navigation, not a value: the titlebar views and the inspector's tool tabs say where
+   you are, so they keep the quiet raised pill and leave gold to the choices inside the
+   panel. Without this the editor showed four gold things at once. */
+.seg-nav button[aria-selected="true"], nav.seg button[aria-selected="true"] {
+  background:var(--ink-3); color:var(--text-0); font-weight:600; box-shadow:var(--sheen);
+}
+/* small: inside dense rows (inspector, model picker effort, text align) */
+.seg-sm { padding:2px; }
+.seg-sm button { height:24px; padding:0 9px; font-size:var(--t-11); }
 
 /* ── switch ──────────────────────────────────────────────────────────── */
 .switch { position:relative; width:38px; height:22px; flex:none; }
@@ -86,26 +130,38 @@
 /* ── select ──────────────────────────────────────────────────────────── */
 .select {
   -webkit-appearance:none; appearance:none;
-  height:34px; padding:0 30px 0 var(--s-3);
-  font:500 var(--t-12) var(--font-ui); color:var(--text-0);
-  background:var(--ink-2); border:var(--edge); border-radius:var(--r-md); box-shadow:var(--sheen);
+  height:var(--ctl-h); min-width:0; padding:0 30px 0 14px;
+  font:500 var(--t-12) var(--font-ui); color:var(--text-0); text-overflow:ellipsis;
+  background:var(--ink-2); border:var(--edge); border-radius:var(--r-pill); box-shadow:var(--sheen);
   cursor:pointer;
   background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23A8A29E' stroke-width='2.5' stroke-linecap='round'><path d='M6 9l6 6 6-6'/></svg>");
   background-repeat:no-repeat; background-position:right 9px center; background-size:13px;
 }
 .select:hover { border-color:var(--ink-4); }
+.select.input-sm { height:var(--ctl-h-sm); }
 
 /* ── input ───────────────────────────────────────────────────────────── */
+/* Every single-line field is this: a pill the height of the button beside it (K3).
+   .input-sm pairs with .btn-sm. Only a textarea keeps a card-like radius, since a pill
+   cannot hold several lines. */
 .input {
-  height:34px; width:100%; padding:0 var(--s-3);
-  font:400 var(--t-13) var(--font-ui); color:var(--text-0);
-  background:var(--ink-2); border:var(--edge); border-radius:var(--r-md); box-shadow:var(--sheen);
+  height:var(--ctl-h); width:100%; min-width:0; padding:0 14px;
+  font:400 var(--t-13)/1 var(--font-ui); color:var(--text-0);
+  background:var(--ink-2); border:var(--edge); border-radius:var(--r-pill); box-shadow:var(--sheen);
+  text-overflow:ellipsis;
   user-select:text;
+  transition:border-color var(--dur-1) var(--ease-in);
 }
+.input-sm { height:var(--ctl-h-sm); padding:0 var(--s-3); font-size:var(--t-12); }
+.input.mono { font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
 .input:hover { border-color:var(--ink-4); }
 .input:focus { border-color:var(--fur-1); }
+.input:disabled { opacity:.35; cursor:default; }
 .input::placeholder { color:var(--text-2); }
-textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; resize:vertical; }
+textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; resize:vertical; border-radius:var(--r-md); text-overflow:clip; }
+/* a field and its button on one row: the field takes the room, the button keeps its label */
+.field-row { display:flex; align-items:center; gap:var(--s-2); min-width:0; }
+.field-row > .input, .field-row > .select, .field-row > .dd { flex:1; min-width:0; }
 
 /* ── card / panel ────────────────────────────────────────────────────── */
 /* A card is lifted by tone and a soft shadow, not outlined. The old hairline made
@@ -113,10 +169,12 @@ textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; re
    warm pool, a lighter surface plus a wide shadow does the separating, and the border
    only has to catch the top edge where light would fall. */
 .card {
+  min-width:0;   /* a grid or flex child: long unbroken text must not widen the track */
   background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-xl);
   box-shadow:var(--shadow-1), var(--sheen); padding:var(--s-5);
 }
-.card-head { display:flex; align-items:center; gap:var(--s-2); margin-bottom:var(--s-4); }
+.card-head { display:flex; align-items:center; gap:var(--s-2); min-width:0; margin-bottom:var(--s-4); }
+.card-head > :first-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .card-head h3 { font-size:var(--t-13); font-family:var(--font-ui); font-weight:600; letter-spacing:-.01em; }
 
 /* option row: label + sublabel on the left, control on the right */
@@ -130,16 +188,44 @@ textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; re
 .opt[data-on="true"] .opt-ico { background:rgba(240,169,60,.14); color:var(--fur-1); border-color:rgba(240,169,60,.35); }
 
 /* ── chips ───────────────────────────────────────────────────────────── */
+/* A chip never wraps ("8.0s" over "out", E1): it truncates. A chip carrying a value is
+   .chip.mono and renders in mono with tabular numerals; .chip's own font shorthand used
+   to override .mono (C2). Selected is the same gold tint as .seg. */
 .chip {
-  display:inline-flex; align-items:center; gap:6px;
-  height:26px; padding:0 10px; border-radius:var(--r-pill);
-  font:600 var(--t-11)/1 var(--font-ui); letter-spacing:.01em;
+  display:inline-flex; align-items:center; justify-content:center; gap:6px;
+  height:26px; max-width:100%; min-width:0; padding:0 10px; border-radius:var(--r-pill);
+  font:600 var(--t-11)/1 var(--font-ui); letter-spacing:.01em; white-space:nowrap;
   color:var(--text-1); background:var(--ink-2); border:var(--edge); cursor:pointer;
-  transition:all var(--dur-1) var(--ease-in);
+  transition:color var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in), border-color var(--dur-1) var(--ease-in);
 }
+.chip > span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.chip.mono { font-family:var(--font-mono); font-weight:500; font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
 .chip:hover { color:var(--text-0); border-color:var(--ink-4); }
-.chip[aria-pressed="true"] { background:rgba(240,169,60,.14); border-color:var(--fur-1); color:var(--fur-0); }
+.chip:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; border-radius:var(--r-pill); }
+.chip[aria-pressed="true"], .chip[aria-selected="true"] { background:var(--press-bg); border-color:var(--press-edge); color:var(--fur-0); }
+.chip:disabled { opacity:.35; cursor:default; }
 .chip-static { cursor:default; }
+.chip-static:hover { color:var(--text-1); border-color:var(--ink-3); }
+/* Status tones. A chip that reports a permission or a connection rather than offering a
+   choice: allowed, and needs attention. Gold is intent and is not spent here, and the
+   word in the chip carries the state too, so neither is colour alone (DESIGN, rule 3). */
+.chip[data-state="granted"], .chip[data-state="connected"], .chip[data-state="on"] {
+  background:rgba(74,222,128,.14); border-color:rgba(74,222,128,.4); color:var(--good);
+}
+.chip[data-state="denied"], .chip[data-state="needed"] {
+  background:rgba(251,191,36,.12); border-color:rgba(251,191,36,.4); color:var(--warn);
+}
+/* large: a chip that is the way into something rather than a label on it. The hero's
+   row of suggestions, and anything that stands alone on a page rather than in a dense
+   row. Taller, roomier, and lifted by --shadow-1 because it floats on the ground. */
+.chip-lg {
+  height:34px; padding:0 14px; gap:7px;
+  font:500 var(--t-12)/1 var(--font-ui);
+  background:var(--ink-1); border:var(--edge-soft); box-shadow:var(--shadow-1);
+}
+/* a row of chips wraps as whole chips; it never squeezes them */
+.chips { display:flex; flex-wrap:wrap; gap:6px; min-width:0; }
+.chips > .chip { flex:none; }
 
 /* ── progress ────────────────────────────────────────────────────────── */
 .bar { height:4px; border-radius:var(--r-pill); background:var(--ink-3); overflow:hidden; }
@@ -158,14 +244,52 @@ textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; re
 .modal {
   width:min(920px,calc(100vw - 64px)); max-height:calc(100vh - 80px);
   display:flex; flex-direction:column;
-  background:var(--ink-1); border-radius:var(--r-lg); box-shadow:var(--shadow-modal);
+  background:var(--ink-1); border-radius:var(--r-xl); box-shadow:var(--shadow-modal), var(--sheen);
+  overflow:hidden;
   animation:pop var(--dur-3) var(--ease-in);
 }
-.modal-head { display:flex; align-items:center; gap:var(--s-3); padding:var(--s-4) var(--s-5); border-bottom:var(--edge); }
-.modal-body { padding:var(--s-5); overflow:auto; }
-.modal-foot { display:flex; align-items:center; gap:var(--s-2); padding:var(--s-4) var(--s-5); border-top:var(--edge); }
+/* sizes: .modal is the wide one (export, player); .modal-sm for a question or a name */
+.modal-sm { width:min(440px,calc(100vw - 64px)); }
+/* One way to close, everywhere (K5): Cancel in the footer, Esc, and a click on the
+   scrim. The head carries the title only; no close cross. */
+.modal-head { display:flex; align-items:center; gap:var(--s-3); min-width:0; padding:var(--s-4) var(--s-5); border-bottom:var(--edge-soft); }
+.modal-head h2, .modal-head h3 { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.modal-body { padding:var(--s-5); overflow:auto; min-height:0; }
+/* Cancel sits left, the gold action right: destructive and primary never touch. */
+.modal-foot { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:var(--s-2); padding:var(--s-4) var(--s-5); border-top:var(--edge-soft); }
+.modal-foot > .spacer { flex:1; }
 @keyframes fade { from{opacity:0} }
 @keyframes pop { from{opacity:0; transform:translateY(10px) scale(.985)} }
+
+/* ── popover ─────────────────────────────────────────────────────────── */
+/* The one recipe for anything that floats over content: dropdown menus, the model
+   picker, library menus, @ mentions (S6). Ink-1 lifted by --shadow-3, a soft edge,
+   radius 14, rows radius 10 with an ink-2 hover. Selected rows carry a gold check and a
+   heavier weight, never colour alone. Sits below .scrim, so a modal always covers it. */
+.popover {
+  z-index:var(--z-pop); padding:4px;
+  background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-md);
+  box-shadow:var(--shadow-3), var(--sheen);
+  animation:popin var(--dur-1) var(--ease-in);
+}
+@keyframes popin { from { opacity:0; transform:translateY(-4px) } }
+.popover-row {
+  display:flex; align-items:center; gap:var(--s-2); width:100%; min-width:0;
+  min-height:32px; padding:0 10px; border-radius:var(--r-sm);
+  font:400 var(--t-13)/1.3 var(--font-ui); color:var(--text-1); text-align:left; cursor:pointer;
+  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in);
+}
+.popover-row > span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.popover-row > .icon, .popover-row > .icon-sm, .popover-row > .icon-xs { flex:none; }
+.popover-row:hover, .popover-row:focus-visible, .popover-row[data-cursor="true"] { background:var(--ink-2); color:var(--text-0); outline:none; }
+.popover-row[aria-selected="true"] { color:var(--text-0); font-weight:500; }
+.popover-row .popover-check { margin-left:auto; color:var(--fur-1); opacity:0; }
+.popover-row[aria-selected="true"] .popover-check { opacity:1; }
+.popover-row.danger { color:var(--text-1); }
+.popover-row.danger:hover { color:var(--text-0); }
+.popover-sep { height:1px; margin:4px 6px; background:rgba(255,255,255,.06); }
+.popover-head { padding:8px 10px 4px; font-size:var(--t-11); font-weight:600; letter-spacing:.01em; color:var(--text-2); }
+@media (prefers-reduced-motion: reduce) { .popover { animation:none; } }
 
 /* ── source picker tiles (live screen/window previews) ───────────────── */
 .tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(228px,1fr)); gap:var(--s-3); }
@@ -188,9 +312,9 @@ textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; re
 }
 .tile-live {
   position:absolute; top:8px; left:8px; display:inline-flex; align-items:center; gap:5px;
-  height:20px; padding:0 8px; border-radius:var(--r-pill);
+  height:22px; padding:0 8px; border-radius:var(--r-pill);
   background:rgba(11,10,9,.72); backdrop-filter:blur(8px);
-  font:600 9px/1 var(--font-ui); letter-spacing:.1em; text-transform:uppercase; color:var(--text-1);
+  font:600 var(--t-11)/1 var(--font-ui); letter-spacing:.09em; text-transform:uppercase; color:var(--text-1);
 }
 .tile-live::before { content:''; width:5px; height:5px; border-radius:50%; background:var(--good); animation:pulse 1.6s infinite; }
 @keyframes pulse { 50%{opacity:.25} }
@@ -233,7 +357,7 @@ textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; re
 }
 .toast .icon { color:var(--fur-1); }
 .toast.ok .icon { color:var(--good); }
-.toast.bad .icon { color:var(--rec); }
+.toast.bad .icon { color:var(--warn); }   /* red is recording only (S3); the icon carries the failure */
 @keyframes toastin { from{opacity:0; transform:translateY(14px)} }
 /* In the editor the bottom of the window is the timeline and its trim handles, so
    toasts drop in over the top of the preview instead, newest nearest the edge. */
@@ -245,4 +369,4 @@ textarea.input { height:auto; padding:var(--s-2) var(--s-3); line-height:1.5; re
 /* repeated toasts collapse into one with a count instead of stacking */
 .toast-count { min-width:18px; height:18px; padding:0 5px; border-radius:var(--r-pill);
   background:var(--ink-3); color:var(--text-1);
-  font:600 10px/18px var(--font-mono); text-align:center; }
+  font:600 var(--t-11)/18px var(--font-mono); font-variant-numeric:tabular-nums; text-align:center; }

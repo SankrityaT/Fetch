@@ -88,7 +88,7 @@
     let cursor = 0                  // index into the flat list of visible rows
 
     const el = document.createElement('div')
-    el.className = 'mp'
+    el.className = 'popover mp'
     el.setAttribute('role', 'dialog')
     el.setAttribute('aria-label', 'Choose a model')
     el.innerHTML = `
@@ -133,7 +133,7 @@
         }
         const on = value && value.engine === e.id && value.model === m.id
         const isDef = e.default && e.default.model === m.id
-        html += `<button type="button" class="mp-row" role="option" data-i="${i}"
+        html += `<button type="button" class="popover-row mp-row" role="option" data-i="${i}"
             aria-selected="${on}" data-cursor="${i === cursor}">
           <span class="mp-name">${esc(m.label)}</span>
           ${on && value.effort ? `<span class="mp-eff">${esc(effortLabel(value.effort))}</span>` : ''}
@@ -152,7 +152,7 @@
       const ls = d.model.efforts || []
       effortEl.innerHTML = ls.length
         ? `<span class="mp-effort-label">Effort</span>
-           <div class="mp-seg" role="radiogroup" aria-label="Effort">
+           <div class="seg seg-sm mp-seg" role="radiogroup" aria-label="Effort">
              ${ls.map(l => `<button type="button" role="radio" data-effort="${esc(l)}"
                 aria-checked="${l === value.effort}">${esc(effortLabel(l))}</button>`).join('')}
            </div>`

@@ -77,7 +77,12 @@ const ASPECTS = ['auto', '16:9', '1:1', '9:16', '4:3', '4:5']
 
 // f(path, type, default, extra): extra carries min, max, step, unit, options, label,
 // doc, when (a condition on other fields), advanced, classic, classicOptions,
-// undrawn, hidden.
+// undrawn, hidden. Four more are for the person only and change nothing an agent sends:
+// display { unit, scale } is how a dial reads when that is not its stored unit (the
+// shutter is stored in frames and read in degrees), placeholder is the hint in an empty
+// text field, optionLabels names an enum's options on screen, and sub is a switch's
+// second line. Every 0..1 dial with no natural unit is a percent, so it reads "50%"
+// beside "6%" rather than a bare "0.5"; -1..1 dials read "-30%" to "+30%".
 const f = (path, type, def, extra = {}) => ({ path, type, default: def, section: path.split('.')[0], ...extra })
 
 const FIELDS = [
@@ -105,24 +110,29 @@ const FIELDS = [
   f('frame.borderColor', 'color', '#FFFFFF', { label: 'Border colour', doc: 'Colour of the border.', classic: false, when: { 'frame.border': '>0' } }),
 
   // ── device ──
-  f('device.kind', 'enum', 'none', { options: ['none', 'browser', 'window', 'laptop', 'phone'], label: 'Device',
+  f('device.kind', 'enum', 'none', { options: ['none', 'browser', 'window', 'laptop', 'phone'], label: 'Kind',
     doc: 'A drawn frame round the take: generic shapes, never a real product. frame.chrome clean draws one on its own. ' +
       'A shot of several captures draws one frame each, the capture\'s own or this. Round a capture that already has chrome in it ' +
       'the frame wears a plain bezel, so the picture has one title bar and not two. A phone over a simulator take is that ' +
       'bezel with no slit until frame.chrome remove crops it to the device screen, and for good where that rectangle was ' +
       'never measured.',
     classic: false }),
-  f('device.title', 'string', '', { label: 'Address or title',
-    doc: 'What the bar says. Anything shaped like a host is drawn as a browser\'s address, anything else as a centred title. ' +
-      'Empty takes the captured window\'s own title; with nothing to say no address field is drawn, since an empty one reads as unfinished.',
+  f('device.title', 'string', '', { label: 'Title', placeholder: 'Library',
+    doc: 'What the bar says: a window\'s centred title, or a browser tab\'s name. Empty takes the captured window\'s own title. ' +
+      'A title shaped like a host stands in as the address too, but only where device.url is empty, which is how older looks say it. ' +
+      'Fetch never invents a host: with nothing given the address pill is drawn empty.',
     classic: false, when: { 'device.kind': '!none' } }),
+  f('device.url', 'string', '', { label: 'Address', placeholder: 'example.com/library',
+    doc: 'The address in a browser frame\'s pill. Comes from the capture, the person or an agent. ' +
+      'Anything not shaped like an address is dropped rather than drawn, and nothing is made up.',
+    classic: false, when: { 'device.kind': 'browser' } }),
   f('device.theme', 'enum', 'auto', { options: ['auto', 'light', 'dark'], label: 'Device tone',
     doc: 'The shell\'s own tone. auto steps in from the ground: graphite on a dark one, bone on a light one. ' +
       'One tone for every frame in a shot.',
     classic: false, when: { 'device.kind': '!none' } }),
 
   // ── background ──
-  f('background.kind', 'enum', 'none', { options: ['none', 'solid', 'gradient', 'mesh', 'image', 'video-blur'], label: 'Background',
+  f('background.kind', 'enum', 'none', { options: ['none', 'solid', 'gradient', 'mesh', 'image', 'video-blur'], label: 'Kind',
     doc: 'none shows the take edge to edge. solid, gradient, mesh (a gradient loosened into control points), image and video-blur ' +
       '(the take itself, blurred and deepened) frame it with padding and a shadow.' }),
   f('background.gradient', 'enum', 'dusk', { options: Object.keys(GRADIENTS), label: 'Gradient',
@@ -133,31 +143,37 @@ const FIELDS = [
     when: { 'background.kind': 'mesh' } }),
   f('background.image', 'asset', null, { label: 'Image',
     doc: 'An image backdrop id from list_looks backgrounds (img:...).', when: { 'background.kind': 'image' } }),
-  f('background.imageBlur', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Image blur', doc: 'Softens the image.', classic: false, when: { 'background.kind': 'image' } }),
-  f('background.imageDim', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Image dim', doc: 'Darkens the image.', classic: false, when: { 'background.kind': 'image' } }),
-  f('background.blurAmount', 'number', 0.5, { min: 0, max: 1, step: 0.05, label: 'Blur amount',
+  f('background.imageBlur', 'number', 0, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Image blur', doc: 'Softens the image.', classic: false, when: { 'background.kind': 'image' } }),
+  f('background.imageDim', 'number', 0, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Image dim', doc: 'Darkens the image.', classic: false, when: { 'background.kind': 'image' } }),
+  f('background.blurAmount', 'number', 0.5, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Blur amount',
     doc: 'How far the take is blurred behind itself.', classic: false, when: { 'background.kind': 'video-blur' } }),
+  f('background.texture', 'enum', 'none', { options: ['none', 'paper', 'print'],
+    optionLabels: { none: 'Flat', paper: 'Paper', print: 'Print stock' }, label: 'Texture',
+    doc: 'A still material on a solid ground, drawn once into the cached background and never redrawn, so it reads as a sheet ' +
+      'rather than as video noise and the encoder keeps it: paper is warm fibre with soft mottling, print is the same finer ' +
+      'and quieter. It belongs to the look, so a look saved under a new name keeps its sheet. Only on a solid ground.',
+    classic: false, when: { 'background.kind': 'solid' } }),
 
   // ── treatment ──
-  f('treatment.motionBlur', 'number', 0.5, { min: 0, max: 1, step: 0.05, label: 'Shutter',
+  f('treatment.motionBlur', 'number', 0.5, { min: 0, max: 1, step: 0.05, label: 'Shutter', display: { unit: 'deg', scale: 360 },
     doc: 'How long the shutter stays open, in frames: 0.5 is the film standard 180 degrees, 1 is 360, 0 closes it and nothing blurs. How far a zoom smears is its own speed at that instant, not this, so a fast pass smears and a settle does not.', classic: false }),
   f('treatment.autoLevel', 'bool', false, { label: 'Auto level', doc: 'Evens the take\'s exposure.', classic: false }),
-  f('treatment.brightness', 'number', 0, { min: -1, max: 1, step: 0.05, label: 'Brightness', doc: 'Lighter or darker.', classic: false }),
-  f('treatment.contrast', 'number', 0, { min: -1, max: 1, step: 0.05, label: 'Contrast', doc: 'More or less contrast.', classic: false }),
-  f('treatment.saturation', 'number', 0, { min: -1, max: 1, step: 0.05, label: 'Saturation', doc: '-1 is black and white.', classic: false }),
+  f('treatment.brightness', 'number', 0, { min: -1, max: 1, step: 0.05, unit: '%', label: 'Brightness', doc: 'Lighter or darker.', classic: false }),
+  f('treatment.contrast', 'number', 0, { min: -1, max: 1, step: 0.05, unit: '%', label: 'Contrast', doc: 'More or less contrast.', classic: false }),
+  f('treatment.saturation', 'number', 0, { min: -1, max: 1, step: 0.05, unit: '%', label: 'Saturation', doc: '-1 is black and white.', classic: false }),
   f('treatment.tint', 'color', '#F0A93C', { label: 'Tint', doc: 'A colour laid over the frame.', classic: false }),
-  f('treatment.tintAmount', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Tint amount', doc: 'How strong the tint is.', classic: false }),
-  f('treatment.haze', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Haze', doc: 'Lifted blacks, like a soft lens.', classic: false }),
-  f('treatment.blur', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Blur', doc: 'Softens the whole frame.', classic: false, advanced: true }),
-  f('treatment.bokeh', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Bokeh', doc: 'The background defocused through an aperture, so highlights open into its shape. Needs an image or video-blur background.', classic: false }),
-  f('treatment.bloom', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Bloom', doc: 'Bright areas glow.', classic: false }),
-  f('treatment.halation', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Halation', doc: 'A warm film glow round highlights.', classic: false }),
-  f('treatment.aberration', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Aberration', doc: 'Colour fringes at the edges.', classic: false, advanced: true }),
-  f('treatment.vignette', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Vignette',
+  f('treatment.tintAmount', 'number', 0, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Tint amount', doc: 'How strong the tint is.', classic: false }),
+  f('treatment.haze', 'number', 0, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Haze', doc: 'Lifted blacks, like a soft lens.', classic: false }),
+  f('treatment.blur', 'number', 0, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Blur', doc: 'Softens the whole frame.', classic: false, advanced: true }),
+  f('treatment.bokeh', 'number', 0, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Bokeh', doc: 'The background defocused through an aperture, so highlights open into its shape. Needs an image or video-blur background.', classic: false }),
+  f('treatment.bloom', 'number', 0, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Bloom', doc: 'Bright areas glow.', classic: false }),
+  f('treatment.halation', 'number', 0, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Halation', doc: 'A warm film glow round highlights.', classic: false }),
+  f('treatment.aberration', 'number', 0, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Aberration', doc: 'Colour fringes at the edges.', classic: false, advanced: true }),
+  f('treatment.vignette', 'number', 0, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Vignette',
     doc: 'Darker corners. 1 takes about two thirds of the light off the frame\'s furthest corner, 0.3 about a fifth.', classic: false }),
 
   // ── grain ──
-  f('grain.film', 'number', 0, { min: 0, max: 1, step: 0.05, label: 'Film grain', doc: 'Moving film grain.', classic: false }),
+  f('grain.film', 'number', 0, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Film grain', doc: 'Moving film grain.', classic: false }),
   f('grain.dither', 'bool', true, { label: 'Dither', doc: 'Breaks up banding in gradients.', classic: false }),
 
   // ── motion ──
@@ -198,7 +214,7 @@ const FIELDS = [
   f('cursor.hideSystem', 'enum', 'auto', { options: ['auto', 'hide', 'keep'], label: 'Mac pointer',
     doc: 'The Mac\'s own pointer where the take has it in the pixels. auto lifts it out only when the drawn cursor replaces it.' }),
   f('cursor.size', 'number', 1, { min: 0.6, max: 2, step: 0.05, unit: 'x', label: 'Cursor size', doc: 'Size of the drawn cursor.', classic: false }),
-  f('cursor.smoothing', 'number', 0.5, { min: 0, max: 1, step: 0.05, label: 'Smoothing', doc: 'How much the cursor\'s path is smoothed.', undrawn: true }),
+  f('cursor.smoothing', 'number', 0.5, { min: 0, max: 1, step: 0.05, unit: '%', label: 'Smoothing', doc: 'How much the cursor\'s path is smoothed.', undrawn: true }),
   f('cursor.ripple', 'bool', true, { label: 'Click ripple', doc: 'A gold ripple on each click.', classic: false }),
   f('cursor.style', 'enum', 'arrow', { options: ['arrow', 'touch'], label: 'Cursor style',
     doc: 'What the take\'s pointer track draws. arrow is the agent\'s cursor. touch is a finger: a disc that ' +
@@ -214,19 +230,19 @@ const FIELDS = [
   f('keys.show', 'bool', true, { label: 'Show keys',
     doc: 'Draw the keys as they were pressed, where the take has a key track. A chord is drawn as caps with the key that acted in gold; a run of typing is one pill, and reads as typing rather than as the letters wherever Fetch cannot tell the field was safe to show.',
     classic: false }),
-  f('keys.place', 'enum', 'left', { options: ['left', 'centre', 'right'], label: 'Key place',
+  f('keys.place', 'enum', 'left', { options: ['left', 'centre', 'right'], label: 'Place',
     doc: 'Which bottom corner the keys sit in. They stand on the ground under the take where the look leaves room for them, and inside its bottom corner where it does not, clear of any burned-in caption.',
     classic: false, when: { 'keys.show': true } }),
-  f('keys.size', 'number', 1, { min: 0.7, max: 1.6, step: 0.05, unit: 'x', label: 'Key size',
+  f('keys.size', 'number', 1, { min: 0.7, max: 1.6, step: 0.05, unit: 'x', label: 'Size',
     doc: 'How large the caps are drawn. 1 is about 60 px tall at 1080.', classic: false, when: { 'keys.show': true } }),
 
   // ── captions ──
-  f('captions.show', 'bool', true, { label: 'Burn in captions', doc: 'Burn the transcript into the video when there is one.' }),
+  f('captions.show', 'bool', true, { label: 'Burn into video', sub: 'Baked in, plays anywhere', doc: 'Burn the transcript into the video when there is one.' }),
   f('captions.font', 'string', 'SF Pro', { label: 'Font', doc: 'An installed font name, e.g. SF Pro, Helvetica, New York.' }),
   f('captions.scale', 'number', 1, { min: 0.6, max: 1.8, step: 0.1, unit: 'x', label: 'Size', doc: 'Caption size.' }),
   f('captions.colour', 'color', '#FFFFFF', { label: 'Colour', doc: 'Caption colour, #RRGGBB.' }),
   f('captions.position', 'enum', 'bottom', { options: ['bottom', 'middle', 'top'], label: 'Place', doc: 'Where captions sit.' }),
-  f('captions.highlight', 'enum', 'word', { options: ['word', 'pill', 'none'], label: 'Spoken word',
+  f('captions.highlight', 'enum', 'word', { options: ['word', 'pill', 'none'], optionLabels: { word: 'Gold', pill: 'Pill', none: 'Off' }, label: 'Spoken word',
     doc: 'word turns the word being spoken gold, pill sits it on a gold pill, none leaves the line plain.' }),
   // Where a person dragged the captions to, as fractions of the frame; null is the place above.
   f('captions.fx', 'number', null, { min: 0, max: 1, nullable: true, hidden: true, label: 'Caption x', doc: 'Dragged caption centre, across.' }),
@@ -248,11 +264,11 @@ const FIELDS = [
     classic: false }),
 
   // ── focus ──
-  f('focus.dim', 'number', 0.5, { min: 0, max: 0.9, step: 0.05, label: 'Spotlight dim', doc: 'How dark the frame goes round a spotlight.', classic: false }),
+  f('focus.dim', 'number', 0.5, { min: 0, max: 0.9, step: 0.05, unit: '%', label: 'Spotlight dim', doc: 'How dark the frame goes round a spotlight.', classic: false }),
   f('focus.lift', 'number', 1.04, { min: 1, max: 1.15, step: 0.01, unit: 'x', label: 'Lift', doc: 'How far a lifted element rises.', classic: false }),
   f('focus.loupe', 'number', 2.2, { min: 1.4, max: 4, step: 0.1, unit: 'x', label: 'Loupe',
     doc: 'How far a loupe magnifies its area. The inset sits beside that area, or under it where there is no room beside.', classic: false }),
-  f('focus.arrow', 'number', 1, { min: 0.6, max: 1.8, step: 0.05, unit: 'x', label: 'Arrow',
+  f('focus.arrow', 'number', 1, { min: 0.6, max: 1.8, step: 0.05, unit: 'x', label: 'Arrow size',
     doc: 'How large a pointing arrow is drawn. It stands outside the box it aims at and points at the nearest edge, so the thing it points at is never under it; a larger arrow needs more clear room beside that box and is shortened, or dropped, where there is none.', classic: false }),
 ]
 

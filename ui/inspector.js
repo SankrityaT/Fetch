@@ -18,30 +18,38 @@
 
 const Look = require('./look')
 const S = require('./look-schema')
+const Fmt = require('./fmt')
+const Photos = require('./unsplash-picker')
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
 
-// What a field's value reads as: 0.06 with unit % is 6%, 1.7 with x is 1.7x
+// How a field reads on screen. Every number goes through the one formatter (ui/fmt.js),
+// so a dial here and the same value anywhere else in Fetch are written the same way:
+// units joined, decimals from the dial's step with trailing zeros dropped, x with at
+// least one decimal, a sign on dials that go both ways. display is the schema's word
+// for a dial read in other units than it is stored in (the shutter, in degrees).
+const disp = x => {
+  const d = x.display || {}
+  return { unit: d.unit || x.unit || '', scale: d.scale != null ? d.scale : x.scale, step: x.step,
+    signed: x.min < 0 && x.max > 0 }
+}
+// what the slider's own numbers are multiplied by, so its steps land on shown values
+const kOf = x => { const o = disp(x); return o.scale != null ? +o.scale : o.unit === '%' ? 100 : 1 }
+const clean = n => +(+n).toFixed(6)
+// 0.06 with unit % is 6%, 1.7 with x is 1.7x, 0.5 of a shutter is 180°
 function shown(x, v) {
   if (v == null) return ''
-  if (x.unit === '%') return Math.round(v * 100) + '%'
-  if (x.unit === 'x') return (+v).toFixed(x.step < 0.1 ? 2 : 1) + 'x'
-  if (x.unit === 's') return (+v).toFixed(1) + 's'
-  // attached like every other unit: in the mono field one space is a whole digit wide,
-  // so "6 px" read as "6  px" beside "7%" and "1.2x"
-  if (x.unit === 'px') return Math.round(v) + 'px'
-  if (x.unit === 'deg') return (+v).toFixed(1) + '°'
-  return String(+(+v).toFixed(2))
+  return Fmt.value(v, disp(x))
 }
 // and back, from what a person types into the number box
 function parsed(x, s) {
-  const n = parseFloat(String(s).replace(/[^\d.+-]/g, ''))
-  if (!Number.isFinite(n)) return null
-  return x.unit === '%' ? n / 100 : n
+  const o = disp(x)
+  return Fmt.parse(s, { unit: o.unit, scale: o.scale })
 }
 
 const LABELS = { 'video-blur': 'Blur', 'none': 'None', 'auto': 'Auto', 'hide': 'Hide', 'keep': 'Keep', 'remove': 'Remove' }
-const optLabel = o => LABELS[o] || (/^\d/.test(o) ? o : o.charAt(0).toUpperCase() + o.slice(1))
+// the schema's own name for an option first, so the Captions tab and this say one thing
+const optLabel = (o, x) => (x && x.optionLabels && x.optionLabels[o]) || LABELS[o] || (/^\d/.test(o) ? o : o.charAt(0).toUpperCase() + o.slice(1))
 
 // A mesh as CSS: the same control points the compositor reads, each a soft radial
 // stop over the deepest one. Close enough for a swatch, and there is still only one
@@ -75,6 +83,14 @@ function create(root, o) {
   const open = new Set(o.open || ['frame', 'background'])
   const ico = o.ico || (() => '')
   let saving = false
+  // The photo picker keeps its own search between draws (ui/unsplash-picker.js)
+  const photos = Photos.create(root, {
+    api: o.photos, ico, toast: o.toast,
+    redraw: () => render(),
+    onAssetsChanged: o.onAssetsChanged,
+    onPick: (p, id) => set({ [p]: id, 'background.kind': 'image' }),
+    onAddKey: o.onAddKey,
+  })
 
   const presets = () => Look.list(o.userDir)
   const base = look => {
@@ -94,43 +110,48 @@ function create(root, o) {
         ${right}</div>`
     let body = ''
     if (x.type === 'number') {
-      const k = x.unit === '%' ? 100 : 1
+      const k = kOf(x)
       body = head(`<input class="lk-num mono" id="${id}" data-num="${x.path}" value="${esc(shown(x, v))}" spellcheck="false" aria-label="${esc(x.label)}">`) +
-        `<input type="range" class="slider" data-range="${x.path}" min="${x.min * k}" max="${x.max * k}" step="${(x.step || 0.01) * k}" value="${(v == null ? x.default : v) * k}" aria-label="${esc(x.label)}">`
+        `<input type="range" class="slider" data-range="${x.path}" min="${clean(x.min * k)}" max="${clean(x.max * k)}" step="${clean((x.step || 0.01) * k)}" value="${clean((v == null ? x.default : v) * k)}" aria-label="${esc(x.label)}">`
     } else if (x.type === 'bool') {
       body = `<label class="lk-top lk-bool"><span class="lk-lbl" title="${esc(x.doc)}">${esc(x.label)}${mod ? '<i class="lk-dot" aria-label="changed"></i>' : ''}</span>
         ${mod ? `<button class="lk-reset" data-reset="${x.path}" aria-label="Reset ${esc(x.label)}">${ico('arrow-counter-clockwise', 'icon-sm')}</button>` : ''}
-        <span class="switch"><input type="checkbox" id="${id}" data-bool="${x.path}" ${v ? 'checked' : ''}><span class="track"></span></span></label>`
+        <span class="switch"><input type="checkbox" id="${id}" data-bool="${x.path}" ${v ? 'checked' : ''}><span class="track"></span></span></label>` +
+        (x.sub ? `<p class="micro dimmer lk-note">${esc(x.sub)}</p>` : '')
     } else if (x.type === 'enum' && (x.path === 'background.gradient' || x.path === 'background.mesh')) {
       const swatch = g => x.path === 'background.mesh' ? meshCss(g) : `linear-gradient(135deg,${S.GRADIENTS[g][0]},${S.GRADIENTS[g][1]})`
       body = head() + `<div class="lk-swatches" role="radiogroup" aria-label="${esc(x.label)}">${x.options.map(g =>
-        `<button class="lk-grad" role="radio" aria-checked="${g === v}" data-enum="${x.path}" data-v="${g}" data-tip="${optLabel(g)}"
+        `<button class="lk-grad" role="radio" aria-checked="${g === v}" data-enum="${x.path}" data-v="${g}" data-tip="${esc(optLabel(g, x))}"
           style="background:${swatch(g)}"></button>`).join('')}</div>`
     } else if (x.type === 'enum') {
       const chips = x.options.length > 4 || x.path === 'background.kind'
       body = head() + (chips
         ? `<div class="aspect-chips" role="radiogroup" aria-label="${esc(x.label)}">${x.options.map(op =>
-            `<button class="chip" role="radio" aria-pressed="${op === v}" aria-checked="${op === v}" data-enum="${x.path}" data-v="${op}">${esc(optLabel(op))}</button>`).join('')}</div>`
+            `<button class="chip" role="radio" aria-pressed="${op === v}" aria-checked="${op === v}" data-enum="${x.path}" data-v="${op}">${esc(optLabel(op, x))}</button>`).join('')}</div>`
         : `<div class="seg seg-sm lk-seg" role="radiogroup" aria-label="${esc(x.label)}">${x.options.map(op =>
-            `<button role="radio" aria-selected="${op === v}" aria-checked="${op === v}" data-enum="${x.path}" data-v="${op}">${esc(optLabel(op))}</button>`).join('')}</div>`)
+            `<button role="radio" aria-selected="${op === v}" aria-checked="${op === v}" data-enum="${x.path}" data-v="${op}">${esc(optLabel(op, x))}</button>`).join('')}</div>`)
     } else if (x.type === 'color') {
       body = head(`<span class="lk-hex mono">${esc(v)}</span><label class="colour-well" data-tip="Any colour">
         <input type="color" data-color="${x.path}" value="${esc(v)}" aria-label="${esc(x.label)}"><span style="background:${esc(v)}"></span></label>`)
     } else if (x.type === 'asset') {
-      const list = (o.assets && o.assets()) || []
-      body = head() + `<div class="bd-grid">${list.map(a => `<button class="bd" data-asset="${x.path}" data-v="${esc(a.id)}" aria-selected="${a.id === v}">
-          <span class="bd-swatch" style="background:url('file://${encodeURI(a.file).replace(/'/g, '%27')}') center/cover"></span>${esc(a.label)}</button>`).join('')}
-        ${o.onAddAsset ? `<button class="bd bd-add" data-add-asset="${x.path}"><span class="bd-swatch none">${ico('plus', 'icon-sm')}</span>Your image</button>` : ''}</div>`
+      // the photographs, each with who took it, and a live Unsplash search under them
+      body = head() + photos.html(x.path, v, (o.assets && o.assets()) || [], !!o.onAddAsset)
+    } else if (o.choices && o.choices[x.path] && typeof window !== 'undefined' && typeof window.Dropdown === 'function') {
+      // a name from a known list (the caption font) is the same dropdown the Captions
+      // tab shows, filled after the draw by mountChoices
+      body = head() + `<div class="dd" id="${id}" data-choice="${x.path}"></div>`
     } else {
-      body = head() + `<input class="input lk-text" id="${id}" data-text="${x.path}" value="${esc(v)}">`
+      body = head() + `<input class="input input-sm lk-text" id="${id}" data-text="${x.path}" value="${esc(v)}"${
+        x.placeholder ? ` placeholder="${esc(x.placeholder)}"` : ''} spellcheck="false">`
     }
     return `<div class="lk-field" data-path="${x.path}" data-mod="${mod}">${body}${note ? `<p class="micro dimmer lk-note">${esc(note)}</p>` : ''}</div>`
   }
 
   const presetLabel = name => { const p = Look.findPreset(name, o.userDir); return p ? p.label : name }
 
+  const count = n => n ? `<span class="lk-count mono" data-tip="${n} changed from the look">${n}</span>` : ''
   const head = (key, label, n, isOpen) => `<button class="lk-sec-head" aria-expanded="${isOpen}" data-sec-toggle="${esc(key)}">
-    <span class="insp-sec">${esc(label)}</span>${n ? `<span class="lk-count mono" data-tip="${n} changed from the look">${n}</span>` : ''}
+    <span class="insp-sec">${esc(label)}</span>${count(n)}
     <span style="flex:1"></span>${ico('caret-down', 'icon-sm lk-caret')}</button>`
 
   // The dials of a section that are rarely the answer, behind one disclosure. A tilt or
@@ -141,6 +162,8 @@ function create(root, o) {
     const key = s.id + ':advanced'
     const isOpen = open.has(key)
     const n = fields.filter(x => !same(Look.getPath(look, x.path), Look.getPath(ref, x.path))).length
+    // nested in its section's fields, which editor.css draws as a quieter disclosure
+    // (.lk-fields > .lk-sec): sentence case, secondary grey, no divider
     return `<div class="lk-sec" data-sec="${key}">${head(key, 'Advanced', n, isOpen)}
       <div class="lk-fields" ${isOpen ? '' : 'hidden'}>${fields.map(x => field(x, look, ref)).join('')}</div></div>`
   }
@@ -153,6 +176,8 @@ function create(root, o) {
     secs.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id))
     const scroll = root.closest('.insp-body')
     const top = scroll ? scroll.scrollTop : 0
+    const act = typeof document !== 'undefined' && document.activeElement
+    const typing = act && root.contains(act) && act.matches('[data-ph-q]') ? act.selectionStart : null
     const files = o.assets ? o.assets() : []
     const fileOf = l => { const im = Look.resolve(l).background.image; const a = files.find(f => f.id === im); return a && a.file }
     const list = presets()
@@ -170,7 +195,7 @@ function create(root, o) {
       </div>
       <div class="lk-save">
         ${saving
-          ? `<input class="input lk-save-name" id="lkSaveName" placeholder="Name this look" maxlength="48" spellcheck="false">
+          ? `<input class="input input-sm lk-save-name" id="lkSaveName" placeholder="Name this look" maxlength="48" spellcheck="false">
              <button class="btn btn-sm btn-primary" data-save-go>Save</button>
              <button class="btn btn-sm btn-ghost" data-save-cancel>Cancel</button>`
           : `<button class="btn btn-sm btn-ghost" data-save>${ico('plus', 'icon-sm')} Save look</button>
@@ -187,8 +212,20 @@ function create(root, o) {
             advanced(s, fields.filter(x => x.advanced), look, ref)}</div>
         </section>`
       }).join('')}`
+    mountChoices(look)
     if (scroll) scroll.scrollTop = top
+    if (typing != null) { const q = root.querySelector('[data-ph-q]'); if (q) { q.focus({ preventScroll: true }); q.setSelectionRange(typing, typing) } }
     if (saving) { const n = root.querySelector('#lkSaveName'); if (n) n.focus() }
+  }
+  function mountChoices(look) {
+    root.querySelectorAll('[data-choice]').forEach(el => {
+      const p = el.dataset.choice
+      const items = o.choices[p]() || []
+      const v = Look.getPath(look, p)
+      const list = items.some(i => i.id === v) ? items : [{ id: v, label: v }].concat(items)
+      window.Dropdown(el, list, v, id => set({ [p]: id }))
+      el.dataset.choice = p
+    })
   }
 
   const set = (patch, live) => { o.set(patch, { live: !!live }); if (!live) render() }
@@ -244,7 +281,7 @@ function create(root, o) {
   root.addEventListener('input', e => {
     const t = e.target, d = t.dataset
     if (d.range) {
-      const x = S.BY_PATH.get(d.range), v = +t.value / (x.unit === '%' ? 100 : 1)
+      const x = S.BY_PATH.get(d.range), v = clean(+t.value / kOf(x))
       const num = root.querySelector(`[data-num="${d.range}"]`)
       if (num) num.value = shown(x, v)
       t.style.setProperty('--fill', ((t.value - t.min) / (t.max - t.min) * 100) + '%')
@@ -256,7 +293,7 @@ function create(root, o) {
   })
   root.addEventListener('change', e => {
     const t = e.target, d = t.dataset
-    if (d.range) set({ [d.range]: +t.value / (S.BY_PATH.get(d.range).unit === '%' ? 100 : 1) })
+    if (d.range) set({ [d.range]: clean(+t.value / kOf(S.BY_PATH.get(d.range))) })
     else if (d.bool) set({ [d.bool]: t.checked })
     else if (d.color) set({ [d.color]: t.value })
     else if (d.text) set({ [d.text]: t.value })
@@ -274,4 +311,4 @@ function create(root, o) {
   return { render }
 }
 
-module.exports = { create, shown, parsed, thumbStyle }
+module.exports = { create, shown, parsed, thumbStyle, kOf }

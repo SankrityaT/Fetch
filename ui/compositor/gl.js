@@ -57,21 +57,87 @@ vec3 pooled(vec3 c, vec2 uv){
   return mix(mix(c, POOL, b), POOL, a);
 }`
 
+// A sheet's own surface (plan.js, groundTexture), procedural rather than a scan: no
+// licence to carry, no tile to repeat across a 4K frame, and the same sheet at every
+// size. Drawn only here, into the still background, so it is made once per plan and
+// size and never moves. Measured in a 1080 line frame's pixels (uUnit turns this
+// target's pixels into those), so the stage at half size shows the export's sheet and
+// not a sheet twice as coarse.
+//
+// Two parts, both around zero, so the ground's mean stays the colour the look chose.
+// Mottling: three octaves of smooth value noise from about 260 pixels down to 45, the
+// uneven pulp every uncoated sheet has, a couple of percent either way. Fibre: short
+// thin strokes, a few to a cell of the grid, each at its own angle and length, tapered
+// at both ends, most a little darker than the sheet and one in four a little lighter.
+// A fibre narrower than a pixel of this target is drawn a pixel wide at the share of it
+// that it covers, so a small stage softens the fibre rather than aliasing it. Darker
+// goes warmer: the blue comes down faster than the red, which is what makes it paper
+// and not grey concrete. print is the same recipe, finer and quieter, and neutral.
+const GL_SHEET = `
+uint shash(uint x){ x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
+float srnd(ivec2 c, uint s){ return float(shash(uint(c.x) * 1973u + shash(uint(c.y) * 9277u + s * 26699u)) & 65535u) / 65535.0; }
+float vnoise(vec2 p, uint s){
+  ivec2 i = ivec2(floor(p)); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(srnd(i, s), srnd(i + ivec2(1, 0), s), f.x), mix(srnd(i + ivec2(0, 1), s), srnd(i + ivec2(1, 1), s), f.x), f.y) - 0.5;
+}
+// q: the point in a 1080 line frame's pixels; px: how many of those one pixel here is
+float fibres(vec2 q, float px, float cell, float len, float str, uint s){
+  vec2 cq = q / cell; ivec2 c0 = ivec2(floor(cq)); float acc = 0.0;
+  for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+    ivec2 c = c0 + ivec2(i, j);
+    for (int k = 0; k < 3; k++) {
+      uint sk = s + uint(k) * 101u;
+      vec2 at = (vec2(c) + vec2(srnd(c, sk), srnd(c, sk + 1u))) * cell;
+      float a = srnd(c, sk + 2u) * 3.1415927, r = srnd(c, sk + 3u);
+      float L = len * (0.3 + 0.7 * r * r), w = 0.55 + 0.75 * srnd(c, sk + 4u);
+      vec2 d = vec2(cos(a), sin(a)), v = q - at;
+      float t = clamp(dot(v, d) / L, -1.0, 1.0);
+      float dist = length(v - d * t * L);
+      float we = max(w, px);
+      float cover = (1.0 - smoothstep(0.0, we, dist)) * (w / we) * (1.0 - t * t);
+      float light = step(0.75, srnd(c, sk + 5u));
+      acc += cover * str * (0.5 + 0.5 * srnd(c, sk + 6u)) * mix(-1.0, 0.7, light);
+    }
+  }
+  return acc;
+}
+vec3 sheet(vec3 c, vec2 p, int kind, float unit){
+  vec2 q = p * unit;
+  bool paper = kind == 1;
+  float mot = 0.55 * vnoise(q / 260.0, 11u) + 0.30 * vnoise(q / 110.0, 12u) + 0.15 * vnoise(q / 45.0, 13u);
+  // formation: the cloudy clumping of pulp a sheet shows against the light, a dozen
+  // pixels across, between the mottling and the fibre
+  float floc = 0.6 * vnoise(q / 14.0, 17u) + 0.4 * vnoise(q / 6.0, 18u);
+  float m = mot * (paper ? 0.12 : 0.05)
+    + floc * (paper ? 0.035 : 0.016)
+    + fibres(q, unit, paper ? 22.0 : 30.0, paper ? 16.0 : 9.0, paper ? 0.024 : 0.012, paper ? 21u : 31u)
+    + vnoise(q / 1.3, 41u) * (paper ? 0.008 : 0.005);
+  vec3 warm = paper ? vec3(0.9, 1.0, 1.22) : vec3(1.0);
+  return clamp(c * (1.0 + m * warm), 0.0, 1.0);
+}`
+
 // A still background: a two-colour linear gradient corner to corner (a solid colour is
-// a gradient from a colour to itself), or an image covering the frame, dimmed.
+// a gradient from a colour to itself), or an image covering the frame, dimmed. A solid
+// colour can carry a sheet's texture (GL_SHEET, uTex 1 paper, 2 print).
 const FS_BG = `#version 300 es
 precision highp float;
 uniform vec2 uRes; uniform int uKind; uniform vec3 uC0, uC1;
+uniform int uTex; uniform float uUnit;
 uniform sampler2D uImg; uniform vec4 uImgUV; uniform float uImgLod, uDim; out vec4 o;
 ${GL_POOL}
+${GL_SHEET}
 void main(){
   vec2 p = gl_FragCoord.xy;
   if (uKind == 1) {
     // ffmpeg's gradients source: c0 at the top left, c1 at the bottom right, mixed in sRGB
     float t = clamp(dot(p, uRes) / dot(uRes, uRes), 0.0, 1.0);
+    vec3 c = mix(uC0, uC1, t);
+    // the sheet under the light, as a surface is under the light that falls on it; the
+    // row is flipped so the sheet is the same way up here as in a readback
+    if (uTex > 0) c = sheet(c, vec2(p.x, uRes.y - p.y), uTex, uUnit);
     // and the app's own pools over it: a photo brings its own light and a mesh is a
     // composition of its own, so this is the branch that has a flat field to answer for
-    o = vec4(pooled(mix(uC0, uC1, t), p / uRes), 1.0);
+    o = vec4(pooled(c, p / uRes), 1.0);
   } else {
     vec2 uv = uImgUV.xy + (p / uRes) * uImgUV.zw;
     o = vec4(textureLod(uImg, uv, uImgLod).rgb * (1.0 - 0.7 * uDim), 1.0);
@@ -1134,8 +1200,9 @@ void main(){
 // ── the drawn device ──────────────────────────────────────────────────────
 // Every device Fetch draws is this one function: rectangles, radii and two tones. It is
 // generic on purpose and by construction. Nothing is traced from a product, nothing
-// carries a wordmark, the three dots on a window bar are the shell's own tone and never
-// the three colours one desktop uses, a laptop is a slab and a shallow foot with no
+// carries a wordmark, the three dots on a window bar are the shell's own tone (a
+// browser's are coloured, warmed, and drawn with the rest of its bar in browserBar), a
+// laptop is a slab and a shallow foot with no
 // keyboard and no hinge, and a phone has a speaker slit and nothing else. If a shape
 // would make anyone think of one company's hardware it is the wrong shape, and the test
 // is not whether it is close enough to be recognisable but whether it is close at all.
@@ -1189,44 +1256,30 @@ function deviceCanvas(D, k, measure) {
   }
   const shell = () => path(B.x, B.y, B.w, B.h, B.r)
   shell(); g.fillStyle = rgbaOf(D.shell, 1); g.fill()
-  // The bar a browser and a window wear, a shade off the shell so it reads as a surface.
-  // Not where the capture inside already carries chrome of its own (Plan.ownChrome): the
-  // top bezel is then the same as the sides and the shell is a frame round a window
-  // rather than a second window round the first. One title bar, and it is the real one.
-  if (D.bar > 0 && !D.own && (D.kind === 'browser' || D.kind === 'window')) {
+  // The bar a window wears, a shade off the shell so it reads as a surface, and the
+  // browser's own two rows (browserBar). Not where the capture inside already carries
+  // chrome of its own (Plan.ownChrome): the top bezel is then the same as the sides and
+  // the shell is a frame round a window rather than a second window round the first.
+  // One title bar, and it is the real one.
+  if (D.bar > 0 && !D.own && D.kind === 'browser') browserBar(g, D, B, hair, measure)
+  else if (D.bar > 0 && !D.own && D.kind === 'window') {
     g.save(); shell(); g.clip()
     g.fillStyle = rgbaOf(D.face, 1); g.fillRect(B.x, B.y, B.w, D.bar)
     g.fillStyle = rgbaOf(D.line, D.light ? 0.14 : 0.10)
     g.fillRect(B.x, B.y + D.bar - hair, B.w, hair)
     g.restore()
-    // the window's own buttons, in the shell's tone: three dots say window in every
-    // desktop drawn since 1984 and the colours are one vendor's, so they stay grey
+    // the window's own buttons, in the shell's tone: three grey dots say window in every
+    // desktop drawn since 1984, and a plain window stays plain
     const dr = D.bar * 0.075, gap = D.bar * 0.36
-    let dx = B.x + D.bar * 0.42 + dr, dy = B.y + D.bar / 2
+    let dx = B.x + D.bar * 0.42 + dr
+    const dy = B.y + D.bar / 2
     for (let i = 0; i < 3; i++) {
       g.beginPath(); g.arc(dx, dy, dr, 0, Math.PI * 2)
       g.fillStyle = rgbaOf(D.line, D.light ? 0.22 : 0.20); g.fill()
       dx += gap
     }
     const ph = D.bar * 0.44, py = B.y + (D.bar - ph) / 2
-    // The address, which is half the reason to draw a browser at all, and the field is
-    // drawn only where there is an address to put in it. A blank one reads as a mockup
-    // nobody finished, which is worse than a frame with no address bar at all, and Fetch
-    // will not invent a host: the plan hands over what the capture or the person said and
-    // whether it is shaped like one (Plan.barText). With a name rather than a host the
-    // bar is a title bar, drawn the way a window's is, and the plan already gave it a
-    // title bar's height.
-    if (D.kind === 'browser' && D.address) {
-      const px0 = dx + D.bar * 0.3, pw = Math.min(S.w * 0.56, B.x + B.w - px0 - D.bar * 0.5)
-      path(px0, py, pw, ph, ph / 2)
-      g.fillStyle = rgbaOf(D.light ? '#FFFFFF' : '#0A0908', D.light ? 0.7 : 0.3); g.fill()
-      g.strokeStyle = rgbaOf(D.line, D.light ? 0.12 : 0.08); g.lineWidth = hair; g.stroke()
-      const fs = ph * 0.52
-      g.save(); path(px0, py, pw, ph, ph / 2); g.clip()
-      g.font = Text.fontFor('sub', fs); g.fillStyle = rgbaOf(D.text, 1); g.textAlign = 'left'
-      g.fillText(fit(D.title, pw - ph * 1.1, fs, measure), px0 + ph * 0.55, py + ph / 2 + fs * 0.36)
-      g.restore()
-    } else if (D.title) {
+    if (D.title) {
       const fs = ph * 0.52
       g.font = Text.fontFor('sub', fs); g.fillStyle = rgbaOf(D.text, 1); g.textAlign = 'center'
       g.fillText(fit(D.title, B.w * 0.6, fs, measure), B.x + B.w / 2, py + ph / 2 + fs * 0.36)
@@ -1252,6 +1305,130 @@ function deviceCanvas(D, k, measure) {
   g.save(); g.globalCompositeOperation = 'destination-out'; hole(); g.fillStyle = '#000'; g.fill(); g.restore()
   inside(hole, D.line, EDGE_LINE, hair)
   return { canvas: cv, x: Math.round(E.x * k), y: Math.round(E.y * k), w, h }
+}
+// A browser's bar: a tab strip over a toolbar, which is what tells a browser from a
+// window at a glance. The genre and nobody's product in particular: the lights are red,
+// amber and green because every desktop's are, but the tones are Fetch's own and warmed;
+// the one open tab is a plain card rounded at the top and joined to the toolbar, with
+// no flare, slant or curve borrowed from any one browser; the page's mark in it is a
+// drawn globe and never a site's icon; back, forward and reload are three strokes each;
+// the field is a pill with a padlock where the address is a secure one, a magnifier
+// where there is no address at all, and nothing is ever typed into it that the plan did
+// not hand over (Plan.barText): Fetch does not invent a host. Forward is dimmed, as it
+// is on any page nobody has gone back from.
+//
+// Proportions are shares of the bar, so a browser is the same browser at every size,
+// and every run of words is cut to its room: a tab title as long as a paragraph ends in
+// an ellipsis inside its tab, and an address as long as the field ends inside it.
+function browserBar(g, D, B, hair, measure) {
+  const H = D.bar, strip = H * 0.46, tool = H - strip, ty = B.y + strip
+  const col = (hex, a = 1) => rgbaOf(hex, a)
+  const shellPath = () => { g.beginPath(); g.roundRect(B.x, B.y, B.w, B.h, Math.min(B.r, B.w / 2, B.h / 2)) }
+  const lw = Math.max(hair, H * 0.022)
+  g.save(); shellPath(); g.clip()
+  // the toolbar, a step towards the viewer from the strip, and the line under it
+  g.fillStyle = col(D.tool); g.fillRect(B.x, ty, B.w, tool)
+  g.fillStyle = col(D.line, D.light ? 0.14 : 0.10); g.fillRect(B.x, B.y + H - hair, B.w, hair)
+  // the lights
+  const lr = H * 0.058, lcy = B.y + strip * 0.54
+  let lx = B.x + H * 0.30 + lr
+  for (const c of ['#E2604F', '#E6AE3E', '#5AB25A']) {
+    g.beginPath(); g.arc(lx, lcy, lr, 0, Math.PI * 2)
+    g.fillStyle = col(c); g.fill()
+    g.strokeStyle = col(D.light ? '#1A1714' : '#0A0908', 0.16); g.lineWidth = hair * 0.8; g.stroke()
+    lx += lr * 3.3
+  }
+  // the open tab, joined to the toolbar: rounded at the top, square where it meets it
+  const tabTop = B.y + strip * 0.18, tabH = ty - tabTop + 0.5
+  const tx = lx - lr + H * 0.34
+  const room = B.x + B.w - H * 0.9 - tx
+  const tabW = Math.max(0, Math.min(room, Math.max(H * 2.6, Math.min(H * 4.4, B.w * 0.22))))
+  if (tabW > H * 0.8) {
+    const rt = Math.min(H * 0.10, tabH / 2)
+    g.beginPath(); g.moveTo(tx, ty + 0.5); g.lineTo(tx, tabTop + rt); g.arcTo(tx, tabTop, tx + rt, tabTop, rt)
+    g.lineTo(tx + tabW - rt, tabTop); g.arcTo(tx + tabW, tabTop, tx + tabW, tabTop + rt, rt); g.lineTo(tx + tabW, ty + 0.5); g.closePath()
+    g.fillStyle = col(D.tool); g.fill()
+    const cy = tabTop + tabH * 0.52, pad = H * 0.16
+    // the page's mark: a globe, drawn, not a site's icon
+    const gr = H * 0.068, gx = tx + pad + gr
+    g.strokeStyle = col(D.text, 0.75); g.lineWidth = lw * 0.8
+    g.beginPath(); g.arc(gx, cy, gr, 0, Math.PI * 2); g.stroke()
+    g.beginPath(); g.ellipse(gx, cy, gr * 0.42, gr, 0, 0, Math.PI * 2); g.stroke()
+    g.beginPath(); g.moveTo(gx - gr, cy); g.lineTo(gx + gr, cy); g.stroke()
+    // its close mark, at the far end
+    const cs = H * 0.045, cx = tx + tabW - pad - cs
+    g.strokeStyle = col(D.text, 0.6); g.lineWidth = lw * 0.8
+    g.beginPath(); g.moveTo(cx - cs, cy - cs); g.lineTo(cx + cs, cy + cs); g.moveTo(cx + cs, cy - cs); g.lineTo(cx - cs, cy + cs); g.stroke()
+    // and the page's name between the two
+    const fs = H * 0.15, x0 = gx + gr + H * 0.11, w0 = cx - cs - H * 0.12 - x0
+    if (D.tab && w0 > fs) {
+      g.font = Text.fontFor('sub', fs); g.fillStyle = col(D.text); g.textAlign = 'left'
+      g.fillText(fit(D.tab, w0, fs, measure), x0, cy + fs * 0.36)
+    }
+    // a new tab
+    const nx = tx + tabW + H * 0.30, ns = H * 0.06
+    if (nx + ns < B.x + B.w - H * 0.2) {
+      g.strokeStyle = col(D.text, 0.55); g.lineWidth = lw * 0.8
+      g.beginPath(); g.moveTo(nx - ns, cy); g.lineTo(nx + ns, cy); g.moveTo(nx, cy - ns); g.lineTo(nx, cy + ns); g.stroke()
+    }
+  }
+  // back, forward, reload
+  const cy = ty + tool / 2, ic = tool * 0.17, step = tool * 0.74
+  g.lineCap = 'round'; g.lineJoin = 'round'; g.lineWidth = lw
+  const arrow = (x, dir, a) => {
+    g.strokeStyle = col(D.text, a); g.beginPath()
+    g.moveTo(x + dir * ic, cy); g.lineTo(x - dir * ic, cy)
+    g.moveTo(x - dir * ic + dir * ic * 0.8, cy - ic * 0.8); g.lineTo(x - dir * ic, cy); g.lineTo(x - dir * ic + dir * ic * 0.8, cy + ic * 0.8)
+    g.stroke()
+  }
+  let x = B.x + H * 0.30 + ic
+  arrow(x, 1, 0.9); x += step
+  arrow(x, -1, 0.38); x += step
+  {
+    const r = ic * 0.95, a0 = -Math.PI * 0.30, a1 = a0 + Math.PI * 1.62
+    g.strokeStyle = col(D.text, 0.9); g.beginPath(); g.arc(x, cy, r, a0, a1); g.stroke()
+    // its head, at the open end, along the way the arc turns
+    const ex = x + r * Math.cos(a0), ey = cy + r * Math.sin(a0), hs = ic * 0.62
+    g.fillStyle = col(D.text, 0.9); g.beginPath()
+    g.moveTo(ex + hs * 0.9, ey + hs * 0.15); g.lineTo(ex - hs * 0.35, ey - hs * 0.75); g.lineTo(ex - hs * 0.2, ey + hs * 0.7); g.closePath(); g.fill()
+  }
+  // the field
+  const px0 = x + ic + tool * 0.42, pr = B.x + B.w - H * 0.30
+  const ph = tool * 0.62, py = cy - ph / 2, pw = pr - px0
+  if (pw > ph * 1.5) {
+    g.beginPath(); g.roundRect(px0, py, pw, ph, ph / 2)
+    g.fillStyle = col(D.well); g.fill()
+    const gx = px0 + ph * 0.58, gs = ph * 0.17
+    const secure = D.url && !/^http:\/\//i.test(D.url)
+    if (secure) {
+      // a padlock: a body and its shackle
+      g.fillStyle = col(D.text, 0.85)
+      g.beginPath(); g.roundRect(gx - gs * 0.8, cy - gs * 0.15, gs * 1.6, gs * 1.2, gs * 0.25); g.fill()
+      g.strokeStyle = col(D.text, 0.85); g.lineWidth = lw * 0.8
+      g.beginPath(); g.arc(gx, cy - gs * 0.15, gs * 0.52, Math.PI, 0); g.stroke()
+    } else if (!D.url) {
+      // nothing to say yet: a magnifier, as on any page whose address was not given
+      g.strokeStyle = col(D.text, 0.55); g.lineWidth = lw * 0.8
+      g.beginPath(); g.arc(gx - gs * 0.2, cy - gs * 0.2, gs * 0.72, 0, Math.PI * 2); g.stroke()
+      g.beginPath(); g.moveTo(gx + gs * 0.32, cy + gs * 0.32); g.lineTo(gx + gs * 0.85, cy + gs * 0.85); g.stroke()
+    }
+    if (D.url) {
+      const shown = String(D.url).replace(/^https:\/\//i, '')
+      const fs = ph * 0.46, tx0 = gx + gs * 1.6, tw = px0 + pw - ph * 0.5 - tx0
+      if (tw > fs) {
+        const text = fit(shown, tw, fs, measure)
+        g.save(); g.beginPath(); g.roundRect(px0, py, pw, ph, ph / 2); g.clip()
+        g.font = Text.fontFor('sub', fs); g.textAlign = 'left'
+        // the host in full, the rest of the address a step quieter, as a field shows it
+        const cut = text.search(/[/?#]/)
+        const host = cut < 0 ? text : text.slice(0, cut)
+        g.fillStyle = col(D.text); g.fillText(host, tx0, cy + fs * 0.36)
+        if (cut >= 0) { g.fillStyle = col(D.text, 0.6); g.fillText(text.slice(cut), tx0 + g.measureText(host).width, cy + fs * 0.36) }
+        g.restore()
+      }
+    }
+  }
+  g.restore()
 }
 // A line of text cut to a width, with the last of it left out rather than spilling
 function fit(text, width, px, measure) {
@@ -1489,7 +1666,8 @@ class Compositor {
     this.bgKey = key
     const { W, H } = this
     if (bg.kind === 'gradient') {
-      this.draw('bg', this.bg, { uRes: [W, H], uKind: 1, uC0: bg.c0, uC1: bg.c1 }, { uImg: null })
+      this.draw('bg', this.bg, { uRes: [W, H], uKind: 1, uC0: bg.c0, uC1: bg.c1,
+        uTex: bg.texture === 'paper' ? 1 : bg.texture === 'print' ? 2 : 0, uUnit: 1080 / H }, { uImg: null })
       return
     }
     if (bg.kind === 'mesh') {
@@ -1498,7 +1676,7 @@ class Compositor {
     }
     if (bg.kind !== 'image') return
     const img = this.images.get(bg.file)
-    if (!img) { this.draw('bg', this.bg, { uRes: [W, H], uKind: 1, uC0: [0.1, 0.09, 0.08], uC1: [0.1, 0.09, 0.08] }, { uImg: null }); return }
+    if (!img) { this.draw('bg', this.bg, { uRes: [W, H], uKind: 1, uC0: [0.1, 0.09, 0.08], uC1: [0.1, 0.09, 0.08], uTex: 0 }, { uImg: null }); return }
     // cover, then centre crop
     const ia = img.w / img.h, oa = W / H
     const uv = ia > oa ? [(1 - oa / ia) / 2, 0, oa / ia, 1] : [0, (1 - ia / oa) / 2, 1, ia / oa]

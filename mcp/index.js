@@ -1293,6 +1293,37 @@ export function build() {
     async args => text(await drive('look.list', args)))
 
   server.registerTool(
+    'photos',
+    {
+      description:
+        'Photographs to stand a take on. This is the tool for "put it on a photo of mountains". ' +
+        'list: every photograph on this Mac, the ones bundled with Fetch and any the person saved, each ' +
+        'with the photographer who took it. ' +
+        'search: ask Unsplash for one that is not here yet, in the person\'s own words, for example ' +
+        '"mountains at dusk". It needs their own free Unsplash access key, which they add in Settings; ' +
+        'with no key it says so in one sentence and sends nothing anywhere. A search leaves this Mac, so ' +
+        'run one when the person asked for a photo, never to browse. ' +
+        'use: put one under a take. photo takes an id from list (img:...), or one from search, which saves ' +
+        'that photo into their own backdrops folder first and tells Unsplash it was used. With path it is ' +
+        'applied to that recording or shot in the editor, where one Undo takes it back; without one you get ' +
+        'the id back for apply_look (background kind image, background image that id). ' +
+        'Every answer carries credit. Name the photographer in what you write back, in credit.text: that ' +
+        'is the licence these photographs are used under, not a courtesy.',
+      inputSchema: z.object({
+        action: z.enum(['list', 'search', 'use']).optional()
+          .describe('Default list, or search when query is sent, or use when photo is.'),
+        query: z.string().optional().describe('search: what the person asked for, e.g. "mountains at dusk".'),
+        page: z.number().optional().describe('search: a further page of the same query. Default 1.'),
+        photo: z.string().optional().describe('use: an id from list (img:...) or from search.'),
+        path: z.string().optional()
+          .describe('use: Absolute path to the recording or shot to put it under. Left out, nothing is applied ' +
+            'and the id comes back.'),
+        step: z.string().optional().describe('The step of the plan this call finishes, e.g. "P2".'),
+      }),
+    },
+    async args => text(await drive('photos.do', args, { timeoutMs: 60000 })))
+
+  server.registerTool(
     'apply_look',
     {
       description:
@@ -1302,8 +1333,13 @@ export function build() {
         'sees it in the editor and one Undo takes it back. Returns the look as its preset and what differs ' +
         'from it, and look_warnings for values clamped and anything the renderer that will draw your export ' +
         'leaves out. Check the result with preview_frame. ' +
-        'A shot holds the same look a recording holds, so this is the call that puts a capture on a warm ' +
-        'dune ground in a browser frame, and a look saved off either one applies to the other unchanged. ' +
+        'A shot holds the same look a recording holds, so this is the call that puts a capture on an amber ' +
+        'dusk ground in a browser frame, and a look saved off either one applies to the other unchanged. ' +
+        'A photograph under a take comes from photos, which names the photographer to credit. ' +
+        'device.kind browser draws a browser and not a window: a tab strip, back, forward, reload and an ' +
+        'address field. The address is the capture\'s own where Fetch knew it, and settable otherwise ' +
+        '(get_look_schema names the field; a title shaped like a host is drawn as the address). Fetch ' +
+        'invents no host: with none known the field is drawn empty, as a browser draws it. ' +
         'What a single frame cannot mean (the fades, the arrival, the loop, the motion blur) is kept on ' +
         'the look as sent and simply not drawn, and the result names those fields under not_drawn.',
       inputSchema: z.object({

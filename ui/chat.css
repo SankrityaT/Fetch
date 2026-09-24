@@ -40,23 +40,37 @@
   flex:1 1 0; min-height:0; overflow-y:auto; overscroll-behavior:contain;
   padding:var(--s-4); display:flex; flex-direction:column; gap:var(--s-3);
 }
+/* Nothing in the thread gives up height to make room for the next thing: the list
+   scrolls instead. Without this a card with overflow:hidden (the question and the
+   proposal) has a min-height of 0, and once the thread outgrew the pane they were
+   squeezed to 40px slivers with their choices and Apply cut off. */
+.chat-list > * { flex-shrink:0; }
 
 .chat-intro p { font-size:var(--t-12); color:var(--text-1); line-height:1.55; margin-bottom:var(--s-3); }
+/* The examples are suggestion chips, the shared .chip from components.css, so their
+   shape, size, font and states are not restated here. Only how they sit in a narrow
+   pane is: one per line, and a long suggestion ends in an ellipsis rather than
+   growing the pill past the pane. */
 .chat-egs { display:flex; flex-direction:column; gap:var(--s-2); align-items:flex-start; }
-.chat-eg {
-  text-align:left; font-size:var(--t-12); color:var(--text-1); line-height:1.4;
-  padding:7px 11px; border-radius:var(--r-sm);
-  background:var(--ink-2); border:var(--edge);
-  transition:color var(--dur-1) var(--ease-in), border-color var(--dur-1) var(--ease-in);
-}
-.chat-eg:hover { color:var(--text-0); border-color:var(--ink-4); }
-.chat-eg:active { background:var(--ink-3); }
+.chat-eg { max-width:100%; }
+.chat-eg > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-/* New chat sits in the head, quiet until wanted */
-.chat-new { flex:none; gap:6px; padding:0 10px 0 8px; font-weight:500; }
-.chat-new:active:not(:disabled) { background:var(--ink-3); }
+/* New chat sits in the head, quiet until wanted: the shared ghost button as it is */
+.chat-new { flex:none; }
 
-.chat-msg { font-size:var(--t-12); line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+.chat-msg { font-size:var(--t-12); line-height:1.6; overflow-wrap:anywhere; }
+/* Only what the person typed keeps its own line breaks. The agent's reply is rendered
+   markdown, so its breaks are the <p> and <ul> it was turned into; pre-wrap on top of
+   that drew a blank line between every block. */
+.chat-me, .chat-err { white-space:pre-wrap; }
+.chat-them > p, .chat-them > ul, .chat-them > ol { margin:0; }
+.chat-them > :is(p, ul, ol) + :is(p, ul, ol) { margin-top:var(--s-2); }
+.chat-them ul, .chat-them ol { padding-left:1.3em; }
+.chat-them ol { list-style:decimal; }
+.chat-them ul { list-style:disc; }
+.chat-them li { padding-left:2px; }
+.chat-them li + li { margin-top:2px; }
+.chat-them li::marker { color:var(--text-2); }
 /* the person's own turn is the one thing in the pane with a bubble, so the
    transcript reads as a conversation without every line being boxed */
 .chat-me {
@@ -66,7 +80,9 @@
   box-shadow:var(--shadow-1);
 }
 .chat-them { color:var(--text-1); }
-.chat-err { color:#FFB4AD; font-size:var(--t-11); }
+.chat-err { color:var(--text-1); font-size:var(--t-11); display:flex; align-items:flex-start; gap:var(--s-2); }
+/* a failure is caution, not recording: the warn icon says so, not a red sentence */
+.chat-err svg { flex:none; margin-top:2px; color:var(--warn); }
 
 /* a tool call is a fact, not speech, so it is set apart from both */
 .chat-tool {
@@ -78,7 +94,7 @@
 .chat-tool-ico { display:grid; place-items:center; flex:none; width:14px; height:14px; }
 .chat-tool[data-state="running"] .chat-tool-ico { color:var(--fur-1); animation:chatPulse 1.1s ease-in-out infinite; }
 .chat-tool[data-state="ok"] .chat-tool-ico { color:var(--good); }
-.chat-tool[data-state="bad"] .chat-tool-ico { color:var(--rec); }
+.chat-tool[data-state="bad"] .chat-tool-ico { color:var(--warn); }
 .chat-tool[data-state="stopped"] .chat-tool-ico { color:var(--text-2); }
 @keyframes chatPulse { 50% { opacity:.35 } }
 
@@ -120,7 +136,6 @@
   display:grid; place-items:center; background:var(--ink-1); color:var(--text-2);
 }
 .chat-card-thumb img, .chat-card-thumb video { width:100%; height:100%; object-fit:cover; display:block; }
-.chat-card-sm .chat-card-thumb { width:64px; height:40px; }
 
 .chat-card-txt { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
 /* The line is the file the card exists to name, so it wraps to a second line rather
@@ -139,22 +154,16 @@
 .chat-card-ok { flex:none; display:grid; place-items:center; color:var(--good); }
 /* Undo sits under the card, not in it: the card opens the file, and one control never
    does two things. Quiet until wanted, like New chat. */
-.chat-card-undo, .chat-card-undone {
-  display:inline-flex; align-items:center; gap:6px; height:28px; margin:var(--s-2) 0 0 var(--s-1);
-  padding:0 10px 0 8px; border-radius:var(--r-pill); font:500 var(--t-12)/1 var(--font-ui);
-}
-.chat-card-undo {
-  color:var(--text-1); background:transparent; border:1px solid transparent; cursor:pointer;
-  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in);
-}
-.chat-card-undo:hover:not(:disabled) { background:var(--ink-2); color:var(--text-0); }
-.chat-card-undo:active:not(:disabled) { background:var(--ink-3); transform:translateY(1px); }
-.chat-card-undo:disabled { opacity:.35; cursor:default; }
+/* The button is the shared .btn .btn-ghost .btn-sm; this only places it. */
+.chat-card-undo { margin:var(--s-2) 0 0 var(--s-1); }
 .chat-card-undo[hidden] { display:none; }
-.chat-card-undone { color:var(--text-2); }
+.chat-card-undone {
+  display:inline-flex; align-items:center; gap:6px; height:28px; margin:var(--s-2) 0 0 var(--s-1);
+  padding:0 var(--s-3); font-size:var(--t-12); font-weight:500; color:var(--text-2);
+}
 .chat-intro p strong { color:var(--text-0); font-weight:600; }
 @media (prefers-reduced-motion: reduce) {
-  .chat-card, .chat-send, .chat-card-undo { transition:none; }
+  .chat-card, .chat-send { transition:none; }
   .chat-status-dot { animation:none; }
 }
 
@@ -264,22 +273,11 @@
 
 .chat-prop-acts { display:flex; align-items:center; gap:var(--s-2); margin-top:2px; }
 .chat-prop-acts .chat-wait-left { flex:1; text-align:right; }
-.chat-prop-yes, .chat-prop-no {
-  display:inline-flex; align-items:center; gap:6px; height:30px; flex:none;
-  padding:0 14px; border-radius:var(--r-pill); font:600 var(--t-12)/1 var(--font-ui); cursor:pointer;
-  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in),
-             transform var(--dur-1) var(--ease-in);
-}
-/* Apply is the thing to act on, so it gets the gold. Discard destroys nothing,
-   because nothing was written, so it can sit beside it as the quiet one. */
-.chat-prop-yes { background:var(--fur-1); color:#231703; }
-.chat-prop-yes:hover:not(:disabled) { background:var(--fur-0); }
-.chat-prop-yes:active:not(:disabled) { background:var(--fur-2); transform:translateY(1px); }
-.chat-prop-no { background:transparent; color:var(--text-1); padding:0 11px; font-weight:500; }
-.chat-prop-no:hover:not(:disabled) { background:var(--ink-3); color:var(--text-0); }
-.chat-prop-no:active:not(:disabled) { background:var(--ink-1); transform:translateY(1px); }
-.chat-prop-yes:focus-visible, .chat-prop-no:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
-.chat-prop-yes:disabled, .chat-prop-no:disabled { opacity:.35; cursor:default; }
+/* Apply is the shared .btn-primary and Discard the shared .btn-ghost, both .btn-sm:
+   Apply is the thing to act on, so it gets the gold. Discard destroys nothing,
+   because nothing was written, so it can sit beside it as the quiet one. Only the
+   decided state is drawn here. */
+.chat-prop-yes, .chat-prop-no { flex:none; }
 /* the decision that was taken stays legible: the tick borrows the button's own text
    colour, since a gold tick on the gold Apply is no tick at all */
 .chat-prop-yes[data-chosen], .chat-prop-no[data-chosen] { opacity:1; }
@@ -303,7 +301,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-wait-bar { display:none; }
-  .chat-pick, .chat-prop-yes, .chat-prop-no { transition:none; }
+  .chat-pick { transition:none; }
 }
 
 .chat-composer { flex:none; padding:var(--s-3); border-top:var(--edge); }
@@ -322,13 +320,13 @@
 
 /* the vendor mark keeps its own background, the same rule the Connect rows use */
 .chat-engine {
-  display:flex; align-items:center; gap:6px; flex:none;
-  padding:4px 8px 4px 5px; border-radius:var(--r-pill);
-  background:var(--ink-2); border:var(--edge);
-  font-size:var(--t-11); font-weight:500; color:var(--text-1);
+  display:flex; align-items:center; gap:6px; flex:none; min-width:0; max-width:60%;
+  padding:5px 10px 5px 6px; border-radius:var(--r-pill);
+  background:var(--ink-2); border:var(--edge-soft);
+  font-size:var(--t-11); font-weight:500; color:var(--text-1); white-space:nowrap;
 }
 .chat-engine:hover { color:var(--text-0); }
-.chat-engine img { width:15px; height:15px; border-radius:4px; object-fit:contain; }
+.chat-engine img { width:16px; height:16px; flex:none; border-radius:4px; object-fit:contain; }
 .chat-engine-none { color:var(--warn); padding:0 3px; }
 
 .chat-hint {
@@ -337,7 +335,7 @@
 }
 
 .chat-send {
-  flex:none; width:30px; height:30px; border-radius:50%;
+  flex:none; width:34px; height:34px; border-radius:50%;
   display:grid; place-items:center;
   background:var(--fur-1); color:#231703;
   transition:opacity var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in),
@@ -355,13 +353,13 @@
 
 .chat-them strong { color:var(--text-0); font-weight:600; }
 .chat-them code {
-  font-family:var(--font-mono); font-size:11px;
+  font-family:var(--font-mono); font-size:var(--t-11);
   background:var(--ink-2); border-radius:4px; padding:1px 4px;
 }
 
 /* Dictation. Local, like everything else in here except the voiceover panel. */
 .chat-mic {
-  flex:none; width:30px; height:30px; border-radius:50%;
+  flex:none; width:34px; height:34px; border-radius:50%;
   display:grid; place-items:center; color:var(--text-2);
   background:var(--ink-2); border:var(--edge-soft);
   transition:color var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in);
@@ -381,19 +379,19 @@
    Floats above the composer rather than pushing it, because the composer is where
    your eyes are and it should not move while you type. */
 .chat-composer { position:relative; }
+/* The surface and the rows are components.css's .popover and .popover-row (S6). What is
+   left here is where it sits, how tall it may get, and the one thing it does
+   differently: it does not animate in, because it opens under a cursor that is mid-word
+   and a list that slides is a list you type into by accident. */
 .chat-mention {
   position:absolute; left:var(--s-3); right:var(--s-3); bottom:calc(100% - 4px);
   max-height:300px; overflow-y:auto; z-index:5;
   display:flex; flex-direction:column; padding:5px;
-  background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-lg);
-  box-shadow:var(--shadow-3);
+  animation:none;
 }
 .chat-mention[hidden] { display:none; }
 
-.chat-mention-row {
-  display:flex; align-items:center; gap:10px; width:100%; text-align:left;
-  padding:8px 10px; border-radius:var(--r-sm); color:var(--text-2);
-}
+.chat-mention-row { gap:10px; min-height:0; padding:8px 10px; color:var(--text-2); }
 .chat-mention-row[data-on="true"], .chat-mention-row:hover { background:var(--ink-2); color:var(--text-1); }
 .chat-mention-row svg { flex:none; }
 .chat-mention-txt { min-width:0; display:flex; flex-direction:column; gap:1px; }
@@ -418,11 +416,11 @@
 .chat-tag span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chat-tag svg { flex:none; color:var(--fur-1); }
 .chat-tag button {
-  display:grid; place-items:center; width:18px; height:18px; flex:none;
+  display:grid; place-items:center; width:20px; height:20px; flex:none;
   border-radius:50%; color:var(--fur-1); opacity:.7;
 }
 .chat-tag button:hover { opacity:1; background:rgba(240,169,60,.2); }
-.chat-tag button svg { width:10px; height:10px; }
+.chat-tag button svg { width:14px; height:14px; }
 /* a project chip is the same gold chip, with a folder for the film strip and the
    branch after the name in mono, the way a lassoed area carries its id: two
    workspaces of one repo differ by exactly that. */
@@ -458,13 +456,13 @@
 .chat-region-go:hover .chat-region-id { color:var(--fur-1); }
 .chat-region-go:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
 .chat-region-x {
-  display:grid; place-items:center; width:18px; height:18px; flex:none;
+  display:grid; place-items:center; width:20px; height:20px; flex:none;
   border-radius:50%; color:var(--fur-1); opacity:.7;
   transition:opacity var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in);
 }
 .chat-region-x:hover { opacity:1; background:rgba(240,169,60,.2); }
 .chat-region-x:active { background:rgba(240,169,60,.3); }
-.chat-region-x svg { width:10px; height:10px; }
+.chat-region-x svg { width:14px; height:14px; }
 
 /* after sending, the areas stay on the message they went with */
 .chat-me-regions { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }

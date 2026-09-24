@@ -45,6 +45,7 @@ const activity = require('./ui/activity-log')
 const chatLog = require('./ui/chat-log')
 const agentChat = require('./ui/agent-chat')
 const voice = require('./ui/voice')
+const unsplash = require('./ui/unsplash')
 
 // ---------- preferences ----------
 // Persisted to <userData>/prefs.json. Loaded lazily and cached in memory;
@@ -2059,8 +2060,8 @@ ipcMain.handle('dictate', async (e, buf) => {
   }
 })
 
-// Voiceover, through the person's own ElevenLabs account. The only part of Fetch
-// that uses the network, and the key lives in the Keychain (see ui/voice.js).
+// Voiceover, through the person's own ElevenLabs account. One of the two parts of
+// Fetch that use the network, and the key lives in the Keychain (see ui/voice.js).
 ipcMain.handle('voice-status', () => voice.status())
 ipcMain.handle('voice-connect', (e, key) => voice.connect(key))
 ipcMain.handle('voice-disconnect', () => voice.clearKey())
@@ -2079,6 +2080,31 @@ ipcMain.handle('voice-speak', async (e, { src, text, voiceId, settings }) => {
     return { ok: false, error: err.message }
   }
 })
+// Photographs for the backdrop picker, through the person's own Unsplash key. The
+// second and last part of Fetch that uses the network (ui/unsplash.js), and the key
+// lives in the Keychain beside the voiceover's, never in prefs.json. Ten photographs
+// ship with the app and need none of this: without a key every handler below still
+// answers, and says in one sentence how to add one.
+//
+// A refusal is an answer, not an exception: the picker (ui/unsplash-picker.js) and
+// Settings both read { ok: false, message }, so no key, no network and a key Unsplash
+// will not take are all one sentence on screen.
+ipcMain.handle('unsplash-status', () => unsplash.status())
+ipcMain.handle('unsplash-connect', (e, key) => unsplash.connect(key))
+ipcMain.handle('unsplash-disconnect', () => unsplash.disconnect())
+ipcMain.handle('unsplash-search', (e, { query, page } = {}) => unsplash.search(query, { page }))
+// The renderer sends back the whole result it was handed. use() looks the photo up by
+// id among the results this client gave out and follows those URLs, not the renderer's,
+// and an object it never gave out is checked host by host. So a compromised renderer
+// cannot make Fetch download from anywhere it likes.
+ipcMain.handle('unsplash-use', async (e, photo) => {
+  const r = await unsplash.use(photo, { dir: proc.userBackdropDir() })
+    .catch(err => ({ ok: false, reason: 'write', message: `That photo could not be saved: ${err.message}` }))
+  activity.record({ op: 'backdrop.unsplash', title: 'Saved a photo from Unsplash',
+    detail: r.ok && r.credit ? r.credit.text : null, ok: !!r.ok, error: r.ok ? null : r.message })
+  return r
+})
+
 ipcMain.handle('chat-engines', async () => {
   const d = await require('./ui/agent-connect').detect()
   return d.clients.filter(c => c.installed && (c.id === 'claude' || c.id === 'codex'))

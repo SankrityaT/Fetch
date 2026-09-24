@@ -35,7 +35,7 @@ body { display:flex; flex-direction:column; }
 .source-card {
   display:grid; grid-template-columns:132px 1fr auto; align-items:center; gap:var(--s-4);
   padding:var(--s-3); text-align:left; cursor:pointer;
-  background:var(--ink-1); border:var(--edge); border-radius:var(--r-lg); box-shadow:var(--sheen);
+  background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-xl); box-shadow:var(--shadow-1), var(--sheen);
   transition:border-color var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in);
 }
 .source-card:hover { border-color:var(--ink-4); background:var(--ink-2); }
@@ -55,8 +55,13 @@ body { display:flex; flex-direction:column; }
 .source-card:hover .source-change { color:var(--fur-1); }
 
 .row { display:flex; align-items:center; gap:var(--s-3); padding:var(--s-1) 0; }
-.row-lbl { width:44px; flex:none; font-size:var(--t-12); color:var(--text-1); font-weight:500; }
-.row-val { width:42px; text-align:right; font-size:var(--t-11); color:var(--text-2); }
+/* A label is as wide as its word ("Similarity" is 53px), 64px at least so the short ones line up, and the value
+   keeps one width whatever it reads ("0dB" or "+10dB"), so every slider in a panel is the
+   same length and never moves while it is dragged (A4). */
+.row-lbl { min-width:64px; flex:none; white-space:nowrap; font-size:var(--t-12); color:var(--text-1); font-weight:500; }
+.row-val { width:48px; flex:none; white-space:nowrap; text-align:right; font-size:var(--t-11); color:var(--text-2);
+  font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
+.row > .slider { flex:1; min-width:0; }
 .cam-controls { margin-top:var(--s-2); padding-top:var(--s-2); border-top:1px solid var(--ink-2);
   transition:opacity var(--dur-2) var(--ease-in); }
 .cam-controls[data-off="true"] { opacity:.3; pointer-events:none; }
@@ -83,20 +88,23 @@ body { display:flex; flex-direction:column; }
 .lib-col { flex:1 1 0; min-width:0; }
 .lib-grid > .empty { flex:1; }
 
-.clip { background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-lg);
+.clip { background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-xl);
   box-shadow:var(--shadow-1), var(--sheen);
   break-inside:avoid; margin-bottom:var(--s-4);
   overflow:visible; transition:box-shadow var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in); }
 .clip:hover { z-index:5; }                    /* tooltips sit above neighbouring cards */
-.clip .clip-shot { border-radius:var(--r-lg) var(--r-lg) 0 0; }
+.clip .clip-shot { border-radius:var(--r-xl) var(--r-xl) 0 0; }
 .clip:hover { box-shadow:var(--shadow-2), var(--sheen); transform:translateY(-2px); }
 .clip-shot { position:relative; background:var(--ink-0); cursor:pointer; display:block;
   width:100%; border:0; padding:0; overflow:hidden; }
-/* height comes from the poster, so the tile is the shape of the take */
-.clip-shot img { width:100%; height:auto; display:block; }
-/* a take with no poster yet has nothing to give it height, so it falls back to the
-   old ratio rather than collapsing to a sliver */
-.clip-shot:not(:has(img)) { aspect-ratio:16/10; }
+/* Every wide tile is one shape, 16:10, so cards side by side are one height: a 16:9 take
+   beside a 16:10 shot used to leave the rows 24px out of step (A3). A tall one (a phone,
+   a portrait window) keeps its own shape, which is what the columns are for; the image
+   says which on load (app.js, .tall). */
+.clip-shot { aspect-ratio:16/10; }
+.clip-shot img { width:100%; height:100%; object-fit:cover; display:block; }
+.clip-shot.tall { aspect-ratio:auto; }
+.clip-shot.tall img { height:auto; }
 .clip-shot .ph { position:absolute; inset:0; display:grid; place-items:center; color:var(--ink-4); }
 .clip-play { position:absolute; inset:0; display:grid; place-items:center; opacity:0;
   background:linear-gradient(transparent,rgba(11,10,9,.6)); transition:opacity var(--dur-1) var(--ease-in); }
@@ -105,16 +113,23 @@ body { display:flex; flex-direction:column; }
   display:grid; place-items:center; }
 .clip-badges { position:absolute; left:8px; bottom:8px; display:flex; gap:5px; }
 .badge { height:19px; padding:0 7px; border-radius:var(--r-pill); background:rgba(11,10,9,.8);
-  backdrop-filter:blur(8px); font:600 9.5px/19px var(--font-mono); letter-spacing:.04em;
+  backdrop-filter:blur(8px); font:600 var(--t-11)/19px var(--font-mono); letter-spacing:.02em;
   text-transform:uppercase; color:var(--text-1); }
 .badge.gold { color:var(--fur-0); }
 .clip-body { padding:var(--s-3); }
-.clip-name { font-size:var(--t-12); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.clip-name { font-size:var(--t-12); line-height:18px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .clip-meta { font-size:var(--t-11); color:var(--text-2); margin-top:2px; font-family:var(--font-mono); }
-.clip-acts { display:flex; flex-wrap:wrap; gap:6px; margin-top:var(--s-3); }
-/* the labelled button takes the slack, icon buttons stay square so all six fit */
-.clip-acts .btn { flex:0 0 auto; width:32px; padding:0; }
-.clip-acts .btn:first-child { flex:1 1 auto; width:auto; padding:0 var(--s-3); }
+/* One row, always: seven actions used to wrap and leave the trash alone on a line of
+   its own (A2). The icon buttons are components.css's circles (.btn-icon); the labelled
+   one takes the slack, and on a card too narrow for its word it drops to an icon too. */
+.clip-body { container:clip / inline-size; }
+.clip-acts { display:flex; flex-wrap:nowrap; gap:6px; margin-top:var(--s-3); min-width:0; }
+.clip-acts .btn:first-child { flex:1 1 auto; min-width:0; }
+@container clip (max-width: 279px) {
+  .clip-acts .btn:first-child { flex:0 0 auto; width:var(--ctl-h-sm, 28px); padding:0; border-radius:50%; }
+  .clip-acts .btn:first-child .clip-act-label { display:none; }
+  .clip-acts { justify-content:space-between; }
+}
 
 /* ── recording HUD ───────────────────────────────────────────────────── */
 #hud {
@@ -164,7 +179,7 @@ body { display:flex; flex-direction:column; }
 
 .ready-card { display:grid; grid-template-columns:104px 1fr auto; align-items:center; gap:var(--s-3);
   width:100%; padding:var(--s-3); text-align:left;
-  background:var(--ink-1); border:var(--edge); border-radius:var(--r-lg); box-shadow:var(--sheen); }
+  background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-xl); box-shadow:var(--shadow-2), var(--sheen); }
 .ready-shot { position:relative; aspect-ratio:16/10; border-radius:var(--r-sm); overflow:hidden;
   background:var(--ink-0); border:1px solid var(--ink-3); }
 .ready-shot img { width:100%; height:100%; object-fit:cover; display:block; }
@@ -281,7 +296,7 @@ body { display:flex; flex-direction:column; }
 .shot-live { position:absolute; top:10px; left:10px; display:inline-flex; align-items:center; gap:6px;
   height:22px; padding:0 9px; border-radius:var(--r-pill);
   background:rgba(10,9,8,.78); backdrop-filter:blur(10px);
-  font:600 9.5px/1 var(--font-ui); letter-spacing:.11em; text-transform:uppercase; color:var(--text-1); }
+  font:600 var(--t-11)/1 var(--font-ui); letter-spacing:.09em; text-transform:uppercase; color:var(--text-1); }
 .shot-live::before { content:''; width:5px; height:5px; border-radius:50%; background:var(--good);
   animation:pulse 1.6s infinite; }
 
@@ -416,17 +431,19 @@ body { display:flex; flex-direction:column; }
 
 /* ── wizard footer summary ───────────────────────────────────────────── */
 .wiz-summary { display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+/* A long app name ("Visual Studio Code - fetch") used to push the chip past its row and
+   off the footer. It keeps its cap and ends in an ellipsis instead. */
 .sum { display:inline-flex; align-items:center; gap:5px; height:24px; padding:0 9px;
   border-radius:var(--r-pill); font-size:var(--t-11); font-weight:600; letter-spacing:-.005em;
-  border:1px solid transparent; max-width:190px; }
-.sum .icon-sm { width:13px; height:13px; }
+  border:1px solid transparent; max-width:190px; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sum > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sum .icon-sm { width:14px; height:14px; }   /* the icon floor, BRAND.md */
 .sum.on { background:rgba(240,169,60,.12); border-color:rgba(240,169,60,.3); color:var(--fur-0); }
 .sum.off { background:var(--ink-2); border-color:var(--ink-3); color:var(--text-2); }
 .sum.off .icon-sm { opacity:.6; }
 
 /* device pickers */
-.dev-row { display:flex; align-items:center; gap:var(--s-3); }
-.dev-row .caps { margin:0; }
 .select:disabled { opacity:.45; cursor:default; }
 
 /* painted mascot: a small settle when the expression changes */
@@ -446,7 +463,7 @@ img.biscuit { object-fit:contain; }
 .derived-row .icon-sm { color:var(--fur-1); flex:none; }
 .d-name { flex:1; font-size:var(--t-11); font-weight:600; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; }
-.d-size { font-size:10px; color:var(--text-2); flex:none; }
+.d-size { font-size:var(--t-11); color:var(--text-2); flex:none; white-space:nowrap; }
 
 .tb-mark { width:26px; height:26px; object-fit:contain; flex:none; }
 
@@ -501,23 +518,32 @@ img.biscuit { object-fit:contain; }
 .hero-send:not(:disabled):hover { transform:scale(1.06); }
 
 .hero-chips {
-  display:flex; flex-wrap:wrap; justify-content:center; gap:var(--s-2);
+  /* As wide as the chips, not the hero's 600px column: four chips there wrapped 3 + 1
+     and left "Transcribe my last take" alone on a line (A5). The row is centred by
+     .hero, so running past the column spills evenly both sides. */
+  display:flex; flex-wrap:nowrap; justify-content:center; gap:var(--s-2);
+  width:max-content; max-width:calc(100cqw - 2 * var(--s-5));
   margin-top:var(--s-4);
 }
-.hero-chip {
-  display:inline-flex; align-items:center; gap:7px;
-  height:34px; padding:0 14px; border-radius:var(--r-pill);
-  background:var(--ink-1); border:var(--edge-soft); color:var(--text-1);
-  font-size:var(--t-12); font-weight:500;
-  box-shadow:var(--shadow-1);
-  transition:color var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in);
+.hero-chip { flex:none; white-space:nowrap; }
+/* Where four will not fit in one row (the chat docked, the smallest window), two rows
+   of two, never three and one. Three fit in one row anywhere the view can be. */
+.view[data-view="record"] { container-type:inline-size; }
+@container (max-width: 720px) {
+  .hero-chips:has(> .hero-chip:nth-child(4)):not(:has(~ .hero-ready:not([hidden]))) {
+    display:grid; grid-template-columns:repeat(2, max-content); justify-content:center;
+  }
 }
+/* The chip itself is .chip .chip-lg in components.css. What the hero adds is the lift
+   on hover and the gold one that records. */
+.hero-chip { transition:color var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in),
+  border-color var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in); }
 .hero-chip:hover { color:var(--text-0); transform:translateY(-1px); }
 .hero-chip svg { color:var(--text-2); }
 .hero-chip:hover svg { color:var(--fur-1); }
 
 /* the one that records, still reading as the primary thing you can do here */
-.hero-chip-go { background:rgba(240,169,60,.13); border-color:rgba(240,169,60,.3); color:var(--fur-0); }
+.hero-chip-go { background:var(--press-bg); border-color:rgba(240,169,60,.3); color:var(--fur-0); }
 .hero-chip-go svg { color:var(--fur-1); }
 .hero-chip-go:hover { background:rgba(240,169,60,.2); color:var(--text-0); }
 /* Once a setup exists its card has Change and the red Start, so the chip would be a

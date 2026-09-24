@@ -124,6 +124,7 @@ const TITLES = {
   'recordings.trash': 'Moved a recording to the Trash',
   'look.schema': 'Read the look settings',
   'look.list': 'Listed looks',
+  'photos.do': 'Worked with backdrop photographs',
   'look.apply': 'Changed a look',
   'look.save': 'Saved a look',
   'edit.sheet': 'Looked over the whole edit',
@@ -639,7 +640,17 @@ const ops = {
     // a drawn frame round one of those is two title bars: the compositor's ownChrome
     // (ui/compositor/plan.js) and review's double-chrome are the only things that read
     // it, and neither can work it out from pixels.
-    const cap = { kind: got.kind, ...(got.app ? { app: got.app } : {}), ...(got.title ? { title: got.title } : {}) }
+    //
+    // And the address, where this capture was of a project's own page and Fetch knew it
+    // without being told: the browser window was found by the server the project is
+    // running (ui/project-windows.js candidate url), so the address is a fact about the
+    // capture rather than a guess. A drawn browser frame fills its field from this
+    // (ui/compositor/plan.js barText), and Fetch still invents no host: with nothing
+    // known the field is simply drawn empty.
+    const found = proj && proj.target && proj.target.pick
+    const url = found && found.kind === 'browser' && found.url ? String(found.url) : ''
+    const cap = { kind: got.kind, ...(got.app ? { app: got.app } : {}), ...(got.title ? { title: got.title } : {}),
+      ...(url ? { url } : {}) }
     // And where the glass is, on a simulator. That one rectangle is what crops the
     // device's own outline out of the picture, what turns a device point into a place on
     // the frame, and what lets the drawn phone be the only phone in the deliverable.
@@ -823,8 +834,103 @@ const ops = {
       looks: Look.list(looksDir()).map(p => ({ name: p.name, label: p.label, about: p.doc || undefined,
         for: p.for || undefined, yours: p.mine || undefined })),
       backgrounds: { gradients: Object.keys(require('./look-schema').GRADIENTS),
-        images: deps.proc.backdropList().filter(b => b.image).map(b => b.id) },
+        images: deps.proc.backdropList().filter(b => b.image).map(b => b.id),
+        // Most of those images are photographs somebody took. The photos tool names
+        // each photographer, and searches Unsplash for one that is not here yet.
+        photographs: 'photos lists these with their photographers and finds more' },
     }
+  },
+
+  // ── photographs, for a ground a take sits on ─────────────────────────────
+  // "Put it on a photo of mountains." Ten photographs ship with Fetch, each with the
+  // name of whoever took it, and with the person's own Unsplash key the same tool
+  // searches Unsplash for one that is not bundled. Three actions behind one op, the way
+  // a simulator is one: list, search, use.
+  //
+  // Two rules this op keeps, and they are Unsplash's rather than Fetch's.
+  // A search leaves the machine, so it runs on the person's ask and never on a hunch of
+  // the agent's own: the tool says so, and with no key it costs nothing because nothing
+  // is sent. And every photograph carries its credit out of here, in the result the
+  // agent reads, so the sentence it writes back can name the photographer.
+  async 'photos.do'(args = {}, ctx) {
+    const unsplash = require('./unsplash')
+    const said = x => String(x == null ? '' : x).trim()
+    const action = said(args.action).toLowerCase() ||
+      (said(args.query) ? 'search' : said(args.photo) ? 'use' : 'list')
+    const credit = c => c && { photographer: c.photographer, profile: c.profile, photo: c.photo, text: c.text }
+    // Say who took it, wherever a photograph leaves this op. A credit nobody passes on
+    // is a licence term quietly broken, and the agent is the one writing the reply.
+    const CREDIT_RULE = 'Name the photographer when you say what you did, in the words of credit.text.'
+
+    if (action === 'list') {
+      const st = await unsplash.status().catch(() => ({ connected: false }))
+      const photos = deps.proc.backdropList().filter(b => b.image)
+        .map(b => ({ id: b.id, label: b.label, yours: !!b.mine, ...(b.credit ? { credit: credit(b.credit) } : {}) }))
+      return {
+        photos,
+        use: 'photos with action use and the id puts one under a take: background.kind image, background.image that id.',
+        search: st.connected
+          ? 'photos with action search and a query looks on Unsplash for one that is not here.'
+          : unsplash.NO_KEY,
+        credit: photos.some(p => p.credit) ? CREDIT_RULE : undefined,
+      }
+    }
+
+    if (action === 'search') {
+      const query = said(args.query)
+      if (!query) throw new Error('search needs query: what the person asked for, for example "mountains at dusk".')
+      const r = await unsplash.search(query, { page: args.page })
+      // No key, no network, no answer to spend a turn on: the sentence says what the
+      // person has to do, and it is the same sentence the picker shows them.
+      if (r.ok === false) throw new Error(r.message || r.why || 'Unsplash did not answer.')
+      return {
+        query: r.query, page: r.page || 1, pages: r.pages || 0, total: r.total || 0,
+        photos: (r.results || []).map(p => ({
+          photo: p.id,
+          about: p.alt || null,
+          size: p.width && p.height ? `${p.width} x ${p.height}` : null,
+          colour: p.color || null,
+          credit: credit(p.credit),
+        })),
+        use: 'photos with action use and photo set to one of these ids saves it and puts it under the take.',
+        credit: CREDIT_RULE,
+        source: 'Unsplash',
+      }
+    }
+
+    if (action !== 'use') throw new Error(`photos takes list, search or use, and "${action}" is none of them.`)
+
+    // Two kinds of id, and the difference is whether anything leaves the machine. An
+    // img: id is already a file on this Mac (bundled, or one the person or an earlier
+    // search saved), so it is applied with no network at all. Anything else is a photo
+    // from a search this session ran, which is fetched once into the person's own
+    // backdrops folder and never fetched again.
+    const want = said(args.photo || args.id)
+    if (!want) throw new Error('use needs photo: an id from photos list, or one from photos search.')
+    let id = want, cr = null, saved = null
+    if (/^img:/i.test(want)) {
+      const hit = deps.proc.imageBackdrops().find(b => b.id === want)
+      if (!hit) {
+        const near = deps.proc.backdropList().filter(b => b.image).map(b => b.id).slice(0, 8).join(', ')
+        throw new Error(`no backdrop called ${want} on this Mac. photos list names the ones there are: ${near}`)
+      }
+      id = hit.replacedBy || hit.id
+      cr = credit(hit.credit)
+    } else {
+      const r = await unsplash.use(want, { dir: deps.proc.userBackdropDir() })
+      if (!r || r.ok === false) throw new Error((r && (r.message || r.why)) || 'that photo could not be saved.')
+      id = r.id
+      cr = credit(r.credit)
+      saved = { file: r.file, already: !!r.already, source: 'Unsplash' }
+    }
+
+    const out = { photo: id, ...(cr ? { credit: cr, crediting: CREDIT_RULE } : {}), ...(saved ? { saved } : {}) }
+    if (!said(args.path)) return { ...out, applied: false, next: 'apply_look with background: { kind: "image", image: "' + id + '" }' }
+    // Through look.apply, so it lands in the editor in front of the person and one Undo
+    // takes it back, exactly as any other change to a look does.
+    const applied = await ops['look.apply']({ path: args.path, step: args.step,
+      look: { background: { kind: 'image', image: id } } }, ctx)
+    return { ...out, applied: true, ...applied }
   },
 
   // A look onto a recording's edit: a preset, a patch, fields to reset, or all three.
@@ -5213,7 +5319,12 @@ function lookWarnings(patch, doc, file, ctx) {
     browser = !!(note && note.front && note.front.product) || /chrome|safari|arc\b|firefox|edge|brave|aside|opera|vivaldi|orion|dia\b/i.test(app)
   } catch {}
   let images
-  try { images = deps.proc.backdropList().filter(b => b.image).map(b => b.id) } catch {}
+  // Every image id that really draws something, which is a longer list than the one the
+  // picker offers: the three drawn gradients the photographs replaced still resolve to
+  // the photograph nearest them (processor.js RETIRED_BACKDROPS), so a look saved last
+  // month renders. Warning about one of those would be telling the truth about the
+  // list and a lie about the export.
+  try { images = deps.proc.imageBackdrops().map(b => b.id) } catch {}
   // Keystrokes are drawn from a key track on the take (ui/compositor/marks.js), and
   // Fetch does not capture the keyboard yet: reading it needs an event tap and the Input
   // Monitoring permission, which is a different promise to the person than "Fetch
@@ -5359,6 +5470,12 @@ function logOp(op, ctx, t0, args, result, error) {
   else if (op === 'chat.ask' && result) detail = result.answered ? `they chose ${result.label}` : result.why
   else if (op === 'chat.propose' && result) detail = result.applied ? 'applied' : result.why
   else if (op === 'voice.speak' && result) detail = `${result.characters} characters, ${result.voice}`
+  // the photographer, so the log line credits whoever took it too
+  else if (op === 'photos.do' && result) {
+    detail = result.photo ? `${result.photo}${result.credit ? ` · ${result.credit.text}` : ''}`
+      : result.query ? `"${result.query}", ${(result.photos || []).length} photos`
+        : `${(result.photos || []).length} photos`
+  }
   else if (op === 'edit.enhance' && result) detail = result.path
   else if (op === 'recordings.trash' && result) detail = result.trashed
   else if (op === 'settings.set' && args && args.settings) detail = Object.keys(args.settings).join(', ')

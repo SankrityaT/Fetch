@@ -92,7 +92,10 @@
 
 /* transport */
 .ed-transport { flex:none; display:flex; align-items:center; gap:var(--s-3); }
-.ed-transport .time { font-size:var(--t-12); color:var(--text-1); }
+/* a time readout never wraps ("0:00 /" over "0:08", E1): the container queries below
+   take things away before it could have to */
+.ed-transport .time { flex:none; white-space:nowrap; font-size:var(--t-12); color:var(--text-1); }
+#edOutLen, #edSize { flex:none; }
 /* which take this is, since every export writes <Take>/<Take>.mp4 */
 .ed-name { flex:1; min-width:0; text-align:center; font-size:var(--t-13); font-weight:600; color:var(--text-0);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -102,7 +105,7 @@
   border-radius:var(--r-sm); background:var(--ink-2); color:var(--text-1); }
 .exp-dest .mono { font-size:var(--t-12); color:var(--text-0); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #expReplace { margin-top:var(--s-2); }
-.pc { width:38px; height:38px; border-radius:50%; display:grid; place-items:center;
+.pc { flex:none; width:38px; height:38px; border-radius:50%; display:grid; place-items:center;
   background:var(--ink-2); border:var(--edge); color:var(--text-0); cursor:pointer; box-shadow:var(--sheen); }
 .pc:hover { background:var(--ink-3); }
 .pc.main { width:46px; height:46px; background:var(--fur-1); border-color:var(--fur-1); color:#231703; }
@@ -114,21 +117,45 @@
 /* ── inspector ───────────────────────────────────────────────────────── */
 .ed-inspector { flex:0 0 312px; width:312px; border-left:var(--edge); background:var(--ink-1);
   display:flex; flex-direction:column; min-height:0; height:100%; overflow:hidden; }
-.insp-tabs { flex:none; display:flex; gap:2px; padding:var(--s-3); border-bottom:var(--edge); }
-.insp-tabs button { flex:1; height:32px; border:0; border-radius:var(--r-sm); background:transparent;
-  color:var(--text-1); cursor:pointer; display:grid; place-items:center;
-  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in); }
-.insp-tabs button:hover { color:var(--text-0); background:var(--ink-2); }
-.insp-tabs button[aria-selected="true"] { background:var(--ink-3); color:var(--fur-1); }
+/* The tabs are the shared segmented control (components.css .seg): its pill, its height
+   and its selected look. They were rounded rectangles of their own (E7). This only
+   stretches the row across the inspector and lets eight or nine icons share it. */
+.insp-tabs { flex:none; padding:var(--s-3); border-bottom:var(--edge); }
+.insp-seg { display:flex; width:100%; }
+.insp-seg button { flex:1 1 0; padding:0; }
 .insp-body { flex:1 1 0; min-height:0; overflow-y:auto; overscroll-behavior:contain;
   padding:var(--s-4); display:flex; flex-direction:column; gap:var(--s-4); }
 .insp-panel { display:flex; flex-direction:column; gap:var(--s-3); }
 .insp-panel[hidden] { display:none; }
 .insp-sec { font-size:var(--t-11); font-weight:600; letter-spacing:.09em; text-transform:uppercase;
   color:var(--text-2); margin-bottom:2px; }
+/* One rhythm for section heads (J10): 24px above a head, from whatever came before it,
+   whether the head opens a group in the panel or sits inside one. The panel's 12px gap
+   is half of it, so a group's head adds the other half. Hidden siblings do not count,
+   so a panel whose first group is hidden (the voiceover's key form, a shot's zooms)
+   starts at the top rather than 12px down. No head carries an inline margin. */
+.insp-panel > :not([hidden]) ~ .insp-sec,
+.insp-panel > :not([hidden]) ~ :is(div, section):has(> .insp-sec:first-child, > .insp-sec-row:first-child) { margin-top:var(--s-3); }
+.insp-panel > * > :not([hidden]) ~ .insp-sec { margin-top:var(--s-5); }
+/* a head with its one action on the right */
+.insp-sec-row { display:flex; align-items:center; gap:var(--s-2); min-width:0; }
+.insp-sec-row .insp-sec { flex:1; min-width:0; margin:0; }
+/* the small, even steps inside a group: a button or row after content, a hint under a control */
+.insp-after { margin-top:var(--s-2); }
+.insp-hint { margin-top:var(--s-2); }
+.insp-lede { margin:0; font-size:var(--t-12); line-height:1.5; color:var(--text-1); }
+.opt.opt-tight { padding:var(--s-2) 0; }
+/* two buttons that split a row between them */
+.insp-pair { gap:var(--s-2); }
+.insp-pair > .btn { flex:1 1 0; min-width:0; }
+.cut-list, .layer-list { display:flex; flex-direction:column; gap:6px; margin-top:var(--s-2); }
+.cut-list:empty, .layer-list:empty { display:none; }
 .insp-foot { flex:none; padding:var(--s-3) var(--s-4); border-top:var(--edge); display:flex; flex-direction:column; gap:var(--s-2); }
 
-.aspect-chips { display:flex; flex-wrap:wrap; gap:6px; }
+/* a row of chips is components.css .chips; this name stays for the look's own rows
+   (ui/inspector.js), which use it, and it adds nothing to the chips themselves */
+.aspect-chips { display:flex; flex-wrap:wrap; gap:6px; min-width:0; }
+.aspect-chips > .chip { flex:none; }
 
 /* captions */
 .cue-list { display:flex; flex-direction:column; gap:6px; }
@@ -136,7 +163,7 @@
   padding:8px; border-radius:var(--r-sm); background:var(--ink-2); border:1px solid transparent; cursor:pointer; }
 .cue:hover { border-color:var(--ink-4); }
 .cue[data-active="true"] { border-color:var(--fur-1); background:rgba(240,169,60,.1); }
-.cue .t { font-family:var(--font-mono); font-size:10.5px; color:var(--text-2); padding-top:2px; }
+.cue .t { font-family:var(--font-mono); font-size:var(--t-11); color:var(--text-2); padding-top:1px; }
 .cue .x { font-size:var(--t-12); line-height:1.45; user-select:text; }
 
 /* text layer list */
@@ -160,27 +187,22 @@
 .tl-handle.in { transform:translateX(-7px); } .tl-handle.out { transform:translateX(-7px); }
 #playhead { position:absolute; top:0; bottom:0; width:2px; background:#fff; pointer-events:none;
   box-shadow:0 0 8px rgba(255,255,255,.5); }
-.tl-ticks { position:absolute; inset:0; pointer-events:none; }
+/* over a cut's hatch, so a removed span still reads its times; under the handles */
+.tl-ticks { position:absolute; inset:0; pointer-events:none; z-index:4; }
 /* on the same dark pill as the lane tags: bare grey text vanished over a light take's
    thumbnails */
-.tl-ticks span { position:absolute; top:4px; height:16px; padding:0 5px; border-radius:var(--r-pill);
+.tl-ticks span { position:absolute; top:4px; height:20px; padding:0 6px; border-radius:var(--r-pill);
   background:rgba(10,9,8,.72); backdrop-filter:blur(6px);
-  font:500 9.5px/16px var(--font-mono); color:var(--text-1);
-  transform:translateX(-50%); }
+  font:500 var(--t-11)/20px var(--font-mono); font-variant-numeric:tabular-nums; color:var(--text-1);
+  white-space:nowrap; transform:translateX(-50%); }
 
-
-.dd-item { display:flex; align-items:center; gap:8px; width:100%; padding:7px 9px;
-  border-radius:7px; background:transparent; color:var(--text-1);
-  font-size:var(--t-12); text-align:left;
-  transition:background var(--dur-1) var(--ease-in), color var(--dur-1) var(--ease-in); }
-.dd-item span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.dd-item .icon-sm { opacity:0; color:var(--fur-1); }
-.dd-item:hover { background:var(--ink-3); color:var(--text-0); }
-.dd-item[aria-selected="true"] { color:var(--fur-0); }
-.dd-item[aria-selected="true"] .icon-sm { opacity:1; }
+/* the font menus' rows are the shared popover rows (components.css .popover-row); the
+   copy of the old dropdown rows that lived here overrode them and is gone */
 
 /* ── colour ──────────────────────────────────────────────────────────── */
-.swatches { display:flex; gap:5px; flex:1; flex-wrap:wrap; }
+/* seven swatches and the well on one row (J4); a narrower panel squeezes the gap, never wraps */
+.swatches { display:flex; gap:5px; flex:1; min-width:0; flex-wrap:nowrap; }
+.swatches .sw { flex:none; }
 .sw { width:19px; height:19px; border-radius:6px; border:1.5px solid rgba(255,255,255,.16);
   transition:transform var(--dur-1) var(--ease-in), border-color var(--dur-1) var(--ease-in); }
 .sw:hover { transform:scale(1.14); }
@@ -188,15 +210,12 @@
   box-shadow:0 0 0 2px rgba(240,169,60,.28); }
 .colour-well { position:relative; width:28px; height:28px; flex:none; border-radius:8px;
   overflow:hidden; border:1.5px solid var(--ink-4); cursor:pointer;
-  background:conic-gradient(from 0deg,#FF4438,#FBBF24,#4ADE80,#5B9DFF,#A78BFA,#F472B6,#FF4438); }
+  background:conic-gradient(from 0deg,#F87171,#FBBF24,#4ADE80,#5B9DFF,#A78BFA,#F472B6,#F87171); }
 .colour-well input { position:absolute; inset:-6px; width:150%; height:150%; opacity:0; cursor:pointer; }
 .colour-well span { position:absolute; inset:0; box-shadow:inset 0 0 0 2px rgba(0,0,0,.3); border-radius:6px; }
 
-/* alignment segmented control */
-.seg-sm { padding:2px; }
-.seg-sm button { height:24px; padding:0 9px; }
-.seg-sm button:nth-child(1) .icon-sm { transform:scaleX(.72) translateX(-3px); }
-.seg-sm button:nth-child(3) .icon-sm { transform:scaleX(.72) translateX(3px); }
+/* the small segmented control is components.css .seg-sm; the alignment buttons carry
+   their own left, centre and right glyphs (editor.js alignIco), not one "T" squeezed (J3) */
 
 /* ── backdrop picker ─────────────────────────────────────────────────── */
 .bd-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
@@ -237,22 +256,29 @@
 .cap-overlay .w[data-pill="true"] { background:var(--fur-1); color:var(--ink-1); text-shadow:none;
   border-radius:999px; padding:0 .16em; margin:0 -.16em; }
 
-/* cut regions on the timeline */
+/* cut regions on the timeline. A removed span is taken out of the picture, so it is
+   drawn as a hole: the lanes darkened under a neutral hatch between two ink edges. It
+   was record red, which on this timeline read as "recording here" (S3); red is the
+   capture state and nothing else. The hatch and the scissors in the list say "cut". */
 .tl-wrap[data-cut="true"] { cursor:crosshair; }
 .tl-cut { position:absolute; top:0; bottom:0; z-index:3;
-  background:repeating-linear-gradient(45deg,rgba(255,68,56,.30) 0 6px,rgba(255,68,56,.14) 6px 12px);
-  border-left:1.5px solid var(--rec); border-right:1.5px solid var(--rec); }
-.tl-cut.ghost { background:rgba(255,68,56,.22); pointer-events:none; }
-.tl-cut-x { position:absolute; top:5px; right:3px; width:17px; height:17px; border-radius:50%;
-  display:grid; place-items:center; background:var(--rec); color:#fff; opacity:0;
-  transition:opacity var(--dur-1) var(--ease-in); }
-.tl-cut:hover .tl-cut-x { opacity:1; }
-.cut-row { display:flex; align-items:center; gap:7px; padding:6px 8px; border-radius:var(--r-sm);
+  background:repeating-linear-gradient(45deg,rgba(10,9,8,.78) 0 5px,rgba(82,73,65,.62) 5px 10px);
+  border-left:1.5px solid var(--text-2); border-right:1.5px solid var(--text-2); }
+.tl-cut.ghost { background:rgba(10,9,8,.55); border-color:var(--ink-4); pointer-events:none; }
+.tl-cut-x { position:absolute; top:5px; right:3px; width:20px; height:20px; border-radius:50%;
+  display:grid; place-items:center; background:var(--ink-3); color:var(--text-0); opacity:0;
+  box-shadow:0 1px 4px rgba(0,0,0,.5);
+  transition:opacity var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in); }
+.tl-cut-x .icon-sm { width:14px; height:14px; }
+.tl-cut-x:hover { background:var(--ink-4); }
+.tl-cut:hover .tl-cut-x, .tl-cut-x:focus-visible { opacity:1; }
+.cut-row { display:flex; align-items:center; gap:var(--s-2); min-width:0; padding:6px 10px; border-radius:var(--r-sm);
   background:var(--ink-2); border:1px solid transparent; color:var(--text-1);
   font-size:var(--t-11); text-align:left; width:100%; }
-.cut-row:hover { border-color:rgba(255,68,56,.4); color:var(--text-0); }
-.cut-row .icon-sm { color:var(--rec); flex:none; }
-.cut-len { margin-left:auto; color:var(--rec); font-weight:600; }
+.cut-row > .mono { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cut-row:hover { border-color:var(--ink-4); color:var(--text-0); }
+.cut-row .icon-sm { color:var(--text-2); flex:none; }
+.cut-len { flex:none; margin-left:auto; color:var(--text-1); font-weight:600; }
 
 /* dragged caption sits wherever it was dropped */
 .cap-overlay[data-pos="free"] { align-items:flex-start; justify-content:flex-start; padding:0; }
@@ -267,14 +293,20 @@
   background:var(--ink-2); border:1px solid rgba(240,169,60,.35); border-radius:var(--r-md);
   box-shadow:var(--sheen); animation:riseIn var(--dur-3) var(--ease-in); }
 .restore-dog { width:34px; height:34px; object-fit:contain; flex:none; }
-.restore-text { flex:1; font-size:var(--t-12); font-weight:500; }
+/* with a long name or beside the chat the words keep a readable measure and the two
+   buttons go under them, instead of the words breaking one to a line */
+.restore-bar { flex-wrap:wrap; row-gap:var(--s-2); }
+.restore-text { flex:1 1 200px; min-width:0; font-size:var(--t-12); font-weight:500; }
+.restore-bar .btn { flex:none; }
 .restore-text .dimmer { font-weight:400; }
 
 /* a working state that shows Biscuit doing the work, not just a bar */
 .work { display:flex; align-items:center; gap:var(--s-3); }
 .work[hidden] { display:none; }
 .work-dog { width:92px; height:54px; object-fit:contain; flex:none; }
-.work-label { font-size:var(--t-11); color:var(--text-1); margin-bottom:6px; font-weight:500; }
+.work-body { flex:1; min-width:0; }
+.work-label { font-size:var(--t-11); color:var(--text-1); margin-bottom:6px; font-weight:500;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 video.motion, img.motion { display:block; }
 
 .bd-add { border-style:dashed; color:var(--text-2); }
@@ -283,9 +315,9 @@ video.motion, img.motion { display:block; }
 /* full screen export state */
 .export-scrim { background:rgba(6,5,4,.86); }
 .export-card { display:flex; flex-direction:column; align-items:center; gap:var(--s-3);
-  padding:var(--s-7) var(--s-8); border-radius:var(--r-lg);
-  background:var(--ink-1); border:var(--edge); box-shadow:var(--shadow-modal);
-  animation:pop var(--dur-3) var(--ease-in); min-width:520px; }
+  padding:var(--s-7) var(--s-8); border-radius:var(--r-xl);
+  background:var(--ink-1); border:var(--edge-soft); box-shadow:var(--shadow-modal), var(--sheen);
+  animation:pop var(--dur-3) var(--ease-in); width:min(520px, calc(100vw - 64px)); box-sizing:border-box; }
 .export-dog { width:340px; height:196px; object-fit:contain; }
 .export-dog-done { animation:dog-land var(--dur-3) var(--ease-in); }
 @keyframes dog-land { from { transform:scale(.9); opacity:.4; } to { transform:none; opacity:1; } }
@@ -326,18 +358,23 @@ video.motion, img.motion { display:block; }
   background:rgba(10,9,8,.7); color:var(--text-1); opacity:0;
   transition:opacity var(--dur-1) var(--ease-in); }
 .tl-lane-extra:hover .lane-x { opacity:1; }
-.lane-x:hover { color:var(--rec); }
+.lane-x:hover { color:var(--text-0); background:var(--ink-3); }
+.lane-x .icon-sm { width:14px; height:14px; }
 
 .extra-file { padding:7px 9px; border-radius:var(--r-sm); background:var(--ink-2);
   border:1px solid rgba(201,127,30,.35); font-size:var(--t-11); color:var(--fur-0);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-bottom:8px; }
-.lane-tag { position:absolute; top:4px; left:6px; z-index:2;
-  display:inline-flex; align-items:center; gap:4px;
-  height:16px; padding:0 6px; border-radius:var(--r-pill);
+/* On the ticks' row, at the same height and size as a tick. 11px like every other
+   small label (S1): at 9px uppercase it was the hardest text in the app to read, and
+   11px capitals would take half the lane, so the words sit as written. The icon is the
+   14px floor (S2). */
+.lane-tag { position:absolute; top:4px; left:6px; z-index:4;
+  display:inline-flex; align-items:center; gap:5px; max-width:calc(100% - 44px);
+  height:20px; padding:0 8px 0 6px; border-radius:var(--r-pill);
   background:rgba(10,9,8,.72); backdrop-filter:blur(6px);
-  font:600 9px/1 var(--font-ui); letter-spacing:.08em; text-transform:uppercase;
+  font:600 var(--t-11)/1 var(--font-ui); letter-spacing:.01em; white-space:nowrap; overflow:hidden;
   color:var(--text-2); pointer-events:none; }
-.lane-tag .icon-sm { width:10px; height:10px; }
+.lane-tag .icon-xs { flex:none; }
 
 /* a playhead you can actually grab, including at zero */
 #playhead { z-index:6; }
@@ -396,7 +433,7 @@ video.motion, img.motion { display:block; }
 
 /* the id is the handle an agent uses, so it is always visible, never on hover only */
 .tl-beat-id {
-  flex:none; font-size:9px; font-weight:600; letter-spacing:.02em;
+  flex:none; font-size:var(--t-11); font-weight:600; letter-spacing:.01em;
   color:var(--text-2); opacity:.75;
 }
 .tl-beat-label {
@@ -444,12 +481,12 @@ video.motion, img.motion { display:block; }
   background:var(--ink-1); border:var(--edge-soft);
 }
 .vo-voice-play:hover { color:var(--fur-1); border-color:var(--fur-2); }
-.vo-voice-play svg { width:9px; height:9px; }
+.vo-voice-play svg { width:14px; height:14px; }
 
 .vo-voice-txt { min-width:0; display:flex; flex-direction:column; gap:1px; }
 .vo-voice-name { font-size:var(--t-12); font-weight:500; }
 .vo-voice-tags {
-  font-size:9.5px; color:var(--text-2); text-transform:lowercase;
+  font-size:var(--t-11); color:var(--text-2); text-transform:lowercase;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 
@@ -463,18 +500,14 @@ video.motion, img.motion { display:block; }
 .vo-script:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
 
 .vo-script-foot { display:flex; align-items:center; justify-content:space-between; margin-top:6px; }
-.vo-count { font-size:var(--t-11); color:var(--text-2); }
+.vo-count { flex:none; font-size:var(--t-11); color:var(--text-2); }
 
 .vo-go { width:100%; margin-top:var(--s-4); }
 
-.vo-connect { display:flex; gap:var(--s-2); margin-top:var(--s-1); }
-.vo-connect input {
-  flex:1; min-width:0; height:30px; padding:0 11px;
-  background:var(--ink-2); border:var(--edge-soft); border-radius:var(--r-pill);
-  font-size:var(--t-12); color:var(--text-0);
-}
-.vo-connect input::placeholder { color:var(--text-2); }
-.vo-connect input:focus-visible { outline:2px solid var(--fur-1); outline-offset:2px; }
+/* the key field is components.css .input.input-sm, the height of the Connect button
+   beside it; its own 30px pill is gone (K3) */
+.vo-connect { display:flex; align-items:center; gap:var(--s-2); margin-top:var(--s-1); }
+.vo-connect .input { flex:1; min-width:0; }
 
 /* ── zooms ────────────────────────────────────────────────────────────────
    Explicit zooms by id. Gold-tinted, the one hue this app reserves for "the thing
@@ -493,8 +526,8 @@ video.motion, img.motion { display:block; }
   transition:background var(--dur-1) var(--ease-in);
 }
 .tl-zoom:hover { background:rgba(240,169,60,.26); }
-.tl-zoom-id { font-size:11px; font-weight:600; flex-shrink:0; }
-.tl-zoom-x { font-size:11px; color:var(--fur-1); opacity:.85; white-space:nowrap; }
+.tl-zoom-id { font-size:var(--t-11); font-weight:600; flex-shrink:0; }
+.tl-zoom-x { font-size:var(--t-11); color:var(--fur-1); opacity:.85; white-space:nowrap; }
 /* too short for id and detail (editor.js fitPills): the id alone, whole */
 .tl-zoom.tight, .tl-mark.tight { padding:0 4px; }
 .tl-zoom.tight .tl-zoom-x, .tl-mark.tight .tl-mark-kind { display:none; }
@@ -510,8 +543,8 @@ video.motion, img.motion { display:block; }
 }
 .tl-mark:hover { background:var(--ink-3); }
 .tl-mark[data-kind="redact"] { background:rgba(251,191,36,.14); border-color:rgba(251,191,36,.45); color:#FDE68A; }
-.tl-mark-id { font-size:11px; font-weight:600; flex-shrink:0; }
-.tl-mark-kind { font-size:11px; opacity:.85; white-space:nowrap; }
+.tl-mark-id { font-size:var(--t-11); font-weight:600; flex-shrink:0; }
+.tl-mark-kind { font-size:var(--t-11); opacity:.85; white-space:nowrap; }
 
 /* ── text layers ──────────────────────────────────────────────────────────
    Neutral like marks: a text is presentation. The selected one gets the gold edge
@@ -528,8 +561,8 @@ video.motion, img.motion { display:block; }
 .tl-text:focus-visible { outline:2px solid var(--fur-1); outline-offset:-2px; }
 .tl-text[data-sel="true"] { border-color:var(--fur-1); color:var(--text-0); }
 .tl-text[data-sel="true"] .tl-text-words { font-weight:600; }
-.tl-text-id { font-size:11px; font-weight:600; }
-.tl-text-words { font-size:11px; opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tl-text-id { font-size:var(--t-11); font-weight:600; }
+.tl-text-words { font-size:var(--t-11); opacity:.85; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 /* the blurred fill sits under everything else in the frame */
 .stage-frame > .bd-fill ~ * { position:relative; z-index:1; }
 .stage-frame > .bd-fill ~ .cap-overlay, .stage-frame > .bd-fill ~ .cam-bubble { position:absolute; z-index:2; }
@@ -543,7 +576,7 @@ video.motion, img.motion { display:block; }
 .ed-ask-dog { width:20px; height:20px; flex:none; border-radius:50%; object-fit:cover;
   object-position:50% 20%; background:var(--ink-3); }
 .ed-kbd { font:500 var(--t-11)/1 var(--font-mono); color:var(--text-2); }
-.ed-ask[aria-pressed="true"] { background:rgba(240,169,60,.14); border-color:var(--fur-1); color:var(--fur-0); }
+/* the pressed look itself is .btn[aria-pressed="true"] in components.css */
 .ed-ask[aria-pressed="true"] .ed-kbd { color:var(--fur-1); }
 .ed-undo-agent { gap:6px; }
 .ed-undo-agent[hidden] { display:none; }
@@ -552,7 +585,9 @@ video.motion, img.motion { display:block; }
    a full circle. The skip buttons go before the take's name is cut short: at 1240
    wide with the chat docked they left it "SuiteA Latest Ta...", and a click on the
    timeline still gets anywhere faster. */
-@container (max-width:640px) {
+/* 760: the smallest window (1000 wide) leaves the stage 688, where History and Ask
+   Biscuit with their labels had squeezed the take's name down to one letter */
+@container (max-width:760px) {
   .ed-transport .ed-lbl, .ed-transport .ed-kbd { display:none; }
   .ed-ask, .ed-undo-agent { width:28px; padding:0; }
 }
@@ -561,7 +596,13 @@ video.motion, img.motion { display:block; }
 }
 @container (max-width:440px) {
   #edOutLen, .ed-name, .tl-bar > .caps { display:none; }
-  .ed-transport { justify-content:space-between; }
+  .ed-transport { justify-content:space-between; gap:var(--s-2); }
+}
+/* the narrowest stage (the smallest window with the chat docked): redo and History are
+   keystrokes away (shift cmd Z, cmd Y), so they go and the play button keeps its size;
+   the lasso stays, since this is when the chat is open to take what it points at */
+@container (max-width:360px) {
+  #edRedo, .ed-versions { display:none; }
 }
 
 /* ── the lasso ────────────────────────────────────────────────────────────
@@ -569,8 +610,10 @@ video.motion, img.motion { display:block; }
    because the person drew it and chose it. Nothing about its geometry transitions:
    the band snaps onto the element under it, and a box that eased into place would
    lag the thing it is naming. */
-.ed-lasso[aria-pressed="true"] { background:rgba(240,169,60,.14); border-color:var(--fur-1); color:var(--fur-0); }
-.ed-lasso[aria-pressed="true"]:hover { background:rgba(240,169,60,.22); }
+/* .pc is the transport's own circle, so the pressed state is spelled here, but from the
+   shared tone rather than from a second set of numbers. */
+.ed-lasso[aria-pressed="true"] { background:var(--press-bg); border-color:var(--press-edge); color:var(--fur-0); }
+.ed-lasso[aria-pressed="true"]:hover { background:var(--press-bg-hover); }
 .ed-lasso:active { background:var(--ink-4); }
 .stage-frame[data-lasso="on"] { cursor:crosshair; }
 
@@ -634,7 +677,8 @@ video.motion, img.motion { display:block; }
 .lk-pname > :first-child { overflow:hidden; text-overflow:ellipsis; }
 .lk-preset[aria-checked="true"] .lk-pname { color:var(--fur-0); }
 .lk-save { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-.lk-save-name { flex:1; min-width:0; height:28px; }
+/* placement only; the height is .input-sm's */
+.lk-save-name { flex:1; min-width:0; }
 .lk-sec { border-top:1px solid var(--ink-2); padding-top:var(--s-2); }
 .lk-sec-head { display:flex; align-items:center; gap:8px; width:100%; padding:4px 0; background:none; border:0;
   cursor:pointer; color:var(--text-2); border-radius:var(--r-sm); }
@@ -645,6 +689,15 @@ video.motion, img.motion { display:block; }
 .lk-count { min-width:16px; height:16px; padding:0 5px; border-radius:var(--r-pill); background:rgba(240,169,60,.14);
   color:var(--fur-0); font-size:var(--t-11); line-height:16px; text-align:center; }
 .lk-fields { display:flex; flex-direction:column; gap:var(--s-3); padding:var(--s-2) 0 var(--s-1); }
+/* "Advanced" inside a section is a quieter disclosure, not another section (E5): no
+   divider, no capitals, 12px in the secondary grey, and no extra room after it, so the
+   next section's divider sits the usual distance below its last dial. */
+.lk-fields > .lk-sec { border-top:0; padding-top:0; }
+.lk-fields > .lk-sec > .lk-sec-head { padding:2px 0; }
+.lk-fields > .lk-sec > .lk-sec-head .insp-sec { font-size:var(--t-12); font-weight:500; letter-spacing:0;
+  text-transform:none; color:var(--text-2); }
+.lk-fields > .lk-sec > .lk-sec-head:hover .insp-sec { color:var(--text-0); }
+.lk-fields > .lk-sec > .lk-fields { padding-bottom:0; }
 .lk-fields[hidden] { display:none; }
 .lk-field { display:flex; flex-direction:column; gap:6px; }
 .lk-top { display:flex; align-items:center; gap:6px; min-height:24px; }
@@ -668,8 +721,8 @@ video.motion, img.motion { display:block; }
 .lk-grad[aria-checked="true"] { border-color:var(--fur-1); box-shadow:0 0 0 2px rgba(240,169,60,.28); }
 .lk-note { margin:0; }
 @media (prefers-reduced-motion: reduce) { .lk-caret, .lk-grad, .lk-thumb { transition:none; } }
-.lk-field .aspect-chips { display:grid; grid-template-columns:repeat(auto-fit, minmax(38px, 1fr)); gap:4px; }
-.lk-field .aspect-chips .chip { justify-content:center; padding:0 6px; }
+/* The look's chip rows (Shape, Device, Background, Headline place) are the plain chip
+   row above: a grid of 38px cells squeezed "Gradient" out of its pill (E2). */
 
 /* The stage drawn by the compositor (paintStageGL): the canvas is the picture, the
    <video> and the camera's stay where they are, invisible, as what the caption, text
@@ -726,7 +779,8 @@ video.motion, img.motion { display:block; }
 .obj-when { color:var(--text-2); flex:none; }
 .obj-sel-id { color:var(--fur-1); margin-right:6px; text-transform:none; letter-spacing:0; }
 .mark-add { display:flex; flex-wrap:wrap; gap:6px; }
-.input-sm { height:28px; max-width:110px; font-size:var(--t-12); }
+/* the field is components.css .input.input-sm; this only keeps a three-character box short */
+.obj-num { max-width:110px; }
 
 /* The selected object on the stage. Gold, like the lasso, because the person chose it.
    A zoom is dashed and has no handles: it is re-aimed by drawing what it should frame,
@@ -790,14 +844,17 @@ video.motion, img.motion { display:block; }
 .ed-versions { gap:6px; }
 .ed-versions .ver-count { font-size:var(--t-11); color:var(--text-2); }
 .ed-versions .ver-count:empty { display:none; }
-.ed-versions[aria-pressed="true"] { background:rgba(240,169,60,.14); border-color:var(--fur-1); color:var(--fur-0); }
 .ed-versions[aria-pressed="true"] .ver-count { color:var(--fur-1); }
-@container (max-width:640px) { .ed-versions { width:28px; padding:0; } .ed-versions .ver-count { display:none; } }
+@container (max-width:760px) { .ed-versions { width:28px; padding:0; } .ed-versions .ver-count { display:none; } }
 
-.ver-panel { position:absolute; z-index:6; top:calc(var(--s-4) + var(--s-2)); right:calc(var(--s-4) + var(--s-2));
-  bottom:calc(var(--s-4) + 38px + var(--s-3) + var(--s-2)); width:340px; max-width:calc(100% - 2 * var(--s-5));
-  display:flex; flex-direction:column; min-height:0;
-  background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-md);
+/* Docked inside the stage's own box (editor.js puts it in #edCanvas): flush with its
+   top, right and bottom, so it reads as a sheet pulled over the frame's edge, with the
+   frame's own corners clipping it. It floated 8px in from them with the picture showing
+   round it, and 7px off the frame at the top (E4). */
+.ver-panel { position:absolute; z-index:6; top:0; right:0; bottom:0;
+  width:340px; max-width:calc(100% - var(--s-7));
+  display:flex; flex-direction:column; min-height:0; text-align:left;
+  background:var(--ink-1); border-left:var(--edge-soft); border-radius:var(--r-lg) 0 0 var(--r-lg);
   box-shadow:var(--shadow-3), var(--sheen); animation:verin var(--dur-2) var(--ease-in); }
 .ver-panel[hidden] { display:none; }
 .ver-head { display:flex; align-items:center; gap:var(--s-2); padding:var(--s-3) var(--s-2) var(--s-2) var(--s-4); }
@@ -821,13 +878,14 @@ video.motion, img.motion { display:block; }
 .ver-body { display:flex; flex-direction:column; gap:2px; min-width:0; }
 .ver-line { font-size:var(--t-12); color:var(--text-0); line-height:1.4; overflow-wrap:anywhere; }
 .ver-meta { display:flex; align-items:center; flex-wrap:wrap; gap:6px; font-size:var(--t-11); color:var(--text-2); letter-spacing:.01em; }
-.ver-mark { width:16px; height:16px; border-radius:50%; display:grid; place-items:center; background:var(--ink-2); flex:none; }
-.ver-mark img, .ver-mark svg { width:11px; height:11px; }
-.ver-dot { width:3px; height:3px; border-radius:50%; background:var(--ink-4); }
+.ver-mark { width:20px; height:20px; border-radius:50%; display:grid; place-items:center; background:var(--ink-2); flex:none; }
+.ver-mark img, .ver-mark svg { width:14px; height:14px; }
+/* the meta separator every other line uses, " · " (J12), not a bullet of its own */
+.ver-sep { color:var(--text-2); }
 .ver-folded::before { content:"· "; }
 .ver-now { font-size:var(--t-11); }
 .ver-kind { display:inline-flex; align-items:center; gap:3px; color:var(--text-1); }
-.ver-kind svg { width:12px; height:12px; }
+.ver-kind svg { width:14px; height:14px; }
 .ver-unseen { font-style:italic; }
 .ver-missing { display:inline-flex; align-items:center; gap:4px; font-size:var(--t-11); color:var(--warn); }
 .ver-act { display:flex; gap:var(--s-2); padding:0 var(--s-2) var(--s-2) calc(var(--s-2) + 3ch + var(--s-3)); }

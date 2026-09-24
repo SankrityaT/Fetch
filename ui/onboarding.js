@@ -21,6 +21,13 @@
 
   var fs = require('fs'), path = require('path'), os = require('os')
 
+  // The one formatter (ui/fmt.js): every value, unit and ellipsis on these screens comes
+  // from it. control.html may already have loaded it as window.Fmt; otherwise require it,
+  // from the page (plain <script>) or from this file (require('./ui/onboarding.js')).
+  var Fmt = window.Fmt || (function () {
+    try { return require('./ui/fmt.js') } catch (e) { return require('./fmt.js') }
+  })()
+
   // Only used by the connect screen. Guarded because this file is also loadable
   // outside Electron for quick visual checks.
   var ipc = null
@@ -71,13 +78,16 @@
   ]
 
   var PERM_ROWS = [
-    { key: 'screen', icon: 'monitor', title: 'Screen recording', required: true,
+    { key: 'screen', icon: 'monitor', title: 'Screen recording',
       sub: 'Required, so Fetch can see your screen while it records.', action: 'Allow screen recording' },
-    { key: 'mic', icon: 'microphone', title: 'Microphone', required: false,
+    { key: 'mic', icon: 'microphone', title: 'Microphone',
       sub: 'Optional, so your voice comes through when you narrate.', action: 'Allow microphone' },
-    { key: 'camera', icon: 'video-camera', title: 'Camera', required: false,
+    { key: 'camera', icon: 'video-camera', title: 'Camera',
       sub: 'Optional. The camera bubble is its own little app, it asks the first time it appears.', action: 'Show me' },
   ]
+
+  // One call to action, one size, in one place: what it says per step
+  var CTA = ['Get started', 'Continue', 'Continue', 'Continue', 'Start using Fetch']
 
   function pillLabel(state) {
     return state === 'granted' ? 'Granted' : state === 'denied' ? 'Denied' : 'Not asked'
@@ -112,12 +122,12 @@
       '<div class="opt ob-perm-row" data-perm="' + r.key + '">' +
         '<div class="opt-ico">' + ico(r.icon, 'icon-sm') + '</div>' +
         '<div class="opt-txt">' +
-          '<span class="opt-title">' + r.title + (r.required ? '<span class="ob-req">Required</span>' : '') + '</span>' +
+          '<span class="opt-title">' + r.title + '</span>' +
           '<span class="opt-sub">' + r.sub + '</span>' +
         '</div>' +
-        '<div class="ob-perm-actions">' +
+        '<div class="ob-status-cols">' +
+          '<span class="ob-act"><button class="btn btn-sm" id="obBtn-' + r.key + '">' + r.action + '</button></span>' +
           '<span class="chip chip-static ob-pill" data-state="unknown" id="obPill-' + r.key + '">Not asked</span>' +
-          '<button class="btn btn-sm" id="obBtn-' + r.key + '">' + r.action + '</button>' +
         '</div>' +
       '</div>'
     )
@@ -125,7 +135,7 @@
 
   function switchRowHtml(id, iconName, title, sub, on) {
     return (
-      '<div class="opt">' +
+      '<div class="opt" data-on="' + !!on + '">' +
         '<div class="opt-ico">' + ico(iconName, 'icon-sm') + '</div>' +
         '<div class="opt-txt"><span class="opt-title">' + title + '</span><span class="opt-sub">' + sub + '</span></div>' +
         '<label class="switch"><input type="checkbox" id="' + id + '" ' + (on ? 'checked' : '') + '><span class="track"></span></label>' +
@@ -139,7 +149,6 @@
         '<img class="biscuit biscuit-xl biscuit-bob" src="./assets/mascot/sit-happy.png" alt="">' +
         '<h1>Meet <em class="accent">Biscuit</em></h1>' +
         '<p class="ob-lede">Fetch records your screen, camera and mic, then hands you back a finished video.</p>' +
-        '<button class="btn btn-primary btn-lg ob-cta" id="obGetStarted">Get started</button>' +
       '</section>'
     )
   }
@@ -148,14 +157,13 @@
     return (
       '<section class="ob-pane" aria-hidden="true">' +
         '<div class="ob-head">' +
-          '<span class="ob-duo"><img class="ob-prop" src="./assets/mascot/screen-prop.png" alt="">' +
+          '<span class="ob-art ob-duo"><img class="ob-prop" src="./assets/mascot/screen-prop.png" alt="">' +
             '<img class="biscuit" src="./assets/mascot/focused.png" alt=""></span>' +
           '<div><h3>Let’s get you set up</h3><p>Fetch asks for three things, all at once, so recording never stalls on a permission prompt later.</p></div>' +
         '</div>' +
         '<div class="card ob-perm-card">' + PERM_ROWS.map(permRowHtml).join('') + '</div>' +
         '<p class="micro dimmer ob-cam-note" id="obCamNote" hidden>The camera bubble is a small separate app, not this window. The first time it appears on screen, macOS asks for camera access on its own. Say yes there, there is nothing to set up here.</p>' +
         '<p class="micro dimmer ob-perm-note">Change any of these later in System Settings, Privacy and Security.</p>' +
-        '<button class="btn btn-primary btn-lg ob-cta" id="obContinue1">Continue</button>' +
       '</section>'
     )
   }
@@ -164,11 +172,11 @@
     return (
       '<section class="ob-pane" aria-hidden="true">' +
         '<div class="ob-head">' +
-          '<img class="biscuit" src="./assets/mascot/curious.png" alt="">' +
+          '<span class="ob-art"><img class="biscuit" src="./assets/mascot/curious.png" alt=""></span>' +
           '<div><h3>Set your defaults</h3><p>Nothing here is permanent, change it anytime from Settings.</p></div>' +
         '</div>' +
         '<div class="card">' +
-          switchRowHtml('obCam', 'video-camera', 'Camera bubble', 'Show the floating camera by default', state.camera) +
+          switchRowHtml('obCam', 'video-camera', 'Camera', 'Show the camera bubble by default', state.camera) +
           switchRowHtml('obMic', 'microphone', 'Microphone', 'Record your voice by default', state.mic) +
           switchRowHtml('obSys', 'speaker-high', 'System audio', 'Capture computer sound by default', state.systemAudio) +
           '<div class="opt">' +
@@ -176,12 +184,11 @@
             '<div class="opt-txt"><span class="opt-title">Countdown</span><span class="opt-sub">Time before recording starts</span></div>' +
             '<div class="seg" id="obCountdown" role="tablist">' +
               '<button data-val="0" role="tab" aria-selected="' + (state.countdown === 0) + '">Off</button>' +
-              '<button data-val="3" role="tab" aria-selected="' + (state.countdown === 3) + '">3s</button>' +
-              '<button data-val="5" role="tab" aria-selected="' + (state.countdown === 5) + '">5s</button>' +
+              '<button data-val="3" role="tab" aria-selected="' + (state.countdown === 3) + '">' + Fmt.secs(3) + '</button>' +
+              '<button data-val="5" role="tab" aria-selected="' + (state.countdown === 5) + '">' + Fmt.secs(5) + '</button>' +
             '</div>' +
           '</div>' +
         '</div>' +
-        '<button class="btn btn-primary btn-lg ob-cta" id="obContinue2">Continue</button>' +
       '</section>'
     )
   }
@@ -198,9 +205,9 @@
   var AGENTS = [
     { id: 'claude',   label: 'Claude Code', sub: 'Anthropic', mark: 'CL', chrome: true },
     { id: 'codex',    label: 'Codex',       sub: 'OpenAI',    mark: 'CX', chrome: false },
-    { id: 'cursor',   label: 'Cursor',      sub: 'Editor',    mark: 'CU', chrome: false },
-    { id: 'windsurf', label: 'Windsurf',    sub: 'Editor',    mark: 'WS', chrome: false },
-    { id: 'zed',      label: 'Zed',         sub: 'Editor',    mark: 'ZD', chrome: true },
+    { id: 'cursor',   label: 'Cursor',      sub: 'Anysphere',      mark: 'CU', chrome: false },
+    { id: 'windsurf', label: 'Windsurf',    sub: 'Cognition',      mark: 'WS', chrome: false },
+    { id: 'zed',      label: 'Zed',         sub: 'Zed Industries', mark: 'ZD', chrome: true },
   ]
 
   // Real marks live in assets/agents/<id>.svg. Until one is dropped in, the slot
@@ -223,8 +230,10 @@
           '<span class="opt-title">' + a.label + '</span>' +
           '<span class="opt-sub">' + a.sub + '</span>' +
         '</div>' +
-        '<span class="ob-badge" data-badge="' + a.id + '"></span>' +
-        '<button class="btn btn-sm ob-agent-btn" data-connect="' + a.id + '" hidden>Connect</button>' +
+        '<div class="ob-status-cols">' +
+          '<span class="ob-act"><button class="btn btn-sm ob-agent-btn" data-connect="' + a.id + '" hidden>Connect</button></span>' +
+          '<span class="chip chip-static ob-pill" data-badge="' + a.id + '" data-state="unknown" hidden></span>' +
+        '</div>' +
       '</div>'
     )
   }
@@ -233,18 +242,17 @@
     return (
       '<section class="ob-pane ob-pane-connect" aria-hidden="true">' +
         '<div class="ob-head">' +
-          '<img class="biscuit" src="./assets/mascot/sit-happy.png" alt="">' +
+          '<span class="ob-art"><img class="biscuit" src="./assets/mascot/sit-happy.png" alt=""></span>' +
           '<div>' +
-            '<h3>Let an agent <em class="accent">throw the ball.</em></h3>' +
+            '<h3>Let an agent throw the <em class="accent">ball</em>.</h3>' +
             '<p>I can take orders from the AI you already pay for. It starts and stops ' +
               'my recordings, reads my transcripts and gets a finished file back.</p>' +
           '</div>' +
         '</div>' +
 
-        '<div class="ob-scroll">' +
         '<div class="card ob-agent-card" id="obAgentCard">' +
           '<div class="ob-agent-loading" id="obAgentLoading">' +
-            ico('spinner-gap', 'icon-sm') + '<span>Looking for what you have installed</span>' +
+            ico('spinner-gap', 'icon-sm') + '<span>Looking for what you have installed' + Fmt.ELL + '</span>' +
           '</div>' +
           AGENTS.map(agentRowHtml).join('') +
           '<p class="micro dimmer ob-agent-empty" id="obAgentEmpty" hidden>' +
@@ -263,10 +271,7 @@
           '</div>' +
         '</div>' +
 
-        '</div>' +
-
-        '<p class="caps ob-assure">You stay on your own plan. No key, no token, nothing leaves this Mac.</p>' +
-        '<button class="btn btn-primary btn-lg ob-cta" id="obContinue3">Continue</button>' +
+        '<p class="micro dimmer ob-assure">You stay on your own plan. No key, no token, nothing leaves this Mac.</p>' +
       '</section>'
     )
   }
@@ -275,9 +280,8 @@
     return (
       '<section class="ob-pane ob-pane-center" aria-hidden="true">' +
         '<img class="biscuit biscuit-xl" src="./assets/mascot/done.png" alt="">' +
-        '<h1>All set. <em class="accent">Go get it.</em></h1>' +
+        '<h1>All set. <em class="accent">Go</em> get it.</h1>' +
         '<p class="ob-lede">Hit record whenever you are ready, Biscuit has the rest.</p>' +
-        '<button class="btn btn-primary btn-lg ob-cta" id="obFinish">Start using Fetch</button>' +
       '</section>'
     )
   }
@@ -301,7 +305,6 @@
     scrim.innerHTML =
       '<div class="modal ob-modal">' +
         '<div class="modal-head ob-chrome">' +
-          '<button class="btn btn-ghost btn-icon btn-sm ob-back" id="obBack" hidden>' + ico('arrow-left', 'icon-sm') + '</button>' +
           '<div class="ob-steps-wrap">' +
             '<div class="ob-runner-slot" id="obRunnerSlot"><img class="ob-runner" id="obRunner" src="./assets/mascot/sit-happy.png" alt=""></div>' +
             '<div class="ob-steps" id="obSteps">' +
@@ -314,12 +317,17 @@
               }).join('') +
             '</div>' +
           '</div>' +
-          '<button class="btn btn-ghost btn-sm ob-skip" id="obSkip">Skip for now</button>' +
         '</div>' +
         '<div class="ob-view">' +
           '<div class="ob-track" id="obTrack">' +
             renderWelcome() + renderPermissions() + renderDefaults(state) + renderConnect() + renderDone() +
           '</div>' +
+        '</div>' +
+        '<div class="modal-foot ob-foot">' +
+          '<button class="btn btn-ghost" id="obBack">Back</button>' +
+          '<span class="ob-foot-gap"></span>' +
+          '<button class="btn btn-ghost" id="obSkip">Skip for now</button>' +
+          '<button class="btn btn-primary" id="obNext">' + CTA[0] + '</button>' +
         '</div>' +
       '</div>'
     document.body.appendChild(scrim)
@@ -414,8 +422,13 @@
       scrim.querySelectorAll('.ob-steps-line').forEach(function (l) {
         l.dataset.done = String(+l.dataset.line < state.step)
       })
-      scrim.querySelector('#obBack').hidden = state.step === 0
-      scrim.querySelector('#obSkip').hidden = state.step === STEPS.length - 1
+      // visibility, not hidden: an absent button keeps its place, so nothing shifts
+      scrim.querySelector('#obBack').style.visibility = state.step === 0 ? 'hidden' : ''
+      scrim.querySelector('#obSkip').style.visibility = state.step === STEPS.length - 1 ? 'hidden' : ''
+      scrim.querySelector('#obNext').textContent = CTA[state.step]
+      // each step opens at its top
+      var pane = scrim.querySelectorAll('.ob-pane')[state.step]
+      if (pane) pane.scrollTop = 0
       updateRunner(prevStep, animateRunner)
       lastStep = state.step
       clearInterval(permPollTimer); permPollTimer = null
@@ -435,17 +448,17 @@
     }
     function goto(n) { state.step = Math.max(0, Math.min(STEPS.length - 1, n)); paint(true) }
 
-    scrim.querySelector('#obGetStarted').onclick = function () { goto(1) }
-    scrim.querySelector('#obContinue1').onclick = function () { goto(2) }
-    scrim.querySelector('#obContinue2').onclick = function () { goto(3) }
-    scrim.querySelector('#obContinue3').onclick = function () { goto(4) }
+    scrim.querySelector('#obNext').onclick = function () {
+      if (state.step === STEPS.length - 1) finish()
+      else goto(state.step + 1)
+    }
     scrim.querySelector('#obBack').onclick = function () { goto(state.step - 1) }
     scrim.querySelector('#obSkip').onclick = function () {
       writePrefs({ onboarded: true })
       if (window.prefs) window.prefs.onboarded = true
       closeOverlay()
     }
-    scrim.querySelector('#obFinish').onclick = function () {
+    function finish() {
       writePrefs({ camera: state.camera, mic: state.mic, systemAudio: state.systemAudio, countdown: state.countdown, onboarded: true })
       if (window.prefs) Object.assign(window.prefs, { camera: state.camera, mic: state.mic, systemAudio: state.systemAudio, countdown: state.countdown, onboarded: true })
       closeOverlay()
@@ -454,7 +467,7 @@
     // permission triggers
     scrim.querySelector('#obBtn-screen').onclick = function (e) {
       var btn = e.currentTarget
-      btn.disabled = true; btn.textContent = 'Requesting...'
+      btn.disabled = true; btn.textContent = 'Requesting' + Fmt.ELL
       navigator.mediaDevices.getDisplayMedia({ video: true }).then(function (stream) {
         stream.getTracks().forEach(function (t) { t.stop() })
         setPerm('screen', 'granted')
@@ -465,7 +478,7 @@
     }
     scrim.querySelector('#obBtn-mic').onclick = function (e) {
       var btn = e.currentTarget
-      btn.disabled = true; btn.textContent = 'Requesting...'
+      btn.disabled = true; btn.textContent = 'Requesting' + Fmt.ELL
       navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
         stream.getTracks().forEach(function (t) { t.stop() })
         setPerm('mic', 'granted')
@@ -486,6 +499,8 @@
       if (!input) return
       input.onchange = function () {
         state[prefKey] = input.checked
+        var row = input.closest('.opt')
+        if (row) row.dataset.on = String(input.checked)
         var patch = {}; patch[prefKey] = input.checked
         writePrefs(patch)
         if (window.prefs) window.prefs[prefKey] = input.checked
@@ -516,27 +531,40 @@
     function setAgent(id, stateName, msg) {
       var row = agentRow(id)
       if (!row) return
-      var badge = row.querySelector('.ob-badge')
+      var badge = row.querySelector('[data-badge]')
       var btn = row.querySelector('.ob-agent-btn')
       row.dataset.state = stateName
       row.hidden = stateName === 'missing' && !showingAll
+      // Same pill, same words, same column as the Permissions screen. The pill's state
+      // name is the colour; the word always says it too.
+      var pill = function (text, tone) { badge.textContent = text; badge.dataset.state = tone; badge.hidden = !text }
+      row.removeAttribute('title')
 
       if (stateName === 'connected') {
-        badge.textContent = 'Connected'
+        pill('Connected', 'granted')
         btn.hidden = true
       } else if (stateName === 'ready') {
-        badge.textContent = 'Detected'
+        pill('Detected', 'unknown')
         btn.hidden = false; btn.disabled = false; btn.textContent = 'Connect'
       } else if (stateName === 'working') {
-        badge.textContent = ''
-        btn.hidden = false; btn.disabled = true; btn.textContent = 'Connecting'
+        pill('', 'unknown')
+        btn.hidden = false; btn.disabled = true; btn.textContent = 'Connecting' + Fmt.ELL
       } else if (stateName === 'error') {
-        // Show what the client actually said. A generic toast here is untraceable.
-        badge.textContent = msg || 'Did not work'
+        // Show what the client actually said, in full on hover: a generic toast here is
+        // untraceable, and a long message must not push the row apart.
+        pill('Did not work', 'denied')
+        if (msg) row.title = msg
+        var sub = row.querySelector('.opt-sub')
+        if (sub) sub.textContent = msg || 'Did not work'
         btn.hidden = false; btn.disabled = false; btn.textContent = 'Try again'
       } else {
-        badge.textContent = 'Not found'
+        pill('Not found', 'unknown')
         btn.hidden = true
+      }
+      if (stateName !== 'error') {
+        var spec = AGENTS.filter(function (a) { return a.id === id })[0]
+        var s2 = row.querySelector('.opt-sub')
+        if (spec && s2) s2.textContent = spec.sub
       }
     }
 

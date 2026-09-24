@@ -50,6 +50,10 @@
 //              where one capture has forty times the pixels of the other, each at its
 //              real size in millimetres, on one line, under one light, under one grade,
 //              on one ground that wears its tooth once
+//   ground     a ground that is a material: Paper's and Mono print's sheet is drawn
+//              once and holds still, and its detail is measured in the encoded file,
+//              not only in the compositor, against the flat colour and moving grain
+//              Paper used to be; Linen Bone, the photographed-looking backdrop, the same
 //   sinks      each encoder (WebCodecs, VideoToolbox through ffmpeg, x264) keeps the
 //              bars' colours, and the canvas encoder one frame per slot
 //   audio      the sound (cuts, fades, an added track, a music bed) is as long as the
@@ -79,6 +83,10 @@ if (process.env.FETCH_GL_TESTS !== '1') {
   process.exit(0)
 }
 if (app.dock) app.dock.hide()
+// A scratch profile of its own, so a run never reads or writes the person's Fetch data
+// while they are using the app on the same Mac.
+fs.mkdirSync('/tmp/fetch-gl/userdata', { recursive: true })
+app.setPath('userData', '/tmp/fetch-gl/userdata')
 
 let pass = 0, fail = 0
 const is = (name, ok, detail) => {
@@ -534,6 +542,13 @@ app.whenReady().then(async () => {
       'blur-ground': { opts: { backdrop: 'blur', inset: 0.06, backdropAspect: 16 / 9, look }, n: 300 },
       'plain-9x16': { opts: { backdropAspect: 9 / 16, look }, n: 300 },
       'image': { opts: { backdrop: 'img:bg.jpg', inset: 0.07, look: { ...look, background: { imageBlur: 0.3, imageDim: 0.2 } } }, ctx: { imageFile: path.join(FIX, 'bg.jpg') }, n: 120 },
+      // A photograph drawn sharp, which is the third ground this round changed: Linen
+      // Bone, a bundled backdrop, wore three levels of tooth that were new every frame,
+      // so its weave boiled and the encoder threw the boiling away. A sharp photograph
+      // has a surface of its own and now keeps it still. A blurred one is a soft field
+      // again and keeps the tooth, which is what 'image' above holds.
+      'ground-photo': { opts: { backdrop: 'img:linen-bone.jpg', inset: 0.07, look },
+        ctx: { imageFile: path.join(__dirname, '../../assets/backdrops/linen-bone.jpg') }, n: 120 },
       'zoom-glide': { opts: { backdrop: 'slate', inset: 0.06, zooms: [{ start: 1, end: 6, scale: 2.2, x: 0.25, y: 0.3 }], look }, n: 36 },
       'zoom-hold': { opts: { backdrop: 'slate', inset: 0.06, zooms: [{ start: 1, end: 6, scale: 2.2, x: 0.25, y: 0.3 }], look }, n: 200 },
       'camera': { opts: { backdrop: 'mint', inset: 0.08, camera, look }, n: 240 },
@@ -627,12 +642,23 @@ app.whenReady().then(async () => {
       // being looked at is the shell, its two hairlines, the take inside the hole and
       // the shadow coming off the shell rather than off the screen.
       'device-browser': { opts: { backdrop: 'ink', inset: 0.07, look: { ...look, device: { kind: 'browser', title: 'songscription.app' } } }, n: 150 },
-      // A browser frame with nothing to put in its address field. It is the same rule as
-      // the still's and it is not a flag for stills: a browser's bar is taller than a
-      // window's for exactly one reason, which is the field standing in it, so with no
-      // field there is no toolbar and what is left is a title bar. Every other browser
-      // golden here carries a host-shaped title, which is how this escaped them.
+      // A browser frame with nothing to put in its address field. It used to fall back to
+      // a window's title bar, and the person looking at it saw a window. It is a browser
+      // with or without an address: tab strip, lights, back, forward, reload and the
+      // field, which holds a magnifier and no words, since Fetch never invents a host.
       'device-browser-bare': { opts: { backdrop: 'ink', inset: 0.07, look: { ...look, device: { kind: 'browser' } } }, n: 150 },
+      // The same two on the light shell, and this time the page's name in the tab and a
+      // full address with a path in the field, as device.url gives it.
+      'device-browser-light': { opts: { backdrop: 'mint', inset: 0.07, look: { ...look,
+        device: { kind: 'browser', theme: 'light', title: 'Library', url: 'https://songscription.app/library?sort=recent' } } }, n: 150 },
+      'device-browser-light-bare': { opts: { backdrop: 'mint', inset: 0.07, look: { ...look, device: { kind: 'browser', theme: 'light' } } }, n: 150 },
+      // And a layout that only fits the sample text is the fault this round exists for:
+      // a tab title as long as a sentence and an address as long as a query string, on
+      // a narrow 9:16 frame where the bar has least room. Both have to end inside their
+      // own boxes, in an ellipsis, and nothing may run into the next control.
+      'device-browser-long': { opts: { backdrop: 'ink', inset: 0.07, backdropAspect: 9 / 16, look: { ...look,
+        device: { kind: 'browser', title: 'Every song in the library, sorted by the date it was last opened, with its key and tempo',
+          url: 'https://songscription.example.com/library/collections/recently-opened?sort=opened&dir=desc&view=grid&page=12' } } }, n: 150 },
       'device-window': { opts: { backdrop: 'slate', inset: 0.07, look: { ...look, device: { kind: 'window', title: 'Library' } } }, n: 150 },
       'device-laptop': { opts: { backdrop: 'dusk', inset: 0.07, look: { ...look, device: { kind: 'laptop' } } }, n: 150 },
       'device-phone': { opts: { backdrop: 'mint', inset: 0.07, look: { ...look, device: { kind: 'phone' } } }, n: 150 },
@@ -1340,19 +1366,40 @@ app.whenReady().then(async () => {
       const br = await call('moved', dev({ kind: 'browser' }), [dev({ kind: 'browser', title: 'songscription.app' }), dev({ kind: 'browser', theme: 'light' })])
       is('device.title writes the address into the bar', br[0].max > 8, `max ${br[0].max} LSB`)
       is('device.theme light is another shell', br[1].max > 8, `max ${br[1].max} LSB`)
-      // A recording reaches the no-field rule too, and should: the bar is taller than a
-      // window's because an address field stands in it, and with nothing to put in the
-      // field there is no field and no toolbar. Said in pixels here because every other
-      // browser golden carries a host-shaped title and so could not see it. A window
-      // title is not an address, which is the other half: a filename is the commonest
-      // window title there is and none of them may be drawn in the pill.
+      // A browser is a browser with or without an address: the same bar, tab strip and
+      // toolbar, taller than a window's, and never a window's bar. It used to fall back
+      // to one where there was no address, and the person saw a window. A window title
+      // is still not an address: a filename is the commonest window title there is and
+      // none of them may be drawn in the field.
       const devOf = d => Plan.prepare({ start: 0, end: 4, cuts: [], backdrop: 'ink', inset: 0.07,
         look: { ...look, device: d } }, meta, {}).device
       const barOf = t => devOf({ kind: 'browser', ...(t == null ? {} : { title: t }) })
       const bare = barOf(null), host9 = barOf('songscription.app'), win = devOf({ kind: 'window', title: 'Library' })
-      is('a recording\'s browser bar with no address is a title bar, not a toolbar',
-        !bare.address && Math.abs(bare.bar / bare.unit - win.bar / win.unit) < 0.001 && host9.bar > bare.bar,
-        `bare ${Math.round(bare.bar)} px, window ${Math.round(win.bar)} px, with an address ${Math.round(host9.bar)} px`)
+      is('a browser bar with no address is still a browser\'s bar, not a window\'s',
+        !bare.address && Math.abs(bare.bar - host9.bar) < 0.5 && bare.bar > win.bar * 1.3,
+        `bare ${Math.round(bare.bar)} px, with an address ${Math.round(host9.bar)} px, window ${Math.round(win.bar)} px`)
+      const bareVsWin = await call('moved', dev({ kind: 'browser' }), [dev({ kind: 'window' })])
+      is('and it draws a different picture from a window', bareVsWin[0].max > 8, `max ${bareVsWin[0].max} LSB`)
+      // Where the words come from. device.url is the address and the title is the tab's;
+      // a title shaped like a host is both, which is how every older look says it; an url
+      // that is not shaped like one is dropped rather than drawn; and nothing is made up.
+      const both = devOf({ kind: 'browser', title: 'Library', url: 'https://songscription.app/library' })
+      is('device.url fills the field and the title names the tab',
+        both.address && both.url === 'https://songscription.app/library' && both.tab === 'Library', JSON.stringify({ url: both.url, tab: both.tab }))
+      is('a host-shaped title is the address, and its host names the tab',
+        host9.url === 'songscription.app' && host9.tab === 'songscription.app', JSON.stringify({ url: host9.url, tab: host9.tab }))
+      const notUrl = devOf({ kind: 'browser', title: 'Library', url: 'notes.txt' })
+      is('an url that is not an address is not drawn as one', !notUrl.address && notUrl.url === '' && notUrl.tab === 'Library',
+        JSON.stringify({ url: notUrl.url, tab: notUrl.tab }))
+      is('and with nothing given there is no address and no tab title', bare.url === '' && bare.tab === '', JSON.stringify({ url: bare.url, tab: bare.tab }))
+      const withUrl = await call('moved', dev({ kind: 'browser', title: 'Library' }), [dev({ kind: 'browser', title: 'Library', url: 'https://songscription.app' })])
+      is('device.url reaches a pixel', withUrl[0].max > 8, `max ${withUrl[0].max} LSB`)
+      // The smallest frame there is: a group member a few hundred pixels wide. The bar
+      // has to shed what does not fit (the tab title, then the tab) rather than draw
+      // one control over another, and it must not throw.
+      const tiny = await call('moved', { ...one({ look: { ...look, device: { kind: 'browser', title: 'A very long page title that cannot fit', url: 'https://example.com/a/long/path' } } }), width: 200 },
+        [{ ...one({ look }), width: 200 }])
+      is('a browser frame at 200 px wide still draws', tiny[0].max > 8, `max ${tiny[0].max} LSB`)
       for (const name of ['README.md', 'notes.txt', 'index.html', 'build.sh']) {
         is(`a window called ${name} is not drawn as an address`, barOf(name).address === false, 'it was')
       }
@@ -1846,9 +1893,10 @@ app.whenReady().then(async () => {
       // place is known the chrome comes off exactly, which is the document's crop; where
       // it is not, the second bar is simply not drawn and the shell wears a plain bezel.
       //
-      // Saying. An address field with nothing in it reads as a mockup somebody left
-      // unfinished, so the field is drawn only where there is an address for it, and the
-      // bar that held it falls back to a title bar's height.
+      // Saying. The field holds an address only where there is one, and Fetch never makes
+      // one up; with none it is an empty field with a magnifier in it, as a real browser's
+      // is, and the bar stays a browser's bar. Falling back to a window's title bar made
+      // the frame a window, which is what the person saw.
       const withChrome = chromeFixture(), noChrome = shotFixture()
       const WIN = { kind: 'window', app: 'Songscription', title: 'Songscription Library' }
       const cBase = { backdrop: 'ink', inset: 0.07, shadow: 0.6, backdropAspect: 16 / 9,
@@ -1913,30 +1961,41 @@ app.whenReady().then(async () => {
           }
           return n ? s / n : 0
         }
+        // how far the bar's pixels stand off the side bezel's tone, on average: a
+        // browser's bar is three tones (strip, toolbar, field), and their mean can land
+        // on the shell's own while every one of them is a step away from it
+        const off = (x0, y0, x1, y1, t) => {
+          let s = 0, n = 0
+          for (let y = Math.round(y0 * k); y < Math.max(Math.round(y0 * k) + 1, Math.round(y1 * k)); y++) {
+            for (let x = Math.round(x0 * k); x < Math.max(Math.round(x0 * k) + 1, Math.round(x1 * k)); x++) { s += Math.abs(lumaAt(px, r.w, x, y) - t); n++ }
+          }
+          return n ? s / n : 0
+        }
+        const shell = mean(B.x + side * 0.35, S.y + S.h * 0.3, B.x + side * 0.75, S.y + S.h * 0.7)
         return {
-          face: Math.round(mean(B.x + B.w * 0.06, B.y + top * 0.35, B.x + B.w * 0.94, B.y + top * 0.75)),
-          shell: Math.round(mean(B.x + side * 0.35, S.y + S.h * 0.3, B.x + side * 0.75, S.y + S.h * 0.7)),
+          face: Math.round(off(B.x + B.w * 0.06, B.y + top * 0.35, B.x + B.w * 0.94, B.y + top * 0.75, shell)),
+          shell: Math.round(shell),
         }
       }
       const bOwn = await bezelTone('shot-chrome-own', cCase['shot-chrome-own'])
       const bCut = await bezelTone('shot-chrome-cropped', cCase['shot-chrome-cropped'])
       is('so the drawn frame puts nothing above the capture\'s own bar',
-        Math.abs(bOwn.face - bOwn.shell) <= 2 && Math.abs(bCut.face - bCut.shell) >= 5,
-        `own ${bOwn.face} against ${bOwn.shell} at the side, cropped ${bCut.face} against ${bCut.shell}`)
+        bOwn.face <= 2 && bCut.face >= 5,
+        `the top bezel stands ${bOwn.face} levels off the side's ${bOwn.shell} round its own bar, ${bCut.face} off ${bCut.shell} where Fetch draws one`)
 
-      // The address. A browser frame with nothing to say draws no field at all, and what
-      // is left is exactly a window's title bar: the same picture, byte for byte, which
-      // is the strongest way to say no empty field is drawn.
+      // The address. A browser frame with nothing to say is still a browser and never a
+      // window: it draws a different picture from a window's title bar round the same
+      // capture, and the same height of bar as a browser with an address.
       const asWindow = await host.renderShot(noChrome, { ...browser(null, 'window'), captured: { kind: 'region' } },
         { width: 640, dest: path.join(OUT, 'shot-bar-window.png') }, 'gl-test-bar-window')
       const dWin = step(rgbOf(cDrawn['shot-bar-blank'].file), rgbOf(asWindow.file))
-      is('a browser frame with no address draws no field: what is left is a title bar',
-        dWin.max === 0, `max ${dWin.max} LSB`)
-      // and an address gets a field, and the room for one
+      is('a browser frame with no address is still a browser, not a window\'s title bar',
+        dWin.max > 8, `max ${dWin.max} LSB`)
+      // and an address goes into the field, in the same bar
       const addr = cPlan(cCase['shot-bar-address']).device, blank = cPlan(cCase['shot-bar-blank']).device
       const dAddr = step(rgbOf(cDrawn['shot-bar-address'].file), rgbOf(cDrawn['shot-bar-blank'].file))
-      is('an address gets a field, and the bar the height a field needs',
-        addr.address && !blank.address && topOf(addr) > topOf(blank) * 1.3 && dAddr.max > 8,
+      is('an address is written into the field of the same bar',
+        addr.address && !blank.address && Math.abs(topOf(addr) - topOf(blank)) <= 1 && dAddr.max > 8,
         `${topOf(addr)} px of bar against ${topOf(blank)}, max ${dAddr.max} LSB apart`)
       // A window title is not an address and is never set as one: it is centred the way
       // a window's own is. This is the case a person reaches by cropping the capture's
@@ -1944,8 +2003,8 @@ app.whenReady().then(async () => {
       const noTitle = await host.renderShot(withChrome, { ...browser(), crop: CUT },
         { width: 640, dest: path.join(OUT, 'shot-chrome-untitled.png') }, 'gl-test-chrome-untitled')
       const dTitle = step(rgbOf(cDrawn['shot-chrome-cropped'].file), rgbOf(noTitle.file))
-      is('the captured window\'s own title fills the drawn bar, as a title and not as an address',
-        cut.title === WIN.title && cut.address === false && dTitle.max > 8,
+      is('the captured window\'s own title names the drawn tab, as a title and not as an address',
+        cut.title === WIN.title && cut.tab === WIN.title && cut.address === false && dTitle.max > 8,
         `"${cut.title}", max ${dTitle.max} LSB against the same frame told nothing`)
 
       // And the branch a recording can never take. A take says nothing about what it
@@ -2155,6 +2214,98 @@ app.whenReady().then(async () => {
       const sBox = changedBox(pp, rgbOf(path.join(OUT, 'group-marks-take.png')), plain.W)
       is('and the set\'s own marks are the first capture\'s', within(sBox, screenOf(onSet, 0)),
         sBox ? `changed ${sBox.w}x${sBox.h} at ${sBox.x},${sBox.y} inside the window` : 'nothing changed at all')
+    }
+
+    if (want('ground')) {
+      console.log('a sheet of paper survives the encoder')
+      // Paper was a flat colour under film grain, and grain is new every frame: it read
+      // as a noisy video of a colour, and the encoder, which spends nothing on noise no
+      // frame can predict, threw it away. The sheet now is a still texture drawn once
+      // into the background. Three numbers, read on the ground beside the take:
+      //   fine    the standard deviation of luma about a 7 px local mean: fibre and tooth
+      //   mottle  the standard deviation of 24 px block means about a plane fitted to
+      //           them, so the app's light pools and any gradient are not counted
+      //   motion  the mean luma change of the same pixels one second apart
+      // each off the compositor's own frame and off the exported file, decoded.
+      const still = path.join(FIX, 'still.mov'), smeta = await proc.probeMeta(still)
+      const Look = require('../../ui/look')
+      const asOpts = L => { const c = Look.toClassic(L)
+        return { backdrop: c.backdrop, backdropAspect: 16 / 9, inset: c.inset, radius: c.radius, shadow: c.shadow, captions: false, look: L } }
+      const paper = Look.merge(Look.defaults(), { preset: 'paper' }).look
+      // the sheet as it was: the same look with no texture and the film it used to wear
+      const oldPaper = { ...paper, preset: 'fetch-default', grain: { ...paper.grain, film: 0.12 } }
+      const print = Look.merge(Look.defaults(), { preset: 'mono-print' }).look
+      const linen = { ...Look.defaults(), background: { kind: 'image', image: 'img:linen-bone.jpg' } }
+      const linenFile = path.join(__dirname, '../../assets/backdrops/linen-bone.jpg')
+      const grounds = [['paper', paper], ['paper as it was', oldPaper], ['mono print', print], ['linen bone', linen]]
+      const gray = (file, t, W, H) => {
+        const r = spawnSync('/opt/homebrew/bin/ffmpeg', ['-v', 'error', '-ss', String(t), '-i', file, '-frames:v', '1',
+          '-vf', `scale=${W}:${H}:flags=neighbor,format=gray`, '-f', 'rawvideo', '-'], { maxBuffer: 1 << 28 })
+        if (!r.stdout || r.stdout.length < W * H) throw new Error('could not read ' + file + ': ' + String(r.stderr).slice(0, 200))
+        return r.stdout
+      }
+      const lumaGray = (rgb, W, H) => { const out = new Float32Array(W * H); for (let i = 0; i < W * H; i++) out[i] = lumaAt(rgb, W, i % W, (i / W) | 0); return out }
+      const measure = (Y, W, R, Y2) => {
+        let fs = 0, fn = 0
+        for (let y = R.y0 + 3; y < R.y1 - 3; y++) for (let x = R.x0 + 3; x < R.x1 - 3; x++) {
+          let m = 0
+          for (let j = -3; j <= 3; j++) for (let i = -3; i <= 3; i++) m += Y[(y + j) * W + x + i]
+          const d = Y[y * W + x] - m / 49; fs += d * d; fn++
+        }
+        const B = 24, pts = []
+        for (let by = R.y0; by + B <= R.y1; by += B) for (let bx = R.x0; bx + B <= R.x1; bx += B) {
+          let m = 0
+          for (let y = by; y < by + B; y++) for (let x = bx; x < bx + B; x++) m += Y[y * W + x]
+          pts.push([bx, by, m / (B * B)])
+        }
+        // least squares plane through the block means, then their spread about it
+        const n = pts.length, S = [0, 0, 0, 0, 0, 0, 0, 0, 0], v = [0, 0, 0]
+        for (const [x, y, z] of pts) { const r = [x, y, 1]; for (let a = 0; a < 3; a++) { v[a] += r[a] * z; for (let b = 0; b < 3; b++) S[a * 3 + b] += r[a] * r[b] } }
+        const det = m => m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6])
+        const D0 = det(S), co = [0, 1, 2].map(c => { const M = S.slice(); for (let r = 0; r < 3; r++) M[r * 3 + c] = v[r]; return det(M) / D0 })
+        let ms = 0
+        for (const [x, y, z] of pts) { const e = z - (co[0] * x + co[1] * y + co[2]); ms += e * e }
+        let mo = 0, mn = 0
+        if (Y2) for (let y = R.y0; y < R.y1; y++) for (let x = R.x0; x < R.x1; x++) { mo += Math.abs(Y[y * W + x] - Y2[y * W + x]); mn++ }
+        return { fine: +Math.sqrt(fs / fn).toFixed(2), mottle: +Math.sqrt(ms / n).toFixed(2), motion: Y2 ? +(mo / mn).toFixed(2) : null }
+      }
+      const got = {}
+      for (const [label, L] of grounds) {
+        const opts = asOpts(L)
+        const ctx = label === 'linen bone' ? { imageFile: linenFile } : {}
+        const spec = Plan.prepare({ ...opts, start: 0, end: 3 }, smeta, ctx)
+        const W = spec.W, H = spec.H, r = spec.rect
+        const R = { x0: 6, x1: Math.floor(r.x * 0.5), y0: Math.round(r.y + r.h * 0.1), y1: Math.round(r.y + r.h * 0.9) }
+        // the compositor's own frame, before any encoder, at the export's size
+        const tag = label.replace(/ /g, '-')
+        const drawnAt = n => path.join(OUT, `ground-${tag}-${n}.png`)
+        // with the dither off here, since the dither is one level of fresh noise on every
+        // frame of every look by design: what is measured is the ground itself
+        const job = n => ({ ffmpeg, src: still, meta: smeta, ctx, n,
+          opts: { ...opts, start: 0, end: 3, look: { ...opts.look, grain: { ...opts.look.grain, dither: false } } } })
+        await call('shot', job(15), drawnAt(15)); await call('shot', job(45), drawnAt(45))
+        const d0 = lumaGray(rgbOf(drawnAt(15)), W, H), d1 = lumaGray(rgbOf(drawnAt(45)), W, H)
+        // and the file, through the export an app user gets
+        const out = await host.exportEdit(still, { ...opts, start: 0, end: 3, format: 'mp4', quality: 'balanced', engine: 'gl',
+          dest: path.join(OUT, `ground-${tag}.mp4`), ...(label === 'linen bone' ? { imageFile: linenFile } : {}) }, null, 'gl-test-ground-' + tag)
+        const e0 = gray(out.file, 0.5, W, H), e1 = gray(out.file, 1.5, W, H)
+        got[label] = { drawn: measure(d0, W, R, d1), file: measure(e0, W, R, e1), sink: out.render && out.render.sink, size: `${W}x${H}` }
+        console.log(`    ${label}: drawn ${JSON.stringify(got[label].drawn)}, file ${JSON.stringify(got[label].file)} (${got[label].sink}, ${got[label].size})`)
+      }
+      const P = got.paper, O = got['paper as it was'], M = got['mono print']
+      is('the paper sheet holds still in the file', P.file.motion < 0.35, `${P.file.motion} levels a second apart; the grain it replaces moved ${O.drawn.motion} drawn and the encoder kept ${O.file.fine} of its ${O.drawn.fine} levels`)
+      is('and in the compositor it does not move at all', P.drawn.motion < 0.05, `${P.drawn.motion} levels`)
+      is('its mottling is in the file', P.file.mottle >= 1.2 && P.file.mottle >= 0.7 * P.drawn.mottle,
+        `${P.file.mottle} levels in the file of ${P.drawn.mottle} drawn; flat paper had ${O.file.mottle}`)
+      is('and its fibre is in the file', P.file.fine >= 0.5 && P.file.fine >= 0.4 * P.drawn.fine,
+        `${P.file.fine} levels in the file of ${P.drawn.fine} drawn; flat paper had ${O.file.fine} (grain) of ${O.drawn.fine} drawn`)
+      is('without being noise: quieter than the grain it replaces, before the encoder', P.drawn.fine < O.drawn.fine * 1.5 + 0.5,
+        `${P.drawn.fine} against ${O.drawn.fine}`)
+      is('Mono print\'s stock holds still and survives too', M.file.motion < 0.35 && M.file.mottle >= 0.6,
+        `motion ${M.file.motion}, mottle ${M.file.mottle} of ${M.drawn.mottle}, fine ${M.file.fine} of ${M.drawn.fine}`)
+      const Ln = got['linen bone']
+      is('Linen Bone holds still, with no moving tooth over its weave', Ln.drawn.motion < 0.05 && Ln.file.motion < 0.35,
+        `motion ${Ln.drawn.motion} drawn, ${Ln.file.motion} in the file; mottle ${Ln.file.mottle} of ${Ln.drawn.mottle}, fine ${Ln.file.fine} of ${Ln.drawn.fine}`)
     }
 
     if (want('sinks')) {

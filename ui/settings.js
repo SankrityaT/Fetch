@@ -6,6 +6,10 @@
    Wrapped in an IIFE anyway so nothing here leaks into the shared scope
    that setup.js and editor.js also read from. */
 ;(function () {
+  // The one formatter (ui/fmt.js): a plain script here, so window.Fmt once control.html
+  // loads it, and required otherwise
+  const Fmt = window.Fmt || require('./ui/fmt')
+
   function fmtSaveDir(dir) {
     if (!dir) return '~/Movies/Fetch'
     const home = require('os').homedir()
@@ -79,9 +83,9 @@
       `<div class="acc-sub"><span class="acc-sub-title">Rules for ${e(g.product)}</span>` +
       (gaps ? `<p class="acc-sub-note">Still to answer: ${gaps}</p>` : '') + '</div>' +
       (rules.length ? `<div class="guide-list">${rules.join('')}</div>` : '<p class="acc-sub-note guide-none">No rules yet.</p>') +
-      `<form class="acc-add" id="guideAdd"><select id="guideSection">` +
+      `<form class="acc-add" id="guideAdd"><select class="select input-sm" id="guideSection">` +
       GUIDE_SECTIONS.map(([k, head]) => `<option value="${k}">${head}</option>`).join('') + '</select>' +
-      '<input type="text" id="guideRule" placeholder="One rule, in your words" autocomplete="off">' +
+      '<input class="input input-sm" type="text" id="guideRule" placeholder="One rule, in your words" autocomplete="off">' +
       '<button class="btn btn-sm" type="submit" id="guideAddBtn" disabled>Add</button></form>'
   }
   async function paintGuide() {
@@ -121,9 +125,85 @@
     paintGuide()
   }
 
+  // ── photos: the Unsplash key ──────────────────────────────────────────
+  // The person's own access key, kept in the macOS Keychain by the main process the way
+  // the voiceover key is (unsplash-status, unsplash-connect, unsplash-disconnect). It
+  // is typed here and handed straight over: the field is a password field and is
+  // cleared the moment the key is taken, so no copy stays in the page. The Look tab's
+  // picker (ui/unsplash-picker.js) hears about a change through 'unsplash-key'.
+  const KEY_PAGE = 'https://unsplash.com/developers'
+  function photosHtml(st) {
+    const on = !!(st && st.connected)
+    const sub = st == null ? `Checking${Fmt.ELL}`
+      : on ? 'Connected. Search from the Look tab, under Background, Image'
+      : 'Not connected. Make a free app on Unsplash for developers and paste its access key here'
+    return `
+      <div class="opt set-row" id="rowPhotos" data-on="${on}">
+        <div class="opt-ico">${ico(on ? 'check-circle' : 'image', 'icon-sm')}</div>
+        <div class="opt-txt">
+          <span class="opt-title">Unsplash</span>
+          <span class="opt-sub">${sub}</span>
+        </div>
+        <div class="set-actions">
+          ${on ? '<button class="btn btn-sm btn-ghost" id="phDisconnect" type="button">Disconnect</button>'
+            : '<button class="btn btn-sm btn-ghost" id="phKeyPage" type="button">Get a key</button>'}
+        </div>
+      </div>
+      ${on || st == null ? '' : `
+      <form class="acc-add" id="phKeyForm">
+        <input class="input input-sm" type="password" id="phKey" placeholder="Access key" autocomplete="off" spellcheck="false" aria-label="Unsplash access key">
+        <button class="btn btn-sm" type="submit" id="phConnect" disabled>Connect</button>
+      </form>`}`
+  }
+  // what a rejected IPC call says, without Electron's wrapping
+  const ipcWhy = err => { const raw = String((err && err.message) || err || ''); return raw.split(/Error:\s*/).pop().trim() || raw }
+  function wirePhotos() {
+    const body = $('photosBody')
+    if (!body) return
+    const paint = async () => {
+      const st = await ipcRenderer.invoke('unsplash-status').catch(() => ({ connected: false }))
+      body.innerHTML = photosHtml(st || { connected: false })
+      const key = $('phKey'), go = $('phConnect')
+      if (key && go) key.oninput = () => { go.disabled = !key.value.trim() }
+    }
+    const changed = () => window.dispatchEvent(new CustomEvent('unsplash-key'))
+    body.addEventListener('submit', async e => {
+      if (e.target.id !== 'phKeyForm') return
+      e.preventDefault()
+      const key = $('phKey'), go = $('phConnect')
+      const k = key.value.trim()
+      if (!k) return
+      go.disabled = true; go.textContent = `Checking${Fmt.ELL}`
+      try {
+        const r = await ipcRenderer.invoke('unsplash-connect', k)
+        if (r && r.ok === false) throw new Error(r.message || r.why || 'Unsplash did not accept that key')
+        key.value = ''
+        toast('Unsplash connected', 'ok')
+        changed()
+        paint()
+      } catch (err) {
+        toast(ipcWhy(err), 'bad', 7000)
+        go.textContent = 'Connect'
+        go.disabled = !key.value.trim()
+      }
+    })
+    body.addEventListener('click', async e => {
+      const b = e.target.closest('button')
+      if (!b) return
+      if (b.id === 'phKeyPage') { try { require('electron').shell.openExternal(KEY_PAGE) } catch {} }
+      else if (b.id === 'phDisconnect') {
+        await ipcRenderer.invoke('unsplash-disconnect').catch(() => {})
+        toast('Unsplash disconnected. Your key is gone from the Keychain', 'ok')
+        changed()
+        paint()
+      }
+    })
+    paint()
+  }
+
   function row(id, iconName, title, sub, checkboxId, on) {
     return `
-      <div class="set-row" id="${id}" data-on="${!!on}">
+      <div class="opt set-row" id="${id}" data-on="${!!on}">
         <div class="opt-ico">${ico(iconName, 'icon-sm')}</div>
         <div class="opt-txt">
           <span class="opt-title">${title}</span>
@@ -160,22 +240,22 @@
       : 'check-circle'
     icoEl.innerHTML = ico(iconName, 'icon-sm')
 
-    let title = 'Fetch is up to date.'
-    if (s.status === 'checking') title = 'Checking for updates...'
-    else if (s.status === 'downloading') title = `Downloading update, ${s.pct || 0}%`
-    else if (s.status === 'ready') title = 'Ready to install.'
-    else if (s.status === 'error') title = s.message || 'Update failed.'
+    let title = 'Fetch is up to date'
+    if (s.status === 'checking') title = `Checking for updates${Fmt.ELL}`
+    else if (s.status === 'downloading') title = `Downloading update, ${Fmt.value(s.pct || 0, { unit: '%', scale: 1 })}`
+    else if (s.status === 'ready') title = 'Ready to install'
+    else if (s.status === 'error') title = s.message || 'Update failed'
     titleEl.textContent = title
 
     let sub = `Version ${s.currentVersion || ''}`
     if (s.availableVersion) sub += `, ${s.availableVersion} available`
-    if (s.waitingForIdle) sub = 'Waiting for you to finish before restarting.'
+    if (s.waitingForIdle) sub = 'Waiting for you to finish before restarting'
     subEl.textContent = sub
 
     checkBtn.disabled = s.status === 'checking' || s.status === 'downloading'
     restartBtn.hidden = s.status !== 'ready'
     restartBtn.disabled = !!s.waitingForIdle
-    restartBtn.textContent = s.waitingForIdle ? 'Waiting to restart...' : 'Restart and update'
+    restartBtn.textContent = s.waitingForIdle ? `Waiting to restart${Fmt.ELL}` : 'Restart and update'
   }
 
   function wireUpdater() {
@@ -265,14 +345,14 @@
 
         <div class="card" id="setSaveCard">
           <div class="card-head"><h3>Save location</h3></div>
-          <div class="set-row">
+          <div class="opt set-row">
             <div class="opt-ico">${ico('folder-open', 'icon-sm')}</div>
             <div class="opt-txt">
               <span class="opt-title">Save folder</span>
               <span class="opt-sub set-path" id="saveDirPath">${fmtSaveDir(p.saveDir)}</span>
             </div>
             <div class="set-actions">
-              <button class="btn btn-sm" id="chooseDirBtn">Choose...</button>
+              <button class="btn btn-sm" id="chooseDirBtn">Choose…</button>
               <button class="btn btn-sm btn-ghost" id="revealDirBtn">Reveal</button>
             </div>
           </div>
@@ -280,7 +360,7 @@
 
         <div class="card set-quick">
           ${row('quickRow', 'sparkle', 'Skip setup and record immediately',
-            'The hero button starts recording right away, using the defaults below.',
+            'The hero button starts recording right away, using the defaults below',
             'quickRecordToggle', p.quickRecord)}
         </div>
 
@@ -292,7 +372,7 @@
           ${row('rowOnlyApp', 'app-window', 'Only the recorded app\'s sound',
             'A window or simulator take hears its own app or device, never a notification or music. ' +
             'Needs System Audio Recording, which macOS asks for once.', 'onlyAppSound', false)}
-          <div class="set-row">
+          <div class="opt set-row">
             <div class="opt-ico">${ico('clock', 'icon-sm')}</div>
             <div class="opt-txt"><span class="opt-title">Countdown</span><span class="opt-sub">Time before recording starts</span></div>
             <div class="seg" id="countdownSeg" role="tablist">
@@ -317,13 +397,13 @@
         <div class="card">
           <div class="card-head"><h3>Updates</h3></div>
           ${row('rowAutoUpdate', 'arrow-clockwise', 'Install updates automatically',
-            'Fetch checks in the background and gets updates ready before you ask.',
+            'Fetch checks in the background and gets updates ready before you ask',
             'updateAutoToggle', p.autoUpdate)}
-          <div class="set-row" id="updateStatusRow">
+          <div class="opt set-row" id="updateStatusRow">
             <div class="opt-ico" id="updateStatusIco">${ico('check-circle', 'icon-sm')}</div>
             <div class="opt-txt">
-              <span class="opt-title" id="updateStatusTitle">Fetch is up to date.</span>
-              <span class="opt-sub" id="updateStatusSub">Checking version...</span>
+              <span class="opt-title" id="updateStatusTitle">Fetch is up to date</span>
+              <span class="opt-sub" id="updateStatusSub">Checking version…</span>
             </div>
             <div class="set-actions">
               <button class="btn btn-sm" id="checkUpdateBtn">Check now</button>
@@ -334,11 +414,11 @@
 
         <div class="card">
           <div class="card-head"><h3>Permissions</h3></div>
-          <div class="set-row">
+          <div class="opt set-row">
             <div class="opt-ico">${ico('monitor', 'icon-sm')}</div>
             <div class="opt-txt">
               <span class="opt-title">Screen, camera and microphone</span>
-              <span class="opt-sub">Run the first-run setup again, or open the macOS privacy settings.</span>
+              <span class="opt-sub">Run the first-run setup again, or open the macOS privacy settings</span>
             </div>
             <div class="set-actions">
               <button class="btn btn-sm" id="rerunSetup">Run setup again</button>
@@ -366,7 +446,7 @@
           </div>
           <div class="acc-chips" id="neverChips">${neverChipsHtml(never)}</div>
           <form class="acc-add" id="neverAdd">
-            <input type="text" id="neverInput" placeholder="App name, e.g. Notes" autocomplete="off" spellcheck="false">
+            <input class="input input-sm" type="text" id="neverInput" placeholder="App name, e.g. Notes" autocomplete="off" spellcheck="false">
             <button class="btn btn-sm" type="submit" id="neverAddBtn" disabled>Add</button>
           </form>
 
@@ -378,7 +458,7 @@
           </div>
           <div class="acc-chips" id="deviceChips">${deviceChipsHtml(neverDevices)}</div>
           <form class="acc-add" id="deviceAdd">
-            <select id="devicePick"><option value="">Loading your simulators...</option></select>
+            <select class="select input-sm" id="devicePick"><option value="">Loading your simulators…</option></select>
             <button class="btn btn-sm" type="submit" id="deviceAddBtn" disabled>Add</button>
           </form>
 
@@ -386,8 +466,8 @@
             'Off: an agent records in the background and nothing appears over your work. ' +
             'On: the red border and floating controls show, as for your own takes.',
             'agentVisibleToggle', !!p.agentTakesVisible)}
-          <p class="acc-seen">${ico('circle-fill', 'icon-sm')}<span>Either way the menu bar icon turns red while
-            anything records, every take is in Activity, and <kbd>&#8997;</kbd><kbd>Shift</kbd><kbd>&#8984;</kbd><kbd>R</kbd>
+          <p class="acc-seen"><span>Either way the menu bar icon turns red while
+            anything records, every take is in Activity, and <kbd>&#8997;&#8679;&#8984;R</kbd>
             stops one an agent started, the same as your own.</span></p>
         </div>
 
@@ -398,11 +478,19 @@
             and the words it avoids. What you write here is in force at once. What an agent drafts
             waits here until you say yes.</p>
           <form class="acc-add" id="guideProductForm">
-            <input type="text" id="guideProduct" list="guideProducts" placeholder="Product name, e.g. Yolk" autocomplete="off" spellcheck="false">
+            <input class="input input-sm" type="text" id="guideProduct" list="guideProducts" placeholder="Product name, e.g. Yolk" autocomplete="off" spellcheck="false">
             <datalist id="guideProducts"></datalist>
             <button class="btn btn-sm" type="submit">Open</button>
           </form>
           <div id="guideBody"></div>
+        </div>
+
+        <div class="card" id="setPhotosCard">
+          <div class="card-head"><h3>Photos</h3></div>
+          <p class="acc-lede">Search Unsplash for a backdrop from the Look tab, with your own free access key.
+            Only your search words go to Unsplash, and a note when you use a photo, as Unsplash asks.
+            Never your recordings, their audio or their names.</p>
+          <div id="photosBody">${photosHtml(null)}</div>
         </div>
 
         <div class="card">
@@ -441,6 +529,7 @@
     if ($('openPrivacy')) $('openPrivacy').onclick = () => ipcRenderer.invoke('open-privacy', 'screen')
     wireAppSound()
     wireGuidelines()
+    wirePhotos()
 
     wireUpdater()
 
@@ -520,7 +609,7 @@
         return
       }
       pick.disabled = false
-      pick.innerHTML = '<option value="">Choose a simulator...</option>' + free.map(d =>
+      pick.innerHTML = '<option value="">Choose a simulator…</option>' + free.map(d =>
         '<option value="' + esc(d.udid) + '" data-name="' + esc(d.name || '') + '">' +
           esc(d.name || d.udid) + (d.booted ? ' (booted)' : '') + '</option>').join('')
       $('deviceAddBtn').disabled = true

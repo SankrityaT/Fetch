@@ -86,6 +86,27 @@ const VIG_REACH = 2.4
 // read off the same arithmetic.
 const TOOTH_SIGMA = 6 / 219 / Math.sqrt(12)
 const GRAIN_ENDS = 0.6
+
+// A ground that is a material and not a colour. Paper was a flat #EDE6DA under a trace
+// of film grain, and grain is new every frame, so it read as a noisy video of a colour
+// rather than as a sheet, and the encoder threw most of it away. A texture here is the
+// sheet's own fibre and its soft mottling, drawn once into the cached background
+// (gl.js, FS_BG) and never again: static, so it costs the encoder one keyframe and then
+// nothing, and the ground holds still behind a take the way paper does.
+//   paper  warm fibre, some dark and a few bright, over mottling a few hundred pixels
+//          across: an uncoated sheet
+//   print  the same, finer and quieter: a smooth print stock under Mono print
+// Which one comes from background.texture, a field of the look like any other, so the
+// sheet travels with the look rather than with the name of the preset it came from:
+// saving Paper under a new name used to leave a flat colour with nothing on it, because
+// the new slug was in no table. Only on a solid ground: a gradient, a mesh and a photo
+// are compositions of their own.
+const TEXTURES = ['paper', 'print']
+function groundTexture(look = {}) {
+  const B = look.background || {}
+  if (B.kind && B.kind !== 'solid') return null
+  return TEXTURES.includes(B.texture) ? B.texture : null
+}
 // Warm ink over a light ground, a warm light over a dark one (BRAND --ink-1, --text-0).
 // Never #000 or #fff: every neutral here is warmed toward the fur hue.
 const EDGE_INK = '#1A1714', EDGE_LIT = '#FBFAF8'
@@ -140,7 +161,9 @@ function rgb(hex) {
 // A frame round the take: a browser, a plain window, a laptop or a phone, drawn from
 // rectangles, radii and two tones. Everything here is generic by construction and by
 // intent. No outline is traced from a product, nothing carries a wordmark, a window's
-// buttons are three dots in the shell's own tone rather than three coloured ones, a
+// buttons are three dots in the shell's own tone rather than three coloured ones (a
+// browser's are coloured, because the person asked for a browser that reads as one at
+// a glance, and red, amber and green close, shrink and grow on every desktop), a
 // laptop is a slab and a shallow foot with no keyboard, wedge or hinge detail, and a
 // phone has a speaker slit and nothing else: no notch, no island, no home bar. If a
 // shape would make anyone think of one company's product it is the wrong shape.
@@ -163,12 +186,16 @@ const DEVICES = {
 // of whatever it meets, because nothing can be within the floor of both of them. That
 // is how a device keeps the take's edge contract without measuring anything per pixel,
 // which is what keeps the two decode paths on the same side of it.
-// face is the bar a browser wears, a shade up from the shell because a toolbar sits in
-// front of the page; deep is the laptop's foot, a shade down, because a foot is under
-// the lid rather than in front of it.
+// face is the bar a window wears, a shade off the shell; deep is the laptop's foot, a
+// shade down, because a foot is under the lid rather than in front of it. A browser has
+// three surfaces of its own: the tab strip is the shell, the open tab and the toolbar
+// it joins are `tool`, a step towards the viewer because they sit in front of the
+// strip, and the address field is `well`, a step back into the toolbar.
 const SHELL = {
-  dark: { shell: '#2A2420', line: EDGE_LIT, face: '#1F1B18', deep: '#1F1B18', text: '#BDB5AC', sheen: 0.07 },
-  light: { shell: '#E8E2DA', line: EDGE_INK, face: '#F6F3EE', deep: '#D6CFC5', text: '#6E655C', sheen: 0.5 },
+  dark: { shell: '#2A2420', line: EDGE_LIT, face: '#1F1B18', deep: '#1F1B18', text: '#BDB5AC', sheen: 0.07,
+    tool: '#3A322C', well: '#1F1B18' },
+  light: { shell: '#E8E2DA', line: EDGE_INK, face: '#F6F3EE', deep: '#D6CFC5', text: '#6E655C', sheen: 0.5,
+    tool: '#FAF7F2', well: '#ECE6DE' },
 }
 
 // ── the chrome the capture already has ──────────────────────────────────
@@ -309,9 +336,21 @@ const ADDRESS = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[:/?#]
 const HAS_PATH = /^[a-z][a-z0-9+.-]*:\/\/|[/?#]/i
 const A_FILE = /\.(?:md|txt|html?|jsx?|tsx?|json|ya?ml|css|scss|less|png|jpe?g|gif|svg|webp|pdf|zip|csv|xml|py|rb|go|rs|swift|java|kt|php|cpp|hpp|toml|lock|log|sh|bash|zsh|sql|env|ini|conf|cfg|plist|xcodeproj|docx?|xlsx?|pptx?|mp4|mov|wav|mp3|webm)$/i
 const isAddress = t => !!t && ADDRESS.test(t) && (HAS_PATH.test(t) || !A_FILE.test(t))
-function barText(said, captured) {
+// A browser has two places for words, and they now say two things: the tab carries the
+// page's name and the field carries the address. The address comes from device.url, or
+// from what the capture knew (captured.url), or from a title that is itself shaped like
+// a host, which is how every look written before the field existed says it. Never made
+// up: with none of the three the field is drawn empty, as a real browser draws it on a
+// page it has not been told the address of, and the tab keeps the title. The tab's own
+// words are the title where there is one that is not the address, and the host where
+// the address is all there is, which is what a browser shows for a page with no title.
+const hostOf = u => String(u).replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[/?#].*$/, '')
+function barText(said, captured, url) {
   const t = String(said == null || said === '' ? (captured && captured.title) || '' : said).trim().slice(0, 80)
-  return { title: t, address: isAddress(t) }
+  const u0 = String(url || (captured && captured.url) || '').trim().slice(0, 200)
+  const u = isAddress(u0) ? u0 : isAddress(t) ? t : ''
+  const tab = t && t !== u ? t : u ? hostOf(u) : ''
+  return { title: t, address: !!u, url: u, tab }
 }
 
 // A shell's top bezel, its foot and whether it keeps the one detail that names it, all
@@ -319,9 +358,10 @@ function barText(said, captured) {
 //
 // An even bezel where the capture has chrome of its own: the shell is then a frame round
 // a window that already has a title bar, rather than a second window round the first.
-// A window's bar where a browser has no address to show, because a browser's bar is
-// taller than a window's for exactly one reason, which is that an address field stands
-// in it. With no field there is no toolbar, only a title bar.
+// A browser keeps its whole bar, tab strip and toolbar, whether or not there is an
+// address to put in its field. It used to fall back to a window's bar where there was
+// none, and the person looking at it saw a window: a browser is told from a window by
+// its tabs and its toolbar, and a frame asked to be a browser has to be one.
 //
 // The same answer for a phone, which is what a simulator asks for. A capture of a
 // device's own window is already a phone shaped picture with a phone's outline drawn in
@@ -335,7 +375,7 @@ function bezel(kind, address, own) {
   const d = DEVICES[kind]
   if (kind === 'phone') return own ? { bar: d.side, foot: d.side, slit: false } : { bar: d.bar, foot: d.foot, slit: true }
   if (kind !== 'browser' && kind !== 'window') return { bar: d.bar, foot: d.foot, slit: false }
-  const bar = own ? d.side : kind === 'browser' && !address ? DEVICES.window.bar : d.bar
+  const bar = own ? d.side : d.bar
   return { bar, foot: d.foot, slit: false }
 }
 
@@ -364,7 +404,7 @@ function devicePlan(D = {}, chrome, g, corner, end, bg = {}, cap = {}) {
   const a = g.vidW / g.vidH
   const base = d.base || 0
   const own = ownChrome(cap)
-  const text = barText(D.title, cap.captured)
+  const text = barText(D.title, cap.captured, D.url)
   const bez = bezel(kind, text.address, own)
   const glass = own ? 0 : glassCorner(cap)
   // An exact place for the take, from a store plan: the screen is that box and the shell
@@ -537,7 +577,7 @@ function groupSpec(raw, D = {}, radius = 0) {
     const asked = m.device === undefined || m.device === null ? D.kind : m.device
     const kind = DEVICES[asked] ? asked : null
     const own = ownChrome({ captured: m.captured, crop: c, viewport: m.viewport, screen: m.screen })
-    const text = barText(m.title == null ? D.title : m.title, m.captured)
+    const text = barText(m.title == null ? D.title : m.title, m.captured, m.url == null ? D.url : m.url)
     const q = { src: m.src || null, w, h, scale: m.scale, ppi: m.ppi, mm: m.mm, kind,
       ...text, own, bez: kind ? bezel(kind, text.address, own) : null,
       marks: Array.isArray(m.marks) ? m.marks : [],
@@ -569,7 +609,7 @@ function placeGroup(G, gl, g, corner, end, bg) {
     const cx = Math.round(ox + (c.x + c.cdx) * S), cy = Math.round(oy + (c.y + c.cdy) * S)
     const sw = m.mm * S
     const shell = m.kind
-      ? { ...shellAt(m.kind, sw, m.a, cx, cy, corner, m.bez), ...tone, title: m.title, address: m.address, own: m.own }
+      ? { ...shellAt(m.kind, sw, m.a, cx, cy, corner, m.bez), ...tone, title: m.title, address: m.address, url: m.url, tab: m.tab, own: m.own }
       : null
     const w = 2 * Math.round(sw / 2), h = 2 * Math.round(sw / m.a / 2)
     const rect = shell ? shell.screen : { x: Math.round(cx - w / 2), y: Math.round(cy - h / 2), w, h }
@@ -1021,6 +1061,8 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   } else if (/^color:#?[0-9a-f]{6}$/i.test(id)) {
     const col = rgb(id.slice(6).replace('#', ''))
     bg = { kind: 'gradient', c0: col, c1: col }
+    const tex = groundTexture(look)
+    if (tex) bg.texture = tex
   } else {
     const pair = GRADIENTS[id] || GRADIENTS.dusk
     bg = { kind: 'gradient', c0: rgb(pair[0]), c1: rgb(pair[1]) }
@@ -1281,7 +1323,12 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     // no film there is nothing in front of anything: the tooth is all the ground has and
     // it keeps its three levels, and a recording of a screen is not given grain nobody
     // asked for. Never under a third either, which is what keeps it clear of the dither.
-    tooth: film > 0 ? clamp(film * 0.055 * GRAIN_ENDS / Math.sqrt(6) / TOOTH_SIGMA, 0.3, 1) : 1,
+    // A ground with a texture of its own has its surface already, and it holds still: a
+    // moving tooth over a sheet of paper is the boiling this texture exists to end. A
+    // photograph drawn sharp is the same case (Linen Bone's weave carried three levels of
+    // tooth that were new every frame, which read as noise on cloth and which the
+    // encoder then threw away); a blurred one is a soft field again and keeps it.
+    tooth: bg.texture || (bg.kind === 'image' && !(bg.blur > 0) && !(bg.bokeh > 0)) ? 0 : film > 0 ? clamp(film * 0.055 * GRAIN_ENDS / Math.sqrt(6) / TOOTH_SIGMA, 0.3, 1) : 1,
     // How many output frames one draw of that texture lasts. Both are seeded by the
     // frame index, which is what lets any frame draw alone, and at 60 fps that meant a
     // completely new field of grain sixty times a second: the same look boiling twice
@@ -1669,4 +1716,4 @@ function cameraFrames(spec, pts) {
   return frameMap(pts, spec.frames, n => Timeline.camTime(spec.cam, srcAt(spec.keep, n / spec.fps)))
 }
 
-module.exports = { prepare, cropPx, framePlan, camAt, srcAt, rateAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL, realMM, groupLayout, GROUP_MAX, MM_DESK, MM_HAND }
+module.exports = { prepare, cropPx, framePlan, camAt, srcAt, rateAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL, realMM, groupLayout, GROUP_MAX, MM_DESK, MM_HAND, barText, groundTexture }

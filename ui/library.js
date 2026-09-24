@@ -24,6 +24,8 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+// every value a person reads (sizes, clock times, the ellipsis) comes from the one formatter
+const Fmt = require('./fmt')
 
 // Outside the renderer (a test, a headless tool) there is no window to draw into and no
 // right to rewrite the person's folders: read nothing of theirs, write nothing of theirs.
@@ -327,10 +329,7 @@ const stamp = (ms, now = new Date()) => {
   const year = d.getFullYear() !== now.getFullYear() ? ` ${d.getFullYear()}` : ''
   return `${MONTHS[d.getMonth()]} ${d.getDate()}${year}, ${h}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() < 12 ? 'AM' : 'PM'}`
 }
-const clock = s => {
-  const t = Math.max(0, Math.round(Number(s) || 0))
-  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
-}
+const clock = s => Fmt.clock(s)
 // Duplicate is the first path in Fetch that makes a new library item out of an old
 // one, and it writes the store above. A capture path that knows its own parent can say
 // so on the item instead (`from`), and that wins: it travels with the file.
@@ -366,9 +365,9 @@ function infoRows(g, all = lastGroups, now = new Date(), opts = {}) {
   const made = (all || []).filter(o => o !== g && (sourceOf(o) || {}).path === c.path)
   if (made.length) rows.push({ label: 'Used to make', value: made.map(o => stemOf(o)).join(', ') })
 
-  if (c.width && c.height) rows.push({ label: 'Size', value: `${c.width} × ${c.height}` })
-  const bytes = [c, ...((g && g.derived) || [])].reduce((n, f) => n + (Number(f.mb) || 0), 0)
-  if (bytes) rows.push({ label: 'On disk', value: `${Math.round(bytes * 10) / 10} MB` })
+  if (c.width && c.height) rows.push({ label: 'Size', value: Fmt.size(c.width, c.height) })
+  const mb = [c, ...((g && g.derived) || [])].reduce((n, f) => n + (Number(f.mb) || 0), 0)
+  if (mb) rows.push({ label: 'On disk', value: Fmt.bytes(mb * 1e6) })
 
   rows.push({ label: shot ? 'Captured' : 'Recorded', value: stamp(c.ctime || c.mtime, now) })
   const edited = ((g && g.derived) || []).reduce((n, f) => Math.max(n, f.mtime || 0), 0)
@@ -384,7 +383,7 @@ function countLabel(groups) {
   const list = groups || []
   const shots = list.filter(isShot).length
   const takes = list.length - shots
-  if (shots && takes) return `${plural(shots, 'shot', 'shots')} · ${plural(takes, 'take', 'takes')}`
+  if (shots && takes) return Fmt.join(plural(shots, 'shot', 'shots'), plural(takes, 'take', 'takes'))
   if (shots) return plural(shots, 'shot', 'shots')
   return plural(takes, 'take', 'takes')
 }
@@ -480,11 +479,16 @@ async function duplicate(g, opts = {}) {
 }
 
 // ── generic scrim + modal, matches the pattern already used elsewhere in the app ──
-function showScrim(bodyHtml, width) {
+// One way to close, as every modal: Cancel, Esc, or a click on the scrim (K5). A menu
+// that opened it goes first, so nothing floats undimmed over the scrim (L1).
+function showScrim(bodyHtml) {
+  closeMenu()
   const scrim = el('div', 'scrim')
-  scrim.innerHTML = `<div class="modal" style="width:min(${width},92vw)">${bodyHtml}</div>`
+  scrim.innerHTML = `<div class="modal modal-sm">${bodyHtml}</div>`
   document.body.appendChild(scrim)
-  const close = () => scrim.remove()
+  const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); close() } }
+  const close = () => { document.removeEventListener('keydown', onKey); scrim.remove() }
+  document.addEventListener('keydown', onKey)
   scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)
   scrim.onclick = e => { if (e.target === scrim) close() }
   return { scrim, close }
@@ -495,10 +499,10 @@ function promptFolderName({ title, value = '', confirmLabel, onConfirm }) {
     <div class="modal-head">${ico('folder', 'icon-lg')}<span class="modal-title">${esc(title)}</span></div>
     <div class="modal-body"><input class="input" id="libFolderName" type="text" maxlength="60"
       placeholder="Folder name" value="${esc(value)}"></div>
-    <div class="modal-foot"><div style="flex:1"></div>
+    <div class="modal-foot">
       <button class="btn btn-sm" data-close>Cancel</button>
       <button class="btn btn-sm btn-primary" id="libFolderOk">${esc(confirmLabel)}</button>
-    </div>`, '380px')
+    </div>`)
   const input = scrim.querySelector('#libFolderName')
   input.focus(); input.select()
   const commit = () => {
@@ -514,22 +518,36 @@ function confirmDeleteFolder(folder, onConfirm) {
   const { scrim, close } = showScrim(`
     <div class="modal-body" style="text-align:center;display:grid;gap:12px;justify-items:center">
       <img class="biscuit" src="./assets/mascot/sad.png" alt="" style="width:88px;height:88px">
-      <h3 style="font-family:var(--font-display);font-size:var(--t-18);letter-spacing:-.03em">Delete "${esc(folder.name)}"?</h3>
+      <h3 style="text-wrap:balance;overflow-wrap:anywhere">Delete "${esc(folder.name)}"?</h3>
       <p class="dim" style="font-size:var(--t-12)">The shots and recordings stay right where they are, this only removes the folder.</p>
     </div>
-    <div class="modal-foot"><div style="flex:1"></div>
+    <div class="modal-foot">
       <button class="btn btn-sm" data-close>Cancel</button>
-      <button class="btn btn-sm btn-danger" id="libFolderDel">Delete folder</button>
-    </div>`, '420px')
+      <button class="btn btn-sm btn-danger" id="libFolderDel">${ico('trash')}Delete folder</button>
+    </div>`)
   scrim.querySelector('#libFolderDel').onclick = () => { close(); onConfirm() }
 }
 
 // ── floating menu, closes on outside click, Escape or scroll ────────────────
 let openMenuEl = null
-function closeMenu() { if (openMenuEl) { openMenuEl.remove(); openMenuEl = null } }
+// Takes the menu's own document listeners with it, whoever closes it: left behind, a
+// closed menu's outside-click listener shut the next menu on its first mousedown.
+function closeMenu() {
+  if (!openMenuEl) return
+  const m = openMenuEl
+  openMenuEl = null
+  if (m._unlisten) m._unlisten()
+  m.remove()
+}
+// app.js closes any open menu before it opens a modal (L1)
+if (!headless) window.fetchCloseMenus = closeMenu
+// A menu hangs from the side of its trigger nearest the middle of the window: the left
+// edges line up for a trigger on the left, the right edges for one on the right, so the
+// Sort menu no longer runs 35px past its button towards the window edge (L2).
 function positionMenu(m, anchorRect) {
   const mr = m.getBoundingClientRect()
-  let left = anchorRect.left
+  const endAligned = anchorRect.left + anchorRect.width / 2 > window.innerWidth / 2
+  let left = endAligned ? anchorRect.right - mr.width : anchorRect.left
   if (left + mr.width > window.innerWidth - 10) left = window.innerWidth - mr.width - 10
   let top = anchorRect.bottom + 6
   if (top + mr.height > window.innerHeight - 10) top = anchorRect.top - mr.height - 6
@@ -538,18 +556,21 @@ function positionMenu(m, anchorRect) {
 }
 function openMenu(anchor, innerHtml, cls = 'lib-menu') {
   closeMenu()
-  const m = el('div', cls, innerHtml)
+  // the one popover recipe in components.css; lib-menu only places it
+  const m = el('div', 'popover ' + cls, innerHtml)
+  m.setAttribute('role', 'menu')
   document.body.appendChild(m)
   positionMenu(m, anchor.getBoundingClientRect())
   openMenuEl = m
   setTimeout(() => {
-    const cleanup = () => {
+    if (openMenuEl !== m) return          // closed before it was wired
+    m._unlisten = () => {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
       window.removeEventListener('resize', onScroll)
       document.removeEventListener('scroll', onScroll, true)
-      closeMenu()
     }
+    const cleanup = () => { if (openMenuEl === m) closeMenu(); else m._unlisten() }
     const onDown = e => { if (!m.contains(e.target) && !anchor.contains(e.target)) cleanup() }
     const onKey = e => { if (e.key === 'Escape') cleanup() }
     const onScroll = () => cleanup()
@@ -564,8 +585,9 @@ function openMenu(anchor, innerHtml, cls = 'lib-menu') {
 // ── folder chip menu: rename / delete ───────────────────────────────────────
 function openFolderMenu(anchor, folder, onChange) {
   const m = openMenu(anchor, `
-    <button class="lib-menu-item" data-a="rename">${ico('pencil-simple')}<span>Rename</span></button>
-    <button class="lib-menu-item danger" data-a="delete">${ico('trash')}<span>Delete</span></button>`)
+    <button class="popover-row lib-menu-item" data-a="rename">${ico('pencil-simple')}<span>Rename</span></button>
+    <div class="popover-sep"></div>
+    <button class="popover-row lib-menu-item danger" data-a="delete">${ico('trash')}<span>Delete</span></button>`)
   m.querySelector('[data-a="rename"]').onclick = () => {
     closeMenu()
     promptFolderName({
@@ -582,12 +604,12 @@ function openFolderMenu(anchor, folder, onChange) {
 // ── assign menu: opened from a card, lists folders plus New folder ────────
 function openAssignMenu(anchor, filePath, onChange) {
   const rows = state.folders.map(f => `
-    <button class="lib-menu-item" data-id="${f.id}">
+    <button class="popover-row lib-menu-item" data-id="${f.id}">
       ${ico(holds(f, filePath) ? 'check' : 'folder')}<span>${esc(f.name)}</span>
     </button>`).join('')
   const m = openMenu(anchor, `
     ${rows || `<div class="lib-menu-empty">No folders yet.</div>`}
-    <button class="lib-menu-item" data-new="1">${ico('plus')}<span>New folder...</span></button>`)
+    <button class="popover-row lib-menu-item" data-new="1">${ico('plus')}<span>New folder${Fmt.ELL}</span></button>`)
   m.querySelectorAll('[data-id]').forEach(b => b.onclick = () => {
     toggleMember(b.dataset.id, filePath)
     closeMenu(); onChange()
@@ -626,9 +648,9 @@ function openInfo(anchor, filePath) {
     <div class="lib-info-row"><span class="lib-info-k">Where</span>
       <span class="lib-info-v mono">${esc(where)}</span></div>
     <div class="lib-info-acts">
-      <button class="lib-menu-item" data-do="copy">${ico('copy')}<span>Duplicate</span></button>
-      <button class="lib-menu-item" data-do="reveal">${ico('folder-open')}<span>Show in Finder</span></button>
-      ${canTrash ? `<button class="lib-menu-item danger" data-do="trash">${ico('trash')}<span>Move to Trash</span></button>` : ''}
+      <button class="popover-row lib-menu-item" data-do="copy">${ico('copy')}<span>Duplicate</span></button>
+      <button class="popover-row lib-menu-item" data-do="reveal">${ico('folder-open')}<span>Show in Finder</span></button>
+      ${canTrash ? `<button class="popover-row lib-menu-item danger" data-do="trash">${ico('trash')}<span>Move to Trash</span></button>` : ''}
     </div>`, 'lib-menu lib-info')
 
   m.querySelectorAll('[data-open]').forEach(b => b.onclick = () => { closeMenu(); openItem(b.dataset.open) })
@@ -700,11 +722,12 @@ function renderBar(gridEl, groups, onChange) {
   bar.innerHTML = sampleBannerHTML() + `
     <div class="lib-bar-row">
       ${kindHtml}
-      <div style="flex:1"></div>
-      <div class="lib-search">${ico('magnifying-glass')}
-        <input id="libQuery" class="input" type="search" placeholder="Search names" value="${esc(view.query)}" autocomplete="off"></div>
-      <button class="btn btn-sm" id="libSort" data-tip="Sort">${ico('sliders-horizontal')}
-        <span>${esc((SORTS.find(s => s[0] === view.sort) || SORTS[0])[1])}</span></button>
+      <div class="lib-bar-tools">
+        <div class="lib-search">${ico('magnifying-glass')}
+          <input id="libQuery" class="input input-sm" type="search" placeholder="Search names" value="${esc(view.query)}" autocomplete="off"></div>
+        <button class="btn btn-sm" id="libSort" data-tip="Sort">${ico('sliders-horizontal')}
+          <span>${esc((SORTS.find(s => s[0] === view.sort) || SORTS[0])[1])}</span></button>
+      </div>
     </div>
     <div class="lib-bar-row wrap">
       <button class="chip folder-chip" data-id="all" aria-pressed="${view.folder === 'all'}">All <span class="chip-count">${(groups || []).length}</span></button>
@@ -740,7 +763,7 @@ function renderBar(gridEl, groups, onChange) {
   sort.onclick = () => {
     const m = openMenu(sort, SORTS.map(([id, label]) =>
       // a blank of the same size where the tick is not, so the labels stay in one line
-      `<button class="lib-menu-item" data-s="${id}">${view.sort === id ? ico('check') : '<span class="icon-sm"></span>'}<span>${esc(label)}</span></button>`).join(''))
+      `<button class="popover-row lib-menu-item" data-s="${id}" aria-selected="${view.sort === id}">${view.sort === id ? ico('check') : '<svg class="icon-sm" aria-hidden="true"></svg>'}<span>${esc(label)}</span></button>`).join(''))
     m.querySelectorAll('[data-s]').forEach(b => b.onclick = () => { view.sort = b.dataset.s; closeMenu(); onChange() })
   }
 
@@ -826,8 +849,8 @@ function tagHTML(g) {
 // The folder button app.js wires by hand, plus an ⓘ this file wires itself.
 function assignButtonHTML(g) {
   const p = g ? item(g).path : ''
-  return `<button class="btn btn-sm" data-act="folder" data-tip="Add to folder">${ico('folder')}</button>` +
-    (p ? `<button class="btn btn-sm" data-lib="info" data-p="${esc(p)}" data-tip="Details">${ico('info')}</button>` : '')
+  return `<button class="btn btn-sm btn-icon" data-act="folder" data-tip="Add to folder" aria-label="Add to folder">${ico('folder')}</button>` +
+    (p ? `<button class="btn btn-sm btn-icon" data-lib="info" data-p="${esc(p)}" data-tip="Details" aria-label="Details">${ico('info')}</button>` : '')
 }
 
 // One delegated listener rather than a handler per card: the grid is rebuilt on every

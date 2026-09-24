@@ -160,6 +160,9 @@
   }
 
   const { ipcRenderer } = require('electron')
+  // Every duration, size and clock the pane shows comes from the one formatter, so a
+  // tool that took 4.3s reads "4.3s" here and in Activity (ui/fmt.js).
+  const Fmt = window.Fmt || require('./ui/fmt')
 
   const MARK = { claude: 'claude', codex: 'codex' }
   const ico = (n, c) => `<svg class="${c || 'icon-sm'}"><use href="./assets/icons/sprite.svg#i-${n}"/></svg>`
@@ -168,12 +171,40 @@
 
   // The smallest markdown that matters here. Models write **bold** and bullet lists
   // whatever you ask, and showing the asterisks reads as a bug. Escaped first, so the
-  // only tags that reach the DOM are the ones made below.
-  function md(t) {
+  // only tags that reach the DOM are the ones made below. Blocks become real <p>, <ul>
+  // and <ol>, so the spacing between them is the stylesheet's, not the model's blank
+  // lines, and a list is a list rather than lines that start with a dot.
+  function inline(t) {
     return esc(t)
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/^[-*] +/gm, '\u00b7 ')
+  }
+  function md(t) {
+    const out = []
+    let para = [], list = null
+    const endPara = () => { if (para.length) out.push('<p>' + para.map(inline).join('<br>') + '</p>'); para = [] }
+    const endList = () => { if (list) out.push('<' + list.tag + '>' + list.items.map(i => '<li>' + inline(i) + '</li>').join('') + '</' + list.tag + '>'); list = null }
+    for (const raw of String(t == null ? '' : t).replace(/\r\n?/g, '\n').split('\n')) {
+      const line = raw.replace(/\s+$/, '')
+      const bullet = /^\s*[-*\u2022] +(.*)$/.exec(line)
+      const num = !bullet && /^\s*\d+[.)] +(.*)$/.exec(line)
+      if (bullet || num) {
+        const tag = bullet ? 'ul' : 'ol'
+        endPara()
+        if (list && list.tag !== tag) endList()
+        if (!list) list = { tag, items: [] }
+        list.items.push((bullet || num)[1])
+      } else if (!line.trim()) {
+        endPara(); endList()
+      } else if (list && /^\s{2,}\S/.test(raw)) {
+        list.items[list.items.length - 1] += ' ' + line.trim()     // a wrapped list item
+      } else {
+        endList()
+        para.push(line.trim())
+      }
+    }
+    endPara(); endList()
+    return out.join('')
   }
 
   const state = {
@@ -249,7 +280,7 @@
       tray.innerHTML = attach.map(tileHtml).join('')
       tray.querySelectorAll('video').forEach(v => v.addEventListener('loadedmetadata', () => {
         const d = v.duration, lab = v.parentElement.querySelector('.att-dur')
-        if (lab && isFinite(d)) lab.textContent = `${Math.floor(d / 60)}:${String(Math.round(d % 60)).padStart(2, '0')}`
+        if (lab && isFinite(d)) lab.textContent = Fmt.clock(d)
       }, { once: true }))
     }
     if (sendBtn) sync()
@@ -378,15 +409,22 @@
   let heroTouched = false
   const turn = { made: false }
 
+  // A suggestion is the shared chip (components.css), not a box of its own. The label
+  // sits in a span so a long one can end in an ellipsis, and the whole text is the tip.
+  const egChip = (label, ask) =>
+    `<button type="button" class="chip chip-lg chat-eg" data-ask="${esc(ask)}" title="${esc(label)}"><span>${esc(label)}</span></button>`
+
   // Shown on an empty thread, and again after New chat.
   const INTRO = `
         <div class="chat-intro">
           <p>Record a window, find a moment by what was said, cut, zoom and export.
              Ask in plain words.</p>
           <div class="chat-egs">
-            <button type="button" class="chat-eg">Record my Chrome window for 10 seconds</button>
-            <button type="button" class="chat-eg">Cut the dead air from my last take</button>
-            <button type="button" class="chat-eg">Export my latest recording</button>
+            ${[
+              'Record my Chrome window for 10 seconds',
+              'Cut the dead air from my last take',
+              'Export my latest recording',
+            ].map(t => egChip(t, t)).join('')}
           </div>
         </div>`
 
@@ -405,7 +443,7 @@
           <p>Ask for an edit to <strong>${esc(stemOf(src))}</strong> in plain words. Each change
              lights up on the timeline, and can be undone.</p>
           <div class="chat-egs">
-            ${chips.map(c => `<button type="button" class="chat-eg" data-ask="${esc(c.ask)}">${esc(c.label)}</button>`).join('')}
+            ${chips.map(c => egChip(c.label, c.ask)).join('')}
           </div>
         </div>`
   }
@@ -445,7 +483,7 @@
       </div>
 
       <form class="chat-composer" id="chatForm">
-        <div class="chat-mention" id="chatMention" hidden></div>
+        <div class="popover chat-mention" id="chatMention" hidden></div>
         <div class="chat-on-row" id="chatOn" hidden></div>
         <div class="chat-ctx" id="chatCtx" hidden></div>
         <div class="chat-region" id="chatRegion" hidden></div>
@@ -599,7 +637,7 @@
     if (!mentionList.length) { pop.hidden = true; return }
     mentionPick = Math.min(mentionPick, mentionList.length - 1)
     pop.innerHTML = mentionList.map((r, i) =>
-      '<button type="button" class="chat-mention-row" data-i="' + i + '" data-on="' + (i === mentionPick) + '"' +
+      '<button type="button" class="popover-row chat-mention-row" data-i="' + i + '" data-on="' + (i === mentionPick) + '"' +
         (r.kind === 'project' ? ' data-kind="project" title="' + esc(r.path) + '"' : '') + '>' +
         (r.kind === 'project' ? projectRow(r, hit.q) : recordingRow(r, hit.q)) +
       '</button>').join('')
@@ -608,13 +646,22 @@
     if (on) on.scrollIntoView({ block: 'nearest' })
   }
 
+  // A still is a Shot and a video a Recording, the Library's words, and both go by the
+  // Library's title: the name without its extension.
+  const STILL_RE = /\.(png|jpe?g|heic|webp|tiff?|bmp)$/i
+  const isStill = r => STILL_RE.test(String((r && (r.path || r.name)) || ''))
+  const titleOf = r => String(r.name || '').replace(/\.[^.]+$/, '') || String(r.name || '')
+  const recIcon = r => isStill(r) ? 'image' : r.srt ? 'closed-captioning' : 'film-strip'
+
   function recordingRow(r, q) {
-    return ico(r.srt ? 'closed-captioning' : 'film-strip', 'icon-sm') +
+    return ico(recIcon(r), 'icon-sm') +
       '<span class="chat-mention-txt">' +
-        '<span class="chat-mention-name">' + boldMatch(r.name, q) + '</span>' +
-        '<span class="chat-mention-sub">Recording' +
-          (r.mb ? ' · ' + r.mb + ' MB' : '') + (r.mtime ? ' · ' + agoText(r.mtime) : '') +
-          (r.srt ? ' · transcribed' : '') + '</span>' +
+        '<span class="chat-mention-name">' + boldMatch(titleOf(r), q) + '</span>' +
+        '<span class="chat-mention-sub">' + Fmt.join(
+          isStill(r) ? 'Shot' : 'Recording',
+          r.mb ? Fmt.bytes(r.mb * 1e6) : '',
+          r.mtime ? agoText(r.mtime) : '',
+          r.srt ? 'transcribed' : '') + '</span>' +
       '</span>'
   }
 
@@ -653,8 +700,8 @@
           (t.branch ? '<span class="chat-tag-branch mono">' + esc(t.branch) + '</span>' : '') +
           '<button type="button" data-untag="' + i + '" aria-label="Remove ' + esc(t.name) + '">' + ico('x', 'icon-sm') + '</button>' +
         '</span>'
-      : '<span class="chat-tag">' + ico('film-strip', 'icon-sm') +
-          '<span>' + esc(t.name) + '</span>' +
+      : '<span class="chat-tag" title="' + esc(t.name) + '">' + ico(isStill(t) ? 'image' : 'film-strip', 'icon-sm') +
+          '<span>' + esc(titleOf(t)) + '</span>' +
           '<button type="button" data-untag="' + i + '" aria-label="Remove">' + ico('x', 'icon-sm') + '</button>' +
         '</span>').join('')
   }
@@ -901,7 +948,7 @@
         : `<img src="${esc(fileUrl(a.path))}" alt="" title="${esc(a.name)}">`).join('')
     // what was tagged stays visible on the message it went with
     const tagLine = sentTags.length
-      ? '<div class="chat-me-tags">' + sentTags.map(t => '<span>@' + esc(t.name) + '</span>').join('') + '</div>' : ''
+      ? '<div class="chat-me-tags">' + sentTags.map(t => '<span>@' + esc(t.kind === 'project' ? t.name : titleOf(t)) + '</span>').join('') + '</div>' : ''
     // and so does what was lassoed, with the id the agent was told to aim at
     const sentRegions = msg.regions || []
     const regionLine = sentRegions.length
@@ -1056,8 +1103,7 @@
     n.dataset.state = ev.ok ? 'ok' : 'bad'
     n.querySelector('.chat-tool-ico').innerHTML = ico(ev.ok ? 'check' : 'warning-circle', 'icon-sm')
     if (ev.summary) n.querySelector('.chat-tool-sum').textContent = ev.summary
-    if (ev.ms != null) n.querySelector('.chat-tool-ms').textContent = ev.ms < 1000
-      ? ev.ms + ' ms' : (ev.ms / 1000).toFixed(1) + ' s'
+    if (ev.ms != null) n.querySelector('.chat-tool-ms').textContent = Fmt.dur(ev.ms)
   }
 
   // Any tool still marked running never reported back; say so rather than leaving a
@@ -1074,7 +1120,7 @@
   // A tool that made or changed a file ends in a card with the file itself: a
   // thumbnail, one plain line and a click that opens it. The row above is the log of
   // what ran; the card is the thing you came for.
-  const clock = s => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`
+  const clock = s => Fmt.clock(s)
   const stemOf = p => baseName(p).replace(/\.[^.]+$/, '')
   const AUDIO_RE = /\.(m4a|mp3|wav|aac|flac|ogg)$/i
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
@@ -1083,12 +1129,12 @@
     d = d || {}; inp = inp || {}
     const meta = []
     if (tool === 'export' && d.path) {
-      if (d.mb) meta.push(`${d.mb} MB`)
+      if (d.mb) meta.push(Fmt.bytes(d.mb * 1e6))
       if (d.seconds) meta.push(clock(d.seconds))
       return { path: d.path, open: 'reveal', line: `Exported ${baseName(d.path)}`, meta }
     }
     if (tool === 'record_stop' && d.path) {
-      if (d.mb) meta.push(`${d.mb} MB`)
+      if (d.mb) meta.push(Fmt.bytes(d.mb * 1e6))
       return { path: d.path, open: 'editor', line: `Recorded ${stemOf(d.path)}`, meta }
     }
     if (tool === 'remove_dead_air' && d.path) {
@@ -1114,14 +1160,14 @@
         line: parts.length ? `Updated the edit: ${parts.join(', ')}` : 'Updated the edit' }
     }
     if (tool === 'get_frame' && inp.path) {
-      return { path: inp.path, open: 'editor', image: d.image, compact: true,
+      return { path: inp.path, open: 'editor', image: d.image,
         line: `Looked at ${clock(+d.at || +inp.at || 0)}`, meta: [stemOf(inp.path)] }
     }
     // what the agent aimed at, and what the edit then looked like, so the person sees
     // the same pictures it judged by
     if (tool === 'find_on_screen' && inp.path) {
       const top = Array.isArray(d.elements) && d.elements[0]
-      return { path: inp.path, open: 'editor', image: d.image, compact: true,
+      return { path: inp.path, open: 'editor', image: d.image,
         line: inp.query && top ? `Found ${top.id} for "${inp.query}" at ${clock(+d.at || +inp.at || 0)}`
           : `Looked for targets at ${clock(+d.at || +inp.at || 0)}`, meta: [stemOf(inp.path)] }
     }
@@ -1129,11 +1175,11 @@
     // is the card rather than a row saying a file was written
     if (tool === 'contact_sheet' && inp.path) {
       const frames = Array.isArray(d.frames) ? d.frames.length : +d.count || 0
-      return { path: inp.path, open: 'editor', image: d.image || d.file, compact: true,
+      return { path: inp.path, open: 'editor', image: d.image || d.file,
         line: `Looked at the whole edit${frames ? `, ${plural(frames, 'frame')}` : ''}`, meta: [stemOf(inp.path)] }
     }
     if (tool === 'preview_frame' && inp.path) {
-      return { path: inp.path, open: 'editor', image: d.image, compact: true,
+      return { path: inp.path, open: 'editor', image: d.image,
         line: `Checked the edit at ${(Array.isArray(d.frames) && d.frames.length ? d.frames.map(f => +f.at)
           : [].concat(d.at != null ? d.at : inp.at || 0)).map(t => clock(+t || 0)).join(', ')}`, meta: [stemOf(inp.path)] }
     }
@@ -1150,7 +1196,7 @@
     if (tool === 'apply_edit' && lastCard && lastCard.key === key) lastCard.node.remove()
     const action = c.open === 'reveal' ? 'Show in Finder' : 'Open in editor'
     const n = add(
-      `<button type="button" class="chat-card${c.compact ? ' chat-card-sm' : ''}" data-path="${esc(c.path)}" ` +
+      `<button type="button" class="chat-card" data-path="${esc(c.path)}" ` +
         `data-open="${c.open}" aria-label="${esc(c.line)}. ${action}">` +
         `<span class="chat-card-thumb" aria-hidden="true"></span>` +
         `<span class="chat-card-txt">` +
@@ -1168,7 +1214,7 @@
     if (level) {
       n.dataset.undoFor = c.path
       n.dataset.undoLevel = level
-      n.insertAdjacentHTML('beforeend', `<button type="button" class="chat-card-undo">` +
+      n.insertAdjacentHTML('beforeend', `<button type="button" class="btn btn-ghost btn-sm chat-card-undo">` +
         `${ico('arrow-counter-clockwise', 'icon-sm')}Undo Biscuit's change</button>`)
     }
     paintUndo()                        // an older card for this take is no longer the latest
@@ -1353,9 +1399,9 @@
       `</div>` +
       (rows ? `<ul class="chat-prop-list">${rows}</ul>` : '') +
       `<div class="chat-prop-acts">` +
-        `<button type="button" class="chat-prop-no" data-decide="discard">Discard</button>` +
+        `<button type="button" class="btn btn-ghost btn-sm chat-prop-no" data-decide="discard">Discard</button>` +
         `<span class="chat-wait-left mono"></span>` +
-        `<button type="button" class="chat-prop-yes" data-decide="apply">Apply</button>` +
+        `<button type="button" class="btn btn-primary btn-sm chat-prop-yes" data-decide="apply">Apply</button>` +
       `</div>` +
       `<div class="chat-wait-foot"><span class="chat-wait-said"></span></div>` +
       `<span class="chat-wait-bar" aria-hidden="true"></span>`, 'chat-prop')
@@ -1512,7 +1558,7 @@
       // its do_next and moved on, so a button still lit would answer into the void.
       settleAll(ev.cancelled ? 'cancelled' : 'timeout')
       if (ev.cancelled) add(`<span>Stopped</span>`, 'chat-note')
-      else if (!ev.ok && ev.error) add(esc(ev.error), 'chat-msg chat-err')
+      else if (!ev.ok && ev.error) add(ico('warning-circle', 'icon-xs') + '<span>' + esc(ev.error) + '</span>', 'chat-msg chat-err')
       if (replay) return
       hideStatus()
       state.busy = false; sync()

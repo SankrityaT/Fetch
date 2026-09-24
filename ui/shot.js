@@ -152,11 +152,26 @@ function cleanText(t) {
 // the picture, and a frame drawn round that is two title bars, so this is the one fact the
 // compositor needs and cannot work out (ui/compositor/plan.js, ownChrome).
 const CAPTURE_KINDS = new Set(['window', 'display', 'region'])
+// The address the capture itself knew, where it knew one. A browser frame draws
+// device.url first and this second (ui/compositor/plan.js, barText), so a shot of a
+// project's own dev server carries its address into the bar without anyone typing it.
+// The same shape test the compositor uses, so a window title that is really a filename
+// never travels as an address, and nothing here is made up.
+const ADDRESS = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[:/?#]\S*)?$/i
+const HAS_PATH = /^[a-z][a-z0-9+.-]*:\/\/|[/?#]/i
+const A_FILE = /\.(?:md|txt|html?|jsx?|tsx?|json|ya?ml|css|scss|less|png|jpe?g|gif|svg|webp|pdf|zip|csv|xml|py|rb|go|rs|swift|java|kt|php|cpp|hpp|toml|lock|log|sh|bash|zsh|sql|env|ini|conf|cfg|plist|xcodeproj|docx?|xlsx?|pptx?|mp4|mov|wav|mp3|webm)$/i
+const isAddress = t => !!t && ADDRESS.test(t) && (HAS_PATH.test(t) || !A_FILE.test(t))
+function cleanUrl(u) {
+  const s = String(u == null ? '' : u).trim().slice(0, 200)
+  return isAddress(s) ? s : ''
+}
 function cleanCaptured(c) {
   if (!c || typeof c !== 'object' || !CAPTURE_KINDS.has(String(c.kind))) return null
   const out = { kind: String(c.kind) }
   if (c.app != null) out.app = String(c.app).slice(0, 120)
   if (c.title != null) out.title = String(c.title).slice(0, 120)
+  const u = cleanUrl(c.url)
+  if (u) out.url = u
   return out
 }
 
@@ -178,6 +193,9 @@ function cleanMember(m) {
   // is the case this exists for: a handset and a browser window in one picture.
   if (m.device != null && DEVICE_KINDS.has(String(m.device))) out.device = String(m.device)
   if (m.title != null) out.title = String(m.title).slice(0, 80)
+  // and its own address, so a browser member of a group draws the page it was of
+  const mu = cleanUrl(m.url)
+  if (mu) out.url = mu
   // a member answers the chrome question about its own capture, which is how a handset
   // with no title bar stands beside a window that has one and both are drawn right
   const cap = cleanCaptured(m.captured)

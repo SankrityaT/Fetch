@@ -113,10 +113,10 @@ Display tracking is tight (-0.03em); 11 to 12px UI text is loose (+0.01em).
 
 8px base grid; 4px allowed for optical nudges only.
 Radii: 10 (thumbnail insets, tooltips, compact list rows), 14 (cards, tiles, popovers),
-20 (primary cards, panels, modals), 999 (pills: buttons, chips, badges, tags, segmented
-controls). Square icon-only controls and small icon avatars go all the way to a full
-circle instead of sitting at a small fixed radius, the same geometry Biscuit is built
-from.
+20 (primary panels), 26 (cards and modals, since 2.0), 999 (pills: buttons, chips, badges,
+tags, segmented controls). Where this list and `DESIGN.md` disagree, `DESIGN.md` decides.
+Square icon-only controls and small icon avatars go all the way to a full circle instead
+of sitting at a small fixed radius, the same geometry Biscuit is built from.
 A card's inner padding is never smaller than 14px, and never mismatched top/bottom.
 
 Elevation changed in 2.0: depth comes from tone first, then wide soft shadows on
@@ -155,9 +155,12 @@ smaller than 14px and never recolored outside the palette.
   "Fetch AI" or "our assistant". Fetch does not have a model.
 - **Say what it will not do, by name.** "Fetch's tools only. No shell, no files, no
   network." A list of exclusions earns more trust than any adjective.
-- **Name the one exception where it happens.** Voiceover is the only feature that uses
-  the internet. Its panel says exactly what is sent (the script) and what is not (the
-  recording, the audio, the filenames). No other copy gets to be vague about the network.
+- **Name every exception where it happens.** Two features use the internet, and no more:
+  voiceover, which sends the script to ElevenLabs, and the backdrop picker's photo search,
+  which sends the search words to Unsplash. Each panel says exactly what is sent and what
+  is not (the recording, the audio, the filenames, never any of them), and each names the
+  other, so neither can claim to be the only one. No other copy gets to be vague about the
+  network.
 - **Attribution is plain.** In the activity log the agent's name, or "You". Never
   "the AI", never "automatically".
 - **Ids are nouns.** `B2`, `Z1`, `C3` appear in copy exactly as on screen, in mono. Do not

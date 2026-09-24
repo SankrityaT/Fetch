@@ -16,6 +16,11 @@ const { spawnSync } = require('child_process')
 const path = require('path')
 
 const SUITES = [
+  // fmt first: it is the one every other suite's numbers are formatted by, it depends on
+  // nothing, and a second of it up front says whether a wrong number anywhere else is
+  // this module or the call site. unsplash is next to it because it is the same shape:
+  // pure, no network (its client is injected), and no Keychain of the person's touched.
+  'fmt', 'unsplash',
   'simulator', 'policy', 'simctl', 'fetchdoc', 'shot-doc', 'look', 'levels', 'timeline',
   'plan', 'fit', 'director', 'review', 'memory', 'guidelines', 'trackedit', 'focus', 'beats', 'naming',
   'zoom', 'overlays', 'zoomview', 'motion', 'stage-pick', 'targets', 'guard', 'guard-breaches', 'project-folder', 'lasso', 'pointer',

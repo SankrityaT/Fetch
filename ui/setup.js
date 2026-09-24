@@ -31,6 +31,10 @@ const STEP_COPY = [
 
 let micStream = null, camStream = null, meterRAF = null
 
+// The one formatter (ui/fmt.js) for every value this wizard shows. A function, not a
+// top level const: every classic script shares one scope, and another may name Fmt too.
+const setupFmt = () => window.Fmt || require('./ui/fmt.js')
+
 function openSetup() {
   const scrim = el('div', 'scrim')
   scrim.innerHTML = `
@@ -57,11 +61,11 @@ function openSetup() {
           <div class="opt-grid">
             <button class="pick" data-mode="screen" aria-pressed="${setup.mode === 'screen'}">
               <span class="pico">${ico('monitor', 'icon-lg')}</span>
-              <span class="pit">A screen</span><span class="pis">everything you see</span>
+              <span class="pit">A screen</span><span class="pis">Everything you see</span>
             </button>
             <button class="pick" data-mode="window" aria-pressed="${setup.mode === 'window'}">
               <span class="pico">${ico('app-window', 'icon-lg')}</span>
-              <span class="pit">One window</span><span class="pis">just that app</span>
+              <span class="pit">One window</span><span class="pis">Just that app</span>
             </button>
           </div>
           <div class="shots" id="wizTiles" ${setup.mode === 'screen' ? '' : 'hidden'}></div>
@@ -88,10 +92,10 @@ function openSetup() {
           <div class="opt-grid">
             <button class="pick" data-cam="on" aria-pressed="true">
               <span class="pico">${ico('video-camera', 'icon-lg')}</span>
-              <span class="pit">Camera on</span><span class="pis">floating bubble</span></button>
+              <span class="pit">Camera on</span><span class="pis">Floating bubble</span></button>
             <button class="pick" data-cam="off" aria-pressed="false">
               <span class="pico">${ico('x', 'icon-lg')}</span>
-              <span class="pit">No camera</span><span class="pis">screen only</span></button>
+              <span class="pit">No camera</span><span class="pis">Screen only</span></button>
           </div>
 
           <div class="place-row" id="camDials">
@@ -115,10 +119,10 @@ function openSetup() {
             <div class="place-dials">
               <div class="row"><span class="row-lbl">Size</span>
                 <input type="range" class="slider" id="wSize" min="120" max="700" value="260">
-                <span class="row-val mono" id="wSizeVal">260</span></div>
+                <span class="row-val mono" id="wSizeVal">${setupFmt().px(260)}</span></div>
               <div class="row"><span class="row-lbl">Zoom</span>
                 <input type="range" class="slider" id="wZoom" min="100" max="300" value="100">
-                <span class="row-val mono" id="wZoomVal">1.0×</span></div>
+                <span class="row-val mono" id="wZoomVal">${setupFmt().mult(1, 0.1)}</span></div>
               <div class="row" style="margin-top:2px"><span class="row-lbl">Camera</span>
                 <div id="camDevice" style="flex:1;min-height:34px"></div></div>
               <p class="micro dimmer" id="camHint" style="margin-top:10px">Click a spot to place it.</p>
@@ -135,23 +139,19 @@ function openSetup() {
           <div class="opt-grid">
             <button class="pick" data-aud="mic" aria-pressed="true">
               <span class="pico">${ico('microphone', 'icon-lg')}</span>
-              <span class="pit">Microphone</span><span class="pis">your voice</span></button>
+              <span class="pit">Microphone</span><span class="pis">Your voice</span></button>
             <button class="pick" data-aud="sys" aria-pressed="true">
               <span class="pico">${ico('speaker-high', 'icon-lg')}</span>
-              <span class="pit">Computer audio</span><span class="pis">system sound</span></button>
+              <span class="pit">System audio</span><span class="pis">Everything your Mac plays</span></button>
           </div>
           <div class="meter-wrap">
-            <div class="dev-row">
-              <span class="caps" style="flex:none">Input</span>
-              <div id="micDevice" style="flex:1;min-height:34px"></div>
-            </div>
+            <div class="caps" style="text-align:left;margin-bottom:8px">Microphone</div>
+            <div id="micDevice" style="min-height:34px"></div>
             <div class="meter" style="margin-top:12px"><i id="micMeter"></i></div>
             <p class="micro dimmer" id="micHint" style="margin-top:9px">Say something to check your mic.</p>
 
-            <div class="dev-row" style="margin-top:18px">
-              <span class="caps" style="flex:none">Computer audio</span>
-              <div id="sysDevice" style="flex:1;min-height:34px"></div>
-            </div>
+            <div class="caps" style="text-align:left;margin:24px 0 8px">System audio</div>
+            <div id="sysDevice" style="min-height:34px"></div>
             <p class="micro dimmer" id="sysHint" style="margin-top:9px">System audio is captured automatically. Install a tool like BlackHole to route just one app's sound here instead.</p>
           </div>
         </section>
@@ -266,7 +266,8 @@ function openSetup() {
               <span class="win-title">${(w.title || 'Untitled window').replace(/</g, '&lt;')}</span></span>
           </span>
           <span class="shot-check">${ico('check', 'icon-sm')}</span>`
-        b.onclick = () => { setup.window = w; paintWindows() }
+        // paint() too: picking a window is what enables Next, and the footer chip names it
+        b.onclick = () => { setup.window = w; paintWindows(); paint() }
         grid.appendChild(b)
       })
       shotLoaded = new Set()
@@ -372,8 +373,8 @@ function openSetup() {
     }
     paintFill()
   }
-  dial('wSize', 'camSize', v => v)
-  dial('wZoom', 'camZoom', v => (v / 100).toFixed(1) + '×')
+  dial('wSize', 'camSize', v => setupFmt().px(v))
+  dial('wZoom', 'camZoom', v => setupFmt().mult(v / 100, 0.1))
 
   // nine placement slots on a small tilted screen
   const SLOTS = ['tl','tc','tr','ml','mc','mr','bl','bc','br']
@@ -415,7 +416,7 @@ function openSetup() {
     try { list = await navigator.mediaDevices.enumerateDevices() } catch { return }
     const named = (kind, fallback) => list
       .filter(d => d.kind === kind && d.deviceId && d.deviceId !== 'default')
-      .map((d, i) => ({ id: d.deviceId, label: d.label || `${fallback.split(' ')[1]} ${i + 1}` }))
+      .map((d, i) => ({ id: d.deviceId, label: d.label || setupFmt().sentence(`${fallback.split(' ')[1]} ${i + 1}`) }))
 
     window.Dropdown('micDevice', [{ id: '', label: 'Default microphone' }, ...named('audioinput', 'Default microphone')],
       setup.micId, id => {
@@ -523,8 +524,8 @@ const summaryChips = () => {
     : (setup.source ? setup.source.name : 'Screen')
   const chips = [[setup.mode === 'window' ? 'app-window' : 'monitor', src, true]]
   chips.push(['video-camera', 'Camera', setup.cam])
-  chips.push(['microphone', 'Mic', setup.mic])
-  chips.push(['speaker-high', 'Audio', setup.sys])
+  chips.push(['microphone', 'Microphone', setup.mic])
+  chips.push(['speaker-high', 'System audio', setup.sys])
   return chips.map(([i, t, on]) =>
     `<span class="sum ${on ? 'on' : 'off'}">${ico(i, 'icon-sm')}${t}</span>`).join('')
 }
@@ -563,7 +564,7 @@ function paintHeroReady() {
   }
   $('readyChips').innerHTML = [
     setup.cam ? ['video-camera', 'Camera'] : null,
-    setup.mic ? ['microphone', 'Mic'] : null,
+    setup.mic ? ['microphone', 'Microphone'] : null,
     setup.sys ? ['speaker-high', 'System audio'] : null,
   ].filter(Boolean).map(([i, t]) => `<span class="chip chip-static">${ico(i, 'icon-sm')} ${t}</span>`).join('')
 }
@@ -639,7 +640,7 @@ function afterRecording(file, mb) {
       <div class="after">
         <img class="biscuit" src="./assets/mascot/sit-film.png" alt="">
         <h3 style="font-family:var(--font-display);font-size:var(--t-24);letter-spacing:-.03em">Got it.</h3>
-        <p class="dim" style="font-size:var(--t-12)">${mb} MB, saved to your Fetch folder.</p>
+        <p class="dim" style="font-size:var(--t-12)">${Fmt.bytes(mb * 1e6)}, saved to your Fetch folder.</p>
         <div class="after-acts">
           <button class="after-act" data-go="export">
             ${ico('export', 'icon-xl')}
@@ -656,9 +657,8 @@ function afterRecording(file, mb) {
       <button class="btn btn-sm btn-ghost" data-close>Not now</button></div>
   </div>`
   document.body.appendChild(scrim)
-  const close = () => scrim.remove()
-  scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)
-  scrim.onclick = e => { if (e.target === scrim) close() }
+  // Not now, Esc, or the scrim: one close for every modal (K5)
+  const close = modalCloser(scrim)
   scrim.querySelector('[data-go="edit"]').onclick = () => { close(); openInEditor(file) }
   scrim.querySelector('[data-go="export"]').onclick = async () => {
     close(); show('library'); await refreshLibrary()

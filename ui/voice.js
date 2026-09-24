@@ -1,11 +1,12 @@
 // Generated voiceover, through the person's own ElevenLabs account.
 // Main-process module, required from main.js.
 //
-// This is the one thing in Fetch that leaves the machine, and it is treated as an
-// exception rather than folded in quietly. Everything else here is deliberate about
-// that: the key lives in the macOS Keychain and never in prefs.json, the script is
-// the only thing ever sent, and nothing is uploaded unless someone presses Generate.
-// The UI says so in those words. A recorder whose whole argument is "nothing leaves
+// This is one of exactly two things in Fetch that leave the machine (the other is the
+// backdrop picker's Unsplash search, ui/unsplash.js), and it is treated as an exception
+// rather than folded in quietly. Everything else here is deliberate about that: the key
+// lives in the macOS Keychain and never in prefs.json, the script is the only thing ever
+// sent, and nothing is uploaded unless someone presses Generate. The UI says so in those
+// words, and names the other one beside it. A recorder whose whole argument is "nothing leaves
 // your Mac" cannot afford an unlabelled network call.
 //
 // What it is for: re-narrating a take without re-recording it. Fetch already has the
@@ -14,40 +15,33 @@
 
 const fs = require('fs')
 const https = require('https')
-const { execFile } = require('child_process')
 
 const API = 'api.elevenlabs.io'
 const SERVICE = 'fetch-elevenlabs'
-const ACCOUNT = 'fetch'
 
 // ---------- the key ----------
-// Keychain, not prefs.json. A key in a JSON file under Application Support is readable
-// by anything the user runs and ends up in backups and screen recordings.
+// Never prefs.json: a key in a JSON file under Application Support is readable by
+// anything the person runs and ends up in backups and screen recordings.
 //
-// Known wart: `security -w <value>` puts the key in argv, so it is briefly visible to
-// `ps` on this machine. The tool offers no stdin form, and the alternative is a file
-// on disk, which is worse and lasts longer.
-const sec = args => new Promise((resolve, reject) => {
-  execFile('/usr/bin/security', args, { timeout: 10000 }, (err, stdout, stderr) => {
-    if (err) return reject(new Error(String(stderr || err.message).trim()))
-    resolve(String(stdout).trim())
-  })
-})
+// And no longer a plain Keychain generic password either. One made by /usr/bin/security
+// carries that binary in its access control list, so any shell running as the person,
+// the read-only one a chat engine keeps included, could print the key back with no
+// prompt. ui/keystore.js holds it instead: encrypted by Electron's safeStorage, whose
+// own Keychain item is bound to Fetch's binary, into a 0600 file. A key still in the old
+// item is migrated on the first read and the old item deleted.
+const keys = require('./keystore').store(SERVICE)
 
 async function getKey() {
-  try { return await sec(['find-generic-password', '-a', ACCOUNT, '-s', SERVICE, '-w']) }
-  catch { return null }
+  try { return await keys.get() } catch { return null }
 }
 
 async function setKey(key) {
-  const k = String(key || '').trim()
-  if (!k) throw new Error('no key given')
-  await sec(['add-generic-password', '-a', ACCOUNT, '-s', SERVICE, '-w', k, '-U'])
+  await keys.set(key)
   return true
 }
 
 async function clearKey() {
-  try { await sec(['delete-generic-password', '-a', ACCOUNT, '-s', SERVICE]) } catch {}
+  try { await keys.clear() } catch {}
   return true
 }
 

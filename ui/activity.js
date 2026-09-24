@@ -20,6 +20,9 @@
   }
 
   const { ipcRenderer } = require('electron')
+  // Durations and the path ellipsis come from the one formatter, so the job chat
+  // called "1m 4s" is "1m 4s" here too, not "1 min" (ui/fmt.js).
+  const Fmt = window.Fmt || require('./ui/fmt')
 
   // Which glyph stands for each kind of work. Filled variants for anything that
   // captured, per the icon rule in BRAND.md.
@@ -48,14 +51,7 @@
     const str = String(p)
     if (!str.startsWith('/') || str.length <= 48) return str
     const parts = str.split('/').filter(Boolean)
-    return parts.length > 2 ? '.../' + parts.slice(-2).join('/') : str
-  }
-
-  const fmtMs = ms => {
-    if (ms == null) return ''
-    if (ms < 1000) return ms + ' ms'
-    if (ms < 60000) return (ms / 1000).toFixed(1) + ' s'
-    return Math.round(ms / 60000) + ' min'
+    return parts.length > 2 ? Fmt.ELL + '/' + parts.slice(-2).join('/') : str
   }
 
   const fmtClock = at => new Date(at)
@@ -77,7 +73,7 @@
     const badge = e.by
       ? `<span class="act-badge">${markFile
           ? `<img src="./assets/agents/${markFile}.svg" alt="" onerror="this.remove()">`
-          : ico('sparkle', 'icon-sm')}</span>`
+          : ico('sparkle', 'icon-xs')}</span>`
       : ''
 
     return `<div class="act-row" data-ok="${e.ok !== false}">
@@ -89,28 +85,37 @@
                   : e.detail ? `<span class="act-detail">${esc(shortPath(e.detail))}</span>` : ''}
       </span>
       <span class="act-by">${e.by ? esc(e.by) : 'You'}</span>
-      <span class="act-ms mono">${fmtMs(e.ms)}</span>
+      <span class="act-ms mono">${Fmt.dur(e.ms)}</span>
       <span class="act-state">${e.ok !== false ? ico('check', 'icon-sm') : ico('warning-circle', 'icon-sm')}</span>
     </div>`
   }
 
+  // The page keeps its title whether or not there is anything under it, like the
+  // Library, so the view never looks like a different screen when it is empty.
+  const HEAD = `<div class="act-head">
+        <h2>Activity</h2>
+        <p class="dim">Everything Fetch has done on this Mac. A row with no logo was you.</p>
+      </div>`
+
   function render(entries) {
     const mount = document.getElementById('activityMount')
     if (!mount) return
+    mount.classList.add('act-mount')
 
+    // Biscuit, one line and one action, centred in the space under the title (DESIGN,
+    // component rule 4). The action goes to Record, the same one the Library offers.
     if (!entries.length) {
-      mount.innerHTML = `<div class="empty">
+      mount.innerHTML = HEAD + `<div class="empty act-empty">
         <img class="biscuit biscuit-lg" src="./assets/mascot/curious.png" alt="">
-        <p>Nothing has happened yet. Recordings, exports and anything an agent does
-           will show up here, with who did it.</p>
+        <p>Nothing yet. Recordings, exports and what an agent does show up here, with who did it.</p>
+        <button type="button" class="btn btn-primary btn-sm" data-act-go="record">Start recording</button>
       </div>`
+      const go = mount.querySelector('[data-act-go]')
+      if (go) go.onclick = () => { const tab = document.querySelector('[data-view=record]'); if (tab) tab.click() }
       return
     }
 
-    let html = `<div class="act-head">
-        <h2>Activity</h2>
-        <p class="dim">Everything Fetch has done on this Mac. A row with no logo was you.</p>
-      </div><div class="act-list">`
+    let html = HEAD + `<div class="act-list">`
 
     let day = null
     for (const e of entries) {

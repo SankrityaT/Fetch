@@ -2250,6 +2250,99 @@ async function main() {
     }
   })()
 
+  // ── a photograph is a thing somebody took ───────────────────────────────
+  // The grounds a take stands on are real photographs now, and one of them can come
+  // from a search of Unsplash with the person's own key. That costs the surface one
+  // tool, and it carries two obligations no other tool has: the photographer is named
+  // in every answer, and the key is never anywhere an agent can read it. These hold
+  // both halves, the way the simulator's do: one tool, and what it promises is true.
+  const BRIDGE_ALL = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
+  const photosOp = BRIDGE_ALL.slice(BRIDGE_ALL.indexOf("async 'photos.do'("))
+    .split('\n  async \'')[0]
+
+  t('the one tool a photograph adds is photos', () => {
+    assert.ok(registered.includes('photos'), 'photos is not registered')
+    assert.deepStrictEqual(source.find(s => s.name === 'photos').ops, ['photos.do'],
+      'photos drives ' + source.find(s => s.name === 'photos').ops.join(', '))
+    const ops = Object.keys(bridge.ops).filter(op => /^photos\./.test(op))
+    assert.deepStrictEqual(ops, ['photos.do'],
+      'the bridge answers ' + ops.join(', ') + '; a photograph is another subject, not another surface')
+    assert.ok(bare.includes('photos'), 'the pane cannot reach the photographs the person can see')
+    const head = (SRC.split("'photos',")[1] || '').split('async args')[0]
+    for (const a of ['list', 'search', 'use']) {
+      assert.ok(new RegExp(`'${a}'`).test(head), `the photos tool does not offer ${a}`)
+      assert.ok(new RegExp(`${a}: `).test(head), `${a} is offered and never explained`)
+    }
+  })
+
+  t('every photograph leaves the tool with the name of whoever took it', () => {
+    const head = (SRC.split("'photos',")[1] || '').split('async args')[0]
+    assert.ok(/credit\.text/.test(head), 'the photos tool never tells an agent what to credit with')
+    assert.ok(/licence|license/.test(head), 'the tool reads the credit as a courtesy rather than the licence')
+    // and the op really hands one back, on all three paths
+    assert.ok(photosOp.length > 400, 'photos.do was not found in the bridge')
+    assert.strictEqual((photosOp.match(/credit/g) || []).length >= 6, true,
+      'photos.do drops the credit somewhere between the photograph and the agent')
+    for (const path of ['list', 'search', 'use']) {
+      assert.ok(new RegExp(`'${path}'`).test(photosOp), `photos.do does not answer ${path}`)
+    }
+  })
+
+  t('the access key is nowhere an agent can reach', () => {
+    // The key is the person's, it lives in the Keychain (ui/unsplash.js), and no tool
+    // takes one, returns one or could be talked into using another. A tool argument
+    // named key is the whole failure in one line, so it is checked by name.
+    const head = (SRC.split("'photos',")[1] || '').split('async args')[0]
+    assert.ok(!/key: z\./.test(head), 'the photos tool takes an access key as an argument')
+    assert.ok(!/security|find-generic-password/.test(photosOp),
+      'photos.do reaches into the Keychain itself instead of leaving that to ui/unsplash.js')
+    assert.ok(!/args\.key|args\.access|access_key/.test(photosOp), 'photos.do reads a key the agent passed in')
+    // and nothing it hands back could carry one: the client answers status, results and
+    // a saved file, and the op passes those on rather than the client itself
+    assert.ok(!/keys\.|\.get\(\)/.test(photosOp), 'photos.do handles the key store directly')
+    // and with no key the tool still answers, because ten photographs ship with the app
+    assert.ok(/NO_KEY/.test(photosOp), 'with no key photos.do says nothing about how to add one')
+  })
+
+  t('a search is the person asking, not the agent browsing', () => {
+    // Unsplash's guidelines ask for non-automated use, and this is the only tool on the
+    // surface that spends somebody else's rate limit. The rule is in the description,
+    // where the model reads it before it chooses.
+    const head = (SRC.split("'photos',")[1] || '').split('async args')[0]
+    assert.ok(/never to browse|not to browse/.test(head), 'the photos tool does not say when a search is warranted')
+    assert.ok(/Unsplash/.test(head), 'the tool never says where a searched photograph comes from')
+  })
+
+  t('the drawn browser is a browser, and the address is settable and never invented', () => {
+    const look = SRC.split("'apply_look',")[1] || ''
+    assert.ok(/tab strip/.test(look), 'apply_look still describes a browser frame as a window with a bar')
+    assert.ok(/invents no host|never invents/.test(look), 'apply_look does not say Fetch leaves an unknown address empty')
+    assert.ok(/settable/.test(look), 'apply_look does not say the address can be set')
+    // the third source: what the capture itself knew. A shot of a project's own page is
+    // taken at the address the project is running at, which nobody has to type.
+    assert.ok(/found\.kind === 'browser' && found\.url/.test(BRIDGE_ALL),
+      'take_shot no longer carries the address the capture was made at')
+  })
+
+  t('the app answers every channel the picker and Settings call', () => {
+    // The third list this file exists for, a round later: the renderer calls a channel,
+    // the main process answers it, and nothing notices when one of them moves. Settings
+    // and the photo picker both reach the Unsplash client this way.
+    const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+    const callers = ['settings.js', 'unsplash-picker.js']
+      .map(f => fs.readFileSync(path.join(__dirname, '..', 'ui', f), 'utf8')).join('\n')
+    const wanted = new Set([...callers.matchAll(/invoke\('(unsplash-[a-z-]+)'/g)].map(m => m[1]))
+    assert.ok(wanted.size >= 4, `${wanted.size} unsplash channels called; the picker and Settings call five`)
+    for (const ch of wanted) {
+      assert.ok(new RegExp(`ipcMain\\.handle\\('${ch}'`).test(MAIN), `nothing in main.js answers ${ch}`)
+    }
+    // and the other way: a handler nobody calls is a channel that has gone stale
+    for (const m of MAIN.matchAll(/ipcMain\.handle\('(unsplash-[a-z-]+)'/g)) {
+      assert.ok(wanted.has(m[1]), `main.js answers ${m[1]} and no renderer calls it`)
+    }
+    assert.ok(/userBackdropDir\(\)/.test(MAIN), 'a searched photo is saved somewhere other than the person\'s own folder')
+  })
+
   fs.rmSync(dir, { recursive: true, force: true })
   console.log(`\n${n} tool surface checks passed`)
 }

@@ -5,16 +5,20 @@
    structural shape of ui/setup.js (horizontal track, step indicator, footer)
    without depending on ui/app.css, which other agents are still editing. */
 
-.ob-modal { width:min(760px,calc(100vw - 64px)); }
+/* One fixed height for every step (O3): the modal no longer grows and shrinks as the
+   panes change. Content taller than that scrolls inside the pane (O2), never under a fold
+   with the rest of the page hidden, and the footer with its one call to action stays put. */
+.ob-modal {
+  width:min(760px,calc(100vw - 64px));
+  height:min(640px,calc(100vh - 80px));
+}
 
-/* three real grid tracks, not flex + absolute positioning: back and skip get
-   their own columns so the centred middle column can never be overlapped by
-   either one, at any width down to the app's minWidth. */
-.ob-chrome { display:grid; grid-template-columns:auto 1fr auto; align-items:center; column-gap:var(--s-3); }
-.ob-back { grid-column:1; justify-self:start; }
-.ob-skip { grid-column:3; justify-self:end; white-space:nowrap; }
-
-.ob-steps-wrap { grid-column:2; justify-self:center; position:relative; padding-top:38px; }
+/* The head holds only the stepper, centred. Back, Skip and the call to action live in
+   the footer, so showing or hiding either one can never push the stepper sideways (O1),
+   and there is nothing beside it to sit off its line (O9). Same shape as the setup
+   wizard: stepper on top, Back left, the action right. */
+.ob-chrome { justify-content:center; flex:none; }
+.ob-steps-wrap { position:relative; padding-top:38px; max-width:100%; }
 .ob-steps { display:flex; align-items:center; gap:var(--s-2); }
 .ob-step {
   display:flex; align-items:center; gap:7px;
@@ -43,47 +47,58 @@
 .ob-runner.ob-settle { animation:obSettle 220ms var(--ease-in); }
 @keyframes obSettle { 30% { transform:translateY(-3px) } 100% { transform:translateY(0) } }
 
-.ob-view { overflow:hidden; }
-.ob-track { display:flex; width:calc(var(--ob-panes,4) * 100%); transition:transform var(--dur-3) var(--ease-in); }
+.ob-view { flex:1; min-height:0; overflow:hidden; }
+.ob-track { display:flex; height:100%; width:calc(var(--ob-panes,4) * 100%); transition:transform var(--dur-3) var(--ease-in); }
+/* The whole pane scrolls, not a region inside it, so every pane is the same width and a
+   card on one step is exactly as wide as the card on the next (O5). The gutter is kept
+   on every pane whether it scrolls or not, for the same reason. */
 .ob-pane {
-  width:calc(100% / var(--ob-panes,4)); flex:none; box-sizing:border-box;
+  width:calc(100% / var(--ob-panes,4)); height:100%; flex:none; box-sizing:border-box;
   padding:var(--s-6) var(--s-6) var(--s-5); display:flex; flex-direction:column; gap:var(--s-4);
-  max-height:70vh; overflow-y:auto;
+  overflow-y:auto; scrollbar-gutter:stable both-edges;
 }
+.ob-pane > * { flex:none; }
 .ob-pane[aria-hidden="true"] { pointer-events:none; }
 
-.ob-pane-center { align-items:center; text-align:center; padding-top:var(--s-7); padding-bottom:var(--s-7); }
+/* hero steps: centred in whatever height is left, and still scroll if there is none */
+.ob-pane-center { align-items:center; text-align:center; justify-content:safe center; }
 .ob-pane-center h1 { max-width:26ch; }
-.ob-pane-center .ob-cta { align-self:center; }
 .ob-lede { color:var(--text-1); font-size:var(--t-13); max-width:40ch; }
 
+.ob-foot { flex:none; }
+.ob-foot-gap { flex:1; }
+
 .ob-head { display:flex; align-items:center; gap:var(--s-4); }
-.ob-head img.biscuit { width:52px; height:52px; flex:none; }
+/* One slot for every head's picture, as wide as the widest (the permissions pair), so
+   the heading starts at the same x on every step (O10) */
+.ob-art { flex:none; width:74px; height:60px; display:grid; place-items:center; }
+.ob-art img.biscuit { width:52px; height:52px; }
 /* the permissions step is about the screen, so he sits in front of one */
-.ob-duo { position:relative; flex:none; width:74px; height:60px; }
+.ob-duo { position:relative; display:block; }
 .ob-duo .ob-prop { position:absolute; right:0; top:0; width:38px; height:50px; object-fit:contain; }
 .ob-duo img.biscuit { position:absolute; left:0; bottom:0; }
+.ob-head > div { min-width:0; }
 .ob-head h3 { font-size:var(--t-18); }
 .ob-head p { color:var(--text-1); font-size:var(--t-12); max-width:44ch; margin-top:2px; }
 
 .ob-perm-card { display:flex; flex-direction:column; }
-.ob-perm-row { cursor:default; align-items:flex-start; }
-.ob-req {
-  display:inline-block; margin-left:8px; padding:1px 7px; border-radius:var(--r-pill);
-  font-size:var(--t-11); font-weight:600; color:var(--fur-1); background:rgba(240,169,60,.14);
-  vertical-align:1px;
-}
-.ob-perm-actions { display:flex; align-items:center; gap:var(--s-3); flex:none; }
-.ob-perm-actions .btn { white-space:nowrap; }
+.ob-perm-row { cursor:default; }
 .ob-cam-note { padding:0 var(--s-2); line-height:1.5; }
 
-.ob-pill { min-width:78px; justify-content:center; cursor:default; }
-.ob-pill[data-state="granted"] { background:rgba(74,222,128,.14); border-color:rgba(74,222,128,.4); color:var(--good); }
-.ob-pill[data-state="denied"] { background:rgba(255,68,56,.12); border-color:rgba(255,68,56,.4); color:#FFB4AD; }
+/* Status and action in fixed columns (O6), shared by Permissions and Connect (O7): the
+   status pill is always the right-hand column, the action always the one left of it,
+   and an empty action slot keeps its place so no pill ever moves over. */
+.ob-status-cols { flex:none; display:grid; grid-template-columns:auto 96px; align-items:center; column-gap:var(--s-3); }
+.ob-act { grid-column:1; display:flex; justify-content:flex-end; }
+.ob-status-cols .ob-pill { grid-column:2; }
+
+/* The status pill: the shared .chip at its own size, stretched to its column, never
+   uppercase. The word says the state; the tone only repeats it. Denied is caution, not
+   record red (red means recording and nothing else). */
+/* placement only; the tones are .chip[data-state] in components.css */
+.ob-pill { justify-content:center; }
 
 .ob-perm-note { text-align:center; }
-
-.ob-cta { margin-top:var(--s-2); }
 
 /* exit: same idea as the pop-in, run in reverse with the exit easing curve */
 .ob-scrim.ob-exit { animation:obFadeOut var(--dur-2) var(--ease-out) forwards; }
@@ -127,15 +142,8 @@
   font:700 var(--t-11)/1 var(--font-display); letter-spacing:.02em; color:var(--text-2);
 }
 
-.ob-badge {
-  font-size:var(--t-11); font-weight:600; letter-spacing:.06em; text-transform:uppercase;
-  color:var(--text-2); white-space:nowrap; flex:none;
-}
-.ob-agent[data-state="connected"] .ob-badge { color:var(--good); }
-.ob-agent[data-state="ready"] .ob-badge { color:var(--fur-1); }
-.ob-agent[data-state="error"] .ob-badge { color:#FFB4AD; text-transform:none; letter-spacing:0; }
-.ob-agent[data-state="missing"] { opacity:.55; }
-.ob-agent-btn { white-space:nowrap; flex:none; }
+.ob-agent[data-state="missing"] .ob-mark,
+.ob-agent[data-state="missing"] .opt-txt { opacity:.55; }
 
 .ob-agent-empty { padding:var(--s-4); line-height:1.5; }
 .ob-more { align-self:flex-start; }
@@ -154,13 +162,4 @@
 .ob-cmd code::-webkit-scrollbar { display:none; }
 .ob-cmd .ob-copied { color:var(--good); }
 
-.ob-assure { text-align:center; line-height:1.6; }
-
-/* Expanded, five rows plus the manual command are taller than the modal. Let that
-   region scroll on its own so the assurance line and the Continue button stay put:
-   a primary action that scrolls out of sight is how people get stuck on a screen. */
-.ob-pane-connect { overflow:hidden; }
-.ob-pane-connect .ob-scroll {
-  display:flex; flex-direction:column; gap:var(--s-4);
-  overflow-y:auto; min-height:0; padding-right:10px;   /* clear of the scrollbar, so it never sits on the card border */
-}
+.ob-assure { text-align:center; line-height:1.5; }

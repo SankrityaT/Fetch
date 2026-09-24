@@ -510,15 +510,28 @@ off its top the shell's top bezel is the same as its sides and no bar is drawn a
 the picture has one title bar and it is the real one. Measured: 13 px of top over 13 px of
 side, against 69 over 12 once the capture's own bar is cropped away, and the capture is
 drawn larger for the bar that is not there, 880 px against 824. No recording can reach that
-one branch, since a take carries no `captured` at all. And it does not draw an address field
-with nothing to put in it: the bar takes `device.title`, puts it in the field where it is
-shaped like a host, centres it the way a window's title is centred where it is not, and
-where there is neither draws no field and falls back to a title bar's height, which is byte
-for byte a window frame. That half is not a still's, and should not be: a browser's bar is
-taller than a window's for exactly one reason, which is the field standing in it, so a
-recording with a browser frame and no address gets the shorter bar too. Every browser golden
-in the suite carried a host-shaped title, which is how that escaped them, and there is one
-now (`device-browser-bare`) that does not. **And a window title is not an address.** A bare
+one branch, since a take carries no `captured` at all.
+**A browser is a browser, with or without an address.** It used to be the window frame
+with a field added where a host was known, and with none it fell back to a window's bar
+height: byte for byte a window, and the goldens asserted that as a feature. The person
+tried it by hand and said so in five words. A browser now draws what every browser has
+and what no single one owns: a tab strip over a toolbar, coloured lights warmed toward
+the fur hue rather than one desktop's own values, one plain tab with a drawn globe and a
+close, a new-tab plus, back, forward (dimmed, as it is on a page nobody has gone back
+from) and reload as plain strokes, and an address pill with a padlock where the address
+is secure and a magnifier where there is none. Every proportion is a share of the bar's
+own height, so it is the same browser at 200 px wide and at 4K, and nothing is measured
+off a picture of one vendor's product: the rule is that a shape earns its place if three
+competing browsers all have it, and is refused if naming one of them is what explains it.
+So no trapezoid tab, no vendor icon set, no favicon fetch, no profile avatar, and no
+"which browser" setting, because generic by construction cannot be turned off.
+**The address is settable and never invented.** It comes from `device.url`, then from
+what the capture knew (`captured.url`: a shot of a project's own page is taken at the
+address that project is running at, which nobody types), then from a `device.title` that
+is itself shaped like a host, which is how every look written before the field existed
+says it. With none of the three the field is drawn empty with a magnifier in it, which is
+what a real browser shows on a page it has not been told the address of, and the tab
+keeps the title. **And a window title is not an address.** A bare
 host and a filename are the same shape, and filenames are the commonest window titles there
 are: `README.md`, `notes.txt`, `index.html` and `build.sh` all matched a run of dotted
 labels ending in letters, so the frame invented an address out of a document. A scheme or a
@@ -534,8 +547,8 @@ pair of tones a range apart, which is how it keeps the take's edge contract with
 measuring anything. It takes that place for the captions too: a burned caption sits in
 the band under the take, which is where it sat before there was a device, and not on the
 shell. Its shell is graphite on a dark ground and bone on a light one, read off a photo
-backdrop's own decoded mean the way the take's hairline is, since four of the five
-photos we ship are dark. `frame.tilt` turns the whole of it in perspective, a plane a camera
+backdrop's own decoded mean the way the take's hairline is, since many of the photographs we
+ship are dark. `frame.tilt` turns the whole of it in perspective, a plane a camera
 turns rather than a skew, with the mask and the shadow following because they are worked
 out on that plane. And a `loupe` mark magnifies a small area into an inset beside it,
 for the detail too small to read and too small to zoom to without losing the context it
@@ -581,7 +594,34 @@ preview frame, a contact sheet cell and an exported PNG of one plan are the same
 the same format. What is left for the classic ffmpeg renderer is a sound file and a
 preview still taken off its own path.
 
-**MCP tools** (`mcp/index.js`), 45: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `record_start`, `record_stop`, `record_status`, `record_pause`, `take_shot`, `pointer`,
+**The grounds are real now.** The five backdrops that shipped through M4 were drawn
+procedurally, which is why they looked like flat gradients: the person said "i swear we
+had better images here", and there never were better ones. Ten photographs ship instead,
+all under the Unsplash License, each one credited to the photographer who took it in
+`assets/backdrops/credits.json` and in `THIRD-PARTY-NOTICES.md`, and the three drawn
+gradients they replaced still resolve to the photograph nearest them, so a look saved last
+month still renders. **And the backdrop picker searches Unsplash live**, with the person's
+own free access key, kept in the macOS Keychain beside the voiceover's and never in
+`prefs.json`. Without a key everything else works and the picker says in one sentence how
+to add one. A photo they pick is fetched once into their own backdrops folder with its
+credit, Unsplash is told it was used as their guidelines require, and the credit rides on
+the backdrop from then on, so the picker, the agent and the notices all name the same
+person. Fetch is not registered for production access yet: before this ships to anybody
+else the searches want a proxy holding Fetch's own key, since asking every person for
+their own is the one guideline this pattern does not meet.
+**Paper is a sheet, not noise.** Paper was a solid `#EDE6DA` under a trace of film grain,
+and film grain is re-seeded every frame, so it read as a noisy video of a colour and the
+encoder, which spends nothing on noise no frame can predict, threw nearly all of it away:
+0.05 of the 0.92 levels drawn survived into the file. The sheet is drawn once into the
+cached still background now, mottling and formation and tapered fibres and a tooth, all
+centred on zero so the ground keeps the colour the look chose, and darker going warmer,
+which is what makes it paper rather than concrete. In an encoded 1920x1080 file its fibre
+goes from 0.05 levels to 0.54 and its mottling from 0.26 to 1.47, and it does not move at
+all. Mono print wears the same recipe finer and quieter, and Linen Bone, which had the
+fault from the other side, keeps its photograph and stops boiling three levels of tooth
+over it every frame.
+
+**MCP tools** (`mcp/index.js`), 46: `get_look_schema`, `list_looks`, `apply_look`, `save_look`, `photos`, `record_start`, `record_stop`, `record_status`, `record_pause`, `take_shot`, `pointer`,
 `list_windows`, `list_displays`, `list_recordings`, `list_projects`, `get_project`, `simulator`, `probe`, `transcribe`,
 `list_beats`, `get_edit`, `apply_edit`, `direct`, `review`, `fit_to_length`, `revert_my_edit`, `versions`,
 `ask`, `propose`, `can_loop`,
@@ -600,7 +640,16 @@ from recording and everything after it is not: `get_edit`, `apply_edit`, `apply_
 `review`, `revert_my_edit`, `export`, `probe`, `list_recordings`, `rename_recording` and
 `delete_recording` all take a shot's path where they take a recording's, and
 `test/tools.test.js` fails if a second op named for stills ever appears beside
-`shot.take`. A shot goes through the same element resolution a recording does, so
+`shot.take`. **A photograph costs the surface one tool too.** `photos` is how "put it on a
+photo of mountains" works: `list` names every photograph on the Mac with the photographer
+who took each one, `search` asks Unsplash in the person's own words, and `use` puts one
+under a take through `apply_look`, so it lands in the editor in front of them and one Undo
+takes it back. Every answer carries the credit and the tool says to name the photographer,
+because that is the licence and not a courtesy. The key is never an argument: the tool
+reaches the same Keychain entry the person connected by hand, and with no key it answers
+with the sentence that says how to add one and sends nothing. A search leaves the Mac, so
+the description says to run one when the person asked for a photo and never to browse,
+which is what Unsplash's guidelines mean by non-automated use. A shot goes through the same element resolution a recording does, so
 `element: 'E7'` from `find_on_screen` and `element: 'R1'` from the person's own lasso aim
 at part of a screenshot exactly as they aim at part of a take, and a lift with nothing to
 raise is refused with the same sentence. An element id aims a `label` or a `callout` too:
@@ -1198,6 +1247,20 @@ and an Esc in Fetch's own window is caught ahead of every other handler, which c
 of macOS not handing a bare Esc to a global shortcut (proven through the registered callback,
 never by pressing a key).
 
+**One control, one place; one number, one formatter.** The person used Fetch by hand for a
+few minutes and found three small interface faults, and a read only audit of every panel
+found 74. Almost all of them came from three causes rather than 74 mistakes. The same
+control was built more than once and the copies drifted, so every chip, segment, input,
+popover, card, modal and call to action now comes from `ui/components.css` and a panel
+selector that overrides its size, radius, font or selected state is deleted. Words, units
+and number formats were chosen per call site, so one setting read as a multiplier two ways,
+with the letter x in one panel and the times sign in another, and three dots fought the
+ellipsis glyph: `ui/fmt.js` is the one formatter, units are joined to their number,
+decimals come from the control's own step, the multiplier is `x`, the separator is ` · `,
+and `test/fmt.test.js` holds it. And layouts fitted the sample text only, so every one is
+now checked with a label about 40 characters long and at the 1000x668 minimum window.
+`DESIGN.md` decides wherever it and `BRAND.md` disagree on a size or a radius.
+
 ## Projects: from @ to the window worth recording
 
 "@majuro record a demo of the lasso" is the person naming a folder of their own code, and
@@ -1287,12 +1350,16 @@ refuses (it cannot record itself); recording it takes the installed Fetch.
    an agent's context. The same list without them is 3.5KB.
 7. **Everything the window can do, the MCP can do.** A feature that exists only in the
    GUI is a feature an agent cannot use. Ship both or neither.
-8. **The network is one labelled exception.** Voiceover through ElevenLabs is the only
-   thing that leaves the machine. It says so where it is used, and its key lives in the
-   Keychain. An agent can ask for one (`list_voices`, `voiceover`, which speaks the take's own
-   captions back when it is given no script and sets the result as the edit's audio track),
-   and it reaches the same account the person connected by hand: the key is never an argument,
-   only the script is sent, and no agent can connect an account for somebody. Work handed to the person's own agent CLI (the chat pane, naming takes)
+8. **The network is a short labelled list.** Two things leave the machine, and each says
+   so where it is used and keeps its key in the Keychain: voiceover through ElevenLabs,
+   and photo search through Unsplash. Nothing else may join them without the same
+   treatment. An agent can ask for both (`list_voices`, `voiceover`, which speaks the take's own
+   captions back when it is given no script and sets the result as the edit's audio track,
+   and `photos`, which searches Unsplash in the person's own words and credits whoever took
+   the photograph),
+   and each reaches the same account the person connected by hand: the key is never an argument,
+   only the script or the search words are sent, and no agent can connect an account for
+   somebody. Work handed to the person's own agent CLI (the chat pane, naming takes)
    goes out on their plan, not Fetch's, and is labelled where it happens: naming sends
    the app, the window title and the first 80 words, and its setting says so. Anything
    else that would need the network needs the same treatment or should not ship.

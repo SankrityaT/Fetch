@@ -1,12 +1,21 @@
 {
   "name": "paper",
   "label": "Paper",
-  "doc": "A light, warm paper ground with a soft shadow and a trace of grain.",
+  "doc": "A warm uncoated sheet: still fibre and soft mottling under the take, and a soft shadow.",
   "for": "a light SaaS page, a document or a design tool",
   "look": {
-    "background": { "kind": "solid", "color": "#EDE6DA" },
-    "frame": { "padding": 0.08, "radius": 10, "shadow": 0.35 },
-    "treatment": { "haze": 0.05 },
-    "grain": { "film": 0.12 }
+    "background": {
+      "kind": "solid",
+      "color": "#EDE6DA",
+      "texture": "paper"
+    },
+    "frame": {
+      "padding": 0.08,
+      "radius": 10,
+      "shadow": 0.35
+    },
+    "treatment": {
+      "haze": 0.05
+    }
   }
 }

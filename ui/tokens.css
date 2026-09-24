@@ -22,6 +22,19 @@
 
   --r-sm:10px; --r-md:14px; --r-lg:20px; --r-xl:26px; --r-pill:999px;
 
+  /* Control geometry. One height pair for everything that sits on a row together
+     (buttons, fields, dropdowns, segments), so a field is never 30px beside a 28px
+     button. components.css is where they are spent; this is where they are set. */
+  --ctl-h:34px;       /* default: .btn, .input, .select, .dd-btn */
+  --ctl-h-sm:28px;    /* small: .btn-sm, .input-sm, .seg buttons, .chip rows beside them */
+  --z-pop:45;         /* popovers and menus: above content, below .scrim (50) */
+
+  /* On: the gold wash and edge a pressed toggle or a chosen chip wears. One tone, so a
+     pressed button and a selected chip cannot drift apart. */
+  --press-bg:rgba(240,169,60,.14);
+  --press-bg-hover:rgba(240,169,60,.22);
+  --press-edge:rgba(240,169,60,.55);
+
   /* ── elevation ──────────────────────────────────────────────────────────
      Rewritten. The old system put a 1px hairline on almost every surface, which
      made every panel read as a box on a flat plane and the app as a wireframe of

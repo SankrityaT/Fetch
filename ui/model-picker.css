@@ -1,11 +1,16 @@
 /* The model picker popover. Floats over content, so it takes --shadow-3 and no blur:
-   DESIGN.md allows blur on exactly two layers and this is not one of them. */
+   DESIGN.md allows blur on exactly two layers and this is not one of them.
+
+   Its surface is components.css's .popover and its rows are .popover-row (S6); the
+   effort row is .seg .seg-sm with the shared gold selected state (K2).
+   ui/model-picker.js puts those classes on, so nothing here repeats their size, radius,
+   font or selected state. What is left is placement and the two things this popover
+   does differently: it is fixed and measured, and it flips its own fade by side. */
 
 .mp {
-  position:fixed; z-index:60; width:340px;
-  display:flex; flex-direction:column;
-  background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-md);
-  box-shadow:var(--shadow-3), var(--sheen);
+  position:fixed; width:min(340px, calc(100vw - 16px));
+  display:flex; flex-direction:column; padding:0;
+  animation:none;   /* it fades by side below; .popover's would run twice */
   opacity:0; transform:translateY(4px);
   transition:opacity var(--dur-1) var(--ease-in), transform var(--dur-1) var(--ease-in);
 }
@@ -42,23 +47,20 @@
 .mp-group:first-child { padding-top:6px; }
 .mp-group img { width:14px; height:14px; border-radius:4px; object-fit:contain; }
 
-.mp-row {
-  display:flex; box-sizing:border-box; min-width:0; align-items:center; gap:8px; width:100%; text-align:left;
-  height:34px; padding:0 8px 0 10px; border-radius:var(--r-sm);
-  font-size:var(--t-13); color:var(--text-1);
-}
-.mp-row[data-cursor="true"] { background:var(--ink-2); color:var(--text-0); }
-.mp-row[aria-selected="true"] { color:var(--text-0); font-weight:500; }
-.mp-row:focus-visible { outline:2px solid var(--fur-1); outline-offset:-2px; }
-.mp-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.mp-eff { font-size:var(--t-12); color:var(--text-2); font-weight:400; }
-.mp-def {
-  margin-left:auto; font:500 var(--t-11)/1 var(--font-mono); color:var(--text-2);
+/* .popover-row carries the size, radius, font, hover and selected state. A model row is
+   that row with a little more height for the two badges it can carry. */
+.mp-row { box-sizing:border-box; gap:8px; min-height:34px; padding:0 8px 0 10px; }
+/* The badges are scoped to the row because .popover-row > span makes a bare span the
+   one that grows, and these three are the ones that must not. */
+.mp-row > .mp-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mp-row > .mp-eff { flex:none; font-size:var(--t-12); color:var(--text-2); font-weight:400; white-space:nowrap; }
+.mp-row > .mp-def {
+  margin-left:auto; flex:none; white-space:nowrap; font:500 var(--t-11)/1 var(--font-mono); color:var(--text-2);
   padding:3px 6px; border-radius:var(--r-pill); background:var(--ink-2);
 }
-.mp-row[data-cursor="true"] .mp-def { background:var(--ink-3); }
-.mp-check { margin-left:auto; width:16px; height:16px; flex:none; color:var(--fur-1); display:grid; place-items:center; }
-.mp-def + .mp-check { margin-left:0; }
+.mp-row[data-cursor="true"] > .mp-def { background:var(--ink-3); }
+.mp-row > .mp-check { margin-left:auto; width:16px; height:16px; flex:none; color:var(--fur-1); display:grid; place-items:center; }
+.mp-row > .mp-def + .mp-check { margin-left:0; }
 
 .mp-empty { padding:18px 10px; font-size:var(--t-12); color:var(--text-2); text-align:center; }
 
@@ -69,19 +71,9 @@
 }
 .mp-effort:empty { display:none; }
 .mp-effort-label { font-size:var(--t-12); color:var(--text-1); flex:none; }
-.mp-effort-none { margin-left:auto; font-size:var(--t-11); color:var(--text-2); }
-.mp-seg {
-  margin-left:auto; display:flex; gap:2px; padding:2px;
-  background:var(--ink-2); border-radius:var(--r-pill);
-}
-.mp-seg button {
-  height:24px; padding:0 8px; border-radius:var(--r-pill);
-  font-size:var(--t-11); font-weight:500; color:var(--text-2);
-  transition:color var(--dur-1) var(--ease-in), background var(--dur-1) var(--ease-in);
-}
-.mp-seg button:hover { color:var(--text-0); }
-.mp-seg button[aria-checked="true"] { background:var(--fur-1); color:#231703; }
-.mp-seg button:focus-visible { outline:2px solid var(--fur-1); outline-offset:1px; }
+.mp-effort-none { margin-left:auto; min-width:0; font-size:var(--t-11); color:var(--text-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* placement only; the look is .seg .seg-sm */
+.mp-seg { margin-left:auto; min-width:0; }
 
 /* the pill that opens it: model name, then effort in a quieter weight */
-.mp-pill-eff { color:var(--text-2); font-weight:400; }
+.mp-pill-eff { color:var(--text-2); font-weight:400; white-space:nowrap; }

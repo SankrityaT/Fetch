@@ -5,7 +5,12 @@ const fs = require('fs'), os = require('os'), path = require('path')
 const $ = id => document.getElementById(id)
 const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n }
 const ico = (name, cls = 'icon') => `<svg class="${cls}"><use href="./assets/icons/sprite.svg#i-${name}"/></svg>`
-const fmtTime = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
+// The one formatter (ui/fmt.js). Required here for its side effect: in the renderer it
+// sets window.Fmt, so this file and every classic script after it (editor.js reads
+// fmtTime) share one set of rules. No lexical name is declared, so a <script> tag for
+// the same file in control.html cannot collide with it.
+require('./ui/fmt.js')
+const fmtTime = s => Fmt.clock(s)
 // A still: a capture, or a finished picture made from one. The library card, the
 // player and the editor all branch on it, so the test is written once. Same list as
 // ui/library.js STILL_EXT, because an item the library calls a shot must open as one.
@@ -21,10 +26,10 @@ const fmtAgo = ms => {
 // ── Biscuit reacts to app state ──────────────────────────────────────────
 const MOODS = {
   idle:    ['idle',        'Screen, camera and mic. Set it up once and go.'],
-  arming:  ['excited',     'Here we go...'],
+  arming:  ['excited',     'Here we go…'],
   rec:     ['recording',   'Rolling. Go get it.'],
   paused:  ['thinking',    'Holding that thought.'],
-  working: ['thinking',    'Working on it...'],
+  working: ['thinking',    'Working on it…'],
   done:    ['done',        'Got it. Saved to your Fetch folder.'],
   error:   ['sad',         'That did not go through.'],
   happy:   ['happy',       'Nice.'],
@@ -42,6 +47,20 @@ function mood(k) {
     setTimeout(() => el2.classList.remove('face-swap'), 260)
   }
   if ($('biscuitLine')) $('biscuitLine').textContent = line
+}
+
+// ── modals close one way ─────────────────────────────────────────────────
+// Cancel in the footer, Esc, or a click on the scrim, for every modal (K5). Returns the
+// close to call from anywhere else. `canClose` holds a modal open while it is working.
+// Any open popover goes first, so nothing floats undimmed over the scrim (L1).
+function modalCloser(scrim, canClose = () => true) {
+  if (window.fetchCloseMenus) window.fetchCloseMenus()
+  const onKey = e => { if (e.key === 'Escape' && canClose()) { e.preventDefault(); close() } }
+  const close = () => { document.removeEventListener('keydown', onKey); scrim.remove() }
+  document.addEventListener('keydown', onKey)
+  scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { if (canClose()) close() })
+  scrim.addEventListener('click', e => { if (e.target === scrim && canClose()) close() })
+  return close
 }
 
 // ── toasts ───────────────────────────────────────────────────────────────
@@ -154,7 +173,7 @@ async function wireShotChip() {
   let ok = false
   try { ok = !!(await ipcRenderer.invoke('shot-available') || {}).ok } catch {}
   if (!ok) return
-  const b = el('button', 'hero-chip', `${ico('camera', 'icon-sm')} Take a shot`)
+  const b = el('button', 'chip chip-lg hero-chip', `${ico('camera', 'icon-sm')} Take a shot`)
   b.id = 'shotBtn'
   b.dataset.tip = 'Captures what you set up, at its full resolution'
   b.onclick = () => takeShot()
@@ -203,27 +222,25 @@ function screenBlocked() {
   mood('error')
   const scrim = el('div', 'scrim')
   scrim.innerHTML = `
-    <div class="modal" style="width:min(460px,92vw)">
+    <div class="modal" style="width:min(560px,92vw)">
       <div class="modal-body" style="text-align:center;display:grid;gap:12px;justify-items:center">
         <img class="biscuit" src="./assets/mascot/sad.png" alt="" style="width:96px;height:96px">
-        <h3 style="font-family:var(--font-display);font-size:var(--t-24);letter-spacing:-.03em">
+        <h3 style="font-size:var(--t-24);text-wrap:balance">
           macOS will not let Fetch see your screen</h3>
         <p class="dim" style="font-size:var(--t-13);line-height:1.5">
           Turn Fetch on under Screen &amp; System Audio Recording, then come back and relaunch.
           macOS only applies it on a restart.</p>
       </div>
-      <div class="modal-foot" style="gap:8px">
+      <div class="modal-foot">
         <button class="btn btn-sm btn-ghost" id="pbSetup">Run setup again</button>
-        <div style="flex:1"></div>
+        <div class="spacer"></div>
         <button class="btn btn-sm btn-ghost" data-close>Not now</button>
         <button class="btn btn-sm" id="pbRelaunch">Relaunch</button>
         <button class="btn btn-sm btn-primary" id="pbOpen">Open System Settings</button>
       </div>
     </div>`
   document.body.appendChild(scrim)
-  const close = () => scrim.remove()
-  scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)
-  scrim.onclick = e => { if (e.target === scrim) close() }
+  const close = modalCloser(scrim)
   scrim.querySelector('#pbOpen').onclick = () => ipcRenderer.invoke('open-privacy', 'screen')
   scrim.querySelector('#pbRelaunch').onclick = () => ipcRenderer.invoke('relaunch')
   scrim.querySelector('#pbSetup').onclick = () => {
@@ -385,7 +402,7 @@ async function finishTake(file, mb, info = {}) {
   try { ipcRenderer.send('take-finished', { ...info, file, mb: +mb, ...(given ? { named: true } : {}) }) } catch {}
   // A background take lands in the library and the agent gets its path. Nothing pops
   // up over whatever the person is doing.
-  // The stop above left him on "Working on it...", which stayed until someone
+  // The stop above left him on "Working on it…", which stayed until someone
   // changed view; hand the hero back to its resting line.
   if (window.__quietTake) { window.__quietTake = false; mood('idle'); paintHeroCta(); refreshLibrary(); return }
   mood('done')
@@ -804,20 +821,21 @@ function derivedSuffix(name) {
 }
 function confirmRenameDerived(g, newBase, onChoice) {
   const scrim = el('div', 'scrim')
-  scrim.innerHTML = `<div class="modal" style="width:min(430px,92vw)">
+  scrim.innerHTML = `<div class="modal modal-sm">
     <div class="modal-body" style="text-align:center;display:grid;gap:12px;justify-items:center">
       <img class="biscuit" src="./assets/mascot/thinking.png" alt="" style="width:88px;height:88px">
-      <h3 style="font-family:var(--font-display);font-size:var(--t-18);letter-spacing:-.03em">Rename the exports too?</h3>
-      <p class="dim" style="font-size:var(--t-12)">This take has ${g.derived.length} export${g.derived.length === 1 ? '' : 's'}.
+      <h3 style="text-wrap:balance">Rename the exports too?</h3>
+      <p class="dim" style="font-size:var(--t-12);overflow-wrap:anywhere">This take has ${g.derived.length} export${g.derived.length === 1 ? '' : 's'}.
         They can follow along as "${escHtml(newBase)}${escHtml(derivedSuffix(g.derived[0].name))}" and so on, or stay as they are.</p>
     </div>
-    <div class="modal-foot"><div style="flex:1"></div>
+    <div class="modal-foot">
+      <button class="btn btn-sm" data-close>Cancel</button>
+      <div class="spacer"></div>
       <button class="btn btn-sm" id="renameJustOne">Just this one</button>
       <button class="btn btn-sm btn-primary" id="renameAllToo">Rename all</button></div>
   </div>`
   document.body.appendChild(scrim)
-  const close = () => scrim.remove()
-  scrim.onclick = e => { if (e.target === scrim) close() }
+  const close = modalCloser(scrim)
   scrim.querySelector('#renameJustOne').onclick = () => { close(); onChoice(false) }
   scrim.querySelector('#renameAllToo').onclick = () => { close(); onChoice(true) }
 }
@@ -955,22 +973,28 @@ async function refreshLibraryOnce() {
           <div class="clip-name" title="${escHtml(g.take ? path.basename(g.take) : c.name)}">${escHtml(takeTitle(g))}</div>
           ${Library.tagHTML(g)}
         </div>
-        <div class="clip-meta">${c.mb} MB · ${fmtAgo(c.mtime)}${takeWhere(g) ? ` · ${escHtml(takeWhere(g))}` : ''}</div>
+        <div class="clip-meta">${escHtml(Fmt.join(Fmt.bytes(c.mb * 1e6), fmtAgo(c.mtime), takeWhere(g)))}</div>
         ${takeRows(g).length ? `<div class="derived">${takeRows(g).map(d => `
           <button class="derived-row" data-p="${d.path}">
             ${ico(isStill(d.path) ? 'image' : 'film-strip', 'icon-sm')}
             <span class="d-name" title="${escHtml(d.name)}">${escHtml(exportLabel(d, g))}</span>
-            <span class="d-size mono">${d.mb} MB</span>
+            <span class="d-size mono">${Fmt.bytes(d.mb * 1e6)}</span>
           </button>`).join('')}</div>` : ''}
         <div class="clip-acts">
-          <button class="btn btn-sm" data-act="edit">${shot ? `${ico('sparkle', 'icon-sm')} Style` : `${ico('scissors', 'icon-sm')} Edit`}</button>
-          ${shot ? '' : `<button class="btn btn-sm" data-act="convert" data-tip="Convert">${ico('export', 'icon-sm')}</button>`}
-          <button class="btn btn-sm" data-act="rename" data-tip="Rename">${ico('pencil-simple', 'icon-sm')}</button>
+          <button class="btn btn-sm" data-act="edit" aria-label="${shot ? 'Style' : 'Edit'}">${shot ? ico('sparkle', 'icon-sm') : ico('scissors', 'icon-sm')}<span class="clip-act-label">${shot ? 'Style' : 'Edit'}</span></button>
+          ${shot ? '' : `<button class="btn btn-sm btn-icon" data-act="convert" data-tip="Convert" aria-label="Convert">${ico('export', 'icon-sm')}</button>`}
+          <button class="btn btn-sm btn-icon" data-act="rename" data-tip="Rename" aria-label="Rename">${ico('pencil-simple', 'icon-sm')}</button>
           ${Library.assignButtonHTML(g)}
-          <button class="btn btn-sm" data-act="reveal" data-tip="Show in Finder">${ico('magnifying-glass', 'icon-sm')}</button>
-          <button class="btn btn-sm btn-danger" data-act="delete" data-tip="Move to Trash">${ico('trash', 'icon-sm')}</button>
+          <button class="btn btn-sm btn-icon" data-act="reveal" data-tip="Show in Finder" aria-label="Show in Finder">${ico('folder-open', 'icon-sm')}</button>
+          <button class="btn btn-sm btn-icon btn-danger" data-act="delete" data-tip="Move to Trash" aria-label="Move to Trash">${ico('trash', 'icon-sm')}</button>
         </div>
       </div>`
+    // A tall picture keeps its own shape; everything wider is the one 16:10 tile (A3)
+    const img = card.querySelector('.clip-shot img')
+    if (img) {
+      const fit = () => { if (img.naturalWidth && img.naturalHeight > img.naturalWidth) img.parentElement.classList.add('tall') }
+      if (img.complete) fit(); else img.addEventListener('load', fit, { once: true })
+    }
     // a shot has nothing to play, so its own tile is the way into the editor
     card.querySelector('.clip-shot').onclick = () => (shot ? openInEditor(c.path) : openPlayer(c))
     // a take folder shows its finished video, or the folder itself before there is one
@@ -1035,26 +1059,24 @@ function confirmDelete(g) {
   const all = [g.original, ...g.derived]
   const what = Library.isShot(g) ? 'shot' : 'take'
   const scrim = el('div', 'scrim')
-  scrim.innerHTML = `<div class="modal" style="width:min(430px,92vw)">
+  scrim.innerHTML = `<div class="modal modal-sm">
     <div class="modal-body" style="text-align:center;display:grid;gap:12px;justify-items:center">
       <img class="biscuit" src="./assets/mascot/sad.png" alt="" style="width:88px;height:88px">
-      <h3 style="font-family:var(--font-display);font-size:var(--t-18);letter-spacing:-.03em">Move to Trash?</h3>
+      <h3>Move to Trash?</h3>
       <p class="dim" style="font-size:var(--t-12)">
         ${all.length === 1 ? `This ${what}` : `This ${what} and its ${g.derived.length} export${g.derived.length === 1 ? '' : 's'}`},
         plus any captions and thumbnails. You can get them back from the Trash.</p>
       ${g.derived.length ? `<label class="opt" style="padding:6px 0"><span class="opt-txt">
         <span class="opt-title">Keep the original</span>
-        <span class="opt-sub">delete only the exports</span></span>
+        <span class="opt-sub">Delete only the exports</span></span>
         <span class="switch"><input type="checkbox" id="keepOrig"><span class="track"></span></span></label>` : ''}
     </div>
-    <div class="modal-foot"><div style="flex:1"></div>
+    <div class="modal-foot">
       <button class="btn btn-sm" data-close>Cancel</button>
-      <button class="btn btn-sm btn-danger" id="doDel">Move to Trash</button></div>
+      <button class="btn btn-sm btn-danger" id="doDel">${ico('trash', 'icon-sm')}Move to Trash</button></div>
   </div>`
   document.body.appendChild(scrim)
-  const close = () => scrim.remove()
-  scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)
-  scrim.onclick = e => { if (e.target === scrim) close() }
+  const close = modalCloser(scrim)
   scrim.querySelector('#doDel').onclick = async e => {
     // the Trash answers asynchronously; a second click would report the take as lost
     if (e.currentTarget.disabled) return
@@ -1076,17 +1098,15 @@ function confirmDelete(g) {
 async function quickConvert(c) {
   const fmts = await ipcRenderer.invoke('formats')
   const scrim = el('div', 'scrim')
-  scrim.innerHTML = `<div class="modal" style="width:min(460px,90vw)">
+  scrim.innerHTML = `<div class="modal modal-sm">
     <div class="modal-head">${ico('export', 'icon-lg')}<span class="modal-title">Convert</span></div>
     <div class="modal-body"><div class="tiles" style="grid-template-columns:1fr 1fr">
       ${fmts.map(f => `<button class="btn" data-fmt="${f.id}" style="justify-content:flex-start">${ico(f.video ? 'film-strip' : 'waveform', 'icon-sm')} ${f.label}</button>`).join('')}
     </div></div>
-    <div class="modal-foot"><div style="flex:1"></div><button class="btn btn-sm" data-close>Cancel</button></div>
+    <div class="modal-foot"><button class="btn btn-sm" data-close>Cancel</button></div>
   </div>`
   document.body.appendChild(scrim)
-  const close = () => scrim.remove()
-  scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)
-  scrim.onclick = e => { if (e.target === scrim) close() }
+  const close = modalCloser(scrim)
   scrim.querySelectorAll('[data-fmt]').forEach(b => b.onclick = async () => {
     close(); toast(`Converting to ${b.dataset.fmt.toUpperCase()}…`)
     const r = await runJob({ op: 'convert', src: c.path, opts: { format: b.dataset.fmt, quality: 'balanced' } }, 'Convert')
@@ -1135,12 +1155,12 @@ async function openNameTakes(list) {
   const eng = await ipcRenderer.invoke('namer-engine').catch(() => null)
   const who = eng === 'codex' ? 'Your Codex' : eng ? 'Your Claude Code' : null
   const scrim = el('div', 'scrim')
-  scrim.innerHTML = `<div class="modal" style="width:min(480px,92vw)">
+  scrim.innerHTML = `<div class="modal" style="width:min(480px,calc(100vw - 64px))">
     <div class="modal-body" style="display:grid;gap:12px">
       <div style="display:flex;gap:14px;align-items:center">
         <img class="biscuit" src="./assets/mascot/thinking.png" alt="" style="width:64px;height:64px">
         <div style="display:grid;gap:4px">
-          <h3 style="font-family:var(--font-display);font-size:var(--t-18);letter-spacing:-.03em">Name these recordings?</h3>
+          <h3>Name these recordings?</h3>
           <p class="dim" style="font-size:var(--t-12)">${who
             ? `${who} names each from the app it showed and its first 80 words, transcribed on this Mac. Never the video or audio.`
             : 'Named from the app they showed and what was said, where Fetch knows them. Connect Claude Code or Codex for better names.'}</p>
@@ -1152,15 +1172,14 @@ async function openNameTakes(list) {
           <span class="name-was">${escHtml(takeTitle(g))}</span>
           <span class="name-when mono">${fmtAgo(g.original.mtime)}</span></label>`).join('')}</div>
     </div>
-    <div class="modal-foot"><span class="dim" id="nameProgress" style="font-size:var(--t-12)"></span><div style="flex:1"></div>
+    <div class="modal-foot"><span class="dim" id="nameProgress" style="font-size:var(--t-12)"></span><div class="spacer"></div>
       <button class="btn btn-sm" data-close>Cancel</button>
       <button class="btn btn-sm btn-primary" id="nameGo">Name ${list.length}</button></div>
   </div>`
   document.body.appendChild(scrim)
-  const close = () => scrim.remove()
-  scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)
-  scrim.onclick = e => { if (e.target === scrim && !go.disabled) close() }
   const go = scrim.querySelector('#nameGo')
+  // held open while it names: its buttons are disabled then, and Esc and the scrim wait too
+  const close = modalCloser(scrim, () => !scrim.dataset.busy)
   const picked = () => [...scrim.querySelectorAll('.name-pick input')].filter(x => x.checked).map(x => list[+x.dataset.i])
   scrim.querySelector('.name-list').onchange = () => {
     const n = picked().length
@@ -1171,15 +1190,17 @@ async function openNameTakes(list) {
     const takes = picked()
     if (!takes.length) return
     go.disabled = true
+    scrim.dataset.busy = '1'
     scrim.querySelectorAll('input, [data-close]').forEach(x => { x.disabled = true })
     $('libName').dataset.busy = '1'
     const done = []
     for (let i = 0; i < takes.length; i++) {
-      scrim.querySelector('#nameProgress').textContent = `Naming ${i + 1} of ${takes.length}...`
+      scrim.querySelector('#nameProgress').textContent = `Naming ${i + 1} of ${takes.length}${Fmt.ELL}`
       const [r] = await ipcRenderer.invoke('name-takes', [takes[i].original.path]).catch(() => [null])
       if (r && r.to) done.push(r)
     }
     delete $('libName').dataset.busy
+    delete scrim.dataset.busy
     close()
     showNamed(done, takes.length)
     refreshLibrary()
@@ -1199,7 +1220,7 @@ function showNamed(done, asked) {
     <span>Named ${done.length} recording${done.length === 1 ? '' : 's'}${left ? `. ${left} had nothing better to go on` : ''}.</span>
     <div style="flex:1"></div>
     <button class="btn btn-sm" id="namedUndo">${ico('arrow-counter-clockwise', 'icon-sm')} Undo</button>
-    <button class="btn btn-sm btn-ghost" id="namedClose" aria-label="Dismiss">${ico('x', 'icon-sm')}</button>`
+    <button class="btn btn-sm btn-icon btn-ghost" id="namedClose" aria-label="Dismiss">${ico('x', 'icon-sm')}</button>`
   bar.hidden = false
   bar.querySelector('#namedClose').onclick = () => { bar.hidden = true }
   bar.querySelector('#namedUndo').onclick = async e => {

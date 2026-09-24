@@ -2459,8 +2459,11 @@ const BACKDROPS = {
   // copy. Always matches the content, so it suits any product's colours.
   blur:    { label: 'Blur',    video: true },
 }
-// Drop any image into assets/backdrops and it shows up as a backdrop. This is
-// how generated artwork gets in without touching code.
+// Drop any image into assets/backdrops and it shows up as a backdrop. The set that
+// ships is ten photographs from Unsplash plus two drawn grounds (assets/backdrops/README.md);
+// credits.json beside them names each photographer, and the list below carries that
+// credit so the picker can show it. The same file in the person's own folder credits a
+// photo they fetched through the Unsplash search (ui/unsplash.js).
 function backdropDir() {
   const packaged = path.join(process.resourcesPath || '.', 'app', 'assets', 'backdrops')
   const dev = path.join(__dirname, 'assets', 'backdrops')
@@ -2474,26 +2477,44 @@ function userBackdropDir() {
   catch { base = path.join(os.homedir(), 'Library/Application Support/Fetch') }
   return path.join(base, 'backdrops')
 }
+// The three drawn gradients the photographs replaced. A look or a take saved with one
+// still names it, so each id keeps answering with the photograph nearest to it rather
+// than falling through to dusk. They are never listed, only resolved.
+const RETIRED_BACKDROPS = {
+  'warm-dune.jpg': 'amber-dusk.jpg',
+  'cold-harbour.jpg': 'still-sea.jpg',
+  'deep-space.jpg': 'night-sky.jpg',
+}
 function imageBackdrops() {
+  const Unsplash = require('./ui/unsplash')
   const out = []
   for (const [dir, mine] of [[backdropDir(), false], [userBackdropDir(), true]]) {
     let files = []
     try { files = fs.readdirSync(dir) } catch { continue }
+    const credits = Unsplash.readCredits(dir)
     for (const f of files.sort()) {
       if (!/\.(jpg|jpeg|png|webp)$/i.test(f)) continue
       out.push({
         id: 'img:' + (mine ? 'user/' : '') + f,
-        label: f.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        label: f.replace(/\.[^.]+$/, '').replace(/^unsplash-/, '').replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
         file: path.join(dir, f),
         image: true, mine,
+        credit: Unsplash.creditFor(credits[f]),
       })
+    }
+    if (!mine) {
+      for (const [old, now] of Object.entries(RETIRED_BACKDROPS)) {
+        const to = out.find(b => b.id === 'img:' + now)
+        if (to && !files.includes(old)) out.push({ ...to, id: 'img:' + old, retired: true, replacedBy: to.id })
+      }
     }
   }
   return out
 }
 const backdropList = () => [
   ...Object.entries(BACKDROPS).map(([id, v]) => ({ id, label: v.label })),
-  ...imageBackdrops().map(({ id, label, image, file, mine }) => ({ id, label, image, file, mine })),
+  ...imageBackdrops().filter(b => !b.retired)
+    .map(({ id, label, image, file, mine, credit }) => ({ id, label, image, file, mine, credit: credit || null })),
 ]
 
 // rounded-corner alpha, expressed for geq
@@ -3548,7 +3569,7 @@ function beatsFor(src, dur) {
 
 module.exports = {
   frameAt, findOnScreen, boxSamples, previewFrame, frameGutter, audioGraph,
-  backdropList, musicList, filmstrip,
+  backdropList, userBackdropDir, musicList, filmstrip,
   toMp4, convert, removeSilence, enhanceAudio, trim, transcribe, burnCaptions, toGif,
   thumbnail, waveform, clipLevels, applyEdit, listRecordings, importFile, forgetFile,
   probeMeta, probeAudioEnd, readCues, writeCues, cancel, runningJobs, formatList, FFMPEG, flattenAudio, alignArgs,

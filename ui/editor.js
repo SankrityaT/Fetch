@@ -1,5 +1,23 @@
 /* Fetch editor. Stage, timeline and inspector, all driven by processor.js. */
 
+// Every value this file shows (times, lengths, sizes, multipliers, percents) is written
+// by the one formatter, ui/fmt.js, so the editor says "1.0x" and "0:08 out" the way
+// Look, chat and Activity do. A classic script shares one global scope with the others,
+// so this sets window.Fmt rather than declaring a name another file may also declare.
+if (!window.Fmt) window.Fmt = require('./ui/fmt')
+
+// Text alignment glyphs: three rules of text set left, centred and right. The sprite
+// has no alignment icons, and three copies of the same "T" squeezed sideways told the
+// buttons apart by their fill alone (J3). Drawn on Phosphor's 256 grid and stroke so
+// they sit beside the sprite's icons.
+function alignIco(side) {
+  const rows = [[40, 216], side === 'left' ? [40, 168] : side === 'right' ? [88, 216] : [64, 192],
+    [40, 216], side === 'left' ? [40, 168] : side === 'right' ? [88, 216] : [64, 192]]
+  // filled bars rather than stroked lines: the icon classes set stroke:none, fill:currentColor
+  return `<svg class="icon-sm" viewBox="0 0 256 256" aria-hidden="true">${rows.map(([a, b], i) =>
+    `<rect x="${a - 8}" y="${56 + i * 40}" width="${b - a + 16}" height="16" rx="8"/>`).join('')}</svg>`
+}
+
 const ed = {
   src: null, meta: null, dur: 0,
   in: 0, out: 0, cur: 0,
@@ -70,12 +88,14 @@ const EDITOR_HTML = `
         <video class="cam-bubble" id="camBubble" muted playsinline hidden></video>
       </div>
       <div id="cropBox" hidden><i class="h nw"></i><i class="h ne"></i><i class="h sw"></i><i class="h se"></i></div>
+      <!-- inside the stage's own box, so it sits on the frame's top, right and bottom edges
+           rather than 8px in from them with the picture showing round it (E4) -->
+      <aside class="ver-panel" id="verPanel" aria-label="Version history" hidden>
+        <header class="ver-head"><span class="ver-title">History</span><span class="ver-sub" id="verCount"></span>
+          <button class="pc ver-x" data-ver-close aria-label="Close history">${ico('x', 'icon-sm')}</button></header>
+        <ol class="ver-list" id="verList"></ol>
+      </aside>
     </div>
-    <aside class="ver-panel" id="verPanel" aria-label="Version history" hidden>
-      <header class="ver-head"><span class="ver-title">History</span><span class="ver-sub" id="verCount"></span>
-        <button class="pc ver-x" data-ver-close aria-label="Close history">${ico('x', 'icon-sm')}</button></header>
-      <ol class="ver-list" id="verList"></ol>
-    </aside>
     <div class="ed-transport">
       <button class="pc" id="edBack" data-tip="Back 5s">${ico('skip-back', 'icon-sm')}</button>
       <button class="pc main" id="edPlay">${ico('play-fill', 'icon')}</button>
@@ -89,7 +109,7 @@ const EDITOR_HTML = `
           ${ico('image', 'icon-sm')} Original</button>
       </div>
       <span class="ed-name" id="edName"></span>
-      <span class="chip chip-static" id="edOutLen">0.0s</span>
+      <span class="chip chip-static mono" id="edOutLen">0:00 out</span>
       <span class="chip chip-static mono" id="edSize" hidden>0 x 0</span>
       <button class="pc" id="edUndo" data-tip="Undo (⌘Z)" aria-label="Undo" disabled>${ico('arrow-counter-clockwise', 'icon-sm')}</button>
       <button class="pc" id="edRedo" data-tip="Redo (⇧⌘Z)" aria-label="Redo" disabled>${ico('arrow-clockwise', 'icon-sm')}</button>
@@ -119,15 +139,15 @@ const EDITOR_HTML = `
     <div class="tl-wrap" id="tlWrap">
       <div class="tl-lanes">
         <div class="tl-lane tl-lane-video" id="laneVideo">
-          <span class="lane-tag">${ico('film-strip', 'icon-sm')} Video</span>
+          <span class="lane-tag">${ico('film-strip', 'icon-xs')} Video</span>
           <img id="strip" alt="">
         </div>
         <div class="tl-lane tl-lane-audio" id="laneAudio">
-          <span class="lane-tag">${ico('waveform', 'icon-sm')} Recording audio</span>
+          <span class="lane-tag">${ico('waveform', 'icon-xs')} Recording audio</span>
           <canvas id="wave"></canvas>
         </div>
         <div class="tl-lane tl-lane-extra" id="laneExtra" hidden>
-          <span class="lane-tag" id="extraTag">${ico('speaker-high', 'icon-sm')} Added audio</span>
+          <span class="lane-tag" id="extraTag">${ico('speaker-high', 'icon-xs')} Added audio</span>
           <canvas id="waveExtra"></canvas>
           <button class="lane-x" id="extraRemove" data-tip="Remove this track">${ico('x', 'icon-sm')}</button>
         </div>
@@ -144,7 +164,7 @@ const EDITOR_HTML = `
   </div>
 
   <aside class="ed-inspector">
-    <div class="insp-tabs" id="inspTabs">
+    <div class="insp-tabs"><div class="seg seg-nav insp-seg" id="inspTabs" role="tablist" aria-label="Edit">
       <button data-tab="trim"     aria-selected="true"  data-tip="Trim">${ico('scissors', 'icon-sm')}</button>
       <button data-tab="crop"     aria-selected="false" data-tip="Crop">${ico('crop', 'icon-sm')}</button>
       <button data-tab="focus"    aria-selected="false" data-tip="Zooms and marks">${ico('magnifying-glass', 'icon-sm')}</button>
@@ -154,7 +174,7 @@ const EDITOR_HTML = `
       <button data-tab="camera"   aria-selected="false" data-tip="Camera" id="camTabBtn" hidden>${ico('video-camera', 'icon-sm')}</button>
       <button data-tab="audio"    aria-selected="false" data-tip="Audio">${ico('waveform', 'icon-sm')}</button>
       <button data-tab="voice"    aria-selected="false" data-tip="Voiceover">${ico('speaker-simple-high', 'icon-sm')}</button>
-    </div>
+    </div></div>
 
     <div class="insp-body">
       <!-- TRIM -->
@@ -164,7 +184,7 @@ const EDITOR_HTML = `
             <div style="flex:1"></div><button class="btn btn-sm" id="setIn">Set to playhead</button></div>
           <div class="row"><span class="row-lbl">End</span><span class="mono dim" id="trimOut">0:00</span>
             <div style="flex:1"></div><button class="btn btn-sm" id="setOut">Set to playhead</button></div>
-          <button class="btn btn-sm btn-ghost" id="trimReset" style="margin-top:8px">Reset to full clip</button>
+          <button class="btn btn-sm btn-ghost insp-after" id="trimReset">Reset to full clip</button>
         </div>
         <div><div class="insp-sec">Tool</div>
           <div class="seg" id="toolSwitch" style="width:100%">
@@ -173,15 +193,15 @@ const EDITOR_HTML = `
             <button data-tool="cut" aria-selected="false" style="flex:1">
               ${ico('scissors', 'icon-sm')} Cut</button>
           </div>
-          <p class="micro dimmer" id="cutHint" style="margin-top:6px">
+          <p class="micro dimmer insp-hint" id="cutHint">
             Turn it on, then drag across the timeline to remove a section.</p>
-          <div id="cutList" style="display:flex;flex-direction:column;gap:5px;margin-top:8px"></div>
+          <div class="cut-list" id="cutList"></div>
         </div>
 
         <div><div class="insp-sec">Clean up</div>
-          <button class="btn btn-sm" id="doSilence" style="width:100%">
+          <button class="btn btn-sm btn-block" id="doSilence">
             ${ico('magic-wand', 'icon-sm')} Remove dead air</button>
-          <p class="micro dimmer" style="margin-top:6px">Finds silent gaps and removes them for you.</p>
+          <p class="micro dimmer insp-hint">Finds silent gaps and removes them for you.</p>
         </div>
       </section>
 
@@ -189,11 +209,11 @@ const EDITOR_HTML = `
       <section class="insp-panel" data-panel="crop" hidden>
         <div><div class="insp-sec">Aspect</div>
           <!-- filled by renderAspects, from the same list the look's Shape field uses -->
-          <div class="aspect-chips" id="arChips"></div>
+          <div class="chips aspect-chips" id="arChips"></div>
         </div>
         <div><div class="insp-sec">Frame</div>
-          <button class="btn btn-sm" id="cropOn" style="width:100%">${ico('crop', 'icon-sm')} Enable crop</button>
-          <button class="btn btn-sm btn-ghost" id="cropReset" style="width:100%;margin-top:6px">Reset</button>
+          <button class="btn btn-sm btn-block" id="cropOn">${ico('crop', 'icon-sm')} Enable crop</button>
+          <button class="btn btn-sm btn-ghost btn-block insp-after" id="cropReset">Reset</button>
         </div>
       </section>
 
@@ -201,21 +221,21 @@ const EDITOR_HTML = `
       <section class="insp-panel" data-panel="focus" hidden>
         <div id="focusZooms"><div class="insp-sec">Zooms</div>
           <div class="obj-list" id="zoomList"></div>
-          <button class="btn btn-sm" id="addZoom" style="width:100%">
+          <button class="btn btn-sm btn-block" id="addZoom">
             ${ico('plus', 'icon-sm')} Zoom at the playhead</button>
         </div>
 
         <div><div class="insp-sec">Marks</div>
-          <div class="mark-add" id="markAdd">
-            <button class="chip" data-kind="redact" data-tip="Destroys the area. For anything private.">Redact</button>
-            <button class="chip" data-kind="blur" data-tip="Softens the area. Never for secrets.">Blur</button>
+          <div class="chips mark-add" id="markAdd">
+            <button class="chip" data-kind="redact" data-tip="Destroys the area, for anything private">Redact</button>
+            <button class="chip" data-kind="blur" data-tip="Softens the area, never for secrets">Blur</button>
             <button class="chip" data-kind="lift" data-tip="Raises the element off the page">Lift</button>
             <button class="chip" data-kind="spotlight" data-tip="Dims everything but the area">Spotlight</button>
             <button class="chip" data-kind="step" data-tip="A numbered gold badge">Step</button>
             <button class="chip" data-kind="loupe" data-tip="A magnified inset of a small area">Loupe</button>
             <button class="chip" data-kind="arrow" data-tip="Points at the thing from outside it">Arrow</button>
           </div>
-          <p class="micro dimmer" id="markHint" style="margin-top:6px">Added at the playhead. Drag it on the stage onto the thing it is for.</p>
+          <p class="micro dimmer insp-hint" id="markHint">Added at the playhead. Drag it on the stage onto the thing it is for.</p>
           <div class="obj-list" id="markList"></div>
         </div>
 
@@ -229,79 +249,82 @@ const EDITOR_HTML = `
           </div>
           <div class="row" id="objScaleRow" hidden><span class="row-lbl">Scale</span>
             <input type="range" class="slider" id="objScale" min="100" max="300" value="180">
-            <span class="row-val mono" id="objScaleVal">1.8&times;</span></div>
+            <span class="row-val mono" id="objScaleVal">1.8x</span></div>
           <div class="row" id="objStrengthRow" hidden><span class="row-lbl">Strength</span>
             <input type="range" class="slider" id="objStrength" min="4" max="60" value="18">
-            <span class="row-val mono" id="objStrengthVal">18</span></div>
+            <span class="row-val mono" id="objStrengthVal">25%</span></div>
           <div class="row" id="objNumRow" hidden><span class="row-lbl">Number</span>
-            <input class="input input-sm" id="objNum" maxlength="3" placeholder="in order"></div>
+            <input class="input input-sm obj-num" id="objNum" maxlength="3" placeholder="In order"></div>
           <p class="micro dimmer" id="objHint"></p>
-          <button class="btn btn-sm btn-danger" id="objDel" style="width:100%;margin-top:10px">
+          <button class="btn btn-sm btn-danger btn-block insp-after" id="objDel">
             ${ico('trash', 'icon-sm')} Remove</button>
         </div>
       </section>
 
       <!-- TEXT -->
       <section class="insp-panel" data-panel="text" hidden>
-        <div style="display:flex;align-items:center;gap:8px">
-          <div class="insp-sec" style="flex:1;margin:0">Layers</div>
+        <div><div class="insp-sec-row">
+          <div class="insp-sec">Layers</div>
           <button class="btn btn-sm" id="addText">${ico('plus', 'icon-sm')} Add</button>
         </div>
-        <div id="layerList" style="display:flex;flex-direction:column;gap:6px"></div>
+        <div class="layer-list" id="layerList"></div></div>
         <div id="textProps" hidden>
           <div class="insp-sec">Selected</div>
           <textarea class="input" id="txtValue" rows="2" placeholder="Type something…"></textarea>
-          <div class="row" style="margin-top:8px"><span class="row-lbl">Size</span>
+          <div class="row insp-after"><span class="row-lbl">Size</span>
             <input type="range" class="slider" id="txtSize" min="2" max="16" value="6">
-            <span class="row-val mono" id="txtSizeVal">6</span></div>
+            <span class="row-val mono" id="txtSizeVal">6%</span></div>
           <div class="row"><span class="row-lbl">Font</span>
             <div class="dd" id="txtFont"></div></div>
           <div class="row"><span class="row-lbl">Align</span>
             <div class="seg seg-sm" id="txtAlign">
-              <button data-align="left" aria-selected="false">${ico('text-t', 'icon-sm')}</button>
-              <button data-align="center" aria-selected="true">${ico('text-t', 'icon-sm')}</button>
-              <button data-align="right" aria-selected="false">${ico('text-t', 'icon-sm')}</button>
+              <button data-align="left" aria-selected="false" aria-label="Align left" data-tip="Left">${alignIco('left')}</button>
+              <button data-align="center" aria-selected="true" aria-label="Align centre" data-tip="Centre">${alignIco('center')}</button>
+              <button data-align="right" aria-selected="false" aria-label="Align right" data-tip="Right">${alignIco('right')}</button>
             </div></div>
           <div class="row"><span class="row-lbl">Colour</span>
             <div class="swatches" id="txtSwatches"></div>
             <label class="colour-well" data-tip="Any colour">
               <input type="color" id="txtColor" value="#FFFFFF"><span></span>
             </label></div>
-          <label class="opt" style="padding:8px 0"><span class="opt-txt"><span class="opt-title">Background pill</span></span>
+          <label class="opt opt-tight"><span class="opt-txt"><span class="opt-title">Background pill</span></span>
             <span class="switch"><input type="checkbox" id="txtBox"><span class="track"></span></span></label>
           <div id="txtTiming">
-          <div class="row"><span class="row-lbl">Timing</span>
+          <!-- the two buttons share the row: beside a "Timing" label they ran past the
+               panel's edge, and the line under them already says what they set -->
+          <div class="row insp-pair" role="group" aria-label="Timing">
             <button class="btn btn-sm" id="txtFrom">From playhead</button>
             <button class="btn btn-sm" id="txtTo">To playhead</button></div>
           <p class="micro dimmer" id="txtRange">Shows for the whole clip</p>
           </div>
-          <button class="btn btn-sm btn-danger" id="txtDel" style="width:100%;margin-top:8px">Delete layer</button>
+          <button class="btn btn-sm btn-danger btn-block insp-after" id="txtDel">
+            ${ico('trash', 'icon-sm')} Remove</button>
         </div>
       </section>
 
       <!-- CAPTIONS -->
       <section class="insp-panel" data-panel="captions" hidden>
-        <div style="display:flex;align-items:center;gap:8px">
-          <div class="insp-sec" style="flex:1;margin:0">Transcript</div>
+        <div class="insp-sec-row">
+          <div class="insp-sec">Transcript</div>
           <button class="btn btn-sm" id="doTranscribe">${ico('sparkle', 'icon-sm')} Transcribe</button>
         </div>
         <div class="work" id="trProg" hidden>
           ${motion('thinking', 'thinking', 'work-dog')}
-          <div style="flex:1">
+          <div class="work-body">
             <div class="work-label">Listening to your recording</div>
             <div class="bar indeterminate"><i></i></div>
           </div>
         </div>
-        <label class="opt" style="padding:8px 0"><span class="opt-txt">
-          <span class="opt-title">Burn into video</span><span class="opt-sub">baked in, plays anywhere</span></span>
+        <label class="opt opt-tight"><span class="opt-txt">
+          <span class="opt-title" data-schema-label="captions.show">Burn into video</span><span class="opt-sub" data-schema-sub="captions.show">Baked in, plays anywhere</span></span>
           <span class="switch"><input type="checkbox" id="burnCaps"><span class="track"></span></span></label>
 
         <div id="capStyle">
-          <div class="insp-sec" style="margin-top:6px">Caption style</div>
+          <div class="insp-sec">Caption style</div>
           <div class="row"><span class="row-lbl">Font</span><div class="dd" id="capFont"></div></div>
           <div class="row"><span class="row-lbl">Size</span>
             <input type="range" class="slider" id="capSize" min="60" max="180" value="100">
-            <span class="row-val mono" id="capSizeVal">1.0×</span></div>
+            <span class="row-val mono" id="capSizeVal">1.0x</span></div>
           <div class="row"><span class="row-lbl">Colour</span>
             <div class="swatches" id="capSwatches"></div>
             <label class="colour-well" data-tip="Any colour">
@@ -312,8 +335,8 @@ const EDITOR_HTML = `
               <button data-pos="middle" aria-selected="false">Middle</button>
               <button data-pos="top" aria-selected="false">Top</button>
             </div></div>
-          <div class="row"><span class="row-lbl">Spoken</span>
-            <div class="seg seg-sm" id="capHl">
+          <div class="row"><span class="row-lbl">Spoken word</span>
+            <div class="seg seg-sm" id="capHl" aria-label="Spoken word">
               <button data-hl="word" aria-selected="true">Gold</button>
               <button data-hl="pill" aria-selected="false">Pill</button>
               <button data-hl="none" aria-selected="false">Off</button>
@@ -328,10 +351,10 @@ const EDITOR_HTML = `
         <div class="lk" id="lookInspector"></div>
       </section>
 
-      <!-- AUDIO -->
+      <!-- CAMERA -->
       <section class="insp-panel" data-panel="camera" hidden>
         <div class="insp-sec">Camera bubble</div>
-        <p class="dim" style="font-size:var(--t-12);margin:0 0 10px">
+        <p class="insp-lede">
           Drag the bubble on the video to move it. It was recorded separately, so it stays sharp wherever you put it.</p>
         <div class="row"><span class="row-lbl">Size</span>
           <input type="range" class="slider" id="camSize" min="10" max="45" value="22">
@@ -343,8 +366,8 @@ const EDITOR_HTML = `
             <button data-c="bl" data-tip="Bottom left"><i></i></button>
             <button data-c="br" data-tip="Bottom right"><i></i></button>
           </div></div>
-        <label class="opt"><span class="opt-text">
-          <span class="opt-title">Show camera</span><span class="opt-sub">off leaves just the screen</span></span>
+        <label class="opt opt-tight"><span class="opt-txt">
+          <span class="opt-title">Show camera</span><span class="opt-sub">Off leaves just the screen</span></span>
           <span class="switch"><input type="checkbox" id="camOn" checked><span class="track"></span></span></label>
       </section>
 
@@ -354,28 +377,29 @@ const EDITOR_HTML = `
           <p class="vo-lede">Speak your script in a studio voice over the same footage,
             using your own ElevenLabs account.</p>
           <form class="vo-connect" id="voConnectForm">
-            <input type="password" id="voKey" placeholder="ElevenLabs API key"
+            <input class="input input-sm" type="password" id="voKey" placeholder="ElevenLabs API key"
               autocomplete="off" spellcheck="false">
             <button class="btn btn-sm btn-primary" type="submit" id="voConnectBtn" disabled>Connect</button>
           </form>
-          <p class="vo-note">${ico('info', 'icon-sm')}<span>This is the only part of Fetch that
-            uses the internet. Your script is sent to ElevenLabs to be spoken. Your recording,
-            your audio and your filenames are not.</span></p>
+          <p class="vo-note">${ico('info', 'icon-sm')}<span>Two things in Fetch use the internet,
+            and each says so where it is used: this one sends your script to ElevenLabs to be
+            spoken, and the backdrop picker sends your search words to Unsplash. Your recording,
+            your audio and your filenames are not sent anywhere.</span></p>
         </div>
 
         <div class="vo-on" id="voOn" hidden>
           <div class="insp-sec">Voice</div>
           <div class="vo-voices" id="voVoices"></div>
 
-          <div class="insp-sec" style="margin-top:12px">Script</div>
+          <div class="insp-sec">Script</div>
           <textarea class="vo-script" id="voScript" rows="5"
             placeholder="What should be said over this take"></textarea>
           <div class="vo-script-foot">
             <button class="btn btn-sm btn-ghost" id="voFromCues">Use my transcript</button>
-            <span class="vo-count mono" id="voCount">0</span>
+            <span class="vo-count" id="voCount"><span class="mono">0</span> characters</span>
           </div>
 
-          <div class="insp-sec" style="margin-top:12px">Delivery</div>
+          <div class="insp-sec">Delivery</div>
           <div class="row"><span class="row-lbl">Stability</span>
             <input type="range" class="slider" id="voStability" min="0" max="100" value="50">
             <span class="row-val mono" id="voStabilityVal">50%</span></div>
@@ -384,13 +408,16 @@ const EDITOR_HTML = `
             <span class="row-val mono" id="voSimilarityVal">75%</span></div>
           <div class="row"><span class="row-lbl">Speed</span>
             <input type="range" class="slider" id="voSpeed" min="70" max="120" value="100">
-            <span class="row-val mono" id="voSpeedVal">1.00x</span></div>
+            <span class="row-val mono" id="voSpeedVal">1.0x</span></div>
 
-          <button class="btn btn-primary btn-sm vo-go" id="voGenerate">
+          <button class="btn btn-sm btn-block vo-go" id="voGenerate">
             ${ico('sparkle', 'icon-sm')} Generate voiceover</button>
           <div class="work" id="voProg" hidden>
-            <img class="biscuit" src="./assets/mascot/thinking.png" alt="">
-            <span class="work-label">Speaking</span><div class="bar indeterminate"><i></i></div>
+            ${motion('thinking', 'thinking', 'work-dog')}
+            <div class="work-body">
+              <div class="work-label">Speaking your script</div>
+              <div class="bar indeterminate"><i></i></div>
+            </div>
           </div>
           <p class="vo-note"><span id="voUsage"></span></p>
         </div>
@@ -398,11 +425,11 @@ const EDITOR_HTML = `
 
       <section class="insp-panel" data-panel="audio" hidden>
         <div class="insp-sec">Sound</div>
-        <label class="opt" style="padding:8px 0"><span class="opt-txt">
-          <span class="opt-title">Denoise</span><span class="opt-sub">removes hiss and hum</span></span>
+        <label class="opt opt-tight"><span class="opt-txt">
+          <span class="opt-title">Denoise</span><span class="opt-sub">Removes hiss and hum</span></span>
           <span class="switch"><input type="checkbox" id="denoise"><span class="track"></span></span></label>
-        <label class="opt" style="padding:8px 0"><span class="opt-txt">
-          <span class="opt-title">Normalise loudness</span><span class="opt-sub">even levels throughout</span></span>
+        <label class="opt opt-tight"><span class="opt-txt">
+          <span class="opt-title">Normalise loudness</span><span class="opt-sub">Even levels throughout</span></span>
           <span class="switch"><input type="checkbox" id="loudnorm" checked><span class="track"></span></span></label>
         <div class="row"><span class="row-lbl">Gain</span>
           <input type="range" class="slider" id="gain" min="-10" max="10" value="0">
@@ -415,35 +442,35 @@ const EDITOR_HTML = `
             <button data-bed="calm" aria-selected="false">Calm</button>
           </div></div>
         <div id="extraPanel" hidden>
-          <div class="insp-sec" style="margin-top:10px">Added track</div>
+          <div class="insp-sec">Added track</div>
           <div class="extra-file"><span class="mono" id="extraName">none</span></div>
           <div class="row"><span class="row-lbl">Level</span>
             <input type="range" class="slider" id="extraVol" min="0" max="150" value="60">
             <span class="row-val mono" id="extraVolVal">60%</span></div>
           <div class="row"><span class="row-lbl">Start at</span>
             <input type="range" class="slider" id="extraOff" min="0" max="200" value="0">
-            <span class="row-val mono" id="extraOffVal">0.0s</span></div>
-          <label class="opt" style="padding:7px 0"><span class="opt-txt">
+            <span class="row-val mono" id="extraOffVal">0s</span></div>
+          <label class="opt opt-tight"><span class="opt-txt">
             <span class="opt-title">Replace original audio</span>
-            <span class="opt-sub">off mixes the two together</span></span>
+            <span class="opt-sub">Off mixes the two together</span></span>
             <span class="switch"><input type="checkbox" id="extraReplace"><span class="track"></span></span></label>
-          <button class="btn btn-sm" id="transcribeExtra" style="width:100%;margin-top:6px">
+          <button class="btn btn-sm btn-block insp-after" id="transcribeExtra">
             ${ico('sparkle', 'icon-sm')} Transcribe this track instead</button>
         </div>
 
-        <p class="micro dimmer" style="margin-top:8px">Fades in and out are in Look, under Motion: they take the picture and the sound together.</p>
+        <p class="micro dimmer">Fades in and out are in Look, under Motion: they take the picture and the sound together.</p>
       </section>
     </div>
 
     <div class="insp-foot">
       <div class="work" id="expBar" hidden>
         ${motion('exporting', 'running', 'work-dog')}
-        <div style="flex:1">
+        <div class="work-body">
           <div class="work-label">Fetching your video</div>
           <div class="bar"><i></i></div>
         </div>
       </div>
-      <button class="btn btn-primary" id="doExport" style="width:100%">
+      <button class="btn btn-primary btn-block" id="doExport">
         ${ico('export', 'icon-sm')} Export</button>
     </div>
   </aside>
@@ -782,7 +809,7 @@ function paintShotSize() {
     try { k = require('./ui/compositor').shotScale(spec, 'native') } catch {}
     w = spec.W * k; h = spec.H * k
   }
-  n.textContent = `${Math.round(w)} x ${Math.round(h)} PNG`
+  n.textContent = `${Fmt.size(w, h)} PNG`
 }
 
 // One redraw when the capture has decoded, and one whenever the stage changes size.
@@ -905,7 +932,7 @@ function versionRow(r, head, at) {
       <span class="ver-id mono">${r.id}</span>
       <span class="ver-body">
         <span class="ver-line">${escHtml(r.line)}</span>
-        <span class="ver-meta">${kind}${verWho(r)}<span class="ver-dot" aria-hidden="true"></span><span class="mono">${verClock(r.at)}</span>${folded}</span>
+        <span class="ver-meta">${kind}${verWho(r)}<span class="ver-sep" aria-hidden="true">${Fmt.SEP.trim()}</span><span class="mono">${verClock(r.at)}</span>${folded}</span>
         ${gone}
       </span>
       ${head ? '<span class="chip chip-static ver-now">Now</span>' : ''}
@@ -1098,7 +1125,7 @@ function wireEditor() {
     renderTexts(); renderLayerList()
   }
   $('txtValue').oninput = e => { cur().text = e.target.value; renderTexts(); renderLayerList() }
-  bindRange('txtSize', v2 => { cur().sizeFrac = v2 / 100; renderTexts() }, v2 => v2)
+  bindRange('txtSize', v2 => { cur().sizeFrac = v2 / 100; renderTexts() }, v2 => Fmt.pct(v2 / 100))
   // colour: eight quick swatches plus a full picker
   const sw = $('txtSwatches')
   sw.innerHTML = SWATCHES.map(c => `<button class="sw" data-c="${c}" style="background:${c}"></button>`).join('')
@@ -1109,7 +1136,7 @@ function wireEditor() {
   }
   $('txtColor').oninput = e => { cur().color = e.target.value; paintSwatches(); renderTexts() }
 
-  dropdown('txtFont', FONTS.map(f => ({ ...f, font: f.id })), 'Helvetica', id => {
+  dropdown('txtFont', FONTS.map(f => ({ ...f, font: fontCss(f.id) })), 'Helvetica', id => {
     cur().font = id; renderTexts()
   })
 
@@ -1125,9 +1152,9 @@ function wireEditor() {
   $('txtDel').onclick = () => { ed.texts.splice(ed.selText, 1); ed.selText = null; renderTexts(); renderLayerList() }
 
   // caption styling
-  dropdown('capFont', FONTS.map(f => ({ ...f, font: f.id })), ed.capStyle.font, id => { ed.capStyle.font = id; paintCaption() })
-  bindRange('capSize', v => { ed.capStyle.scale = v / 100; paintCaption() }, v => (v / 100).toFixed(1) + '×')
-  bindRange('camSize', v => { if (ed.cam) { ed.cam.size = v / 100; paintCam() } }, v => v + '%')
+  dropdown('capFont', FONTS.map(f => ({ ...f, font: fontCss(f.id) })), ed.capStyle.font, id => { ed.capStyle.font = id; paintCaption() })
+  bindRange('capSize', v => { ed.capStyle.scale = v / 100; paintCaption() }, v => Fmt.mult(v / 100, 0.1))
+  bindRange('camSize', v => { if (ed.cam) { ed.cam.size = v / 100; paintCam() } }, v => Fmt.pct(v / 100))
   if ($('camCorner')) $('camCorner').onclick = e => {
     const b = e.target.closest('button[data-c]'); if (!b || !ed.cam) return
     const m = Math.max(0.06, ed.cam.size / 2 + 0.02)
@@ -1146,6 +1173,7 @@ function wireEditor() {
     capSw.querySelectorAll('.sw').forEach(x => x.setAttribute('aria-selected', String(x === b)))
   }
   $('capColour').oninput = e => { ed.capStyle.colour = e.target.value; paintCaption() }
+  captionWords()
   $('capPos').onclick = e => {
     const b = e.target.closest('[data-pos]'); if (!b) return
     ed.capStyle.position = b.dataset.pos
@@ -1177,13 +1205,13 @@ function wireEditor() {
         ed.beats = r.beats || []; renderBeats(); highlightBeat()
         upgradeName()
       if ($('burnCaps') && ed.cues.length) $('burnCaps').checked = true
-      toast(`${r.words} words${r.rtfx ? ` · ${r.rtfx}x realtime` : ''}`, 'ok')
+      toast(Fmt.join(`${r.words} words`, r.rtfx ? `${Fmt.mult(+r.rtfx, 1)} realtime` : ''), 'ok')
     }
     paintTranscribeBtn()
   }
 
   // audio
-  bindRange('gain', v2 => {}, v2 => `${v2 > 0 ? '+' : ''}${v2}dB`)
+  bindRange('gain', v2 => {}, v2 => Fmt.db(v2))
 
   // look: the inspector, generated from the Look spec (ui/inspector.js)
   mountLook()
@@ -1218,9 +1246,9 @@ function wireEditor() {
     $('laneExtra').hidden = true
     $('extraPanel').hidden = true
   }
-  bindRange('extraVol', v => { if (ed.audioTrack) ed.audioTrack.volume = v / 100 }, v => v + '%')
+  bindRange('extraVol', v => { if (ed.audioTrack) ed.audioTrack.volume = v / 100 }, v => Fmt.pct(v / 100))
   bindRange('extraOff', v => { if (ed.audioTrack) { ed.audioTrack.offset = v / 10; drawExtraWave() } },
-            v => (v / 10).toFixed(1) + 's')
+            v => Fmt.secs(v / 10, 0.1))
   $('extraReplace').onchange = e => { if (ed.audioTrack) ed.audioTrack.replace = e.target.checked }
   $('transcribeExtra').onclick = async () => {
     if (!ed.audioTrack) return
@@ -1325,7 +1353,7 @@ function wireEditor() {
       if (row) { voPicked = row.dataset.id; renderVoices() }
     })
 
-    const count = () => { $('voCount').textContent = String($('voScript').value.length) }
+    const count = () => { const n = $('voScript').value.length; $('voCount').innerHTML = `<span class="mono">${Fmt.count(n)}</span> character${n === 1 ? '' : 's'}` }
     $('voScript').addEventListener('input', count)
 
     $('voFromCues').onclick = () => {
@@ -1336,9 +1364,9 @@ function wireEditor() {
 
     // read at generate time rather than stored, so these only need to paint
     const noop = () => {}
-    bindRange('voStability', noop, v => v + '%')
-    bindRange('voSimilarity', noop, v => v + '%')
-    bindRange('voSpeed', noop, v => (v / 100).toFixed(2) + 'x')
+    bindRange('voStability', noop, v => Fmt.pct(v / 100))
+    bindRange('voSimilarity', noop, v => Fmt.pct(v / 100))
+    bindRange('voSpeed', noop, v => Fmt.mult(v / 100, 0.01))
 
     $('voGenerate').onclick = async () => {
       const text = $('voScript').value.trim()
@@ -1602,7 +1630,15 @@ const FONTS = [
   { id: 'Georgia',              label: 'Georgia',    file: '/Library/Fonts/Georgia.ttf' },
   { id: 'Impact',               label: 'Impact',     file: '/Library/Fonts/Impact.ttf' },
 ]
-const SWATCHES = ['#FFFFFF', '#0A0908', '#F0A93C', '#FF4438', '#4ADE80', '#5B9DFF', '#F472B6', '#FBBF24']
+// Seven, so they fit one row beside the colour well. No record red (BRAND: nothing else is
+// ever that red) and one gold, not two that read as the same colour (J4).
+const SWATCHES = ['#FFFFFF', '#0A0908', '#F0A93C', '#F87171', '#4ADE80', '#5B9DFF', '#F472B6']
+// The CSS family that actually reaches a font by this name. "SF Pro", "SF Mono" and
+// "New York" are not family names CSS can see, so written bare they fell through to
+// Times, in the menu and on the stage (D1). The shared dropdown owns the table.
+const fontCss = name => (window.Dropdown && typeof window.Dropdown.cssFamily === 'function')
+  ? window.Dropdown.cssFamily(name || 'SF Pro')
+  : (!name || name === 'SF Pro' ? '-apple-system,"SF Pro Display",system-ui,sans-serif' : `"${name}", sans-serif`)
 
 // Motion clips are WebM with alpha. If one is missing or fails to decode, fall
 // back to the matching still: a wait screen that renders nothing is worse than
@@ -1614,6 +1650,26 @@ function motion(name, still, cls = '') {
 }
 
 const cur = () => ed.texts[ed.selText] || {}
+// The Captions tab and Look's Captions section edit the same fields, so they use the same
+// words: both read them from the schema (J6). The markup carries today's words so the
+// panel is never blank, and this keeps it from drifting when the schema changes.
+function captionWords() {
+  let by = null
+  try { by = require('./ui/look-schema').BY_PATH } catch {}
+  if (!by) return
+  const get = path => by instanceof Map ? by.get(path) : by[path]
+  document.querySelectorAll('[data-schema-label]').forEach(n => {
+    const x = get(n.dataset.schemaLabel); if (x && x.label) n.textContent = x.label })
+  document.querySelectorAll('[data-schema-sub]').forEach(n => {
+    const x = get(n.dataset.schemaSub); if (x && x.sub) n.textContent = x.sub })
+  const hl = get('captions.highlight'), seg = $('capHl')
+  if (hl && seg) {
+    if (hl.label) seg.setAttribute('aria-label', hl.label)
+    if (hl.optionLabels) seg.querySelectorAll('button[data-hl]').forEach(b => {
+      const w = hl.optionLabels[b.dataset.hl]; if (w) b.textContent = w })
+  }
+}
+
 function bindRange(id, apply, fmt) {
   const s = $(id), out = $(id + 'Val')
   if (!s) return
@@ -1671,7 +1727,7 @@ document.addEventListener('click', e => {
 })
 
 function paintTime() {
-  $('edTime').textContent = `${fmtTime(ed.cur)} / ${fmtTime(ed.dur)}`
+  $('edTime').textContent = `${Fmt.clock(ed.cur)} / ${Fmt.clock(ed.dur)}`
 }
 function paintPlayhead() {
   const w = $('tlWrap').clientWidth
@@ -1696,8 +1752,8 @@ function renderCuts() {
     list.innerHTML = ed.cuts.length
       ? ed.cuts.map(([a, b], i) => `<button class="cut-row" data-i="${i}">
           ${ico('scissors', 'icon-sm')}
-          <span class="mono">${fmtTime(a)} to ${fmtTime(b)}</span>
-          <span class="cut-len mono">-${(b - a).toFixed(1)}s</span></button>`).join('')
+          <span class="mono">${Fmt.clock(a)} to ${Fmt.clock(b)}</span>
+          <span class="cut-len mono">-${Fmt.secs(b - a, 0.1)}</span></button>`).join('')
       : ''
     list.querySelectorAll('.cut-row').forEach(b => b.onclick = () => {
       ed.cuts.splice(+b.dataset.i, 1); renderCuts(); paintTrim()
@@ -1706,7 +1762,7 @@ function renderCuts() {
   const removed = ed.cuts.reduce((t, [a, b]) => t + (b - a), 0)
   const span = Math.max(0, (ed.out - ed.in) - removed)
   const chip = $('edOutLen')
-  if (chip) chip.textContent = `${span.toFixed(1)}s out`
+  if (chip) chip.textContent = `${Fmt.clock(span)} out`
 }
 
 function paintTrim() {
@@ -1716,8 +1772,8 @@ function paintTrim() {
   $('hIn').style.left = a + 'px'; $('hOut').style.left = b + 'px'
   $('dimL').style.left = '0px'; $('dimL').style.width = a + 'px'
   $('dimR').style.left = b + 'px'; $('dimR').style.width = (w - b) + 'px'
-  $('trimIn').textContent = fmtTime(ed.in); $('trimOut').textContent = fmtTime(ed.out)
-  $('tlRange').textContent = `${fmtTime(ed.in)} to ${fmtTime(ed.out)}`
+  $('trimIn').textContent = Fmt.clock(ed.in); $('trimOut').textContent = Fmt.clock(ed.out)
+  $('tlRange').textContent = `${Fmt.clock(ed.in)} to ${Fmt.clock(ed.out)}`
   renderCuts(); renderTextTrack()     // a text with no range spans the trim
 }
 // ── beats ────────────────────────────────────────────────────────────────────
@@ -1756,10 +1812,10 @@ function renderZooms() {
     const width = Math.max(0.6, ((z.end - z.start) / ed.dur) * 100)
     return '<button class="tl-zoom" data-id="' + escHtml(z.id) + '" data-sel="' + String(isSel('zoom', z.id)) + '" ' +
       'style="left:' + left + '%;width:' + width + '%" ' +
-      'title="' + escHtml(z.id) + ' zooms ' + (z.scale || 1.8).toFixed(2) + 'x">' +
+      'title="' + escHtml(z.id) + ' zooms ' + Fmt.mult(z.scale || 1.8) + '">' +
       '<i class="tl-grip l" data-grip="start"></i>' +
       '<span class="tl-zoom-id mono">' + escHtml(z.id) + '</span>' +
-      '<span class="tl-zoom-x mono">' + (z.scale || 1.8).toFixed(1) + '&times;</span>' +
+      '<span class="tl-zoom-x mono">' + Fmt.mult(z.scale || 1.8) + '</span>' +
       '<i class="tl-grip r" data-grip="end"></i>' +
     '</button>'
   }).join('')
@@ -1923,13 +1979,25 @@ async function loadBeats() {
 function layoutTimeline() {
   const w = $('tlWrap').clientWidth
   const ticks = $('tlTicks'); ticks.innerHTML = ''
-  const step = ed.dur > 240 ? 60 : ed.dur > 60 ? 30 : ed.dur > 20 ? 10 : ed.dur > 8 ? 5 : 1
-  // 0:00 is skipped: centred on the left edge it was half cut off and sat under the lane tag
+  // A step by length, then widened until labels have room: beside an open chat at the
+  // smallest window a second apart was 34px and the labels ran into each other.
+  const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+  let step = ed.dur > 240 ? 60 : ed.dur > 60 ? 30 : ed.dur > 20 ? 10 : ed.dur > 8 ? 5 : 1
+  const MIN_GAP = ed.dur >= 3600 ? 88 : 60     // an h:mm:ss label is wider
+  while (ed.dur && step / ed.dur * w < MIN_GAP && STEPS.some(n => n > step)) step = STEPS.find(n => n > step)
+  // The video lane's tag shares the ticks' row, so a tick whose label would run under it
+  // is not drawn. 0:00 always was; at the minimum width, or with the chat open, the first
+  // one or two go as well rather than sit on "Video" (E3). Measured, not assumed, so a
+  // longer tag or a larger label keeps clear too.
+  const tag = document.querySelector('#laneVideo .lane-tag')
+  const clear = tag && tag.offsetWidth ? tag.offsetLeft + tag.offsetWidth + 6 : 0
   for (let t = step; t <= ed.dur; t += step) {
     const x = t / ed.dur * w
-    const s = el('span', null, fmtTime(t)); s.style.left = x + 'px'
-    if (w - x < 24) s.style.transform = 'translateX(-100%)'   // keep the last label inside
+    const s = el('span', null, Fmt.clock(t)); s.style.left = x + 'px'
     ticks.appendChild(s)
+    const half = s.offsetWidth / 2
+    if (w - x < half + 2) s.style.transform = 'translateX(-100%)'   // keep the last label inside
+    else if (x - half < clear) s.remove()
   }
   paintTrim(); paintPlayhead()
 }
@@ -2164,7 +2232,7 @@ function renderTexts() {
     n.style.top = (vr.top + t.fy * vr.h) + 'px'
     n.style.fontSize = Math.max(9, t.sizeFrac * vr.h / 1.18) + 'px'
     n.style.color = t.color === 'white' ? '#fff' : (t.color || '#fff')
-    n.style.fontFamily = !t.font || t.font === 'SF Pro' ? '-apple-system,"SF Pro Display",system-ui' : t.font
+    n.style.fontFamily = fontCss(t.font)
     n.style.textAlign = t.align || 'center'
     if (style !== 'label') {
       // a closing address shows under the product's name, as the export draws it
@@ -2210,7 +2278,9 @@ function renderTexts() {
 function renderLayerList() {
   const list = $('layerList'); list.innerHTML = ''
   ed.texts.forEach((t, i) => {
-    const r = el('div', 'layer-row', `${ico('text-t', 'icon-sm')}<span class="lname">${(t.text || 'Empty').slice(0, 22)}</span>`)
+    // the whole text, cut by the row's own ellipsis: a slice at 22 characters ended a long
+    // headline mid-word with no mark that anything was missing, and went in unescaped
+    const r = el('div', 'layer-row', `${ico('text-t', 'icon-sm')}<span class="lname">${escHtml(String(t.text || '').trim() || 'Empty')}</span>`)
     r.dataset.sel = String(i === ed.selText)
     r.onclick = () => { ed.selText = i; renderTexts(); renderLayerList() }
     list.appendChild(r)
@@ -2220,7 +2290,7 @@ function renderLayerList() {
   if (has) {
     const t = cur()
     $('txtValue').value = t.text || ''
-    $('txtSize').value = Math.round((t.sizeFrac || .06) * 100); $('txtSizeVal').textContent = Math.round((t.sizeFrac || .06) * 100)
+    $('txtSize').value = Math.round((t.sizeFrac || .06) * 100); $('txtSizeVal').textContent = Fmt.pct(+$('txtSize').value / 100)
     $('txtColor').value = t.color || 'white'
     $('txtBox').checked = !!t.box
     paintTextRange()
@@ -2302,6 +2372,13 @@ function mountLook() {
     ico, toast,
     assets: () => lookBackdropList.filter(b => b.image),
     onAddAsset: done => pickBackdropImage(done),
+    // a photograph downloaded from the picker is a new backdrop on disk, so the list
+    // the inspector draws from is read again rather than left a search behind
+    onAssetsChanged: () => loadLookBackdrops(),
+    // A name from a known list is a list, not a text box. The Look tab drew Font as a
+    // free input while the Captions tab drew the same field as a dropdown, so the same
+    // setting had two controls and one of them took any string (J6).
+    choices: { 'captions.font': () => FONTS.map(f => ({ ...f, font: fontCss(f.id) })) },
     notes: {
       'frame.aspect': L => L.frame.aspect === 'auto' ? "Keeps your recording's shape."
         : L.background.kind === 'none' ? 'The space round your recording is filled with a soft blur of it, never black bars.'
@@ -2366,9 +2443,9 @@ function pickBackdropImage(done) {
     const offAspect = Math.abs(dims.w / dims.h - 16 / 9) > 0.25
     await loadLookBackdrops()
     done('img:user/' + path.basename(dest))
-    if (small) toast(`Added, but it is ${dims.w}x${dims.h}. Under 1920x1080 will look soft.`, 'bad', 6500)
+    if (small) toast(`Added, but it is ${Fmt.size(dims.w, dims.h)}. Under ${Fmt.size(1920, 1080)} will look soft.`, 'bad', 6500)
     else if (offAspect) toast(`Added. At ${ratio}:1 it will be cropped to fit 16:9.`, '', 5500)
-    else toast(`Added ${dims.w}x${dims.h} backdrop`, 'ok')
+    else toast(`Added ${Fmt.size(dims.w, dims.h)} backdrop`, 'ok')
   }
   input.click()
 }
@@ -2528,7 +2605,7 @@ function paintSwatches() {
 function paintTextRange() {
   const t = cur()
   $('txtRange').textContent = (t.start != null && t.end != null)
-    ? `Shows ${fmtTime(t.start)} → ${fmtTime(t.end)}` : 'Shows for the whole clip'
+    ? `Shows ${Fmt.clock(t.start)} to ${Fmt.clock(t.end)}` : 'Shows for the whole clip'
   renderTextTrack()
 }
 
@@ -2554,7 +2631,7 @@ function renderCues() {
   }
   paintTranscribeBtn()
   ed.cues.forEach((c, i) => {
-    const n = el('div', 'cue', `<span class="t">${fmtTime(c.start)}</span><span class="x" contenteditable>${escHtml(c.text || '')}</span>`)
+    const n = el('div', 'cue', `<span class="t">${Fmt.clock(c.start)}</span><span class="x" contenteditable>${escHtml(c.text || '')}</span>`)
     n.dataset.i = i
     n.onclick = e => { if (e.target.classList.contains('x')) return; seek(c.start) }
     n.querySelector('.x').onblur = e => { c.text = e.target.textContent.trim(); ipcRenderer.invoke('write-cues', ed.src, ed.cues) }
@@ -2598,7 +2675,7 @@ function paintCaption() {
     k += n
     return line
   }).join('<br>')
-  span.style.fontFamily = !st.font || st.font === 'SF Pro' ? '-apple-system,"SF Pro Display",system-ui' : st.font
+  span.style.fontFamily = fontCss(st.font)
   span.style.fontSize = Math.max(9, L.px / 1.18) + 'px'
   span.style.color = st.colour || '#FFFFFF'
   span.dataset.boxed = 'false'
@@ -2988,8 +3065,7 @@ async function exportModal() {
   const fmts = await ipcRenderer.invoke('formats')
   const scrim = el('div', 'scrim')
   scrim.innerHTML = `<div class="modal" style="width:min(560px,92vw)">
-    <div class="modal-head">${ico('export', 'icon-lg')}<span class="modal-title">Export</span>
-      <div style="flex:1"></div><button class="btn btn-ghost btn-icon btn-sm" data-close>${ico('x', 'icon-sm')}</button></div>
+    <div class="modal-head">${ico('export', 'icon-lg')}<span class="modal-title">Export</span></div>
     <div class="modal-body" style="display:flex;flex-direction:column;gap:16px">
       <div><div class="insp-sec">Format</div>
         <div class="aspect-chips" id="fmtChips">
@@ -3021,7 +3097,7 @@ async function exportModal() {
   })
   const summary = () => {
     scrim.querySelector('#expSummary').textContent =
-      `${outLen().toFixed(1)}s · ${pick.fmt.toUpperCase()} · ${pick.q[0].toUpperCase() + pick.q.slice(1)}${pick.res ? ' · ' + pick.res + 'p' : ''}`
+      Fmt.join(Fmt.clock(outLen()), pick.fmt.toUpperCase(), pick.q[0].toUpperCase() + pick.q.slice(1), pick.res ? pick.res + 'p' : '')
     paintDest()
   }
   // Every export of a take rewrites <Take>/<Take>.mp4, so say so before the click,
@@ -3042,9 +3118,9 @@ async function exportModal() {
   const outLen = () => Math.max(0, (ed.out - ed.in) - (ed.cuts || []).reduce((n, [a, b]) =>
     n + Math.max(0, Math.min(b, ed.out) - Math.max(a, ed.in)), 0))
   group('[data-fmt]', 'fmt'); group('[data-q]', 'q'); group('[data-res]', 'res'); summary()
-  const close = () => scrim.remove()
-  scrim.querySelectorAll('[data-close]').forEach(b => b.onclick = close)
-  scrim.onclick = e => { if (e.target === scrim) close() }
+  // One close for every modal (K5): Cancel, Esc, or the scrim. No header cross here
+  // and none on Convert, Move to Trash or New folder either.
+  const close = modalCloser(scrim)
   scrim.querySelector('#expGo').onclick = () => { close(); doExport(pick) }
 }
 
@@ -3121,7 +3197,7 @@ async function exportShot() {
     if (j.status === 'done') {
       jobs.delete(cid); btn.disabled = false; if (bar) bar.hidden = true
       if (typeof mood === 'function') mood('happy')
-      toast(`Shot saved${j.result && j.result.mb ? ` · ${j.result.mb} MB` : ''}`, 'ok')
+      toast(`Shot saved${j.result && j.result.mb ? Fmt.SEP + Fmt.bytes(j.result.mb * 1e6) : ''}`, 'ok')
       if (typeof window.clearEditorDirty === 'function') window.clearEditorDirty()
       refreshLibrary()
       if (j.result && j.result.file) ipcRenderer.send('reveal', j.result.file)
@@ -3163,15 +3239,15 @@ async function doExport(pick) {
     if (j.status === 'progress' && j.pct != null) ov.progress(j.pct, 'Encoding')
     if (j.status === 'done') {
       jobs.delete(cid); $('doExport').disabled = false
-      ov.finish(`Done · ${j.result.mb} MB`)
+      ov.finish(Fmt.join('Done', Fmt.bytes(j.result.mb * 1e6)))
       // Settings can retire the source once an export succeeds. Trash, never unlink,
       // so an accidental setting is always recoverable.
       if (window.prefs && window.prefs.keepOriginal === false && ed.src !== j.result.file) {
         const mb = j.result.mb
         trash([ed.src, ...sidecars(ed.src)]).then(n =>
-          toast(n ? `Exported, original moved to Trash` : `Exported · ${mb} MB`, 'ok'))
+          toast(n ? 'Exported, original moved to Trash' : Fmt.join('Exported', Fmt.bytes(mb * 1e6)), 'ok'))
       } else {
-        toast(`Exported · ${j.result.mb} MB`, 'ok')
+        toast(Fmt.join('Exported', Fmt.bytes(j.result.mb * 1e6)), 'ok')
       }
       // the edit is safely on disk now, so the autosave no longer counts as unsaved
       if (typeof window.clearEditorDirty === 'function') window.clearEditorDirty()
@@ -3936,10 +4012,10 @@ function renderFocus() {
       'data-sel="' + String(isSel(kind, o.id)) + '" data-mark="' + escHtml(kind === 'mark' ? o.kind : '') + '">' +
       '<span class="obj-id mono">' + escHtml(o.id) + '</span>' +
       '<span class="obj-what">' + escHtml(detail) + '</span>' +
-      '<span class="obj-when mono">' + fmtTime(o.start) + ' to ' + fmtTime(o.end) + '</span>' +
+      '<span class="obj-when mono">' + Fmt.clock(o.start) + ' to ' + Fmt.clock(o.end) + '</span>' +
     '</button>'
   zl.innerHTML = (ed.zooms || []).length
-    ? ed.zooms.map(z => row('zoom', z, (+z.scale || 1.8).toFixed(1) + '×')).join('')
+    ? ed.zooms.map(z => row('zoom', z, Fmt.mult(+z.scale || 1.8))).join('')
     : '<p class="micro dimmer">No zooms yet.</p>'
   ml.innerHTML = (ed.marks || []).length
     ? ed.marks.map(m => row('mark', m, objLabel('mark', m))).join('')
@@ -3957,20 +4033,20 @@ function renderObjEdit() {
   const kind = ed.sel.kind, zoom = kind === 'zoom'
   $('objId').textContent = o.id
   $('objWhat').textContent = objLabel(kind, o).trim()
-  $('objStart').textContent = fmtTime(o.start)
-  $('objEnd').textContent = fmtTime(o.end)
+  $('objStart').textContent = Fmt.clock(o.start)
+  $('objEnd').textContent = Fmt.clock(o.end)
   const show = (id, on) => { const n = $(id); if (n) n.hidden = !on }
   show('objScaleRow', zoom); show('objStrengthRow', !zoom && o.kind === 'blur'); show('objNumRow', !zoom && o.kind === 'step')
   if (zoom) {
     const s = $('objScale'), v = $('objScaleVal')
     s.value = Math.round((+o.scale || 1.8) * 100)
     s.style.setProperty('--fill', ((s.value - s.min) / (s.max - s.min) * 100) + '%')
-    v.textContent = (+o.scale || 1.8).toFixed(1) + '×'
+    v.textContent = Fmt.mult(+o.scale || 1.8, 0.01)
   } else if (o.kind === 'blur') {
     const s = $('objStrength'), v = $('objStrengthVal')
     s.value = Math.round(+o.strength || 18)
     s.style.setProperty('--fill', ((s.value - s.min) / (s.max - s.min) * 100) + '%')
-    v.textContent = s.value
+    v.textContent = Fmt.pctOf(+s.value, +s.min, +s.max)
   } else if (o.kind === 'step') {
     $('objNum').value = o.n != null ? o.n : ''
   }

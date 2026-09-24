@@ -601,11 +601,12 @@ console.log('the picture\'s own type, and the room it takes')
   for (const a of ['songscription.app', 'app.example.com/library', 'https://x.example/a']) {
     is(`and ${a} still is`, bar(a).address, true)
   }
-  // a browser's bar is taller than a window's because a field stands in it, so with no
-  // field there is no toolbar. The same rule on a recording as on a capture.
+  // A browser's bar is a tab strip plus a toolbar, always, so it is much taller than a
+  // window's title bar with or without an address. An address only changes what is drawn
+  // inside the pill. The same rule on a recording as on a capture.
   const bare = bar(''), win = framed([], { device: { kind: 'window', title: 'Library' } }).device
-  is('a browser bar with nothing to put in it is a title bar', r3(bare.bar / bare.unit), r3(win.bar / win.unit))
-  is('and one with an address is taller', bar('songscription.app').bar > bare.bar, true)
+  is('a browser bar with nothing to put in it is still a browser bar', r3(bare.bar / bare.unit), r3(bar('songscription.app').bar / bar('songscription.app').unit))
+  is('and either of them is taller than a window\'s title bar', bare.bar > win.bar * 1.3, true)
 }
 
 console.log('which engine')

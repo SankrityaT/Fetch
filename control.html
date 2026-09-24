@@ -2,6 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Where this window may load anything from. It runs with node in it, and since the
+     backdrop picker it now draws shows photographs served by Unsplash, remote strings
+     reach this document for the first time. Pictures may come from this Mac or from
+     images.unsplash.com and nowhere else; nothing here may open a connection, a frame
+     or a plugin of its own. Scripts and styles are this app's own files, loaded off
+     disk, and the inline handlers and style attributes they already use stay allowed:
+     tightening those is a separate job, and a broken window helps nobody. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob: 'unsafe-inline' 'unsafe-eval'; img-src 'self' file: data: blob: https://images.unsplash.com; media-src 'self' file: data: blob:; connect-src 'self' file: data: blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Fetch</title>
 <link rel="stylesheet" href="./ui/tokens.css">
 <link rel="stylesheet" href="./ui/components.css">
@@ -68,13 +76,13 @@
       </form>
 
       <div class="hero-chips" id="heroChips">
-        <button class="hero-chip hero-chip-go" id="setupBtn">
+        <button class="chip chip-lg hero-chip hero-chip-go" id="setupBtn">
           <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-sliders-horizontal"/></svg>
           Set up a recording</button>
-        <button class="hero-chip" data-ask="What is on my screen right now? Name the apps.">
+        <button class="chip chip-lg hero-chip" data-ask="What is on my screen right now? Name the apps.">
           <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-monitor"/></svg>
           What is on my screen?</button>
-        <button class="hero-chip" data-ask="Transcribe my most recent recording and tell me what I said.">
+        <button class="chip chip-lg hero-chip" data-ask="Transcribe my most recent recording and tell me what I said.">
           <svg class="icon-sm"><use href="./assets/icons/sprite.svg#i-closed-captioning"/></svg>
           Transcribe my last take</button>
       </div>
@@ -136,6 +144,7 @@
 
 <div class="toasts" id="toasts"></div>
 
+<script src="./ui/fmt.js"></script>
 <script src="./ui/prefs.js"></script>
 <script src="./ui/dropdown.js"></script>
 <script src="./ui/setup.js"></script>
