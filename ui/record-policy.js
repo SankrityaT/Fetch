@@ -437,7 +437,9 @@ const AGENT_PREFS = ['saveDir', 'camera', 'mic', 'systemAudio', 'countdown',
   'openEditorAfter', 'keepOriginal', 'quickRecord', 'autoConvertMp4', 'autoUpdate', 'agentNames']
 // neverRecordDevices is here for the same reason neverRecord is: the list is the whole
 // protection, so an agent that could edit it would pass every check in this file.
-const HUMAN_ONLY_PREFS = ['recordAccess', 'neverRecord', 'neverRecordDevices', 'allowedRecordApps', 'telemetry', 'agentTakesVisible']
+const HUMAN_ONLY_PREFS = ['recordAccess', 'neverRecord', 'neverRecordDevices', 'allowedRecordApps', 'telemetry', 'agentTakesVisible',
+  // an agent that can write its own standing permission has no permission rule at all
+  'alwaysAllow']
 
 // A settings patch from an agent, checked and coerced. Throws on the first problem
 // and refuses the patch as a whole, so nothing is half applied. `dirExists` is passed

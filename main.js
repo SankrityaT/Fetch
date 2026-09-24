@@ -66,6 +66,8 @@ const DEFAULT_PREFS = {
   // What an agent may record. Defaults to 'ask' so a fresh install is never wide open,
   // and neverRecord is seeded rather than empty (see ui/record-policy.js).
   recordAccess: 'ask',
+  // "Always allow" grants, each { key, label, at }. Listed and revoked in Settings.
+  alwaysAllow: [],
   neverRecord: null,       // null means "use the seeded list"
   allowedRecordApps: [],
   // UDIDs an agent may never record and never drive. Empty rather than seeded: no device
@@ -320,6 +322,17 @@ app.whenReady().then(() => {
     exportDoc: (src, opts, key) => {
       const id = key || 'agent:export:' + (++agentJobSeq)
       return jobQueue.submit({ id, op: 'export', run: () => require('./ui/render-host').exportEdit(src, opts, null, id) })
+    },
+    // A window for the consent dialog to hang off, so it is a sheet and not a modal.
+    // Parentless, macOS runs the alert with -[NSAlert runModal] and the main thread
+    // stops: no socket, no menu, no quit, and the bridge's own one minute deadline can
+    // never fire because its timer is on the loop the modal holds. The window is shown
+    // without focus where it was hidden, since a sheet on a window that is not on
+    // screen is queued by AppKit and nobody is ever asked.
+    askHost: () => {
+      if (!control || control.isDestroyed()) return null
+      try { if (!control.isVisible()) control.showInactive() } catch {}
+      return control
     },
     // whether the person has stopped agents with Esc, for a question whose answer lands
     // after the stop: a late yes must not act for an agent that was stopped

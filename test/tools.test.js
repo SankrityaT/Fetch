@@ -1033,8 +1033,12 @@ async function main() {
   t('a silent take stays silent to review, and a late yes does not act for a stopped agent', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'agent-bridge.js'), 'utf8')
     assert.ok(/heardSilent\.has\(file\)/.test(src), 'review still offers transcribe on a take record_stop called silent')
-    const ask = src.slice(src.indexOf('async function askPerson('))
-    assert.ok(/deps\.held && deps\.held\(\)/.test(ask.slice(0, 2400)), 'a yes after Esc still acts')
+    // the whole of askPerson, to its closing brace at column 0, rather than a fixed
+    // number of characters: a comment added inside it once pushed the guard out of the
+    // window and failed a check about behaviour that had not changed
+    const from = src.indexOf('async function askPerson(')
+    const ask = src.slice(from, src.indexOf('\n}', from) + 2)
+    assert.ok(/deps\.held && deps\.held\(\)/.test(ask), 'a yes after Esc still acts')
     assert.strictEqual(typeof bridge.forgetConsent, 'function')
     assert.ok(/still: doc && doc\.kind === 'shot' \? true : null/.test(src), 'a recording is called a still frame')
   })

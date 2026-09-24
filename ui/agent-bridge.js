@@ -2091,6 +2091,7 @@ async function enforceAccess(args, ctx, seen = null) {
       (sim ? 'udid:' + sim.udid : args.window != null ? 'app:' + (app || '') : 'display') +
       (sound ? '|sound:' + sound : '')
     if (sessionAllowed.has(key)) return
+    if (allowedAlways(key)) return
     const who = (ctx && ctx.client) || 'An agent'
     const what = sim ? `the ${sim.name} simulator`
       : args.window != null ? (app ? `a ${app} window` : 'a window') : 'your whole screen'
@@ -2113,15 +2114,42 @@ async function enforceAccess(args, ctx, seen = null) {
         : args.window != null
           ? `Allow ${still ? 'screenshots of ' : ''}${app || 'this app'} until Fetch quits`
           : null,
-      still)
+      still, null, false,
+      { alwaysLabel: sim ? `Always allow ${sim.name}` : args.window != null ? `Always allow ${app || 'this app'}` : null })
     if (answer === 'unanswered') throw new Error(`Fetch refused to ${act}: ${verdict.unanswered}`)
     if (answer === 'no') throw new Error(`Fetch refused to ${act}: the person at the Mac said no`)
     if (answer === 'session') sessionAllowed.add(key)
+    if (answer === 'always') {
+      rememberAlways(key, `${still ? 'Screenshots of' : 'Recording'} ${what}${sound ? ', with sound' : ''}`)
+    }
   }
 }
 
 // Approvals given with "until Fetch quits". In memory only, so a restart asks again.
 const sessionAllowed = new Set()
+
+// Approvals given with "Always allow". These outlive the run, so they live in prefs
+// rather than in memory, each one carrying the words the person read when they granted
+// it and the day they did, because a permission nobody can find is a permission nobody
+// can take back. Settings lists them and removes them one at a time.
+//
+// What can never be in here: anything SIM_REFUSED names. That table is checked above
+// consent in record-policy, so erase, delete, uninstall, create, clone and upgrade never
+// reach a question at all, and no yes of any length can reach them. The invariant is
+// structural rather than a filter on this list, and the tests assert it that way.
+//
+// An agent cannot write this: 'alwaysAllow' is in HUMAN_ONLY_PREFS, so set_settings
+// refuses a patch that so much as mentions it. Only the button below puts one here.
+const alwaysList = () => {
+  const p = deps.getPrefs ? deps.getPrefs() : {}
+  return Array.isArray(p.alwaysAllow) ? p.alwaysAllow.filter(e => e && e.key) : []
+}
+const allowedAlways = key => !!key && alwaysList().some(e => e.key === key)
+function rememberAlways(key, label) {
+  if (!key || allowedAlways(key)) return
+  const next = [...alwaysList(), { key, label: label || key, at: new Date().toISOString() }]
+  if (deps.setPrefs) deps.setPrefs({ alwaysAllow: next })
+}
 
 // A free-standing alert rather than a sheet on Fetch's window: the question needs an
 // answer, but it should not drag the whole app in front of what the person is doing.
@@ -2153,7 +2181,8 @@ async function rulesConfirmed(product, texts) {
   } catch { return false }
 }
 
-async function askPerson(message, detail, sessionLabel, still = false, allowLabel = null, sessionFirst = false) {
+async function askPerson(message, detail, sessionLabel, still = false, allowLabel = null, sessionFirst = false,
+  { alwaysLabel = null } = {}) {
   const { dialog } = require('electron')
   // Driving somebody's device is not recording it, so the button says which it is.
   const once = allowLabel || (still ? 'Allow this shot' : 'Allow this take')
@@ -2161,12 +2190,28 @@ async function askPerson(message, detail, sessionLabel, still = false, allowLabe
   // unless they happened to press the second button the first time, so where the answer
   // is one of a run the session answer is the one under their hand.
   const both = sessionLabel ? (sessionFirst ? [sessionLabel, once] : [once, sessionLabel]) : [once]
-  const buttons = [...both, 'Don\'t allow']
+  const always = alwaysLabel ? [alwaysLabel] : []
+  const buttons = [...both, ...always, 'Don\'t allow']
   const no = buttons.length - 1
   let timer = null
-  const asked = dialog.showMessageBox({
-    type: 'question', message, detail, buttons, defaultId: no, cancelId: no, noLink: true,
-  }).then(r => (r.response === no ? 'no'
+  // On a window, never parentless. A parentless message box on macOS is run with
+  // -[NSAlert runModal], which blocks Electron's main thread: the socket stops
+  // answering, the menu stops opening, the app cannot even be quit, and the deadline
+  // below can never fire because the timer that would fire it is on the loop the modal
+  // is holding. Measured: with the display asleep, every Fetch call timed out and the
+  // app had to be killed. Given a window that is really on screen it is a sheet
+  // instead, which leaves the loop running, so the deadline works and a person who is
+  // not there costs a minute rather than the app.
+  //
+  // The window is shown without taking focus. A question about what an agent is doing
+  // should be visible, and Fetch was already the thing being asked about; what it must
+  // not do is steal the keyboard out from under whatever the person is typing in.
+  let host = null
+  try { host = deps.askHost ? deps.askHost() : null } catch { host = null }
+  const opts = { type: 'question', message, detail, buttons, defaultId: no, cancelId: no, noLink: true }
+  const asked = (host ? dialog.showMessageBox(host, opts) : dialog.showMessageBox(opts))
+    .then(r => (r.response === no ? 'no'
+    : buttons[r.response] === alwaysLabel ? 'always'
     : buttons[r.response] === sessionLabel ? 'session' : 'once'), () => 'no')
   let answer
   try {
@@ -2805,15 +2850,18 @@ async function simAsk(verb, sim, ctx, say) {
   if (first.allow) return true
   const key = `sim|${verb}|${sim.udid}`
   if (sessionAllowed.has(key)) return true
+  if (allowedAlways(key)) return true
   const who = (ctx && ctx.client) || 'An agent'
   const answer = await askPerson(`${who} ${say.wants} ${sim.name}.`, say.detail,
-    say.session ? `${say.session} until Fetch quits` : null, false, say.allow, !!say.sessionFirst)
+    say.session ? `${say.session} until Fetch quits` : null, false, say.allow, !!say.sessionFirst,
+    { alwaysLabel: say.session ? `${say.session} always` : null })
   if (answer === 'unanswered') {
     throw new Error(`Fetch refused: driving somebody's device needs their word, and nobody was at the ` +
       'Mac to give it. Ask them in the chat and try again.')
   }
   if (answer === 'no') throw new Error('Fetch refused: the person at the Mac said no.')
   if (answer === 'session') sessionAllowed.add(key)
+  if (answer === 'always') rememberAlways(key, `${say.session || verb} on ${sim.name}`)
   return true
 }
 
