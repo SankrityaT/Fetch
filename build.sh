@@ -59,7 +59,14 @@ cp -R node_modules/electron/dist/Electron.app "$APP"
 mv "$APP/Contents/MacOS/Electron" "$APP/Contents/MacOS/Fetch"
 rm -rf "$APP/Contents/Resources/default_app.asar"
 mkdir -p "$APP/Contents/Resources/app"
-cp main.js control.html cam.html hud.html border.html processor.js fontinstance.js package.json "$APP/Contents/Resources/app/"
+# Every page at the root, by glob rather than by name. Named one at a time, two of
+# them were missed for as long as they have existed: render.html, which the
+# compositor loads for every contact sheet, preview and export, and
+# agent-cursor.html. Both are only ever loaded at runtime, so nothing in the build
+# and nothing in the tests, which run from the source tree, ever noticed. In a
+# packaged Fetch every one of those calls failed with ERR_FILE_NOT_FOUND.
+# test/packaging.test.js now holds this list to what main.js and ui/ actually load.
+cp main.js *.html processor.js fontinstance.js package.json "$APP/Contents/Resources/app/"
 cp -R ui "$APP/Contents/Resources/app/ui"
 cp -R assets "$APP/Contents/Resources/app/assets"
 
