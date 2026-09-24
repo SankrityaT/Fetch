@@ -308,12 +308,31 @@ function cardItems(tp, t, measure, out) {
     const tw = measure(title, px, 'title') * 0.98
     if (tw > W * 0.84) px = Math.floor(px * (W * 0.84) / tw)
     const u = H / 1080
-    const sp = Math.round(Math.max(H * 0.0335, px * 0.34))
+    let sp = Math.round(Math.max(H * 0.0335, px * 0.34))
     const gap = Math.round((url ? 24 : 18) * u)
     const pillFs = Math.round(30 * u), pillH = Math.round(pillFs * 2)
     const subText = url ? `${subtitle}  →` : subtitle
     const pillW = url ? Math.round(measure(subText, pillFs, 'sub') + pillH * 0.95) : 0
-    const subH = !subtitle ? 0 : url ? pillH : Math.round(sp * 1.2)
+    // The title is shrunk to the frame a few lines up and the subtitle never was, so a
+    // subtitle longer than the frame is wide was drawn at full size straight off both
+    // edges, cut mid word. It wraps to the same column the title is held to, up to two
+    // lines, and is shrunk after that, which is the order that keeps it readable: a
+    // line that only just overflows wraps rather than going small, and one that cannot
+    // fit in two lines goes small rather than running off.
+    let subLines = subtitle && !url ? wrapTo(subtitle, budget(W * 0.84, sp)) : []
+    if (subLines.length > 2) {
+      const flat = subLines.join(' ')
+      let mid = Math.ceil(flat.length / 2), cut = flat.lastIndexOf(' ', mid)
+      if (cut < 0) cut = flat.indexOf(' ', mid)
+      subLines = cut > 0 ? [flat.slice(0, cut), flat.slice(cut + 1)] : [flat]
+    }
+    if (subLines.length) {
+      const widest = Math.max(...subLines.map(l => measure(l, sp, 'sub')))
+      if (widest > W * 0.84) sp = Math.floor(sp * (W * 0.84) / widest)
+    }
+    const subLead = Math.round(sp * 1.24)
+    const subH = !subtitle ? 0 : url ? pillH
+      : Math.round(sp * 1.2 + Math.max(0, subLines.length - 1) * subLead)
     const lineT = Math.round(px * 1.05)
     const blockH = lineT + (subtitle ? gap + subH : 0)
     const cx = W * (tt.fx != null ? +tt.fx : 0.5)
@@ -363,13 +382,17 @@ function cardItems(tp, t, measure, out) {
         },
       })
     } else if (b) {
-      const font = fontFor('sub', sp), w = measure(subtitle, sp, 'sub') + sp, m = sp * 0.5 + 26 * u
+      const lines = subLines.length ? subLines : [subtitle]
+      const font = fontFor('sub', sp), m = sp * 0.5 + 26 * u
+      const w = Math.max(...lines.map(l => measure(l, sp, 'sub'))) + sp
       out.items.push({
-        key: `sub|${font}|${fill}|${subtitle}`, bounds: { x: cx - w / 2 - m, y: sy - subH / 2 - m, w: w + 2 * m, h: subH + 2 * m },
+        key: `sub|${font}|${fill}|${lines.join('\u0000')}`, bounds: { x: cx - w / 2 - m, y: sy - subH / 2 - m, w: w + 2 * m, h: subH + 2 * m },
         op: b.op * 0.7, dy: b.dy, blur: b.blur, blurMax: blurIn, z: 6,
         paint(ctx) {
           ctx.font = font; ctx.textAlign = 'center'; ctx.letterSpacing = `${sp * 0.01}px`; ctx.fillStyle = fill
-          ctx.fillText(subtitle, cx, baseline(ctx, sy))
+          // the block of lines is centred on sy, whatever it holds
+          const top = sy - subLead * (lines.length - 1) / 2
+          lines.forEach((line, i) => ctx.fillText(line, cx, baseline(ctx, top + i * subLead)))
         },
       })
     }
