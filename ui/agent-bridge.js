@@ -1235,18 +1235,38 @@ const ops = {
     if (args.look && typeof args.look === 'object') doc = require('./fetchdoc').mergeDoc(doc, { look: args.look })
     // several moments in one call: the start of a move and its middle are both checked
     const times = (Array.isArray(args.at) ? args.at : [args.at]).slice(0, 6)
-    let frames = null
+    let frames = null, fell = null
     // drawn by the renderer the export will use, so what the agent checks is the file
     const host = require('./render-host')
     const pick = host.pickEngine(args.path, require('./fetchdoc').toExportOpts(doc))
     if (pick.engine === 'gl') {
-      try { frames = await host.previewFrames(args.path, doc, times) } catch (e) { console.warn('[preview] compositor failed, drawing with the classic renderer:', e && e.message) }
+      try { frames = await host.previewFrames(args.path, doc, times) } catch (e) {
+        fell = (e && e.message) || String(e)
+        console.warn('[preview] compositor failed, drawing with the classic renderer:', fell)
+      }
     }
     if (!frames) {
       frames = []
       for (const t of times) frames.push(await deps.proc.previewFrame(args.path, doc, t))
     }
-    return { image: frames[0].file, at: frames[0].at, frames: frames.map(r => ({ image: r.file, at: r.at })) }
+    // Which renderer drew this, said out loud. It used to fall back to the classic one
+    // in silence, and a picture from that path is not the picture the export makes: it
+    // draws the agent's arrow where the compositor draws a finger, and leaves out every
+    // look field marked classic. An agent then judges the edit against a frame the file
+    // will never hold, decides the edit is wrong, and changes something that was right.
+    // Measured on a touch take: the same moment came back with an arrow through this
+    // path and with the tap disc through the compositor.
+    const engine = frames[0] && frames[0].engine === 'gl' ? 'gl' : 'classic'
+    const out = { image: frames[0].file, at: frames[0].at, engine,
+      frames: frames.map(r => ({ image: r.file, at: r.at, engine })) }
+    if (engine !== pick.engine) {
+      out.not_the_export = 'The compositor could not draw this, so these frames came from the ' +
+        'classic renderer and your export will not look like them: a touch take\'s taps are ' +
+        'drawn as the agent\'s arrow rather than as a finger, and the look fields only the ' +
+        'compositor draws are missing. Judge the edit from an export, or try again.'
+      if (fell) out.why = fell
+    }
+    return out
   },
 
   async 'edit.silence'(args = {}) {
