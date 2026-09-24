@@ -326,6 +326,32 @@
     }).join('')
   }
 
+  // What you said "Always allow" to. A standing permission nobody can find is a
+  // standing permission nobody can take back, so every grant is listed here with the
+  // words that were on the button and the day it was given, and one click ends it.
+  // Only this list and that button ever write them: an agent asking set_settings for
+  // alwaysAllow is refused, because an agent that can grant itself a permission has
+  // no permission rule at all.
+  const grantDay = at => {
+    const d = new Date(at)
+    return isNaN(d) ? '' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+  }
+  function alwaysChipsHtml(list) {
+    if (!list.length) {
+      return '<p class="acc-empty">Nothing is always allowed. Every agent take and every tap on a ' +
+        'device still waits for you.</p>'
+    }
+    return list.map(g => {
+      const label = (g && g.label) || (g && g.key) || ''
+      const day = g && g.at ? grantDay(g.at) : ''
+      return '<span class="chip chip-static acc-chip" title="' + esc((g && g.key) || '') + '">' + esc(label) +
+        (day ? '<span class="acc-chip-sub">' + esc(day) + '</span>' : '') +
+        '<button class="acc-chip-x" data-revoke="' + esc((g && g.key) || '') + '" ' +
+          'aria-label="Stop always allowing ' + esc(label) + '">' + ico('x', 'icon-sm') + '</button>' +
+      '</span>'
+    }).join('')
+  }
+
   function renderSettings() {
     const mount = $('settingsMount')
     if (!mount) return
@@ -335,6 +361,7 @@
     // Empty rather than seeded, deliberately: no device is dangerous on every Mac, and a
     // made up id would teach somebody that this list knows something it does not.
     const neverDevices = Array.isArray(p.neverRecordDevices) ? p.neverRecordDevices : []
+    const always = Array.isArray(p.alwaysAllow) ? p.alwaysAllow.filter(g => g && g.key) : []
 
     mount.innerHTML = `
       <div class="set-wrap">
@@ -462,6 +489,14 @@
             <button class="btn btn-sm" type="submit" id="deviceAddBtn" disabled>Add</button>
           </form>
 
+          <div class="acc-sub">
+            <span class="acc-sub-title">Always allowed</span>
+            <p class="acc-sub-note">What you pressed Always allow to, so Fetch stops asking. Each one
+              covers that one thing on that one device or app, and never anything that would erase or
+              remove something. Take one back and the next attempt asks you again.</p>
+          </div>
+          <div class="acc-chips" id="alwaysChips">${alwaysChipsHtml(always)}</div>
+
           ${row('rowAgentVisible', 'eye', 'Show agent recordings on screen',
             'Off: an agent records in the background and nothing appears over your work. ' +
             'On: the red border and floating controls show, as for your own takes.',
@@ -588,6 +623,19 @@
       paintDevices(list.filter(d => d !== gone))
       toast((gone && gone.name ? gone.name : 'That device') + ' can be recorded again', 'ok')
       fillDevicePicker()
+    })
+
+    $('alwaysChips').addEventListener('click', e => {
+      const btn = e.target.closest('[data-revoke]')
+      if (!btn) return
+      const key = btn.dataset.revoke
+      const list = (Array.isArray(window.prefs.alwaysAllow) ? window.prefs.alwaysAllow : []).filter(g => g && g.key)
+      const gone = list.find(g => g.key === key)
+      const left = list.filter(g => g.key !== key)
+      window.savePrefs({ alwaysAllow: left })
+      window.prefs.alwaysAllow = left
+      $('alwaysChips').innerHTML = alwaysChipsHtml(left)
+      toast('Fetch will ask again before ' + ((gone && gone.label) || 'that'), 'ok')
     })
 
     // The devices Fetch can see, so nobody has to copy a UDID out of a terminal to

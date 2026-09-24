@@ -63,5 +63,15 @@ const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
 is('askHost shows the window without taking focus', /askHost: \(\) => \{[\s\S]{0,400}showInactive\(\)/.test(mainSrc), true)
 is('and hands back a real window, never a hidden one it did not show', /if \(!control \|\| control\.isDestroyed\(\)\) return null/.test(mainSrc), true)
 
+// ── and it can be taken back, which is what makes it a permission ────────
+const setSrc = fs.readFileSync(path.join(ROOT, 'ui/settings.js'), 'utf8')
+is('Settings lists the grants', /id="alwaysChips"/.test(setSrc), true)
+is('under a heading that says what they are', /Always allowed/.test(setSrc), true)
+is('each grant carries the day it was given', /grantDay\(g\.at\)/.test(setSrc), true)
+is('each has a button that ends it', /data-revoke="/.test(setSrc), true)
+is('revoking writes the shorter list back', /savePrefs\(\{ alwaysAllow: left \}\)/.test(setSrc), true)
+is('and says the asking is back', /Fetch will ask again before/.test(setSrc), true)
+is('an empty list says so rather than showing nothing', /Nothing is always allowed/.test(setSrc), true)
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
