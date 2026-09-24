@@ -179,7 +179,22 @@ const DEVICES = {
   browser: { bar: 0.070, side: 0.008, foot: 0.008, r: 0.018, sr: 0.005 },
   window: { bar: 0.046, side: 0.008, foot: 0.008, r: 0.018, sr: 0.005 },
   laptop: { bar: 0.020, side: 0.020, foot: 0.052, r: 0.022, sr: 0.006, base: 0.030, over: 0.055 },
-  phone: { bar: 0.050, side: 0.030, foot: 0.050, r: 0.070, sr: 0.030 },
+  // A phone's bezels, even. They were bar 0.050 and foot 0.050 against side 0.030, a
+  // brow and a chin nearly twice the sides, which is the face of a phone from well
+  // over a decade ago and read as one: the shell looked like a slab with the glass
+  // sunk in it. Every phone made since has edges within a hair of each other, with a
+  // little more under the screen than over it, which is what these are.
+  //
+  // sr stays where it was on purpose, and it is not the drawn corner: it is the radius
+  // the glass is masked at when nobody measured the real one, and guessing a large
+  // corner there would cut the app's own pixels off a take Fetch knows nothing about.
+  // Where a corner has been measured, gr takes over a few lines down and the shell is
+  // cut concentric with it, which is how the drawn phone gets a modern corner honestly.
+  //
+  // None of this is traced from anybody's product and none of it is trade dress: a
+  // rounded rectangle with thin even edges is what the whole industry makes. The rule
+  // this file keeps is unchanged, and the slit stays the only detail on it.
+  phone: { bar: 0.028, side: 0.026, foot: 0.032, frame: 0.017, r: 0.070, sr: 0.030 },
 }
 // The shell, and the hairline that answers for both of its edges. The two are the
 // range apart on purpose: an edge drawn as a pair of tones that far apart stands clear
@@ -373,7 +388,13 @@ function barText(said, captured, url) {
 // foot the thickness of their sides and are left exactly as they were.
 function bezel(kind, address, own) {
   const d = DEVICES[kind]
-  if (kind === 'phone') return own ? { bar: d.side, foot: d.side, slit: false } : { bar: d.bar, foot: d.foot, slit: true }
+  // A plain frame over a capture that already shows a phone has its own thickness, and
+  // it is thinner than any of the phone's own edges. It used to borrow d.side, which
+  // worked only while a phone wore a brow half again as thick as its sides: once the
+  // bezels were evened up, the frame and the phone became the same picture, and the
+  // thing this branch exists to prevent (a phone drawn round a phone) came back by
+  // arithmetic rather than by anybody choosing it.
+  if (kind === 'phone') return own ? { bar: d.frame, foot: d.frame, side: d.frame, slit: false } : { bar: d.bar, foot: d.foot, slit: true }
   if (kind !== 'browser' && kind !== 'window') return { bar: d.bar, foot: d.foot, slit: false }
   const bar = own ? d.side : d.bar
   return { bar, foot: d.foot, slit: false }
@@ -427,7 +448,11 @@ function devicePlan(D = {}, chrome, g, corner, end, bg = {}, cap = {}) {
     }
   }
   // the largest screen of the take's own shape that leaves room for the shell round it
-  const sw = Math.min(g.vidW / (1 + 2 * d.side), g.vidH / (1 / a + bez.bar + bez.foot + base))
+  // the sides come off the bezel where it names them (a plain frame does), else off the
+  // device's own table: naming bar and foot without side is what let a frame keep a
+  // phone's sides while its top and bottom went thin
+  const sideOf = bez.side != null ? bez.side : d.side
+  const sw = Math.min(g.vidW / (1 + 2 * sideOf), g.vidH / (1 / a + bez.bar + bez.foot + base))
   return { ...shellAt(kind, sw, a, g.ox + g.vidW / 2, g.oy + g.vidH / 2, corner, bez, glass),
     ...shellTone(D, end, bg), ...text, own }
 }
@@ -443,17 +468,19 @@ function shellAt(kind, sw, a, cx, cy, corner, bez = bezel(kind, false, false), g
   const base = d.base || 0
   const sh = sw / a
   const bar = bez.bar
+  // as above: a bezel that names its sides owns all four edges, not only two
+  const side = bez.side != null ? bez.side : d.side
   // The glass's own corner, where the capture is a device's glass: the mask is that
   // round or the Simulator's bezel shows in the corners. Then the shell is cut concentric
   // with it, so the bezel is as thick round the corner as along the side. Zero on every
   // other take, which leaves both radii exactly as they were.
   const gr = glass > 0 ? glass * Math.min(sw, sh) : 0
   const sr = Math.max(corner, sw * d.sr, gr)
-  const boxW = sw * (1 + 2 * d.side), boxH = sh + sw * (bar + bez.foot)
+  const boxW = sw * (1 + 2 * side), boxH = sh + sw * (bar + bez.foot)
   const box = { x: Math.round(cx - boxW / 2), y: Math.round(cy - (boxH + sw * base) / 2), w: Math.round(boxW), h: Math.round(boxH),
-    r: gr ? Math.max(sw * d.r, sr + sw * d.side) : sw * d.r }
+    r: gr ? Math.max(sw * d.r, sr + sw * side) : sw * d.r }
   const screen = {
-    x: Math.round(box.x + sw * d.side), y: Math.round(box.y + sw * bar),
+    x: Math.round(box.x + sw * side), y: Math.round(box.y + sw * bar),
     w: 2 * Math.round(sw / 2), h: 2 * Math.round(sh / 2),
     // never tighter than the window's own rounded corner, or its black corner shows
     r: sr,

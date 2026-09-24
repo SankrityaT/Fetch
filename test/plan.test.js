@@ -445,8 +445,11 @@ console.log('a phone inside a phone')
   is('and the pixels drawn are the glass and nothing round it',
     [cut.crop.x, cut.crop.y, cut.crop.w, cut.crop.h], [44, 154, 706, 1534])
   const c = sides(cut.device)
-  is('a phone\'s bezel and foot are a pair, and both stand off its sides',
-    [Math.abs(c.top - c.foot) <= 1, c.top > c.side + 2], [true, true])
+  // Even, with a little more under the glass than over it. They used to be a brow and
+  // a chin half again as thick as the sides, which is the face of a phone from well
+  // over a decade ago; every phone since has edges within a hair of each other.
+  is('a phone\'s edges are even, with a touch more chin',
+    [Math.abs(c.top - c.side) <= 2, c.foot > c.top, c.foot - c.top <= 6], [true, true, true])
 
   // Nothing cropped: the Simulator's toolbar and its own drawn bezel are still in the
   // picture, so Fetch's phone would be the second one in it.
@@ -457,7 +460,11 @@ console.log('a phone inside a phone')
   const k = sides(kept)
   is('and it is a plain frame: one thickness on all four sides',
     [Math.abs(k.top - k.side) <= 1, Math.abs(k.foot - k.side) <= 1], [true, true])
-  is('which is thinner than the bezel a phone of its own gets', k.top < c.top, true)
+  // and thinner than every edge of a phone of its own, not only its brow: that is the
+  // whole job of a plain frame, and once the phone's bezels were evened up, borrowing
+  // the phone's own side for it would have made the two the same picture again
+  is('which is thinner than every edge a phone of its own gets',
+    [k.top < c.top, k.side < c.side, k.foot < c.foot], [true, true, true])
 
   // No measurement is not permission to guess. A rectangle nobody measured is never
   // written onto the document (ui/simulator.js), so what reaches here is no rectangle
@@ -776,7 +783,9 @@ console.log('the take at the store plan\'s box')
   const B = box4(want.box)
 
   is('without the box, a plain frame is a pixel off it', box4(draw({}).rect), [98, 211, 690, 1498])
-  is('and a drawn phone is well inside it', box4(draw({ frame: { chrome: 'clean' } }).rect), [118, 254, 650, 1414])
+  // a little more glass than before, because the bezels are thinner now, and still
+  // well inside the plain frame above
+  is('and a drawn phone is well inside it', box4(draw({ frame: { chrome: 'clean' } }).rect), [115, 246, 656, 1424])
   const flat = draw({}, want.box)
   is('with it, the take is the box', box4(flat.rect), B)
   is('on the store\'s exact pair', [flat.W, flat.H], [886, 1920])
