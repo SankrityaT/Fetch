@@ -2297,7 +2297,12 @@ ipcMain.handle('edit-job', async (e, payload) => {
 
 
 app.on('window-all-closed', () => app.quit())
-app.on('before-quit', () => { agentBridge.stop(); require('./ui/render-host').close() })
+app.on('before-quit', () => {
+  // a dev server Fetch started to record a project is Fetch's to stop: one left running
+  // is a port somebody has to go and hunt for after the app is gone
+  if (agentBridge.stopStartedServers) try { agentBridge.stopStartedServers() } catch {}
+  agentBridge.stop(); require('./ui/render-host').close()
+})
 // The editor opening a take is the moment an export becomes likely: start the hidden
 // render window now so the first export does not wait for it
 ipcMain.on('render-warm', () => require('./ui/render-host').warm())

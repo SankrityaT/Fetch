@@ -4998,13 +4998,75 @@ const candidateRow = c => ({
 // record_start and take_shot with project: the window to use, or the sentence that
 // refuses. A pick that is not on screen is refused too, since a take of it gets no
 // frames and Fetch never brings a window forward.
-async function projectTarget(q) {
+// Dev servers Fetch started, by project path, so one is not started twice and so
+// something holds the handle: a server started and then forgotten is a port somebody
+// has to hunt for later. Stopped when Fetch quits.
+const started = new Map()
+function stopStarted() {
+  for (const [, v] of started) { try { v.stop() } catch {} }
+  started.clear()
+}
+
+/**
+ * Start what a project serves, because it was asked to be recorded and nothing of it is
+ * running. Fetch used to name the command and stop, and the person went and typed it:
+ * for a tool whose claim is that an agent drives it, being told to go and start your own
+ * dev server is the thing not working.
+ *
+ * It is its own yes, and a larger one than recording a window: this runs the
+ * repository's own code on somebody's Mac. Only a script the project itself declares is
+ * ever run, read out of its own package.json, and the question says the command in full
+ * before anything spawns.
+ */
+async function startProject(p, ctx) {
+  const PS = require('./project-start')
+  const live = started.get(p.path)
+  if (live) return live
+  const plan = PS.planStart(p.path)
+  if (!plan.ok) return { refused: plan.why }
+  const who = (ctx && ctx.client) || 'An agent'
+  const key = `start|${p.path}`
+  if (!sessionAllowed.has(key) && !allowedAlways(key)) {
+    const answer = await askPerson(
+      `${who} wants to start ${p.handle || p.name} to record it.`,
+      `It will run ${plan.says} in ${p.path}, which runs that project's own code on this Mac, ` +
+      `and open the address it prints in your browser. Nothing is recorded until it is serving.`,
+      `Let ${who} start ${p.handle || p.name} until Fetch quits`, false, `Start it once`, false,
+      { alwaysLabel: `Always start ${p.handle || p.name}` })
+    if (answer === 'unanswered') return { refused: `starting ${p.handle || p.name} needs the person's word and nobody was at the Mac to give it.` }
+    if (answer === 'no') return { refused: 'the person at the Mac said no.' }
+    if (answer === 'session') sessionAllowed.add(key)
+    if (answer === 'always') rememberAlways(key, `Start ${p.handle || p.name}`)
+  }
+  let out
+  try { out = await PS.run(plan) } catch (e) { return { refused: (e && e.message) || String(e) } }
+  started.set(p.path, out)
+  // the address it printed, in the person's own browser: a page nobody can see is not a
+  // page Fetch can record
+  try { require('child_process').execFile('/usr/bin/open', [out.url]) } catch {}
+  return { ...out, says: plan.says }
+}
+
+async function projectTarget(q, ctx = null) {
   const list = await projectList()
   const r = resolveProject(q, list)
   if (!r.ok) throw new Error(r.why)
   const p = r.project
-  const running = await projectRunning(p, 15000)
+  let running = await projectRunning(p, 15000)
   if (!running) throw new Error(`Fetch could not read what is running from ${p.handle || p.name} in time, so nothing was captured. Call it again.`)
+  // Nothing of it is running, and it is startable: start it rather than saying how.
+  let began = null
+  if (!running.pick && /^Nothing from /.test(running.why || '')) {
+    const go = await startProject(p, ctx)
+    if (go && !go.refused) {
+      began = go
+      // the browser needs a moment to put the page on screen before anything looks for it
+      await new Promise(r2 => setTimeout(r2, 2500))
+      running = await projectRunning(p, 15000) || running
+    } else if (go && go.refused) {
+      running = { ...running, why: `${running.why} Fetch tried to start it and could not: ${go.refused}` }
+    }
+  }
   const pick = running.pick
   const others = (running.candidates || []).filter(c => c.window && c.recordable).slice(0, 3)
   const named = others.length ? ` Seen: ${others.map(c => `window ${c.window.id} (${c.window.app}${c.window.title ? `, ${c.window.title}` : ''})`).join('; ')}.` : ''
@@ -5015,8 +5077,10 @@ async function projectTarget(q) {
   const root = ownRoot()
   const product = productFor(p, root)
   return { project: p, pick, why: running.why, product, folder: projectFolder(p),
+    ...(began ? { started: { ran: began.says, url: began.url, pid: began.pid } } : {}),
     said: { name: p.name, handle: p.handle || p.name, path: p.path, ...(p.branch ? { branch: p.branch } : {}),
-      chosen: running.why, ...(product ? { product } : {}) } }
+      chosen: running.why, ...(product ? { product } : {}),
+      ...(began ? { started: `Fetch ran ${began.says} and it is serving at ${began.url}` } : {}) } }
 }
 
 // A take or a shot of a project, named product first, so the rules and the facts kept for
@@ -5048,7 +5112,7 @@ async function projectArgs(args = {}, ctx = null) {
     p = r.project
     product = productFor(p, ownRoot())
   } else {
-    target = await projectTarget(args.project)
+    target = await projectTarget(args.project, ctx)
     p = target.project
     product = target.product
     if (target.pick.kind === 'simulator' && target.pick.device) out.simulator = target.pick.device.udid
@@ -5769,7 +5833,13 @@ module.exports = { start, stop, socketPath, VERSION,
   forgetConsent: () => {
     sessionAllowed.clear()
     try { stopJobs(() => true) } catch {}
+    // a dev server Fetch started for an agent the person has just stopped is that
+    // agent's, and it goes with it
+    try { stopStarted() } catch {}
   },
+  // every dev server Fetch started, stopped: one left running is a port somebody has to
+  // hunt for later, so Fetch does not leave them behind when it quits
+  stopStartedServers: () => { try { stopStarted() } catch {} },
   // the same stop on its own, for a caller that wants it by name
   stopAgentJobs: () => stopJobs(() => true),
   // every export an agent has running on a take inside the sample, stopped before the
