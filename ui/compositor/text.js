@@ -21,6 +21,10 @@ const GOLD = '#F0A93C', INK = '#1A1714', WHITE = '#FBFAF8', SHADE = '#0A0908'
 // The house faces are the system's own: SF Pro (Chromium's system-ui), its Display cut
 // chosen by size, and SF Pro Rounded for step numerals. A face a person picked is used
 // by its family name, bold, as the classic export cuts its bold instance.
+// A title card and its subtitle used to be hard wired to SF Pro: a text layer carried
+// a font, the card ignored it, and a card over a product's own screen came out in the
+// system face whatever anybody picked. Both now take the layer's font, and fall back
+// to SF Pro where it has none, which is what ROLE already said.
 const SYSTEM = { 'SF Pro': 'system-ui, -apple-system', 'New York': 'ui-serif, "New York", Georgia', 'SF Mono': 'ui-monospace, "SF Mono", Menlo' }
 const family = name => SYSTEM[name] || (name ? `"${String(name).replace(/"/g, '')}", system-ui` : SYSTEM['SF Pro'])
 const ROLE = {
@@ -354,7 +358,7 @@ function cardItems(tp, t, measure, out) {
     }
     const a = phase(0)
     if (a) {
-      const font = fontFor('title', px), track = px * -0.02
+      const font = fontFor('title', px, tt.font), track = px * -0.02
       const w = measure(title, px, 'title') + px, m = px * 0.6
       out.items.push({
         key: `title|${font}|${fill}|${title}`, bounds: { x: cx - w / 2 - m, y: ty - lineT / 2 - m, w: w + 2 * m, h: lineT + 2 * m },
@@ -369,7 +373,7 @@ function cardItems(tp, t, measure, out) {
     }
     const b = subtitle && phase(stagger)
     if (b && url) {
-      const font = fontFor('title', pillFs), m = 40 * u
+      const font = fontFor('title', pillFs, tt.font), m = 40 * u
       out.items.push({
         key: `url|${font}|${subText}|${pillW}|${pillH}`, bounds: { x: cx - pillW / 2 - m, y: sy - pillH / 2 - m, w: pillW + 2 * m, h: pillH + 2 * m + 6 * u },
         op: b.op, dy: b.dy, blur: b.blur, blurMax: blurIn, z: 6,
@@ -383,7 +387,7 @@ function cardItems(tp, t, measure, out) {
       })
     } else if (b) {
       const lines = subLines.length ? subLines : [subtitle]
-      const font = fontFor('sub', sp), m = sp * 0.5 + 26 * u
+      const font = fontFor('sub', sp, tt.font), m = sp * 0.5 + 26 * u
       const w = Math.max(...lines.map(l => measure(l, sp, 'sub'))) + sp
       out.items.push({
         key: `sub|${font}|${fill}|${lines.join('\u0000')}`, bounds: { x: cx - w / 2 - m, y: sy - subH / 2 - m, w: w + 2 * m, h: subH + 2 * m },
@@ -426,7 +430,7 @@ function labelItems(tp, t, measure, out) {
       const y = tt.fy != null && tt.fy !== 0.5 ? H * +tt.fy : B.y + B.h * 0.8
       const barH = px * 1.05 + (subtitle ? sp * 1.3 : 0)
       const dx = t < a + IN ? -px * 0.4 * (1 - e) : -px * 0.15 * leaving
-      const fT = fontFor('title', px), fS = fontFor('sub', sp)
+      const fT = fontFor('title', px, tt.font), fS = fontFor('sub', sp, tt.font)
       const w = Math.max(measure(title, px, 'title'), subtitle ? measure(subtitle, sp, 'sub') : 0) + px * 2
       const m = px * 1.8
       out.items.push({

@@ -227,12 +227,63 @@ async function drawInWindow(msg, onProgress, jobId, guard) {
     return await new Promise((resolve, reject) => {
       Object.assign(entry, { resolve, reject })
       jobs.set(id, entry)
-      w.webContents.send('render:job', { ...msg, id })
+      w.webContents.send('render:job', { ...msg, id, fonts: fontsWanted(msg) })
     })
   } finally {
     if (jobId != null) proc.unregister(jobId, stand)
     closeWhenIdle()
   }
+}
+
+// ── the fonts a job names ───────────────────────────────────────────────
+//
+// The compositor names faces by CSS family, and a family the render window never
+// registered falls back to system-ui silently. So every font named anywhere in a job
+// that is not one of the system faces is looked for in the person's own projects, and
+// the file is sent with the job. A product filmed from its own repository gets typeset
+// in the face that repository ships, which is the whole point: a title card over
+// somebody's app should not be in the system font beside a screen that is not.
+//
+// Lazy and cached: nothing is scanned until a job names a family Fetch does not
+// already have, and the answer is kept, misses included, so a font nobody has is
+// looked for once rather than on every frame of every export.
+const projectFonts = require('./project-fonts')
+const SYSTEM_FAMILY = new Set(['SF Pro', 'SF Pro Rounded', 'SF Mono', 'New York',
+  'Helvetica', 'Avenir Next', 'Georgia', 'Impact'])
+const fontFound = new Map()
+
+function familiesIn(v, out = new Set(), depth = 0) {
+  if (!v || typeof v !== 'object' || depth > 8) return out
+  if (Array.isArray(v)) { for (const x of v) familiesIn(x, out, depth + 1); return out }
+  for (const [k, x] of Object.entries(v)) {
+    if ((k === 'font' || k === 'titleFont') && typeof x === 'string' && x && !SYSTEM_FAMILY.has(x)) out.add(x)
+    else familiesIn(x, out, depth + 1)
+  }
+  return out
+}
+
+function findFamily(family) {
+  if (fontFound.has(family)) return fontFound.get(family)
+  let hit = null
+  try {
+    for (const proj of require('./projects').projectIndex() || []) {
+      const root = proj && (proj.path || proj.dir)
+      if (!root) continue
+      const found = projectFonts.fontsIn(root).find(f => f.family === family)
+      if (found) { hit = found; break }
+    }
+  } catch { hit = null }
+  fontFound.set(family, hit)
+  return hit
+}
+
+function fontsWanted(msg) {
+  const out = []
+  for (const family of familiesIn(msg)) {
+    const hit = findFamily(family)
+    if (hit) out.push(hit)
+  }
+  return out
 }
 
 // Draw the picture of one export in the render window

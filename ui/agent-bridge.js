@@ -2227,6 +2227,28 @@ async function askPerson(message, detail, sessionLabel, still = false, allowLabe
   return answer
 }
 
+// Every font family the person's projects ship, for options.fonts. Read off the files
+// rather than off their names: DMSans-VF.ttf is the "DM Sans" family and no rule over
+// the filename gets that right. Cached for a minute, because this is read on every
+// get_edit and a project's fonts do not change inside one.
+const PROJECT_FONT_MS = 60e3
+let projFonts = { at: 0, names: [] }
+function projectFontNames() {
+  const now = Date.now()
+  if (now - projFonts.at < PROJECT_FONT_MS) return projFonts.names
+  const names = new Set()
+  try {
+    const pf = require('./project-fonts')
+    for (const proj of require('./projects').projectIndex() || []) {
+      const root = proj && (proj.path || proj.dir)
+      if (!root) continue
+      for (const f of pf.fontsIn(root)) names.add(f.family)
+    }
+  } catch {}
+  projFonts = { at: now, names: [...names].sort() }
+  return projFonts.names
+}
+
 // ── simulators, as things Fetch knows ────────────────────────────────────
 //
 // The scope of this whole section, stated once: simctl has forty two subcommands and no
@@ -5327,7 +5349,9 @@ function summarise(doc, path) {
 
     // the values each setting accepts, so an agent never has to guess a font name
     options: {
-      fonts: (deps.proc.fontList ? deps.proc.fontList() : ['Helvetica']),
+      // the system faces, and the ones the person's own projects carry, so a picture
+      // of a product can be typeset in that product's face rather than in SF Pro
+      fonts: [...(deps.proc.fontList ? deps.proc.fontList() : ['Helvetica']), ...projectFontNames()],
       looks: Look.list(looksDir()).map(p => p.name),
       // from the exporter's own list, so an image someone dropped in is offered to
       // agents the moment it exists, not when this line is edited

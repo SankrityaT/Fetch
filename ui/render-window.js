@@ -9,8 +9,31 @@ const { renderVideo, renderStills } = require('./compositor')
 const cancelled = new Set()
 ipcRenderer.on('render:cancel', (_e, id) => cancelled.add(id))
 
+// A font a project carries has to be in this window before anything is drawn with it:
+// the compositor names faces by CSS family, and a family nothing registered falls back
+// to system-ui without saying so, which is how a title card set in the product's own
+// face came out in SF Pro. Registered once per family per window, since the window
+// outlives a job.
+const fontsIn = new Set()
+async function useFonts(list) {
+  for (const f of list || []) {
+    if (!f || !f.family || !f.file || fontsIn.has(f.family)) continue
+    fontsIn.add(f.family)
+    try {
+      const face = new FontFace(f.family, `url("file://${encodeURI(f.file)}")`)
+      await face.load()
+      document.fonts.add(face)
+    } catch (err) {
+      // a face that will not load is a picture in the wrong font, never a failed export
+      console.warn('[render] font', f.family, 'did not load:', err && err.message)
+      fontsIn.delete(f.family)
+    }
+  }
+}
+
 ipcRenderer.on('render:job', async (_e, job) => {
   const id = job.id
+  if (job.fonts && job.fonts.length) await useFonts(job.fonts)
   const hooks = {
     progress: (n, total) => ipcRenderer.send('render:progress', { id, n, total }),
     pid: pid => ipcRenderer.send('render:pid', { id, pid }),
