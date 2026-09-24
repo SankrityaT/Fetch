@@ -678,12 +678,19 @@ function toRenderer(action) { if (control && !control.isDestroyed()) control.web
 // Between calls an agent is still at work, thinking, so the brake stays armed for the
 // whole stretch an agent is connected: from its first call until its socket closes or
 // it has been quiet for AGENT_IDLE_MS. Armed, the pill, the tray, the menu and Esc in
-// Fetch's own window all stop it; only the system wide Esc waits for the next call.
+// Fetch's own window all stop it; only the system wide chord waits for the next call.
 //
 // Stopped means held: every call an agent makes after that is refused with a sentence
 // until the person lets it continue, because killing a CLI in the chat stops one agent
 // and an agent in a terminal would simply call again.
+// Esc in Fetch's own window, and a chord for everywhere else. Plain Escape was claimed
+// system wide here once, and that is the one key it cannot have: an agent drives Fetch
+// from a terminal, and Esc is that terminal's own interrupt. Pressing it to interrupt
+// the agent also latched this brake, so the agent's very next call was refused and the
+// person had to come back to Fetch and click Let it continue. The stop from anywhere is
+// worth keeping, so it moved to a chord nothing else answers to.
 const HOTKEY_BRAKE = 'Escape'
+const GLOBAL_BRAKE = 'Shift+Command+Escape'
 const MENU_BRAKE = 'Command+.'
 // Esc stays claimed this long after a call, so one pressed as the next call lands is not lost
 const DRIVE_GRACE_MS = 3000
@@ -750,8 +757,8 @@ function driveChanged() {
   if (on === brake.on) { paintBrake(); return }
   brake.on = on
   if (app.isReady()) {
-    if (on && !globalShortcut.isRegistered(HOTKEY_BRAKE)) brake.global = globalShortcut.register(HOTKEY_BRAKE, () => stopAgent('Esc'))
-    if (!on && globalShortcut.isRegistered(HOTKEY_BRAKE)) globalShortcut.unregister(HOTKEY_BRAKE)
+    if (on && !globalShortcut.isRegistered(GLOBAL_BRAKE)) brake.global = globalShortcut.register(GLOBAL_BRAKE, () => stopAgent('Shift+Cmd+Esc'))
+    if (!on && globalShortcut.isRegistered(GLOBAL_BRAKE)) globalShortcut.unregister(GLOBAL_BRAKE)
   }
   paintBrake()
 }

@@ -78,7 +78,8 @@ is('the edit menu keeps its roles (Cmd+Z in the editor)', all().some(i => i.role
 const brakeItem = () => byAcc('Command+.')[0]
 is('Command+. is in the menu', !!brakeItem(), true)
 is('and disabled with no agent at work', brakeItem().enabled, false)
-is('Esc is not claimed while nothing drives', globals.has('Escape'), false)
+is('no chord is claimed while nothing drives', globals.has('Shift+Command+Escape'), false)
+is('and plain Esc is never claimed system wide', globals.has('Escape'), false)
 
 // an agent call: every op is wrapped, and the wrap marks it driving
 is('every bridge op is gated', Object.values(bridge.ops).every(f => f.braked === true), true)
@@ -91,13 +92,14 @@ const continueItem = () => all().find(i => /Continue/.test(i.label || ''))
 ;(async () => {
   const ctx = { client: 'Claude Code' }
   try { await bridge.ops['recordings.list']({}, ctx) } catch {}
-  is('an agent call makes it driving: Esc is claimed system wide', globals.has('Escape'), true)
+  is('an agent call makes it driving: the chord is claimed system wide', globals.has('Shift+Command+Escape'), true)
+  is('and plain Esc is left to the app in front, a terminal included', globals.has('Escape'), false)
   is('the menu names who and enables Stop', [brakeItem().label, brakeItem().enabled], ['Stop Claude Code', true])
   is('the window is told, for the pill', [lastBrake().driving, lastBrake().by, lastBrake().esc], [true, 'Claude Code', true])
   sent.length = 0
-  globals.get('Escape')()
+  globals.get('Shift+Command+Escape')()
   is('Esc holds the agent', lastBrake().held && lastBrake().held.by, 'Claude Code')
-  is('and gives Esc back to the Mac', globals.has('Escape'), false)
+  is('and gives the chord back to the Mac', globals.has('Shift+Command+Escape'), false)
   is('the stop is in the activity log as the person', acts.filter(a => a.op === 'agent.stop').map(a => [a.title, a.by || null]), [['Stopped Claude Code', null]])
   let err = null
   try { await bridge.ops['recordings.list']({}, ctx) } catch (e) { err = e.message }
@@ -128,7 +130,7 @@ const continueItem = () => all().find(i => /Continue/.test(i.label || ''))
   // Between calls an agent is thinking, not gone. Esc goes back to the app in front after
   // a few seconds, so a terminal's own Esc works, but the brake stays armed
   await sleep(3300)
-  is('between calls Esc is not taken from the app in front', globals.has('Escape'), false)
+  is('between calls the chord is not claimed', globals.has('Shift+Command+Escape'), false)
   is('but the pill still shows, with Stop', [lastBrake().driving, lastBrake().esc], [true, false])
   is('and Agent > Stop is still on', brakeItem().enabled, true)
   ipcOn.get('agent-stop')({}, 'button')
@@ -146,7 +148,7 @@ const continueItem = () => all().find(i => /Continue/.test(i.label || ''))
   await bridge.ops.hello({ client: 'Claude Code', chat: true }, chatCtx)
   chatBusy = true
   try { await bridge.ops['recordings.list']({}, chatCtx) } catch {}
-  is('a chat turn claims Esc', globals.has('Escape'), true)
+  is('a chat turn claims the chord', globals.has('Shift+Command+Escape'), true)
   byAcc('Command+.')[0].click()
   is('Command+. cancels the chat turn', cancelled, 1)
   is('and holds', continueItem().enabled, true)
@@ -169,7 +171,7 @@ const continueItem = () => all().find(i => /Continue/.test(i.label || ''))
   ipcOn.get('rec-state')({}, 'idle')
   ipcOn.get('agent-release')()
   deps.clientGone(tctx)
-  is('with nothing at work, Esc is not claimed', globals.has('Escape'), false)
+  is('with nothing at work, the chord is not claimed', globals.has('Shift+Command+Escape'), false)
 
   // An agent's jobs through main.js as it submits them: one id for the queue and the
   // processor, the person's Cancel reaching them, and Esc stopping them.
@@ -201,7 +203,7 @@ const continueItem = () => all().find(i => /Continue/.test(i.label || ''))
       const ex2 = settled(deps.exportDoc('/tmp/none.mov', {}))
       is('an export with no key is counted, never stamped with the clock', /^agent:export:\d{1,6}$/.test(Q.jobs().queued[0] || ''), true)
       try { await bridge.ops['recordings.list']({}, { client: 'Claude Code' }) } catch {}
-      globals.get('Escape')()
+      globals.get('Shift+Command+Escape')()
       is('Esc stops an agent\'s dead air mid run, through its own stop', [await op, cancels.includes(ids[0])], ['cancelled', true])
       is('  and its queued export', await ex2, 'cancelled')
       ipcOn.get('agent-release')()
@@ -268,7 +270,8 @@ const continueItem = () => all().find(i => /Continue/.test(i.label || ''))
   // the renderer's fallback: Esc in Fetch's own window, for the whole armed stretch
   const appSrc = fs.readFileSync(path.join(ROOT, 'ui/app.js'), 'utf8')
   is('the window listens for Esc in the capture phase', /e\.key !== 'Escape'[\s\S]{0,120}brakeState\.driving[\s\S]{0,200}ipcRenderer\.send\('agent-stop', 'Esc'\)\n\}, true\)/.test(appSrc), true)
-  is('and the pill says Esc is taken from the app in front', /Esc in any app stops it here/.test(appSrc), true)
+  is('and the pill names both: Esc here, the chord anywhere', /Esc here, or Shift-Cmd-Esc from any app/.test(appSrc), true)
+  is('and the pill never claims plain Esc works from any app', /Esc in any app/.test(appSrc), false)
   // the chat's shim names itself, so the brake can tell it from a terminal's
   const chatSrc = fs.readFileSync(path.join(ROOT, 'ui/agent-chat.js'), 'utf8')
   is('both chat engines start the shim with --chat', (chatSrc.match(/--chat/g) || []).length >= 2, true)

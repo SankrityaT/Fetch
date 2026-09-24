@@ -725,9 +725,9 @@ function paintBrake(s) {
       `<span class="agent-brake-line">Stopped ${who}. It can do nothing in Fetch until you say so.</span>` +
       `<button class="btn btn-sm" data-brake="release">Let it continue</button>`
     : `<span class="agent-brake-mark">${agentMark(s2.by)}</span>` +
-      // While Esc is claimed system wide it is taken from the app in front too, a
-      // terminal's own interrupt included, so the pill says so rather than surprising anyone
-      `<span class="agent-brake-line">${who} is working${s2.esc ? '. Esc in any app stops it here' : ''}</span>` +
+      // Esc here stops it; the chord does it from any app. Plain Esc is never claimed
+      // system wide, so a terminal's own interrupt stays that terminal's.
+      `<span class="agent-brake-line">${who} is working${s2.esc ? '. Esc here, or Shift-Cmd-Esc from any app' : ''}</span>` +
       `<button class="btn btn-sm agent-brake-stop" data-brake="stop" aria-keyshortcuts="Escape">` +
       `${ico('stop-fill', 'icon-sm')}Stop<kbd class="mono">esc</kbd></button>`
 }
