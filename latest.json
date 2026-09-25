@@ -1,5 +1,5 @@
 {
-  "version": "1.3.1",
+  "version": "1.3.2",
   "url": "https://github.com/SankrityaT/Fetch/releases/latest/download/Fetch.dmg",
-  "notes": "Ask Fetch how a product should look and it shows you three directions drawn on your own take, then remembers the one you pick. The @ picker works from the front door. Dead air stops taking moving footage with it. The playhead stays inside the video."
+  "notes": "Anything on screen now covers recording a simulator, so Fetch stops asking again per device. An app painted black to its own edge is measured properly, so it can be tapped and cropped. And a take no longer dissolves into the ground it stands on."
 }
