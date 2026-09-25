@@ -26,7 +26,7 @@ const SUITES = [
   'zoom', 'overlays', 'zoomview', 'motion', 'stage-pick', 'targets', 'guard', 'guard-breaches', 'project-folder', 'lasso', 'pointer',
   'touch', 'chat', 'assist', 'projects', 'project-windows', 'takes', 'recorder', 'library', 'sample',
   ['engine', '/tmp/fetch-test/test.webm'],
-  'formats', 'tools', 'shot', 'shot-stage', 'sizes', 'history', 'brake', 'always-allow', 'packaging', 'project-fonts', 'preview-engine', 'project-start', 'playhead',
+  'formats', 'tools', 'shot', 'shot-stage', 'sizes', 'history', 'brake', 'always-allow', 'packaging', 'project-fonts', 'preview-engine', 'project-start', 'playhead', 'hero-mention',
 ]
 
 const only = process.argv.slice(2)

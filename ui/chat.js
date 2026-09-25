@@ -531,22 +531,13 @@
     // a rename can move the open recording under the chip, so look again before typing
     // and warm the @ lists, so the first @ and a typed-through @name both have them
     input.addEventListener('focus', () => { paintOn(); warmMentions() })
-    input.addEventListener('input', () => { grow(); sync(); updateMention() })
+    input.addEventListener('input', () => { grow(); sync() })
     // Enter sends, Shift+Enter is a newline: this is a chat box, not a document.
     input.addEventListener('keydown', e => {
-      const pop = pane.querySelector('#chatMention')
-      if (!pop.hidden && mentionList.length) {
-        if (e.key === 'ArrowDown') { e.preventDefault(); mentionPick = (mentionPick + 1) % mentionList.length; updateMention(); return }
-        if (e.key === 'ArrowUp') { e.preventDefault(); mentionPick = (mentionPick - 1 + mentionList.length) % mentionList.length; updateMention(); return }
-        if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); takeMention(mentionPick); return }
-        if (e.key === 'Escape') { e.preventDefault(); pop.hidden = true; return }
-      }
+      if (mentionKey(e, input, pane.querySelector('#chatMention'))) return
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() }
     })
-    pane.querySelector('#chatMention').addEventListener('mousedown', e => {
-      const row = e.target.closest('.chat-mention-row')
-      if (row) { e.preventDefault(); takeMention(+row.dataset.i) }
-    })
+    wireMentions(input, pane.querySelector('#chatMention'))
     pane.querySelector('#chatCtx').addEventListener('click', e => {
       const x = e.target.closest('[data-untag]')
       if (x) { tags.splice(+x.dataset.untag, 1); paintTags() }
@@ -601,8 +592,12 @@
     projectsForMention()
   }
 
-  function mentionQuery() {
-    const v = input.value, caret = input.selectionStart
+  // Which field the picker is serving. The pane's composer and the Record screen's hero
+  // are two inputs onto one conversation, and the picker used to close over the pane's
+  // one, so typing @ at the front door did nothing at all: the lists were even warmed
+  // on focus there, and nothing was ever drawn with them.
+  function mentionQuery(el) {
+    const v = el.value, caret = el.selectionStart
     const before = v.slice(0, caret)
     const m = /(^|\s)@([^\s@]*)$/.exec(before)
     if (!m) return null
@@ -623,9 +618,8 @@
     return esc(name.slice(0, i)) + '<strong>' + esc(name.slice(i, i + q.length)) + '</strong>' + esc(name.slice(i + q.length))
   }
 
-  async function updateMention() {
-    const hit = mentionQuery()
-    const pop = pane.querySelector('#chatMention')
+  async function updateMention(el, pop) {
+    const hit = mentionQuery(el)
     if (!hit) { pop.hidden = true; mentionAt = -1; return }
     mentionAt = hit.at
     // typing outruns the lookups; only the answer to the latest keystroke is drawn
@@ -678,20 +672,58 @@
       '</span>'
   }
 
-  function takeMention(i) {
+  function takeMention(i, el, pop) {
     const r = mentionList[i]
     if (!r || mentionAt < 0) return
-    const v = input.value, caret = input.selectionStart
-    input.value = (v.slice(0, mentionAt) + v.slice(caret)).replace(/\s{2,}/g, ' ')
-    input.selectionStart = input.selectionEnd = mentionAt
+    const v = el.value, caret = el.selectionStart
+    el.value = (v.slice(0, mentionAt) + v.slice(caret)).replace(/\s{2,}/g, ' ')
+    el.selectionStart = el.selectionEnd = mentionAt
+    // The tag rides on the conversation, not on the box it was typed in: the hero sends
+    // through the pane, so a take pointed at from the front door is on the message the
+    // pane submits. The name cannot simply be left as text, because a take is called
+    // "Yolkling · hatch 3" and the typed-through reader only matches a word with no
+    // spaces in it.
     if (!tags.some(t => t.path === r.path)) tags.push(tagFor(r))
-    pane.querySelector('#chatMention').hidden = true
+    pop.hidden = true
     mentionAt = -1
-    paintTags(); grow(); sync(); input.focus()
+    paintTags(); grow(); sync(); el.focus()
+    if (heroSync) heroSync()
+    el.dispatchEvent(new Event('input'))
+  }
+
+  /**
+   * Wire the picker onto a composer. Both call it: the pane's input and the hero.
+   * Everything about which rows to show and what a pick does is shared; only the field
+   * and its popover differ.
+   */
+  function wireMentions(el, pop) {
+    el.addEventListener('input', () => updateMention(el, pop))
+    el.addEventListener('blur', () => setTimeout(() => { pop.hidden = true }, 120))
+    pop.addEventListener('mousedown', e => {
+      const row = e.target.closest('.chat-mention-row')
+      if (row) { e.preventDefault(); takeMention(+row.dataset.i, el, pop) }
+    })
+  }
+
+  // Arrow keys, Enter and Escape over an open picker, for whichever field owns it.
+  // True when the key was the picker's, so the caller knows not to send.
+  function mentionKey(e, el, pop) {
+    if (pop.hidden || !mentionList.length) return false
+    if (e.key === 'ArrowDown') { e.preventDefault(); mentionPick = (mentionPick + 1) % mentionList.length; updateMention(el, pop); return true }
+    if (e.key === 'ArrowUp') { e.preventDefault(); mentionPick = (mentionPick - 1 + mentionList.length) % mentionList.length; updateMention(el, pop); return true }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); takeMention(mentionPick, el, pop); return true }
+    if (e.key === 'Escape') { e.preventDefault(); pop.hidden = true; return true }
+    return false
   }
 
   function paintTags() {
-    const host = pane.querySelector('#chatCtx')
+    // Both trays, because a tag can be picked in either composer and the one you picked
+    // it in is the one you are looking at.
+    for (const host of [pane.querySelector('#chatCtx'), document.getElementById('heroCtx')]) {
+      if (host) paintTagsInto(host)
+    }
+  }
+  function paintTagsInto(host) {
     host.hidden = !tags.length
     host.innerHTML = tags.map((t, i) => t.kind === 'project'
       ? '<span class="chat-tag" data-kind="project" title="' + esc(SOURCE[t.source] + ' · ' + t.path) + '">' +
@@ -1647,11 +1679,20 @@
       submit()
     }
 
+    const heroPop = document.getElementById('heroMention')
     field.addEventListener('input', () => { grow(); sync() })
     // the front door sends through the pane, so it warms the @ lists the same way
     field.addEventListener('focus', warmMentions)
+    // and now draws with them: the same picker, on this field
+    if (heroPop) wireMentions(field, heroPop)
     field.addEventListener('keydown', e => {
+      if (heroPop && mentionKey(e, field, heroPop)) return
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(field.value) }
+    })
+    const heroTray = document.getElementById('heroCtx')
+    if (heroTray) heroTray.addEventListener('click', e => {
+      const x = e.target.closest('[data-untag]')
+      if (x) { tags.splice(+x.dataset.untag, 1); paintTags() }
     })
     wireAttach(field, form)
     form.onsubmit = e => { e.preventDefault(); ask(field.value) }

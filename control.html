@@ -64,6 +64,10 @@
            direct path stays first in the chip row, because someone who just wants to
            press record should not have to type a sentence to get there. -->
       <form class="hero-ask" id="heroAsk">
+        <!-- the same @ picker the chat pane has: this is the front door, and pointing at
+             a take by name has to work here or it does not work where people start -->
+        <div class="popover chat-mention" id="heroMention" hidden></div>
+        <div class="chat-ctx" id="heroCtx" hidden></div>
         <div class="att-tray" id="heroAtt" hidden></div>
         <textarea id="heroInput" rows="1" autocomplete="off"
           placeholder="Record my Chrome window, then caption it"></textarea>
