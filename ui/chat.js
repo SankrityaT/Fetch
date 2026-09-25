@@ -1389,6 +1389,21 @@
     ipcRenderer.send('chat-reply', { id, how, choice: choice || null })
   }
 
+  // One choice, and the frame it stands for when it has one. Two rendered stills beat
+  // two descriptions of them, so a choice that carries a shot shows it the way a
+  // proposal shows its preview, with the words moved beside the picture. A choice
+  // without one is the button it always was.
+  function pickHtml(c) {
+    const words = `<span class="chat-pick-lab">${esc(c.label)}</span>` +
+      (c.hint ? `<span class="chat-pick-hint">${esc(c.hint)}</span>` : '')
+    return `<button type="button" class="chat-pick" data-choice="${esc(c.id)}">` +
+      (c.shot
+        ? `<span class="chat-pick-shot"><img alt="" src="${esc(fileUrl(c.shot))}"></span>` +
+          `<span class="chat-pick-txt">${words}</span>`
+        : words) +
+      `</button>`
+  }
+
   function askCard(ev, replay) {
     const r = Assist.askSpec(ev)
     if (!r.ok) return false
@@ -1399,17 +1414,16 @@
     const n = add(
       `<div class="chat-wait-head">${ico('dog', 'icon-sm')}<span>${esc(q.question)}</span></div>` +
       (q.note ? `<p class="chat-ask-note">${esc(q.note)}</p>` : '') +
-      `<div class="chat-ask-picks">` + q.choices.map(c =>
-        `<button type="button" class="chat-pick" data-choice="${esc(c.id)}">` +
-          `<span class="chat-pick-lab">${esc(c.label)}</span>` +
-          (c.hint ? `<span class="chat-pick-hint">${esc(c.hint)}</span>` : '') +
-        `</button>`).join('') + `</div>` +
+      `<div class="chat-ask-picks">` + q.choices.map(pickHtml).join('') + `</div>` +
       `<div class="chat-wait-foot"><span class="chat-wait-said"></span><span class="chat-wait-left mono"></span></div>` +
       `<span class="chat-wait-bar" aria-hidden="true"></span>`, 'chat-ask')
     n.dataset.wait = q.id
     n.setAttribute('role', 'group')
     n.setAttribute('aria-live', 'polite')
     n.setAttribute('aria-label', 'Biscuit is asking: ' + q.question)
+    // As in proposeCard: a still that will not load takes its own box out, so a missing
+    // file leaves a plain choice to click rather than a broken image inside a button.
+    n.querySelectorAll('.chat-pick-shot img').forEach(im => { im.onerror = () => im.parentElement.remove() })
     goLive(n, 'ask', q, replay)
     return true
   }

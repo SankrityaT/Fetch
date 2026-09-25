@@ -13,9 +13,18 @@
 // rasterItem and canvasMeasure need a canvas.
 
 const O = require('../overlays')
+const { tok } = require('./tokens')
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
-const GOLD = '#F0A93C', INK = '#1A1714', WHITE = '#FBFAF8', SHADE = '#0A0908'
+// The four colours every caption, card and label here paints with, read from the token
+// contract rather than kept as hexes beside the thing they paint. They overlap rather
+// than match what the other passes draw with: the plan takes ink and lit, the GL
+// renderer takes accent and ink, and shade is this file's alone. That is exactly why
+// they belong in one table. Held as literals in three files they drift, and nothing
+// would say they had. The literals stay on as fallbacks, so a theme that has lost a
+// name still paints what it painted before.
+const GOLD = tok('dark', 'accent', '#F0A93C'), INK = tok('dark', 'ink', '#1A1714')
+const WHITE = tok('dark', 'lit', '#FBFAF8'), SHADE = tok('dark', 'shade', '#0A0908')
 
 // ── fonts ───────────────────────────────────────────────────────────────────
 // The house faces are the system's own: SF Pro (Chromium's system-ui), its Display cut

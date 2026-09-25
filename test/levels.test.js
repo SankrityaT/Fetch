@@ -100,6 +100,45 @@ async function main() {
     is('no ffmpeg at all draws without levels', await within(8000, Levels.measure('take.mov', {})), null)
   }
   proc.FFMPEG = real
+
+  // The colours, against the real binary and the real clips. A stand-in cannot say
+  // anything useful here: what is being checked is that a take's own ground comes back
+  // as the colour that was recorded, which means something has to have been recorded.
+  console.log('\nthe take\'s own colours')
+  {
+    const still = '/tmp/fetch-test/silence-still.webm', moving = '/tmp/fetch-test/silence.webm'
+    if (!fs.existsSync(still) || !fs.existsSync(moving)) {
+      is('fixtures are built (run ./test/fixtures.sh)', false, true)
+    } else {
+      // silence-still.webm is one flat colour, 0x1A1714, held for twelve seconds: the
+      // ground truth for bg. VP9 through yuv420 gives back a channel or two either way,
+      // so this asks for the colour and not for the bytes.
+      const flat = await within(30000, Levels.palette(still, {}))
+      const near = (got, want) => [1, 3, 5].every(i => Math.abs(parseInt(got.slice(i, i + 2), 16) - parseInt(want.slice(i, i + 2), 16)) <= 4)
+      is('a flat take comes back as the colour it was recorded in', near(flat.bg, '#1a1714'), true)
+      is('and has no accent, because nothing in it is a colour anybody chose', flat.accent, null)
+
+      const p = await within(30000, Levels.palette(moving, {}))
+      const hex = v => /^#[0-9a-f]{6}$/.test(v)
+      is('testsrc2 gives three readable hexes', [hex(p.bg), hex(p.ink), hex(p.accent)], [true, true, true])
+      is('and its ink is not its ground', p.ink !== p.bg, true)
+      // Saturation alone picked a colour covering four tenths of a percent of the frame
+      // over the one covering thirteen percent of it, because the fringe measured 1.000
+      // where the real one measured 0.996. An accent is a colour the product is painted
+      // in, and a colour nothing is painted in is a fringe however pure it measures.
+      is('the accent is a colour most of the frame is, not a fringe', p.accent, '#01fdfe')
+      // A flat take has no ink in it. It used to hand the ground back again, which reads
+      // as a real second colour and is not one, and whatever consumed it then put the
+      // ground's own colour where the lettering goes.
+      is('a flat take says plainly that it has no ink', flat.ink, null)
+
+      // The colour pass is a pass of its own. measure reads the same keyframes and must
+      // still come back with the same two numbers it came back with before there was one.
+      const m = await within(30000, Levels.measure(moving, {}))
+      const at = (v, want) => Math.abs(Math.round(v * 255) - want) <= 1
+      is('and measure reads the same take exactly as it did', m && at(m.lo, 29) && at(m.hi, 226), true)
+    }
+  }
   fs.rmSync(dir, { recursive: true, force: true })
   console.log(`\n${pass} passed, ${fail} failed`)
   process.exit(fail ? 1 : 0)

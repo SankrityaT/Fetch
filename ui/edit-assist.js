@@ -482,7 +482,14 @@ function choiceList(raw) {
     // A blank or repeated choice is dropped rather than counted, so a sloppy list
     // does not push a real reading off the end of the card.
     if (!id || out.some(x => x.id === id)) continue
-    out.push({ id, label, hint: trim(o.hint, 90) || null })
+    // A choice may also carry a shot: a still Fetch itself rendered, so two readings can
+    // be two pictures rather than two sentences. It is only ever a path this app made and
+    // handed back, never a path the agent wrote down. Nothing in the pane can check that,
+    // because the renderer has no filesystem, so the rule lives at the bridge that fills
+    // this field and in this line. Cut like any other field if it is absurdly long, and a
+    // path that will not open drops out in the card, leaving the words behind.
+    const shot = typeof o.shot === 'string' ? trim(o.shot, 260) || null : null
+    out.push({ id, label, hint: trim(o.hint, 90) || null, shot })
   }
   return out.slice(0, MAX_CHOICES)
 }

@@ -22,6 +22,12 @@
 //
 // Pure: no Electron, no filesystem, no DOM.
 
+// The token contract. Exactly one stop below comes from it, the shade both of Fetch's
+// own palettes end on; every other hex in those two tables is a colour with no token
+// that holds it, and inventing tokens to cover them would be naming numbers rather than
+// decisions. It is pure too: no Electron, no filesystem, no DOM.
+const { tok } = require('./compositor/tokens')
+
 const SECTIONS = [
   { id: 'frame', label: 'Frame', doc: 'How the take sits in the output: shape, padding, corners, shadow, browser chrome.' },
   { id: 'device', label: 'Device', doc: 'A frame drawn around the take: a browser, a window, a laptop or a phone.' },
@@ -39,13 +45,21 @@ const SECTIONS = [
 
 // The gradient backgrounds the renderer ships, and the colours they run between. The
 // editor previews them with the same two colours.
+//
+// ink and studio are Fetch's own ramp rather than artistic content, so where the token
+// contract already holds one of their neutrals it is read from there instead of copied a
+// second time. That is one value: the deep warm black the ink pair and the ink mesh both
+// settle on is the shade token. Everything else in those two was mixed for the ramp,
+// studio's warm neutrals included, and a token invented to carry a single stop would name
+// nothing anyone else could ask for, so they stay literals. The other five palettes are
+// pictures and are left alone entirely.
 const GRADIENTS = {
   dusk: ['#F0A93C', '#7A3E12'],
   ember: ['#FF6B4A', '#7A1F3D'],
   mint: ['#63E6BE', '#0B7285'],
   violet: ['#A78BFA', '#3B1D6E'],
   slate: ['#64748B', '#0F172A'],
-  ink: ['#2A2320', '#0A0908'],
+  ink: ['#2A2320', tok('dark', 'shade', '#0A0908')],
   // A sweep rather than a colour: one warm light in the corner and a deep warm neutral
   // everywhere else. dusk is the gold itself, which is right when somebody asks for
   // gold and wrong under a recording, where the accent has to stay the accent.
@@ -64,7 +78,7 @@ const MESHES = {
   mint: [[0.10, 0.08, 0.30, '#7FF0CE'], [0.90, 0.12, 0.26, '#2FB8A6'], [0.08, 0.88, 0.28, '#0B7285'], [0.92, 0.92, 0.30, '#053F50'], [0.50, 0.54, 0.34, '#0F6B7C']],
   violet: [[0.12, 0.10, 0.30, '#B9A2FF'], [0.88, 0.08, 0.26, '#7C5CE0'], [0.06, 0.92, 0.28, '#3B1D6E'], [0.94, 0.90, 0.30, '#200F45'], [0.50, 0.52, 0.34, '#3F2178']],
   slate: [[0.10, 0.10, 0.30, '#8494AC'], [0.92, 0.14, 0.26, '#4E5C73'], [0.08, 0.90, 0.28, '#1B2540'], [0.90, 0.94, 0.30, '#0B1120'], [0.50, 0.52, 0.34, '#26314A']],
-  ink: [[0.12, 0.10, 0.30, '#3A312B'], [0.90, 0.10, 0.26, '#241F1B'], [0.08, 0.92, 0.28, '#100D0C'], [0.92, 0.90, 0.30, '#0A0908'], [0.50, 0.52, 0.34, '#161311']],
+  ink: [[0.12, 0.10, 0.30, '#3A312B'], [0.90, 0.10, 0.26, '#241F1B'], [0.08, 0.92, 0.28, '#100D0C'], [0.92, 0.90, 0.30, tok('dark', 'shade', '#0A0908')], [0.50, 0.52, 0.34, '#161311']],
   // The one mesh that is a light rather than a palette: a compact warm key in the top
   // left corner, its own surround, and three deep warm neutrals carrying the rest. The
   // light is the only place gold reaches, and it lands on the margin above and left of

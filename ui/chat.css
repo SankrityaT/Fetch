@@ -253,6 +253,18 @@
 }
 .chat-pick[data-chosen] svg { flex:none; color:var(--fur-1); }
 
+/* A choice can carry the frame it stands for, and then the reading is the picture and
+   the words are the caption, so the button turns on its side. The shot keeps the
+   frame's shape, like the proposal's below. A choice with no shot is untouched, and
+   one whose file did not load falls back to that on its own. */
+.chat-pick-shot {
+  flex:none; width:96px; border-radius:var(--r-sm); overflow:hidden;
+  background:var(--ink-1); display:block;
+}
+.chat-pick-shot img { width:100%; height:auto; display:block; }
+.chat-pick:has(.chat-pick-shot) { flex-direction:row; align-items:center; gap:var(--s-3); }
+.chat-pick-txt { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+
 /* The proposal leads with the picture, because the whole point is that you look at
    it before it lands. Its shape is the frame's, not a square. */
 .chat-prop-top { display:flex; align-items:flex-start; gap:var(--s-3); }

@@ -265,6 +265,21 @@ t('a question needs a question and two to four choices, or it is refused at the 
   assert.strictEqual(r.ask.choices[0].hint, null)
 })
 
+// Two looks are easier to choose between as two pictures than as two sentences, so a
+// choice can carry a still Fetch rendered. Only a path this app made ever gets in.
+t('a choice can carry the shot it stands for, and one without still has none', () => {
+  const r = A.askSpec({ question: 'Which crop?', choices: [
+    { label: 'Tight', shot: '/tmp/fetch/a.png' },
+    { label: 'Wide' },
+    { label: 'Odd', shot: 42 },
+  ] })
+  assert.strictEqual(r.ask.choices[0].shot, '/tmp/fetch/a.png')
+  assert.strictEqual(r.ask.choices[1].shot, null, 'no shot is null, not missing')
+  assert.strictEqual(r.ask.choices[2].shot, null, 'only a string is a path')
+  const long = A.askSpec({ question: 'Which?', choices: [{ label: 'Tight', shot: '/x/' + 'y'.repeat(400) }, { label: 'Wide' }] })
+  assert.strictEqual(long.ask.choices[0].shot.length, 260, 'a path is capped like every other field')
+})
+
 // A question the person never sees must not hold the agent, and an agent must not be
 // able to park itself for an hour either.
 t('a question always has a deadline, inside sane bounds', () => {

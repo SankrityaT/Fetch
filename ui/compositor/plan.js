@@ -18,6 +18,7 @@ const Overlays = require('../overlays')
 const Marks = require('./marks')
 const Text = require('./text')
 const { GRADIENTS, MESHES } = require('../look-schema')
+const { tok } = require('./tokens')
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const num = (v, d) => (v != null && Number.isFinite(+v) ? +v : d)
@@ -107,9 +108,12 @@ function groundTexture(look = {}) {
   if (B.kind && B.kind !== 'solid') return null
   return TEXTURES.includes(B.texture) ? B.texture : null
 }
-// Warm ink over a light ground, a warm light over a dark one (BRAND --ink-1, --text-0).
+// Warm ink over a light ground, a warm light over a dark one. The pair used to be
+// BRAND's --ink-1 and --text-0 copied in by hand, which is a copy that can drift from
+// what it was copied from; it is an import now, and the fallback is the literal it
+// replaces so a theme missing a name still draws what it always drew.
 // Never #000 or #fff: every neutral here is warmed toward the fur hue.
-const EDGE_INK = '#1A1714', EDGE_LIT = '#FBFAF8'
+const EDGE_INK = tok('dark', 'ink', '#1A1714'), EDGE_LIT = tok('dark', 'lit', '#FBFAF8')
 const lum = c => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
 
 /**
@@ -206,11 +210,17 @@ const DEVICES = {
 // three surfaces of its own: the tab strip is the shell, the open tab and the toolbar
 // it joins are `tool`, a step towards the viewer because they sit in front of the
 // strip, and the address field is `well`, a step back into the toolbar.
+// The tones are the token contract's now, but the keys are not renamed to match it:
+// gl.js spreads this map into the device spec and that spec is part of the picture's
+// cache key, so `face` reading the `surface` token has to stay `face` here or the
+// editor stage and the export quietly stop agreeing about a frame.
 const SHELL = {
-  dark: { shell: '#2A2420', line: EDGE_LIT, face: '#1F1B18', deep: '#1F1B18', text: '#BDB5AC', sheen: 0.07,
-    tool: '#3A322C', well: '#1F1B18' },
-  light: { shell: '#E8E2DA', line: EDGE_INK, face: '#F6F3EE', deep: '#D6CFC5', text: '#6E655C', sheen: 0.5,
-    tool: '#FAF7F2', well: '#ECE6DE' },
+  dark: { shell: tok('dark', 'shell', '#2A2420'), line: tok('dark', 'line', EDGE_LIT), face: tok('dark', 'surface', '#1F1B18'),
+    deep: tok('dark', 'deep', '#1F1B18'), text: tok('dark', 'text', '#BDB5AC'), sheen: tok('dark', 'sheen', 0.07),
+    tool: tok('dark', 'tool', '#3A322C'), well: tok('dark', 'well', '#1F1B18') },
+  light: { shell: tok('light', 'shell', '#E8E2DA'), line: tok('light', 'line', EDGE_INK), face: tok('light', 'surface', '#F6F3EE'),
+    deep: tok('light', 'deep', '#D6CFC5'), text: tok('light', 'text', '#6E655C'), sheen: tok('light', 'sheen', 0.5),
+    tool: tok('light', 'tool', '#FAF7F2'), well: tok('light', 'well', '#ECE6DE') },
 }
 
 // ── the chrome the capture already has ──────────────────────────────────

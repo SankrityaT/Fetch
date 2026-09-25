@@ -310,6 +310,27 @@ t('a lassoed area thumbnail still keeps its shape', () => {
   assert.ok(regionThumb({ image: '/a.png' }, 16).includes('width="24"'), 'no size known: 3 by 2')
 })
 
+// A question can now offer rendered frames instead of descriptions, and the choice
+// that has no frame has to come out of this byte for byte as it always did.
+t('a choice draws its shot, and a choice without one draws what it always drew', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../ui/chat.js'), 'utf8')
+  const body = /function pickHtml\(c\) \{[\s\S]*?\n  \}/.exec(src)
+  assert.ok(body, 'pickHtml is still there')
+  const pickHtml = new Function('esc', 'fileUrl', body[0] + '\nreturn pickHtml')(x => x, x => 'file://' + x)
+
+  const plain = pickHtml({ id: 'wide', label: 'Wide', hint: 'Shows the dock' })
+  assert.strictEqual(plain, '<button type="button" class="chat-pick" data-choice="wide">' +
+    '<span class="chat-pick-lab">Wide</span><span class="chat-pick-hint">Shows the dock</span></button>')
+
+  const shown = pickHtml({ id: 'tight', label: 'Tight', shot: '/tmp/fetch/a.png' })
+  assert.ok(shown.includes('<span class="chat-pick-shot"><img alt="" src="file:///tmp/fetch/a.png">'), shown)
+  assert.ok(shown.includes('class="chat-pick-txt"') && shown.includes('data-choice="tight"'), shown)
+  // the image drops itself when the file is gone, exactly as the proposal's preview does
+  assert.ok(/chat-pick-shot img[\s\S]{0,120}onerror/.test(src), 'a missing shot removes its own box')
+  const css = fs.readFileSync(path.join(__dirname, '../ui/chat.css'), 'utf8')
+  assert.ok(css.includes('.chat-pick-shot'), 'the shot has somewhere to sit')
+})
+
 t('every chip the composer draws is still drawn', () => {
   const src = fs.readFileSync(path.join(__dirname, '../ui/chat.js'), 'utf8')
   for (const k of ['class="chat-tag"', 'chat-region-chip', 'data-unregion', 'data-untag', 'chat-me-tags', 'chat-me-regions', 'data-unattach']) {
