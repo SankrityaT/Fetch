@@ -47,5 +47,19 @@ is('a pick becomes a tag on the conversation', /if \(!tags\.some\(t => t\.path =
 is('tags paint into every tray that exists', /for \(const host of \[pane\.querySelector\('#chatCtx'\), document\.getElementById\('heroCtx'\)\]\)/.test(chat), true)
 is('and the hero tray can drop one again', /heroTray\.addEventListener\('click'/.test(chat), true)
 
+// ── and it has to be somewhere anyone can see ───────────────────────────
+// The picker is position:absolute with bottom:100%, so it is placed against the nearest
+// positioned ancestor. The chat's composer is position:relative and the hero's was not,
+// so the popover escaped to the page and was laid out off screen: the rows were built,
+// the list was right, and none of it was visible. Wiring the JS was not enough, and the
+// only way to catch this is to check the box it is drawn inside.
+const appCss = fs.readFileSync(path.join(ROOT, 'ui/app.css'), 'utf8')
+const chatCss = fs.readFileSync(path.join(ROOT, 'ui/chat.css'), 'utf8')
+const block = re => (appCss.match(re) || [''])[0]
+is('the picker is absolute, so it needs an anchor', /\.chat-mention \{[^}]*position:absolute/.test(chatCss), true)
+is('and is placed off the bottom of that anchor', /\.chat-mention \{[^}]*bottom:calc\(100% - 4px\)/.test(chatCss), true)
+is('the chat composer is that anchor', /\.chat-composer \{ position:relative; \}/.test(chatCss), true)
+is('and so is the hero composer', /position:relative/.test(block(/\.hero-ask \{[\s\S]*?\n\}/)), true)
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

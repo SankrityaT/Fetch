@@ -481,6 +481,12 @@ img.biscuit { object-fit:contain; }
    only wants to press record should never have to type a sentence to get there. */
 
 .hero-ask {
+  /* The @ picker is position:absolute with bottom:100%, so it needs something to be
+     absolute against. The chat's composer gives it that (chat.css .chat-composer) and
+     this did not, so the popover escaped to the page and was laid out off screen: the
+     rows were built, the list was right, and nobody could see any of it. Typing @ at
+     the front door looked dead when it was only invisible. */
+  position:relative;
   width:min(620px, 100%); margin:var(--s-5) auto 0;
   background:var(--ink-1); border:var(--edge-soft); border-radius:var(--r-xl);
   box-shadow:var(--shadow-2), var(--sheen);
