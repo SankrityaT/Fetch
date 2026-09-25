@@ -49,6 +49,23 @@ is('tap asks rather than refusing', [tap.allow, !!tap.needsConsent], [false, tru
 is('a grant is checked before the question, for a take', /if \(allowedAlways\(key\)\) return\b/.test(src), true)
 is('and before the question for driving a device', /if \(allowedAlways\(key\)\) return true/.test(src), true)
 is('an Always answer is written to prefs', /if \(answer === 'always'\) rememberAlways\(key/.test(src), true)
+
+// ── the standing setting reaches driving, not only recording ─────────────
+// Recording read recordAccess and driving did not, so somebody who had set Anything on
+// screen was still asked once per simulator, and a take they asked for out loud died on
+// a dialog nobody was there to answer.
+is('Anything on screen is a yes to driving a device too', /if \(prefs\.recordAccess === 'open'\) return true/.test(src), true)
+{
+  const from = src.indexOf('async function simAsk(')
+  const body = src.slice(from, src.indexOf('\n}', from) + 2)
+  // order matters: the never list and the refused verbs are above consent, so a standing
+  // yes must be read after them and never instead of them
+  is('and it is read after the policy has had its say', body.indexOf('policy.simDecide') < body.indexOf('recordAccess === \'open\''), true)
+  is('and it never reaches a verb refused to everyone',
+    /if \(!first\.allow && !first\.needsConsent\) throw/.test(body) &&
+    body.indexOf('!first.needsConsent') < body.indexOf('recordAccess === \'open\''), true)
+  is('a device on the never list is still refused before it', body.indexOf('neverRecordDevices') < body.indexOf('recordAccess === \'open\''), true)
+}
 is('each grant carries the words the person read and the day', /\{ key, label: label \|\| key, at: new Date\(\)\.toISOString\(\) \}/.test(src), true)
 is('grants live in prefs, not in memory, so a restart keeps them', /deps\.setPrefs\(\{ alwaysAllow: next \}\)/.test(src), true)
 

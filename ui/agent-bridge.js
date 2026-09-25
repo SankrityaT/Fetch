@@ -3246,6 +3246,20 @@ async function simAsk(verb, sim, ctx, say) {
   const key = `sim|${verb}|${sim.udid}`
   if (sessionAllowed.has(key)) return true
   if (allowedAlways(key)) return true
+  // The standing yes, and the same one a take of a window goes through (enforceAccess).
+  // Recording already read recordAccess and driving never did, so somebody who had set
+  // Anything on screen still got a dialog for every simulator they owned, and a take
+  // they had asked for out loud failed on a question nobody was there to answer. A
+  // simulator take does not exist without the boot and the launch that put the window
+  // on screen, so gating those on a second yes gates the take itself.
+  //
+  // Safe to read here because recordAccess is in HUMAN_ONLY_PREFS: it is set by hand in
+  // Settings and an agent cannot give itself this. What sits above it is untouched, and
+  // that is where the teeth are: the never record devices list, and the verbs refused to
+  // everyone (create, erase, delete, uninstall, the framebuffer grab, bringing a window
+  // to the front). This reaches boot, install, launch, the status bar, the appearance,
+  // a tap and a deep link, and nothing else.
+  if (prefs.recordAccess === 'open') return true
   const who = (ctx && ctx.client) || 'An agent'
   const answer = await askPerson(`${who} ${say.wants} ${sim.name}.`, say.detail,
     say.session ? `${say.session} until Fetch quits` : null, false, say.allow, !!say.sessionFirst,
