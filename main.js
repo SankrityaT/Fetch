@@ -296,6 +296,11 @@ app.whenReady().then(() => {
           jobQueue.onCancel(() => p.cancel(id))
           if (op === 'silence') return p.removeSilence(src, opts || {}, null, id)
           if (op === 'enhance') return p.enhanceAudio(src, opts || {}, null, id)
+          // Transcription was the one heavy op that went straight to the processor and
+          // never through here: not queued, so it fought an export for the machine; not
+          // in the queue's ledger, so nothing on screen said it was happening; and not
+          // cancellable with the rest when somebody stopped the agent.
+          if (op === 'transcribe') return p.transcribe(src, opts || {}, null, id)
           throw new Error('unknown op ' + op)
         },
       })
@@ -2178,8 +2183,20 @@ ipcMain.handle('export-dest', (e, src, fmt) => {
   return { file, exists: fs.existsSync(file), take: !!proc.takeDir(src) }
 })
 ipcMain.handle('backdrops', () => proc.backdropList())
-ipcMain.handle('has-cursor', (e, src) =>
-  fs.existsSync(proc.sidecarIn(String(src), '.cursor.json')))
+// Whether this take has a pointer track at all, which decides whether auto zoom can be
+// switched on. It used to look only for the .cursor.json sidecar Fetch's own recorder
+// writes, and a track can just as well live in the edit document: an agent reports its
+// taps onto a take, apply_edit takes a pointer array, and the compositor draws either
+// one without caring where it came from. So a take with eleven taps in its document was
+// told "no cursor track: only recordings made by Fetch can auto zoom", with the switch
+// greyed out, while the finger it claimed not to have was being drawn on every frame.
+ipcMain.handle('has-cursor', (e, src) => {
+  if (fs.existsSync(proc.sidecarIn(String(src), '.cursor.json'))) return true
+  try {
+    const doc = proc.readDoc(String(src), 0)
+    return !!(doc && Array.isArray(doc.pointer) && doc.pointer.length)
+  } catch { return false }
+})
 ipcMain.handle('import-file', (e, src) => proc.importFile(src))
 
 // "Import...": any container ffmpeg can read

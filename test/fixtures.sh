@@ -4,10 +4,19 @@ set -e
 cd "$(dirname "$0")/.."
 F=./vendor/ffmpeg
 mkdir -p /tmp/fetch-test
-# 12s clip: tone 0-2, 4-6, 8-10 with silence between → known ground truth for removeSilence
+# Two 12s clips, same audio: tone 0-2, 4-6, 8-10 with silence between.
+#
+# Dead air is silence AND a picture that is not doing anything, so the picture is half
+# the fixture and there have to be two. The moving one is testsrc2, which animates every
+# frame; the still one holds one colour, which is what a screen recording looks like
+# while somebody says nothing. The first must be protected and the second must be cut,
+# and a rule that cannot tell them apart is the rule that was deleting people's work.
 $F -hide_banner -v error -y -f lavfi -i "testsrc2=s=640x360:r=30:d=12" \
   -f lavfi -i "aevalsrc='0.4*sin(440*2*PI*t)*lt(mod(t,4),2)':d=12:s=44100" \
   -c:v libvpx-vp9 -b:v 500k -deadline realtime -cpu-used 8 -c:a libopus /tmp/fetch-test/silence.webm
+$F -hide_banner -v error -y -f lavfi -i "color=c=0x1A1714:s=640x360:r=30:d=12" \
+  -f lavfi -i "aevalsrc='0.4*sin(440*2*PI*t)*lt(mod(t,4),2)':d=12:s=44100" \
+  -c:v libvpx-vp9 -b:v 500k -deadline realtime -cpu-used 8 -c:a libopus /tmp/fetch-test/silence-still.webm
 # assorted input containers
 SRC=$(ls -t ~/Desktop/recording-*.webm 2>/dev/null | head -1)
 if [ -n "$SRC" ]; then

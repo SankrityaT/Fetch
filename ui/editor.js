@@ -2408,7 +2408,16 @@ function mountLook() {
           : 'Pushes in where the cursor clicks or settles.'}</p>`),
     },
   })
-  root.addEventListener('change', e => { if (e.target.id === 'autoZoom') ed.autoZoom = e.target.checked })
+  // Auto zoom is an edit field rather than a look field, so it does not go through
+  // setLook and nothing was repainting after it. The switch moved, the value changed,
+  // the stage kept drawing the old thing, and the only way to find out whether it had
+  // done anything was to export. Draw it, like every other control does.
+  root.addEventListener('change', e => {
+    if (e.target.id !== 'autoZoom') return
+    ed.autoZoom = e.target.checked
+    try { paintStageGL({ fresh: true }) } catch {}
+    try { renderZooms() } catch {}
+  })
   loadLookBackdrops()
 }
 

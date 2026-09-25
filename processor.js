@@ -406,6 +406,41 @@ async function convert(srcArg, opts, onProgress, jobId) {
 
 // ---- dead-air removal --------------------------------------------------
 // detect silences, keep everything else, cut video+audio in sync
+// ---- what dead air is ---------------------------------------------------
+//
+// Silence AND a picture that is not doing anything. It used to be silence alone, and so
+// it cut whatever happened while nobody was talking: an animation playing out, a result
+// landing, a screen hatching. Those are the moments a demo is made of, and they are
+// exactly the ones with no narration over them. Measured on a real narrated take: of
+// 12.2 s of silence, 4.1 s had the screen moving through it and was being deleted.
+//
+// Kept pure and exported so the rule that decides what is destroyed can be tested
+// without an encoder.
+const spansOf = (events, dur) => (events || [])
+  .map(e => [Math.max(0, +e.start || 0), Math.min(dur, e.end === undefined ? dur : +e.end)])
+  .filter(([s, e]) => e > s)
+
+/**
+ * The stretches safe to lose: where the two overlap, minus the padding that keeps a
+ * breath either side of every cut.
+ *   quiet  [[s,e]] silence
+ *   still  [[s,e]] a frozen picture, or the whole take where there is no picture
+ */
+function deadAir(quiet, still, { minSil = 0.7, pad = 0.15, dur = 0 } = {}) {
+  const out = []
+  for (const [qs, qe] of quiet || []) {
+    for (const [fs2, fe] of still || []) {
+      const s = Math.max(qs, fs2), e = Math.min(qe, fe)
+      // shorter than the gap somebody asked to remove is not a gap they asked to remove
+      if (e - s >= minSil) out.push([s, e])
+    }
+  }
+  return out
+    .sort((a, b) => a[0] - b[0])
+    .map(([s, e]) => [Math.max(0, s + pad), Math.min(dur || e, e - pad)])
+    .filter(([s, e]) => e - s > 0.05)
+}
+
 async function removeSilence(srcArg, opts, onProgress, jobId) {
   const { src, meta, done } = await ensureSeekable(srcArg, jobId)
   try {
@@ -413,24 +448,54 @@ async function removeSilence(srcArg, opts, onProgress, jobId) {
     const minSil = opts.minSilence ?? 0.7     // gaps shorter than this stay
     const pad = opts.pad ?? 0.15              // breathing room around cuts
     const thresh = opts.thresh ?? '-35dB'
+    // How still the picture has to be to count as still: freezedetect's tolerance, where
+    // a less negative number forgives more.
+    //
+    // Swept against two fixtures that differ only in what the screen is doing, both
+    // heavily compressed VP9 so codec noise is in play. A held colour reads as one
+    // continuous freeze across the whole clip anywhere from -60dB to -35dB, and an
+    // animated pattern reads as no freeze at all across that same band. At -30dB the
+    // band breaks: the animation starts being called still, which is the direction that
+    // deletes somebody's work. -45dB sits in the middle of what holds.
+    const still = opts.still ?? '-45dB'
     const dur = meta.duration
 
     const events = []
-    await run(FFMPEG, ['-i', src, '-af', `silencedetect=noise=${thresh}:d=${minSil}`, '-f', 'null', '-'],
+    const frozen = []
+    // Dead air is silence AND a picture that is not doing anything. It used to be
+    // silence alone, and so it cut whatever happened while nobody was talking: an
+    // animation playing out, a result landing, a screen hatching. Those are the moments
+    // a demo is made of, and they are exactly the ones with no narration over them.
+    // Both detectors run in one pass over the file.
+    // meta has no hasVideo flag; a picture is what it measured a size for
+    const hasPicture = !!(meta.width && meta.height)
+    const vf = hasPicture ? ['-vf', `freezedetect=n=${still}:d=${minSil}`] : []
+    await run(FFMPEG, ['-i', src, '-af', `silencedetect=noise=${thresh}:d=${minSil}`, ...vf, '-f', 'null', '-'],
       l => {
         let m = /silence_start: ([\d.-]+)/.exec(l)
         if (m) events.push({ start: Math.max(0, +m[1]) })
         m = /silence_end: ([\d.]+)/.exec(l)
         if (m && events.length && events[events.length - 1].end === undefined) events[events.length - 1].end = +m[1]
+        m = /freeze_start: ([\d.-]+)/.exec(l)
+        if (m) frozen.push({ start: Math.max(0, +m[1]) })
+        m = /freeze_end: ([\d.]+)/.exec(l)
+        if (m && frozen.length && frozen[frozen.length - 1].end === undefined) frozen[frozen.length - 1].end = +m[1]
         if (onProgress) timeWatcher(p => onProgress(p, dur, Math.round(p / dur * 40)), dur)(l)
       }, jobId)
 
     // a silence still open at EOF runs to the end
     if (events.length && events[events.length - 1].end === undefined) events[events.length - 1].end = dur
+    if (frozen.length && frozen[frozen.length - 1].end === undefined) frozen[frozen.length - 1].end = dur
 
-    const cuts = events.map(e => [Math.max(0, e.start + pad), Math.min(dur, e.end - pad)])
-      .filter(([s, e]) => e - s > 0.05)
-    if (!cuts.length) throw new Error('no dead air found, nothing to cut')
+    const quiet = spansOf(events, dur)
+    const stillSpans = vf.length ? spansOf(frozen, dur) : [[0, dur]]
+    const cuts = deadAir(quiet, stillSpans, { minSil, pad, dur })
+    if (!cuts.length) {
+      throw new Error(quiet.length && vf.length
+        ? `no dead air found: there ${quiet.length === 1 ? 'is 1 silent stretch' : `are ${quiet.length} silent stretches`} in this, ` +
+          'but the picture is moving through all of it, so cutting any of it would take out something happening on screen.'
+        : 'no dead air found, nothing to cut')
+    }
 
     const keep = []
     let t = 0
@@ -549,18 +614,26 @@ async function transcribe(srcArg, opts, onProgress, jobId) {
   // a word's time is its sample's place in this wav, so the wav starts with the picture
   await run(FFMPEG, ['-y', '-fflags', '+genpts', '-i', srcArg, ...head, ...alignArgs(tmeta), '-vn', '-ac', '1', '-ar', '16000',
     '-c:a', 'pcm_s16le', wav], null, jobId)
+  const began = Date.now()
+  // The first run downloads the speech model, which is minutes on a slow line and looks
+  // exactly like a hang. It was noticed only when somebody was listening for progress,
+  // and the agent path passed no listener at all, so a call that spent four minutes
+  // fetching a model came back indistinguishable from one that took four minutes to
+  // transcribe. Noticed always now, and reported.
+  let fetchedModel = false
   try {
-    // first run downloads the model, so progress arrives as stderr chatter
     await new Promise((resolve, reject) => {
       const p = spawn(bin, ['transcribe', wav, '--output-json', jsonPath, '--language', locale])
       register(jobId, p)
       let err = ''
       p.stderr.on('data', d => {
         err += d
-        if (!onProgress) return
         d.toString().split('\n').forEach(l => {
           const pct = /(\d+(?:\.\d+)?)\s*%/.exec(l)
-          if (pct && /ownload|etch|odel/.test(l)) onProgress(parseFloat(pct[1]), true)
+          if (pct && /ownload|etch|odel/.test(l)) {
+            fetchedModel = true
+            if (onProgress) onProgress(parseFloat(pct[1]), true)
+          }
         })
       })
       p.on('error', e => { unregister(jobId, p); reject(e) })
@@ -616,6 +689,7 @@ async function transcribe(srcArg, opts, onProgress, jobId) {
 
     return { file: txtPath, srt: srtPath, cues, beats, wordsFile: wordsPath,
              words: words.length, text: j.text || '',
+             seconds: Math.round((Date.now() - began) / 100) / 10, modelFetched: fetchedModel,
              rtfx: j.rtfx ? Math.round(j.rtfx) : null }
   } finally {
     try { fs.unlinkSync(wav) } catch {}
@@ -3582,6 +3656,6 @@ module.exports = {
   // for the compositor's export (ui/render-host.js)
   renderAudio, musicBed, register, unregister, run, FORMATS, imageBackdrops,
   // what the compositor works out once per take (ui/compositor/prepare.js)
-  stepSpots, pointerRests, captionClutterTimes, ensureSeekable, FONT_FILES,
+  stepSpots, pointerRests, captionClutterTimes, ensureSeekable, FONT_FILES, deadAir, spansOf,
   fontList: () => Object.keys(FONT_FILES),
 }

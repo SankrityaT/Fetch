@@ -64,13 +64,26 @@ const cleanup = []
   await test('enhanceAudio', () => p.enhanceAudio(SRC, { denoise: true, loudnorm: true, gain: 2 }),
     r => { cleanup.push(r.file); const m = probe(r.file); return m.a === 'aac' && m.dur > 1 ? null : 'bad ' + JSON.stringify(m) })
 
-  // synthetic clip: tone 0-2, 4-6, 8-10 with silence between → expect 4 kept segments, ~6.9s
-  await test('removeSilence (ground truth)', () => p.removeSilence('/tmp/fetch-test/silence.webm', {}),
+  // Dead air is silence AND a still picture. Both fixtures carry the same audio, tone
+  // 0-2, 4-6, 8-10 with silence between; they differ only in what the screen is doing.
+  //
+  // Still picture: the silence is genuinely dead, so it goes. 4 kept segments, ~6.9s.
+  await test('removeSilence (ground truth: silence over a still picture)',
+    () => p.removeSilence('/tmp/fetch-test/silence-still.webm', {}),
     r => { cleanup.push(r.file); const m = probe(r.file)
            if (r.cuts !== 4) return `kept ${r.cuts} segments, expected 4`
            if (Math.abs(m.dur - 6.9) > 0.6) return `duration ${m.dur}, expected ~6.9`
            if (Math.abs(r.savedPct - 43) > 6) return `savedPct ${r.savedPct}, expected ~43`
            return null })
+
+  // Moving picture, same silence: this is the bug that deleted people's work. Nobody is
+  // talking, and the screen is doing the thing the demo exists to show. It must refuse,
+  // and say why, rather than quietly cutting the middle out of the video.
+  await test('removeSilence (silence over a moving picture is protected)', async () => {
+    try { const r = await p.removeSilence('/tmp/fetch-test/silence.webm', {}); return { cut: true, r } }
+    catch (e) { return { cut: false, msg: e.message } }
+  }, r => r.cut ? 'cut footage that was moving under the silence'
+    : (/picture is moving/.test(r.msg) ? null : 'refused for the wrong reason: ' + r.msg))
 
   await test('removeSilence (no silence → friendly error)', async () => {
     try { await p.removeSilence(SRC, {}); return { threw: false } }

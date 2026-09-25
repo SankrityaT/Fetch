@@ -1931,10 +1931,21 @@ const ops = {
   async transcribe(args = {}) {
     if (!args.path) throw new Error('path is required')
     if (isShot(args.path)) throw notOnAShot('A transcript')
-    const r = await deps.proc.transcribe(args.path, {}, null, 'agent:transcribe')
+    // Through the queue, like every other heavy op: one at a time against an export,
+    // in the ledger so the app can say it is happening, and stopped with the rest when
+    // the person stops the agent.
+    const r = await deps.runOp('transcribe', args.path, {})
     // Paths and counts, not payloads: a long transcript inline is thousands of tokens
     // of an agent's context for no benefit. The text is opt-in.
-    const out = { srt: r.srt, txt: r.file, words: r.words, cues: (r.cues || []).length }
+    const out = { srt: r.srt, txt: r.file, words: r.words, cues: (r.cues || []).length,
+      seconds: r.seconds }
+    // A call that spent most of its time fetching the speech model looked exactly like
+    // one that spent it transcribing, and a first run can be minutes on a slow line.
+    // Say which it was, so nobody is left wondering whether it worked.
+    if (r.modelFetched) {
+      out.note = `This was the first transcription on this Mac, so most of those ${r.seconds} s ` +
+        'were spent downloading the speech model. It is kept, and every transcription after this is the transcription alone.'
+    }
     if (args.include_text) out.text = r.text
     return out
   },
