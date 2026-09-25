@@ -1370,6 +1370,32 @@ export function build() {
     },
     async args => text(await drive('look.save', args)))
 
+  // The question that comes before the look tab: what the picture is for. Asked once
+  // for a product, and the answer is kept for that product rather than for this take.
+  server.registerTool(
+    'design_direction',
+    {
+      description:
+        'Settle what a product\'s pictures are for, once, before styling anything. Three directions are ' +
+        'built from the take\'s own sampled colours and the faces the product\'s project ships (the ' +
+        'product\'s own, a stage, and press), one frame of this take is drawn in each, and the person ' +
+        'picks between the three pictures in the Fetch chat. What they pick is remembered for that ' +
+        'product and used on every take of it, which the card tells them, so this is asked once and ' +
+        'never again: call it on the first take of a product and read the answer on the rest. When a ' +
+        'look rule is already in force it asks nothing, draws nothing and returns the direction in ' +
+        'force. It comes back whether or not they answered, within 90 seconds by default; with no ' +
+        'answer the first direction goes on this take alone, nothing is remembered, and the result ' +
+        'says so. The result names the direction and carries its look, which apply_look takes whole. ' +
+        'Use apply_look, not this, to change one field or to put one take on a preset.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording, or to a shot. Its name says which product this is of.'),
+        timeout_seconds: z.number().min(10).max(600).optional().describe('How long to wait for the pick. 90 by default.'),
+      }),
+    },
+    // The three frames are drawn before the card goes up, and then the card's own
+    // longest deadline with the app's backstop behind it, the same budget ask keeps.
+    async args => text(await drive('design.direction', args, { timeoutMs: 610000 + 180000 })))
+
   server.registerTool(
     'remove_dead_air',
     {

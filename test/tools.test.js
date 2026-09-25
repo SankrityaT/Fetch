@@ -2347,6 +2347,30 @@ async function main() {
     assert.ok(/userBackdropDir\(\)/.test(MAIN), 'a searched photo is saved somewhere other than the person\'s own folder')
   })
 
+  // Which direction a look rule names, which is the whole of design_direction's short
+  // circuit: read it wrong and somebody is asked a question they have already answered,
+  // or told they answered one they did not. Both of these were found by rendering, not
+  // by reading, so they are pinned here rather than left to be found again.
+  t('a look rule names its direction on word boundaries, straight or curly', () => {
+    const rule = text => [{ id: 'F1', text }]
+    const named = text => bridge.directionNamed(rule(text), 'Yolkling')
+    const id = text => { const r = named(text); return r ? r.id : null }
+    // 'press' sits inside 'compressed', and a bare substring answered Press to a rule
+    // that says nothing about it
+    assert.strictEqual(id('Use the compressed print direction everywhere.'), null,
+      'a word that merely contains a label is not that label')
+    assert.strictEqual(id('The look direction for this product is Press.'), 'press')
+    assert.strictEqual(id('The look direction for this product is On a stage.'), 'stage')
+    // the apostrophe a Mac types is not the one the label carries, and the rule was
+    // read as somebody's own sentence about padding instead of as their pick
+    assert.strictEqual(id('The look direction for Yolkling is Yolkling\u2019s own.'), 'product',
+      'a curly apostrophe is the one a person actually types')
+    assert.strictEqual(id('The look direction for Yolkling is Yolkling\'s own.'), 'product')
+    // and a rule about something else stays a rule about something else
+    assert.strictEqual(named('Screenshots sit on a light background with generous padding.'), null)
+    assert.strictEqual(named('Impressed by the direction this is going.'), null)
+  })
+
   fs.rmSync(dir, { recursive: true, force: true })
   console.log(`\n${n} tool surface checks passed`)
 }

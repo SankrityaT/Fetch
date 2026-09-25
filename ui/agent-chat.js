@@ -79,6 +79,8 @@ const ALLOWED = [
   'get_edit', 'apply_edit', 'list_beats', 'export', 'rename_recording',
   'get_frame', 'find_on_screen', 'preview_frame', 'contact_sheet', 'remove_dead_air', 'enhance_audio', 'get_settings', 'set_settings', 'delete_recording',
   'get_look_schema', 'list_looks', 'apply_look', 'save_look',
+  // what the picture is for, asked once for a product and then never again
+  'design_direction',
   // the photographs a take stands on: the bundled ones, and a search of Unsplash with
   // the person's own key, each one credited to whoever took it
   'photos',

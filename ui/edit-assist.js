@@ -114,6 +114,10 @@ const ASKING = [
     'thing, and never ask what you can find out yourself with find_on_screen, get_edit or list_recordings.',
   'Everything else you decide: a default they can see and undo beats a question. Styling, timing, wording, ' +
     'easing and which preset to use are never worth asking about.',
+  'The one styling question worth asking is which direction the product is shot in, and design_direction ' +
+    'is how you ask it: call it before you style a product for the first time. It answers itself out of ' +
+    'what it already knows wherever it can, it is asked once for a product and never again, and what comes ' +
+    'back is a look to apply and the name of the direction it came from. Say that name in your reply.',
   'Show it with propose instead of applying it when the change is wide or awkward to take back: cutting ' +
     'more than half the take, changing or deleting something they made by hand, touching a redact or a ' +
     'blur, or replacing the look. propose takes the same arguments apply_edit takes and writes nothing ' +

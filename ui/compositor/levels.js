@@ -89,10 +89,13 @@ const bucketOf = (r, g, b) => (((r / STEP) | 0) * LEVELS + ((g / STEP) | 0)) * L
 
 /**
  * palette(src, { start, end, crop, width, height, viewport, screen, timeout }) resolves
- * { bg, ink, accent } as '#rrggbb' strings: the ground the product is drawn on, what is
- * written on that ground, and the product's own colour, which is null when the take has
- * no saturated colour in it at all. Resolves null when the take could not be read.
- * Never rejects.
+ * { bg, ink, accent, mean }: the first three as '#rrggbb' strings, the ground the
+ * product is drawn on, what is written on that ground, and the product's own colour,
+ * which is null when the take has no saturated colour in it at all. `mean` is the whole
+ * take's own luma in 0..1, which is a different question from its ground: the blurred
+ * ground the compositor can draw is an average of the take and not the colour most of
+ * it is, and a take whose ground is a white page and whose product is a dark chart
+ * answers the two apart. Resolves null when the take could not be read. Never rejects.
  *
  * A second pass over the same keyframes, rather than a widening of measure's: measure
  * runs on every look change and every export, and grey is a third of the bytes and all
@@ -146,9 +149,18 @@ function palette(src, { start = 0, end = 0, crop = null, width = 0, height = 0, 
   })
 }
 
-// The three colours, out of the buckets that were voted for
+// The three colours, out of the buckets that were voted for, and the take's own level
 function colours(count, sum, n) {
   if (n < 2048) return null                       // one small frame is not a take
+  // The mean is of every pixel that was read, before the vote and before the tail is
+  // left out: the compositor's blurred ground is that average and nothing else, so a
+  // toast or a cursor belongs in it exactly as much as it belongs in the picture. The
+  // weights are the ones the frame pass uses on the same sRGB values, not the
+  // linearised ones below, because what is being answered is how light the ground it
+  // draws will be and not how two colours read against each other.
+  let mr = 0, mg = 0, mb = 0
+  for (let i = 0; i < BUCKETS; i++) { mr += sum[i * 3]; mg += sum[i * 3 + 1]; mb += sum[i * 3 + 2] }
+  const mean = (0.2126 * mr + 0.7152 * mg + 0.0722 * mb) / (255 * n)
   // A colour has to hold the same 0.4 percent measure gives the picture's ends before it
   // counts: below that it is a cursor, a toast, or the fringe of one antialiased edge,
   // and none of those is what the product is painted in.
@@ -188,7 +200,7 @@ function colours(count, sum, n) {
     const weight = sat * (s.c / n)
     if (weight > best) { best = weight; accent = s.col }
   }
-  return { bg: hex(bg), ink: inked ? hex(ink) : null, accent: accent ? hex(accent) : null }
+  return { bg: hex(bg), ink: inked ? hex(ink) : null, accent: accent ? hex(accent) : null, mean }
 }
 
 const luma = c => {

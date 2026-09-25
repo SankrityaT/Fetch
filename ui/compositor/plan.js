@@ -153,6 +153,25 @@ function edgeEnd(bg) {
   return edgeFor(light)
 }
 
+// Which grounds are the take itself, blurred: an edit given a shape of its own fills
+// what it gained with one, and a framed edit asks for it by name. prepare.js has to
+// know this before the plan exists, because the tone of that ground can only be read
+// off the take's pixels, so both ask the one question rather than two that can drift.
+const blurGround = (opts = {}) => (opts.backdrop ? String(opts.backdrop) === 'blur' : !!+opts.backdropAspect)
+
+// How light a blurred ground actually comes out, from the take's own mean luma
+// (prepare.js, `ground`), or null for a take nobody measured. That ground is the take
+// pressed to 30 percent of its luma and then lifted back into a band under the take's
+// own tone (gl.js, fillAt), and on anything but a dark take it is the band that decides
+// where it lands: a 0.93 page draws a gutter a bleed below itself, not a black bar. The
+// press only ever darkens and the band only ever lifts, so the pair is the higher of
+// the two, and the fall-off is left out of it because the ground divides its own
+// vignette back out again.
+function blurLum(bg) {
+  if (!(bg.take >= 0)) return null
+  return Math.max(0.3 * bg.take, bg.take - (bg.band ? bg.band[1] : EDGE_BLEED))
+}
+
 // '#F0A93C' or '0xF0A93C' to [r, g, b] in 0..1
 function rgb(hex) {
   const m = /^(?:#|0x)?([0-9a-f]{6})$/i.exec(String(hex || ''))
@@ -515,9 +534,20 @@ function shellAt(kind, sw, a, cx, cy, corner, bez = bezel(kind, false, false), g
 // and gl.js re-picks it from the decoded mean (deviceOf), the way it does the hairline.
 // A group asks this once for the whole set: two shells in one picture lit two ways is
 // the fault the whole group exists to avoid.
+//
+// A blurred ground is the second one the hairline's end cannot answer for, and for the
+// opposite reason. That ground is the take held under itself, so the take is the light
+// one of the pair whatever either of them measures, and the line has to go to the take
+// (edgeEnd, and the note over it). The ground's own tone is a different question, and a
+// light take's blurred gutter is a light ground: a 0.93 page drew a 0.71 one and got a
+// graphite shell on it. So the shell asks the ground directly, from the take's mean
+// (blurLum, measured once in prepare.js), and a take nobody measured keeps the graphite
+// it has always had rather than guessing from the frame in front of it.
 function shellTone(D = {}, end, bg = {}) {
   const auto = D.theme !== 'light' && D.theme !== 'dark'
-  const light = !auto ? D.theme === 'light' : bg.kind !== 'image' && !!end.light
+  const light = !auto ? D.theme === 'light'
+    : bg.kind === 'blur' ? blurLum(bg) > 0.5
+    : bg.kind !== 'image' && !!end.light
   return { light, auto, ...SHELL[light ? 'light' : 'dark'] }
 }
 
@@ -1078,15 +1108,22 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
     // Half again the floor at the near end, not the floor itself: a ground sitting
     // exactly on it leaves nothing for grain and dither, and this one is wide enough
     // to want a step rather than a line.
+    //
+    // take: the mean luma of the take this ground is made of, measured once for the
+    // whole take in the main process (prepare.js, `ground`) and carried here as a plain
+    // number, because what stands on this ground has to know how light it is and no
+    // pass may read the frame it is drawing to find out. Absent on a take that could
+    // not be read, and everything downstream treats that as the dark it always was.
+    const take = P && P.ground && P.ground.mean >= 0 ? P.ground.mean : null
     return { kind: 'blur', fw, fh, sigma: Math.max(2, 125 * fh / 1080) * (0.25 + 1.5 * amount),
-      band: [1.5 * EDGE_FLOOR, EDGE_BLEED] }
+      band: [1.5 * EDGE_FLOOR, EDGE_BLEED], ...(take != null ? { take } : {}) }
   }
   // Bokeh is the background's own defocus given an aperture's shape, so it rides on the
   // background rather than on the finished frame: an image backdrop or the take's own
   // blurred ground. A gradient, a mesh or no background has nothing to defocus.
   const bokehDial = clamp(num(L('treatment').bokeh, 0), 0, 1)
-  if (!framed) bg = aspect ? blurFill() : { kind: 'none' }
-  else if (id === 'blur') bg = blurFill()
+  if (!framed) bg = blurGround(opts) ? blurFill() : { kind: 'none' }
+  else if (blurGround(opts)) bg = blurFill()
   else if (id.startsWith('img:') && ctx.imageFile) {
     const B = L('background')
     bg = { kind: 'image', file: ctx.imageFile, blur: clamp(num(B.imageBlur, 0), 0, 1), dim: clamp(num(B.imageDim, 0), 0, 1) }
@@ -1753,4 +1790,4 @@ function cameraFrames(spec, pts) {
   return frameMap(pts, spec.frames, n => Timeline.camTime(spec.cam, srcAt(spec.keep, n / spec.fps)))
 }
 
-module.exports = { prepare, cropPx, framePlan, camAt, srcAt, rateAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL, realMM, groupLayout, GROUP_MAX, MM_DESK, MM_HAND, barText, groundTexture }
+module.exports = { prepare, cropPx, framePlan, camAt, srcAt, rateAt, srcPair, viewAt, travel, engineFor, unsupported, holdIndex, frameMap, screenFrames, crossFrames, cameraFrames, cutPoints, takeMove, rgb, markKey, edgeFor, SHELL, realMM, groupLayout, GROUP_MAX, MM_DESK, MM_HAND, barText, groundTexture, blurGround }

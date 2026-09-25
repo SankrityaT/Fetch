@@ -127,6 +127,7 @@ const TITLES = {
   'photos.do': 'Worked with backdrop photographs',
   'look.apply': 'Changed a look',
   'look.save': 'Saved a look',
+  'design.direction': 'Asked which direction the product takes',
   'edit.sheet': 'Looked over the whole edit',
   'edit.direct': 'Wrote the brief and the plan',
   'edit.review': 'Checked the edit against the brief',
@@ -974,6 +975,151 @@ const ops = {
     }
     const saved = Look.save(looksDir(), args.name, look)
     return { name: saved.name, label: saved.label, changes: saved.look }
+  },
+
+  // ── the other question, asked once ─────────────────────────────────────
+  // Fetch ships seven looks and every one of them is defensible, which is the problem:
+  // the Look tab asks somebody for an opinion about padding before they have one about
+  // what the picture is for. This asks the other question instead, as three pictures of
+  // their own take side by side, and the answer belongs to the product rather than to
+  // this take, so it is asked once for a product and then never again.
+  //
+  // Every piece of it is somebody else's and stays there: the colours are sampled off
+  // the take (ui/compositor/levels.js palette), the faces are the project's own
+  // (ui/project-fonts.js), the three directions are pure and never throw
+  // (ui/directions.js), the frames are the same draw a proposal card shows (framesFor)
+  // and the pick is the question every other fork goes through (chat.ask). This op is
+  // the joint between them and holds no design opinion of its own.
+  async 'design.direction'(args = {}, ctx) {
+    if (!args.path) throw new Error('path is required')
+    if (!fs.existsSync(args.path)) throw new Error('no such file')
+    await sampleRoot()
+    const G = require('./guidelines')
+    const where = { root: memRoot(args.path), take: args.path }
+    const product = G.place(where).product
+    // A direction is kept for one product, the way a rule is. With nothing to keep it
+    // under there is no question worth asking: a pick nobody could remember is a look
+    // the agent may as well apply itself.
+    if (!product) {
+      return { asked: false, product: null, direction: null, look: null,
+        why: 'nothing here names the product this take is of, and a direction is remembered for one product.',
+        do_next: 'Name the take for its product with rename_recording and call this again, or style this one ' +
+          'take by hand with apply_look.' }
+    }
+
+    // Already decided, and nothing is drawn to find that out. A look rule in force is
+    // this person's answer to this question, whether this op put it there or they wrote
+    // it in the Guidelines panel themselves, and asking again is asking somebody to
+    // decide what they have decided. Read the way every other op reads their rules.
+    const sheet = G.read(where)
+    const ruled = (sheet && sheet.ok && sheet.rules.look) || []
+    if (ruled.length) {
+      const named = directionNamed(ruled, product)
+      // A look rule that names no direction is somebody's own sentence about grain and
+      // padding. It still settles the question, so nothing is asked and nothing drawn,
+      // but there is no direction to hand back and saying there is one would be an
+      // invention.
+      if (!named) {
+        return { asked: false, product, direction: null, look: null,
+          look_rules: ruled.map(r => ({ id: r.id, text: r.text })),
+          in_force: `${product}'s own look rules`,
+          why: `${product} already has a look rule, so nobody was asked again and nothing was drawn. It is a ` +
+            'sentence of their own rather than one of the three directions.',
+          do_next: 'Build what the rule asks for with apply_look; get_look_schema names every field it can set.' }
+      }
+      // Rebuilt off this take rather than stored whole, because direction one is the
+      // product's own colours and those are read off the take in hand: the same
+      // direction on the next take of the same product is that take's own ground, which
+      // is what makes it the product's own rather than one frame's.
+      const three = await directionsOf(args.path, product)
+      const d = three.find(x => x.id === named.id) || three[0]
+      return {
+        asked: false, product,
+        direction: { id: d.id, label: d.label, why: d.why },
+        look: d.look,
+        applied_to_this_take: false,
+        in_force: `takes named for ${product}`,
+        rule: { id: named.rule.id, text: named.rule.text },
+        why: `${product} picked ${d.label} already, so nobody was asked again and no frame was drawn.`,
+        do_next: `apply_look with the look above puts ${d.label} on this take. Never ask about the direction ` +
+          `again for this product. A take whose name does not begin with ${product} reads as a product of its ` +
+          'own and would be asked separately, so rename_recording is what keeps one product on one direction.',
+      }
+    }
+
+    // Nobody has decided, so the three are drawn: this take under each of them, off a
+    // deep copy of the document, saving nothing.
+    const three = await directionsOf(args.path, product)
+    const shots = await framesFor(args.path, three.map(d => ({ look: d.look })), await lookMoment(args.path))
+    // A choice's shot is only ever a path Fetch itself drew, and here that is framesFor's
+    // own output and nothing else. No path off args and none an agent wrote down ever
+    // reaches this field: the pane cannot check it, so the rule lives at the bridge that
+    // fills it, which is this line (ui/edit-assist.js choiceList says the same).
+    const choices = three.map((d, i) => ({
+      id: d.id, label: d.label, hint: jobOf(d.why),
+      ...(shots[i] && shots[i].file ? { shot: shots[i].file } : {}),
+    }))
+    const asked = await ops['chat.ask']({
+      question: `How should ${product} look?`,
+      // The consent, in front of them before they click: what they pick decides pictures
+      // they are not looking at, of takes that do not exist yet, so the card says which
+      // product it is kept for rather than leaving them to find out.
+      //
+      // "Takes named for it" and not "every take of it", because that is what is true.
+      // A product is read off the take's own name (ui/memory.js productOf), which splits
+      // on the convention Product · Take name, so three takes of one product called
+      // "Songscription Demo", "Songscription Library 3" and "Songscription · Library
+      // Tour" are three products and this is asked three times. Promising more than the
+      // filing can keep is how consent turns into a thing somebody has to discover.
+      note: `Your pick is remembered for ${product} and used on takes named for it, so this is asked once.`,
+      choices,
+      ...(args.timeout_seconds != null ? { timeout_seconds: args.timeout_seconds } : {}),
+    })
+    const frames = three.map((d, i) => ({ direction: d.id, image: (shots[i] && shots[i].file) || null }))
+
+    // Esc is the person stopping the turn, not a question they let run out. Nothing is
+    // applied on that branch, the way nothing else is.
+    if (asked.reason === 'cancelled') {
+      return { asked: true, answered: false, product, direction: null, look: null,
+        applied_to_this_take: false, remembered: false, frames,
+        why: asked.why, do_next: asked.do_next }
+    }
+
+    const chosen = asked.answered ? three.find(d => d.id === asked.choice) : null
+    // Direction one where nobody answered: it is the derived one, so the unattended
+    // answer is the product's own colours and letters rather than an opinion Fetch made
+    // up while nobody was looking.
+    const d = chosen || three[0]
+    // On this take and nowhere else, through the call an agent would make itself, so the
+    // person sees it land in the editor and one Undo takes it back. A take nobody has
+    // open cannot be written to, and that is said rather than swallowed.
+    let landed = null, failed = null
+    try { landed = await ops['look.apply']({ path: args.path, look: d.look }, ctx) } catch (e) { failed = (e && e.message) || String(e) }
+    const applied = { applied_to_this_take: !!landed, ...(failed ? { not_applied: failed } : {}),
+      ...(landed && landed.look_warnings ? { look_warnings: landed.look_warnings } : {}) }
+    if (chosen) {
+      // Next ticket: write the look rule that makes this the product's, through
+      // ui/guidelines.js write as the person's own words, naming the direction so the
+      // short circuit above reads it back.
+      return {
+        asked: true, answered: true, product,
+        direction: { id: d.id, label: d.label, why: d.why },
+        look: d.look, ...applied, remembered: false, frames,
+        in_force: 'this take only, so far',
+        why: `They chose ${d.label}. It is on this take; nothing is written into ${product}'s rules yet.`,
+        do_next: `Work in ${d.label} from here. Say in your reply which one they chose and that one Undo takes it back.`,
+      }
+    }
+    return {
+      asked: true, answered: false, reason: asked.reason, product,
+      direction: { id: d.id, label: d.label, why: d.why },
+      look: d.look, ...applied, remembered: false, frames,
+      in_force: 'this take only',
+      why: `${asked.why} ${d.label} is the derived one, so it went on this take alone and nothing was ` +
+        `remembered for ${product}.`,
+      do_next: `Say in your reply that you took ${d.label} for this take only and that they can undo it. ` +
+        'Do not ask again in this job.',
+    }
   },
 
   // Renders the recording's current edit, exactly what the editor's Export would.
@@ -2028,15 +2174,23 @@ async function proposedFrame(args) {
     // compositor is handed is that copy, and the file on disk is left exactly as the
     // person left it. A deep copy in, a temp still out.
     const doc = FD.mergeDoc(deps.proc.readDoc(args.path, meta && meta.duration), resolved)
-    const p = await ops['edit.preview']({ path: args.path, at: firstChange(resolved, doc), doc })
+    // firstChange finds the moment the change is at, and where there is no change to
+    // find it gives up at a second in. That is the right moment for a card about an
+    // edit and the wrong one for a card about a look: a second into a take is very
+    // often still the title card, and three looks of a title card are three pictures
+    // of the same dark rectangle. So a caller that knows a better moment says so.
+    const at = Number.isFinite(+args.at) ? +args.at : firstChange(resolved, doc)
+    const p = await ops['edit.preview']({ path: args.path, at, doc })
     return p.image || null
   } catch { return null }
 }
 
 // One frame of a take with an overlay laid over it: a partial document, a look most
 // often, drawn and not saved. The door a caller other than a proposal card comes in by,
-// and the same picture either way.
-const frameOf = (path, overlay) => proposedFrame({ path, doc: overlay || {} })
+// and the same picture either way. `at` is source seconds, for a caller that knows which
+// moment of the take is worth showing; without one the draw falls back to the moment the
+// overlay changes, as a proposal card does.
+const frameOf = (path, overlay, at) => proposedFrame({ path, doc: overlay || {}, at })
 
 // Several looks of one take, one { file } per overlay in the order they came in, so a
 // caller can put them beside each other and pick. A look that could not be drawn is a
@@ -2047,14 +2201,127 @@ const frameOf = (path, overlay) => proposedFrame({ path, doc: overlay || {} })
 // aims is drawn in turn instead, because aiming reads frames of the take and numbers the
 // elements Fetch is holding, and two of those at once would hand one overlay the other's
 // ids.
-async function framesFor(path, overlays) {
+async function framesFor(path, overlays, at) {
   const list = (Array.isArray(overlays) ? overlays : []).map(o => o || {})
   if (list.some(o => AIMED.some(k => Array.isArray(o[k])))) {
     const out = []
-    for (const o of list) out.push({ file: await frameOf(path, o) })
+    for (const o of list) out.push({ file: await frameOf(path, o, at) })
     return out
   }
-  return Promise.all(list.map(async o => ({ file: await frameOf(path, o) })))
+  return Promise.all(list.map(async o => ({ file: await frameOf(path, o, at) })))
+}
+
+// ── what a direction is built out of ─────────────────────────────────────
+// ui/directions.js is pure: it is handed the colours and the faces and never goes and
+// gets them. These three are the going and getting, for design.direction above.
+
+// The colours this take is actually painted in, off the same keyframes the exposure is
+// measured from and over the crop the export will draw, so a Simulator's black ring is
+// not read as the product's ground. A demux and no draw, which is why the short circuit
+// can afford it and a row of frames is what it is saving. Null is a fine answer: three
+// directions with nothing sampled are still three directions, and the first one says so.
+async function takeColours(file) {
+  const Levels = require('./compositor/levels')
+  try {
+    if (isShot(file)) {
+      const shot = await shotOf(file)
+      return await Levels.palette(shot.src, { crop: shot.crop || null, width: shot.w, height: shot.h })
+    }
+    const meta = await deps.proc.probeMeta(file).catch(() => ({}))
+    const doc = deps.proc.readDoc(file, meta && meta.duration)
+    return await Levels.palette(file, { crop: (doc && doc.crop) || null,
+      width: meta && meta.width, height: meta && meta.height,
+      viewport: (doc && doc.viewport) || null,
+      screen: (doc && doc.device && doc.device.screen) || null })
+  } catch { return null }
+}
+
+// The faces one product ships, off the project its rules are kept under (productFor),
+// so the frame is typeset in the app's own face rather than in SF Pro beside it. This
+// asks the person for nothing that list_projects asks for: a family name already
+// reaches every agent through get_edit's options.fonts, and no folder, branch or remote
+// leaves here.
+async function productFonts(product) {
+  if (!product) return []
+  try {
+    const Memory = require('./memory')
+    const list = await projectList()
+    // Asked twice, because neither question alone finds it. productFor is the authority
+    // on whose rules are whose, and it reads the rules that already exist: on the first
+    // take of a product there are none, so "Yolkling" measured against a project whose
+    // remote is yolkling-ios missed that product's own three faces, which is the whole
+    // of direction one. resolveProject asks the other way, by the project's own name,
+    // exactly, refusing a near miss and refusing two. A product whose rules are kept
+    // under a name no project is called is found only by the first.
+    const named = resolveProject(product, list)
+    const hit = list.find(p => Memory.sameSubject(productFor(p, ownRoot()), product)) ||
+      (named.ok ? named.project : null)
+    return hit && hit.path ? require('./project-fonts').fontsIn(hit.path) : []
+  } catch { return [] }
+}
+
+// The three, for one take of one product.
+async function directionsOf(file, product) {
+  const [palette, fonts] = await Promise.all([takeColours(file), productFonts(product)])
+  return require('./directions').directionsFor({ palette, fonts, product })
+}
+
+// The moment of a take worth showing a look on. Halfway through, because the beginning
+// of a take is the part least like the rest of it: a demo opens on a title card or on a
+// window still settling, and three looks drawn there came back as three pictures of the
+// same dark rectangle, which is the card promising a choice and showing none. Halfway is
+// not clever, but it is past every opening and it is the same moment for all three, and
+// the three being the same moment is what makes them comparable at all. A take that
+// cannot be probed keeps the old behaviour by returning nothing.
+async function lookMoment(file) {
+  const meta = await deps.proc.probeMeta(file).catch(() => null)
+  const dur = meta && +meta.duration
+  return Number.isFinite(dur) && dur > 0 ? r2(dur / 2) : undefined
+}
+
+// Which of the three a look rule names, where one of them named it. A rule is a
+// sentence in the person's own rulebook rather than a field ("Songscription's
+// screenshots take the Press direction"), so it is read back by the direction's own
+// label with the word direction beside it, which is the shape the rule is written in.
+// Anything else is a look rule somebody wrote about padding, and answering it with a
+// direction would be inventing a pick they never made.
+//
+// The labels come from directionsFor itself, asked with nothing but the product's name:
+// it is pure, so what the three are called costs nothing and needs no take read.
+//
+// Two things a plain substring got wrong, both measured rather than imagined. "Use the
+// compressed print direction everywhere" answered Press, because press sits inside
+// compressed, so a label has to fall on word boundaries the way the word direction
+// beside it already did. And a label carrying an apostrophe ("Yolkling's own") is typed
+// by a person on a Mac as a curly one, which matched nothing: the rule settled the
+// question, so nobody was asked twice, but the direction came back null and the reason
+// given for it was wrong. Both ends are flattened to the straight one before they meet.
+const straight = s => String(s || '').replace(/[\u2018\u2019\u02BC]/g, "'").toLowerCase()
+const ESCAPE = /[.*+?^${}()|[\]\\]/g
+// Boundaries by hand rather than \b, because a label may end in an apostrophe and s,
+// where \b sits in a different place than it does after a bare letter.
+const namesLabel = (text, label) =>
+  new RegExp(`(?<![a-z0-9])${straight(label).replace(ESCAPE, '\\$&')}(?![a-z0-9])`).test(text)
+
+function directionNamed(rules, product) {
+  const three = require('./directions').directionsFor({ product })
+  for (const r of rules || []) {
+    const text = straight((r && r.text) || '')
+    if (!/\bdirections?\b/.test(text)) continue
+    const hit = three.find(d => namesLabel(text, d.label))
+    if (hit) return { id: hit.id, rule: r }
+  }
+  return null
+}
+
+// A direction's `why` is two halves: what it took, which the picture beside it is
+// already showing, and the job it is the right answer to, which no picture can show.
+// The card gives a hint ninety characters (ui/edit-assist.js), so the half that is not
+// on screen is the half that goes there, and a why written some other way is used whole.
+const jobOf = why => {
+  const s = String(why || '')
+  const m = s.match(/,\s+for (.+)$/)
+  return m ? 'For ' + m[1] : s
 }
 
 // Whether an edit loops, off the plan alone (ui/compositor/gl.js, loopCheck). Two
@@ -5996,6 +6263,10 @@ module.exports = { start, stop, socketPath, VERSION,
   // saved document: the picture on a proposal card comes from the first of these, and
   // anything offering a choice of looks from the second. Neither writes the document.
   frameOf, framesFor,
+  // which of the three directions a look rule names, exercised by test/tools.test.js:
+  // it is the whole of the short circuit that keeps design_direction to one asking
+  // per product, and both ways it can be read wrong cost somebody a second answer
+  directionNamed,
   // the person's answer to a question or a proposal. main.js does not call it: the
   // pane's reply is picked up here. test/tools.test.js does, to answer one for real.
   settleWait,

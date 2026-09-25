@@ -17,6 +17,10 @@
 //   glass     the corner of a device's glass on a take whose document has none (one
 //             written before the capture stored it): read off one frame of the take
 //             (ui/simulator.js measureCorner), only where the crop is the glass
+//   ground    the take's own colours and mean luma (levels.js palette), while the look
+//             fills the output with a blurred copy of the take: that ground is as light
+//             as the take it is made of, and the shell drawn on it has to know which
+//             way to go before the first frame
 //   levels    the take's black and white points (levels.js), while the look asks for
 //             auto level, for a glow, or for the one grade the pair moves: treatment
 //             stretches every frame between the same two, the bright pass reads what is
@@ -223,6 +227,18 @@ async function prepareRender(src, opts = {}, { meta = null, jobId = null } = {})
     if (T.autoLevel || +T.bloom > 0 || +T.halation > 0 || grades) {
       tasks.levels = memo(`lv|${id}|${JSON.stringify([start, end, crop, px])}`,
         () => Levels.measure(seek.src, { start, end, crop, width: W, height: H, viewport: opts.viewport, screen: opts.screen }))
+    }
+
+    // The one ground that is the take itself: the take blurred and held under its own
+    // tone. How light it comes out is therefore a fact about the recording and not about
+    // the look, and what stands on it (the drawn shell's graphite or bone) has to be
+    // told, because a pass may not read the frame it is drawing. Measured once for the
+    // whole take, on the same keyframes as the levels above, so a shell cannot flicker
+    // as the take's content moves under it. Only where the ground actually is a blurred
+    // take, which Plan answers rather than this file guessing at the same rule twice.
+    if (Plan.blurGround(opts)) {
+      tasks.ground = memo(`bl|${id}|${JSON.stringify([start, end, crop, px])}`,
+        () => Levels.palette(seek.src, { start, end, crop, width: W, height: H, viewport: opts.viewport, screen: opts.screen }))
     }
 
     const spans = proc.macCursorSpans(src, opts)
