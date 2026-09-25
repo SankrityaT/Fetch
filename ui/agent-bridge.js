@@ -5078,8 +5078,62 @@ async function showPage(p, url, ctx) {
     if (answer === 'session') sessionAllowed.add(key)
     if (answer === 'always') rememberAlways(key, `Open ${p.handle || p.name}`)
   }
+  // Which windows the browsers had before, so the one this opens can be told from them.
+  // Matching it afterwards by the page's title does not work and cannot be made to: a
+  // dev server for a client rendered app serves HTML with no <title> in it at all, the
+  // title is written by JavaScript after hydration, and that is most of the web now.
+  // Measured on a Next app: the window read "Songscription · Your library" and the
+  // served document had no title element, so nothing matched and Fetch said no browser
+  // was showing a page that was plainly on screen. Fetch opened this one, so it does
+  // not have to guess: it watches for the window that appears.
+  const before = await browserWindows()
   try { require('child_process').execFile('/usr/bin/open', [url]) } catch (e) { return { ok: false, why: (e && e.message) || String(e) } }
-  return { ok: true }
+  const win = await appearedWindow(before)
+  return { ok: true, window: win }
+}
+
+const BROWSERS = /chrome|safari|firefox|arc|brave|edge|orion|vivaldi/i
+async function browserWindows() {
+  let list = []
+  try { list = await deps.listWindows() } catch { list = [] }
+  const out = new Map()
+  for (const w of list || []) if (BROWSERS.test(String(w.app || ''))) out.set(String(w.id), String(w.title || ''))
+  return out
+}
+
+/**
+ * The browser window that turned up after a page was opened, or null.
+ *
+ * A browser given a URL either opens a window, which is a new id, or a tab in one it
+ * already has, which is the same id with a new title. Both are watched. Polled rather
+ * than waited out once, because a cold tab can take a few seconds to paint and a fixed
+ * sleep is either too short to catch it or too long on every call that was fine.
+ */
+async function appearedWindow(before, ms = 9000) {
+  const until = Date.now() + ms
+  let last = null
+  while (Date.now() < until) {
+    await new Promise(r => setTimeout(r, 600))
+    let list = []
+    try { list = await deps.listWindows() } catch { list = [] }
+    const browsers = (list || []).filter(w => BROWSERS.test(String(w.app || '')))
+    const fresh = browsers.find(w => !before.has(String(w.id)))
+    if (fresh) return fresh
+    const retitled = browsers.find(w => before.has(String(w.id)) && String(w.title || '') !== before.get(String(w.id)) && String(w.title || '').trim())
+    if (retitled) last = retitled
+  }
+  if (last) return last
+  // Nothing new and nothing renamed, which is not the same as nothing happening: a page
+  // that sets no title at all loads into a window Chrome still calls "Untitled", so it
+  // is neither a new id nor a changed one. Measured on the app this was built against.
+  // `open` brings the browser forward and focuses the tab it loaded, so the front
+  // window is the one showing it, and that is a fact about what just happened rather
+  // than a guess about a title.
+  try {
+    const front = deps.frontWindow ? await deps.frontWindow(AGENT_HOSTS) : null
+    if (front && BROWSERS.test(String(front.app || ''))) return front
+  } catch {}
+  return null
 }
 
 async function projectTarget(q, ctx = null) {
@@ -5111,9 +5165,18 @@ async function projectTarget(q, ctx = null) {
     if (serving) {
       const shown = await showPage(p, serving.url, ctx)
       if (shown.ok) {
-        await new Promise(r2 => setTimeout(r2, 2500))
-        running = await projectRunning(p, 15000) || running
-        if (running.pick) began = { ...(began || {}), url: serving.url, opened: serving.url }
+        began = { ...(began || {}), url: serving.url, opened: serving.url }
+        // The window Fetch itself opened, taken as the answer rather than looked for
+        // again: it knows which one it is, and the search it would run cannot find a
+        // client rendered page by title.
+        if (shown.window) {
+          running = { ...running, pick: { kind: 'browser', url: serving.url, recordable: true,
+            window: { ...shown.window, onScreen: true },
+            evidence: [`Fetch opened ${serving.url} and this window is what appeared`] },
+            why: `Fetch opened ${serving.url} in ${shown.window.app} and is recording that window.` }
+        } else {
+          running = await projectRunning(p, 15000) || running
+        }
       } else if (shown.why) {
         running = { ...running, why: `${running.why} Fetch tried to open it and could not: ${shown.why}` }
       }
@@ -5132,7 +5195,13 @@ async function projectTarget(q, ctx = null) {
     ...(began ? { started: { ran: began.says, url: began.url, pid: began.pid } } : {}),
     said: { name: p.name, handle: p.handle || p.name, path: p.path, ...(p.branch ? { branch: p.branch } : {}),
       chosen: running.why, ...(product ? { product } : {}),
-      ...(began ? { started: `Fetch ran ${began.says} and it is serving at ${began.url}` } : {}) } }
+      // Said from what actually happened, not from a shape that assumes both. Starting
+      // a project and opening a page it was already serving are two different acts and
+      // either can happen without the other; reading says on a page that was only
+      // opened printed the sentence "Fetch ran undefined".
+      ...(began ? { started: began.says
+        ? `Fetch ran ${began.says}${began.opened ? ' and opened' : ', and it is serving at'} ${began.url}`
+        : `Fetch opened ${began.url}, which ${p.handle || p.name} was already serving` } : {}) } }
 }
 
 // A take or a shot of a project, named product first, so the rules and the facts kept for

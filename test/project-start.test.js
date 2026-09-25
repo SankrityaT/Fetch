@@ -107,5 +107,33 @@ is('the child leads its own process group', /detached: true/.test(runSrc), true)
 is('so the group can be stopped, not just the child', /process\.kill\(-child\.pid, 'SIGTERM'\)/.test(runSrc), true)
 is('and a group that ignores the ask is killed', /process\.kill\(-child\.pid, 'SIGKILL'\)/.test(runSrc), true)
 
+// ── the window it opened, known rather than searched for ────────────────
+// Matching a browser window to a dev server by the page's title does not work and
+// cannot be made to: a client rendered app serves HTML with no <title> in it, the title
+// is written by JavaScript after hydration, and that is most of the web now. Measured
+// on a Next app: the window read "Songscription · Your library" while the served
+// document had no title element, so nothing matched and Fetch said no browser was
+// showing a page that was plainly on screen.
+is('the browser windows are noted before the page is opened', /const before = await browserWindows\(\)/.test(bridge), true)
+is('and the one that appears is taken as the answer', /const win = await appearedWindow\(before\)/.test(bridge), true)
+is('a new window is a new id', /const fresh = browsers\.find\(w => !before\.has\(String\(w\.id\)\)\)/.test(bridge), true)
+is('and a new tab is the same id with a new title', /const retitled = browsers\.find/.test(bridge), true)
+is('it is polled, because a cold tab takes a moment to paint', /while \(Date\.now\(\) < until\)/.test(bridge), true)
+is('the window it opened becomes the pick, not another search', /Fetch opened \$\{serving\.url\} and this window is what appeared/.test(bridge), true)
+is('and the reason says so plainly', /Fetch opened \$\{serving\.url\} in \$\{shown\.window\.app\}/.test(bridge), true)
+is('only a browser counts', /chrome\|safari\|firefox\|arc\|brave\|edge/.test(bridge), true)
+
+// A page that sets no title at all is neither a new id nor a changed one: Chrome calls
+// the window "Untitled" before and after. `open` brings the browser forward and focuses
+// the tab it loaded, so the front window is the one showing it.
+is('the frontmost browser is the last answer', /const front = deps\.frontWindow \? await deps\.frontWindow\(AGENT_HOSTS\) : null/.test(bridge), true)
+is('and only if it is a browser', /if \(front && BROWSERS\.test\(String\(front\.app \|\| ''\)\)\) return front/.test(bridge), true)
+
+// Starting a project and opening a page it was already serving are two different acts,
+// and either can happen without the other. Reading the command off a page that was only
+// opened printed the sentence "Fetch ran undefined" into the result.
+is('a page that was only opened never claims a command was run', /Fetch opened \$\{began\.url\}, which \$\{p\.handle \|\| p\.name\} was already serving/.test(bridge), true)
+is('and the sentence is chosen from what happened', /began\.says\s*\n?\s*\? `Fetch ran/.test(bridge), true)
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
