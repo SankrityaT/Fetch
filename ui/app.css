@@ -563,6 +563,10 @@ img.biscuit { object-fit:contain; }
   animation:brakein var(--dur-2) var(--ease-in);
 }
 .agent-brake[hidden] { display:none; }
+/* In the editor the bottom left of the window is the timeline's video lane, so the pill
+   moves to the top left instead of sitting on the frames somebody is reading. It clears
+   the toolbar, which is what the offset is measured against. */
+html[data-view="editor"] .agent-brake { bottom:auto; top:calc(var(--s-5) + 44px); }
 .agent-brake-mark { width:22px; height:22px; border-radius:50%; display:grid; place-items:center;
   background:var(--ink-1); color:var(--fur-1); flex:none; }
 .agent-brake-mark img { width:14px; height:14px; }

@@ -75,6 +75,11 @@ function toast(msg, kind = '', ms = 3800) {
 function show(view) {
   document.querySelectorAll('#nav button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === view)))
   document.querySelectorAll('.view').forEach(v => { v.hidden = v.dataset.view !== view })
+  // Which view is up, on the document, so the agent pill can get out of the timeline's
+  // way. It is pinned to the bottom left of the window, and in the editor the bottom
+  // left of the window is the video lane: while an agent worked, the pill sat on top of
+  // the frames the person was trying to read.
+  document.documentElement.dataset.view = view
   if (view === 'library') refreshLibrary()
   if (view === 'activity' && window.refreshActivity) window.refreshActivity()
   if (view === 'record') paintHeroCta()      // the pref may have changed in Settings

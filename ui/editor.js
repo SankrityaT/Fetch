@@ -1461,6 +1461,13 @@ function wireEditor() {
     const t = FD.trimFromClips(doc.clips)
     const whole = !(doc.clips && doc.clips.length) || !(t.end > t.start)
     ed.in = whole ? 0 : t.start; ed.out = whole ? ed.dur : t.end; ed.cuts = whole ? [] : t.cuts
+    // The playhead belongs inside the video. Opening a saved edit restored the trim and
+    // left the playhead where it started, at zero, so a take trimmed to begin at 0:33
+    // opened parked thirty three seconds before its own first frame and played footage
+    // that is not in the export. Only moved when it is outside the range: an agent
+    // changing something mid-session must not yank the playhead away from wherever the
+    // person is looking.
+    if (!ed.shot && (ed.cur < ed.in || ed.cur > ed.out)) seek(Math.max(ed.in, Math.min(ed.cur, ed.out)))
     ed.texts = (doc.texts || []).map(x => ({ ...x }))
     ed.cues = (doc.cues || []).map(x => ({ ...x }))
     ed.beats = (doc.beats || []).map(x => ({ ...x }))
