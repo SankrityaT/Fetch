@@ -505,6 +505,29 @@ t("a shape rule needs the take's own shape when the look keeps it, and says so w
   assert.deepStrictEqual(top.findings.map(f => f.fix.args.look), [{ captions: { position: 'bottom' } }])
 })
 
+// What design_direction writes when somebody picks one of the three. The op itself is
+// exercised in test/tools.test.js and by hand against a real take; what matters here is
+// the pair of properties the once per product promise rests on, which belong to the
+// rulebook rather than to the op.
+t('a picked direction is in force at once, and a second pick replaces it', () => {
+  const where = { root: home(), product: S }
+  const pick = label => G.write(where, { section: 'look', from: 'person', key: 'direction',
+    rule: `The look direction for ${S} is ${label}.` })
+  const inForce = () => { const sheet = G.read(where); return (sheet.ok && sheet.rules.look) || [] }
+
+  // from: 'person' is a click, and a click does not then have to be shown to the person
+  // and said yes to. Anything else would be asking them twice.
+  const first = pick('Press')
+  assert.strictEqual(first.written[0].draft, false, 'a pick is in force, not drafted')
+  assert.deepStrictEqual(inForce().map(r => r.text), [`The look direction for ${S} is Press.`])
+
+  // and changing their mind replaces the rule rather than stacking a second one that
+  // contradicts it, which is what key: 'direction' is for
+  pick('On a stage')
+  assert.deepStrictEqual(inForce().map(r => r.text), [`The look direction for ${S} is On a stage.`],
+    'a second pick replaces the first rather than stacking under it')
+})
+
 t('no em dash in the rulebook, its memory or this file', () => {
   const dash = String.fromCharCode(0x2014)
   for (const f of ['../ui/guidelines.js', '../ui/memory.js', __filename]) {

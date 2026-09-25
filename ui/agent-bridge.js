@@ -1098,16 +1098,15 @@ const ops = {
     const applied = { applied_to_this_take: !!landed, ...(failed ? { not_applied: failed } : {}),
       ...(landed && landed.look_warnings ? { look_warnings: landed.look_warnings } : {}) }
     if (chosen) {
-      // Next ticket: write the look rule that makes this the product's, through
-      // ui/guidelines.js write as the person's own words, naming the direction so the
-      // short circuit above reads it back.
+      const kept = rememberDirection(where, product, d)
       return {
         asked: true, answered: true, product,
         direction: { id: d.id, label: d.label, why: d.why },
-        look: d.look, ...applied, remembered: false, frames,
-        in_force: 'this take only, so far',
-        why: `They chose ${d.label}. It is on this take; nothing is written into ${product}'s rules yet.`,
-        do_next: `Work in ${d.label} from here. Say in your reply which one they chose and that one Undo takes it back.`,
+        look: d.look, ...applied, ...kept, frames,
+        why: `They chose ${d.label}. ${kept.remembered ? `It is on this take and it is now ${product}'s direction, `
+          + 'so this is not asked again.' : 'It is on this take; it could not be written into the rules.'}`,
+        do_next: `Work in ${d.label} from here. Say in your reply which one they chose and that one Undo takes it `
+          + `back. Do not ask about ${product}'s direction again.`,
       }
     }
     return {
@@ -2264,6 +2263,43 @@ async function productFonts(product) {
 async function directionsOf(file, product) {
   const [palette, fonts] = await Promise.all([takeColours(file), productFonts(product)])
   return require('./directions').directionsFor({ palette, fonts, product })
+}
+
+// What a pick is remembered as. Two writes, both to machinery that already exists,
+// because a direction is not a new kind of thing: a rule in the product's own rulebook,
+// which is what every other part of Fetch already reads to know how this product is
+// shot, and a saved look under the product's name, which is what puts it in the Look
+// tab beside the seven built-in ones.
+//
+// from: 'person' puts the rule in force with no draft and no adopting, and that is the
+// one place in this file where that is right: a click on the card is the person's own
+// act, and making them then say yes to their own click is asking the question twice.
+// Unreachable on timeout, dismissed, unattended or cancelled, and it has to stay that
+// way, because on those branches nobody clicked anything.
+//
+// key: 'direction' is what makes a second pick replace the first rather than stack a
+// contradiction under it (ui/memory.js add).
+//
+// The sentence is written in the shape directionNamed reads back: the word direction,
+// and the direction's own label. The two are a pair and moving one moves the other.
+function rememberDirection(where, product, d) {
+  const G = require('./guidelines')
+  const out = {}
+  try {
+    const w = G.write(where, { section: 'look', from: 'person', key: 'direction',
+      rule: `The look direction for ${product} is ${d.label}.` })
+    const row = (w.written || []).find(x => x.ok)
+    if (row) out.rule = { id: row.id, text: row.text }
+  } catch (e) { out.not_remembered = (e && e.message) || String(e) }
+  // A saved look is a convenience rather than the record: the rule above is what every
+  // later take is styled from. So a name already taken, or a folder that cannot be
+  // written, loses the Look tab entry and nothing else.
+  try {
+    const saved = require('./look').save(looksDir(), `${product} direction`, d.look, `${product}: ${d.label}`)
+    out.saved_look = saved.name
+  } catch { /* the rule is the record; a look that cannot be filed is not a failure */ }
+  return { ...out, remembered: !!out.rule,
+    in_force: out.rule ? `takes named for ${product}` : 'this take only' }
 }
 
 // The moment of a take worth showing a look on. Halfway through, because the beginning
