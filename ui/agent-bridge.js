@@ -1228,8 +1228,9 @@ const ops = {
     }
     const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
     // args.doc is a whole document to draw in place of the saved one, which is how a
-    // proposal shows an edit that has not been applied. No tool takes it: nothing is
-    // written either way, so the only caller is chat.propose.
+    // proposal shows an edit that has not been applied, and how a look is tried on
+    // before anybody commits to it. No tool takes it: the callers are all in here,
+    // through proposedFrame, and none of them writes anything either way.
     let doc = cornerTrusted(args.doc || deps.proc.readDoc(args.path, meta && meta.duration))
     // a look to try, drawn without saving it
     if (args.look && typeof args.look === 'object') doc = require('./fetchdoc').mergeDoc(doc, { look: args.look })
@@ -1994,10 +1995,21 @@ function settleWait(id, how, choice) {
   return true
 }
 
-// One frame of the proposed edit, drawn off a copy of the document. Nothing is saved,
-// no undo level is spent and the frame is a temp still like preview_frame's own, so a
-// card the person turned down still shows what they turned down when the thread is
-// read back. A frame that cannot be drawn is null: the card reads fine without one.
+// The keys an overlay can aim. Naming one of them is what makes a draw read state
+// outside its own copy of the document: the editor is asked what it is holding, so ids
+// resolve against the real thing, and a zoom aimed at a point reads a frame of the take
+// to find what is under it. An overlay naming none of them, a look on its own, reads
+// neither, which is why several of those can be drawn at once.
+const AIMED = ['marks', 'zooms', 'texts', 'remove']
+
+// One frame of a proposed edit, drawn off a copy of the document. Nothing is saved, no
+// undo level is spent and the frame is a temp still like preview_frame's own, so a card
+// the person turned down still shows what they turned down when the thread is read back.
+// A frame that cannot be drawn is null: the card reads fine without one.
+//
+// This is also the one place any look of a take is drawn (frameOf, framesFor below), and
+// it is the place test/tools.test.js reviews by name for resolving an edit's ids, so the
+// resolve stays here rather than moving out into a helper of its own.
 async function proposedFrame(args) {
   try {
     const FD = require('./fetchdoc')
@@ -2008,14 +2020,41 @@ async function proposedFrame(args) {
     // box, and Apply then framed the element: a picture of a change that is not the
     // change, which is worse than no picture.
     const sent = JSON.parse(JSON.stringify(args.doc))
-    const prev = ['marks', 'zooms', 'texts', 'remove'].some(k => Array.isArray(sent[k]))
+    const prev = AIMED.some(k => Array.isArray(sent[k]))
       ? await inEditor(args.path, docNow(args.path)).catch(() => null) : null
     const resolved = withElements(args.path, sent, prev)
     await aimZooms(args.path, resolved, prev).catch(() => null)
+    // The saved document is read and merged into a copy, never written back: what the
+    // compositor is handed is that copy, and the file on disk is left exactly as the
+    // person left it. A deep copy in, a temp still out.
     const doc = FD.mergeDoc(deps.proc.readDoc(args.path, meta && meta.duration), resolved)
     const p = await ops['edit.preview']({ path: args.path, at: firstChange(resolved, doc), doc })
     return p.image || null
   } catch { return null }
+}
+
+// One frame of a take with an overlay laid over it: a partial document, a look most
+// often, drawn and not saved. The door a caller other than a proposal card comes in by,
+// and the same picture either way.
+const frameOf = (path, overlay) => proposedFrame({ path, doc: overlay || {} })
+
+// Several looks of one take, one { file } per overlay in the order they came in, so a
+// caller can put them beside each other and pick. A look that could not be drawn is a
+// null file rather than a hole in the row.
+//
+// Overlays that aim at nothing are drawn together, which is where the seconds are: each
+// draw is its own job in the render window and its own copy of the document. One that
+// aims is drawn in turn instead, because aiming reads frames of the take and numbers the
+// elements Fetch is holding, and two of those at once would hand one overlay the other's
+// ids.
+async function framesFor(path, overlays) {
+  const list = (Array.isArray(overlays) ? overlays : []).map(o => o || {})
+  if (list.some(o => AIMED.some(k => Array.isArray(o[k])))) {
+    const out = []
+    for (const o of list) out.push({ file: await frameOf(path, o) })
+    return out
+  }
+  return Promise.all(list.map(async o => ({ file: await frameOf(path, o) })))
 }
 
 // Whether an edit loops, off the plan alone (ui/compositor/gl.js, loopCheck). Two
@@ -5953,6 +5992,10 @@ module.exports = { start, stop, socketPath, VERSION,
     } },
   // the two rules that are code rather than prose, exercised by test/lasso.test.js
   withElements, aimZooms,
+  // a look at a take, or several of them beside each other, drawn off a copy of the
+  // saved document: the picture on a proposal card comes from the first of these, and
+  // anything offering a choice of looks from the second. Neither writes the document.
+  frameOf, framesFor,
   // the person's answer to a question or a proposal. main.js does not call it: the
   // pane's reply is picked up here. test/tools.test.js does, to answer one for real.
   settleWait,

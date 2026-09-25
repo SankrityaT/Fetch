@@ -548,7 +548,13 @@ async function previewFrames(src, doc, times, { width = 1280 } = {}) {
   const { spec, opts } = await specForDoc(src, doc)
   const clock = Timeline.outClock(opts.cuts, spec.start, spec.end, opts.rates)
   const at = (times || []).map(t => Math.min(Math.max(spec.start, +t || 0), Math.max(spec.start, spec.end - 0.05)))
-  const tag = `fetch-preview-${process.pid}-${Date.now().toString(36)}`
+  // Salted, because the pid and the millisecond are not enough to tell two of these
+  // apart. framesFor (ui/agent-bridge.js) draws several looks of one take at once, and
+  // every one of them is frame 0 at the same source second, so two draws landing in one
+  // millisecond built the same path: one look came back wearing another's picture, and
+  // two jobs writing that path together can tear the JPEG. The same salt as the temp
+  // names in ui/agent-chat.js and ui/library.js.
+  const tag = `fetch-preview-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
   const files = at.map((t, i) => path.join(os.tmpdir(), `${tag}-${i}-${t.toFixed(2)}.jpg`))
   const out = await drawStills({ spec, src, times: at.map(t => clock(t)), files, width })
   return out.map((f, i) => ({ file: f.file, at: +at[i].toFixed(2), engine: 'gl' }))

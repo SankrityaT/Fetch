@@ -116,6 +116,13 @@ const FIELDS = [
       'simulator take\'s screen rectangle was read off a frame); keep leaves it; clean crops the same way and draws ' +
       'Fetch\'s own in its place, the phone over a device screen and the browser over a page.',
     classicOptions: ['clean'] }),
+  // A look-wide answer to the question device.theme asks about one shell. It is saved and
+  // checked here before anything reads it, so the ticket that teaches the compositor to
+  // honour dark and light finds every stored look already carrying the field. auto is the
+  // only value anything acts on today, and auto is what every look already means.
+  f('frame.theme', 'enum', 'auto', { options: ['auto', 'dark', 'light'], label: 'Theme',
+    doc: 'Which token theme the look is drawn from, not the shell alone. auto reads it off the ground, the way it always has.',
+    undrawn: true }),
   f('frame.scale', 'number', 1, { min: 0.5, max: 1.2, step: 0.01, unit: 'x', label: 'Scale', doc: 'Size of the framed take.', undrawn: true, advanced: true }),
   f('frame.offsetX', 'number', 0, { min: -0.5, max: 0.5, step: 0.01, unit: '%', label: 'Offset X', doc: 'Moves the framed take across.', undrawn: true, advanced: true }),
   f('frame.offsetY', 'number', 0, { min: -0.5, max: 0.5, step: 0.01, unit: '%', label: 'Offset Y', doc: 'Moves the framed take down.', undrawn: true, advanced: true }),

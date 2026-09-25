@@ -17,6 +17,16 @@
 const Text = require('./text')
 const Marks = require('./marks')
 const Plan = require('./plan')
+// The colours drawn here come from the same contract the plan and the text pass read
+// (ui/compositor/tokens.js), named at the point of use with the literal they replace as
+// the fallback, so a theme short of a name paints what this file always painted.
+//
+// Every one of them names the dark theme on purpose, including the pair a light shell
+// picks between: these are the furniture Fetch draws over a take rather than the ground
+// under it, and a keyline that has to read as a darkening is taken from the dark end of
+// the palette whichever shell it lands on. Pointing them at themeOf would turn a rename
+// into a redesign, so the theme a look names does not reach them.
+const { tok } = require('./tokens')
 
 const VS = `#version 300 es
 void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
@@ -1335,7 +1345,8 @@ function browserBar(g, D, B, hair, measure) {
   for (const c of ['#E2604F', '#E6AE3E', '#5AB25A']) {
     g.beginPath(); g.arc(lx, lcy, lr, 0, Math.PI * 2)
     g.fillStyle = col(c); g.fill()
-    g.strokeStyle = col(D.light ? '#1A1714' : '#0A0908', 0.16); g.lineWidth = hair * 0.8; g.stroke()
+    g.strokeStyle = col(D.light ? tok('dark', 'ink', '#1A1714') : tok('dark', 'shade', '#0A0908'), 0.16)
+    g.lineWidth = hair * 0.8; g.stroke()
     lx += lr * 3.3
   }
   // the open tab, joined to the toolbar: rounded at the top, square where it meets it
@@ -2213,7 +2224,7 @@ class Compositor {
       // the keyline, half of it outside the shape, then the gold over the inner half.
       // The gold is stroked as well as filled, which is what rounds the head's corners
       // and the shaft's shoulders: the shape is geometric, the joins are not sharp.
-      path(); g.strokeStyle = '#FBFAF8'; g.lineWidth = 2 * (bord + rj); g.stroke()
+      path(); g.strokeStyle = tok('dark', 'lit', '#FBFAF8'); g.lineWidth = 2 * (bord + rj); g.stroke()
       g.strokeStyle = g.fillStyle = Text.GOLD; g.lineWidth = 2 * rj; g.stroke(); g.fill()
       return { canvas: cv, x: -tx, y: -ty, w: wd, h: ht }
     })
@@ -2273,7 +2284,8 @@ class Compositor {
       g.lineJoin = 'round'
       g.save(); g.filter = `blur(${(2.2 * ak).toFixed(2)}px)`; g.translate(0, 1.3 * ak); path()
       g.fillStyle = g.strokeStyle = 'rgba(0,0,0,0.45)'; g.lineWidth = bord * 2; g.stroke(); g.fill(); g.restore()
-      path(); g.strokeStyle = '#FBFAF8'; g.lineWidth = bord * 2; g.stroke(); g.fillStyle = '#0A0908'; g.fill()
+      path(); g.strokeStyle = tok('dark', 'lit', '#FBFAF8'); g.lineWidth = bord * 2; g.stroke()
+      g.fillStyle = tok('dark', 'shade', '#0A0908'); g.fill()
       return { canvas: cv, x: -m, y: -m, w: wd, h: ht }
     })
     const x = P.x * sx, y = P.y * sy
@@ -2292,7 +2304,8 @@ class Compositor {
         const cv = canvas(wd, ht), g = cv.getContext('2d')
         const pill = dy => { g.beginPath(); g.roundRect(m, m + dy, tagW + tuck, tagH, tagH / 2) }
         g.save(); g.filter = `blur(${(2.4 * ak).toFixed(2)}px)`; g.fillStyle = 'rgba(0,0,0,0.37)'; pill(1.2 * ak); g.fill(); g.restore()
-        pill(0); g.fillStyle = Text.GOLD; g.fill(); g.strokeStyle = '#FBFAF8'; g.lineWidth = bord; g.stroke()
+        pill(0); g.fillStyle = Text.GOLD; g.fill()
+        g.strokeStyle = tok('dark', 'lit', '#FBFAF8'); g.lineWidth = bord; g.stroke()
         g.font = font; g.fillStyle = Text.INK; g.letterSpacing = `${tagFs * 0.01}px`
         g.textAlign = left ? 'right' : 'left'
         const mm = g.measureText('Bg'), mid = m + tagH / 2 + (mm.actualBoundingBoxAscent - mm.actualBoundingBoxDescent) / 2
@@ -2393,7 +2406,7 @@ class Compositor {
         const m = f.feather * 2.6 * k
         this.quad('frost', this.scene, [f.x * k - m, f.y * k - m, f.w * k + 2 * m, f.h * k + 2 * m],
           { uRes: [W, H], uBox: [f.x * k, f.y * k, f.w * k, f.h * k], uR: f.r * k, uF: f.feather * k, uOp: f.op,
-            uScrim: Plan.rgb(f.scrim || '#0A0908'), uScrimA: f.scrimA || 0 }, { uBlur: blur })
+            uScrim: Plan.rgb(f.scrim || tok('dark', 'shade', '#0A0908')), uScrimA: f.scrimA || 0 }, { uBlur: blur })
       }
     }
     for (const it of T.items) {
@@ -2447,7 +2460,7 @@ class Compositor {
         const role = c.face === 'sub' || c.face === 'caption' ? c.face : 'caption'
         g.font = Text.fontFor(role, px, role === c.face ? null : c.face)
         g.letterSpacing = role === 'caption' ? `${px * -0.005}px` : '0px'
-        g.fillStyle = gold ? Text.INK : c.role === 'hint' ? '#BDB5AC' : '#FBFAF8'
+        g.fillStyle = gold ? Text.INK : c.role === 'hint' ? tok('dark', 'text', '#BDB5AC') : tok('dark', 'lit', '#FBFAF8')
         g.textAlign = 'center'
         const mm = g.measureText(c.label)
         g.fillText(c.label, m + w / 2, m + h / 2 + (mm.actualBoundingBoxAscent - mm.actualBoundingBoxDescent) / 2)
