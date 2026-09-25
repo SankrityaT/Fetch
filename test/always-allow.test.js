@@ -73,5 +73,13 @@ is('revoking writes the shorter list back', /savePrefs\(\{ alwaysAllow: left \}\
 is('and says the asking is back', /Fetch will ask again before/.test(setSrc), true)
 is('an empty list says so rather than showing nothing', /Nothing is always allowed/.test(setSrc), true)
 
+// The gate in front of naming a project had no standing yes at all: once, or until
+// Fetch quits, and then it asked again on the next launch. It is the question somebody
+// who works by project sees most often.
+const bridgeSrc2 = fs.readFileSync(path.join(ROOT, 'ui/agent-bridge.js'), 'utf8')
+is('seeing the projects can be allowed for good', /if \(allowedAlways\('projects'\)\) return/.test(bridgeSrc2), true)
+is('the button is offered', /alwaysLabel: 'Always allow'/.test(bridgeSrc2), true)
+is('and an always answer is written down', /rememberAlways\('projects', 'See the projects on this Mac'\)/.test(bridgeSrc2), true)
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

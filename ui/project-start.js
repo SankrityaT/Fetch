@@ -144,13 +144,23 @@ function run(plan, { timeoutMs = START_WAIT_MS, env = null } = {}) {
   return new Promise((resolve, reject) => {
     let child
     try {
-      child = spawn(plan.cmd, plan.args, { cwd: plan.cwd, stdio: ['ignore', 'pipe', 'pipe'],
+      // detached so the child leads its own process group, which is the only way to
+      // stop what it starts: `npm run dev` is a shell that spawns the real server, and
+      // killing the npm alone leaves that server holding the port. Measured: a stop
+      // that looked clean left a dev server on 3001 that outlived the app.
+      child = spawn(plan.cmd, plan.args, { cwd: plan.cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true,
         env: { ...process.env, ...(env || {}), FORCE_COLOR: '0', BROWSER: 'none' } })
     } catch (e) { return reject(new Error(`${plan.says} would not start: ${e.message}`)) }
 
     const lines = []
     let done = false
-    const stop = () => { try { process.kill(-child.pid, 'SIGTERM') } catch {} try { child.kill('SIGTERM') } catch {} }
+    // the group first, then the child: the group is what holds the server, and the
+    // child alone is what used to be killed
+    const stop = () => {
+      try { process.kill(-child.pid, 'SIGTERM') } catch {}
+      try { child.kill('SIGTERM') } catch {}
+      setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL') } catch {} }, 2000).unref()
+    }
     const finish = (err, url) => {
       if (done) return
       done = true

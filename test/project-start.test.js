@@ -89,5 +89,23 @@ is('and servers it started go when Fetch does', /stopStartedServers/.test(bridge
 const mainSrc = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
 is('which main calls on the way out', /stopStartedServers\(\)/.test(mainSrc), true)
 
+// ── serving, with nothing showing it ────────────────────────────────────
+// The same failure as naming the start command and stopping: the one thing between the
+// request and the recording is something Fetch can do.
+is('a project that is serving has its page opened, not described',
+  /wants to open \$\{p\.handle \|\| p\.name\} to record it/.test(bridge), true)
+is('opening is its own yes, separate from starting', /const key = `show\|\$\{p\.path\}`/.test(bridge), true)
+is('with a standing one offered', /alwaysLabel: `Always open/.test(bridge), true)
+is('and it is only reached when nothing was picked', /const serving = \(running\.candidates \|\| \[\]\)\.find\(c => c\.kind === 'server' && c\.url\)/.test(bridge), true)
+
+// ── the stop has to kill what the script started ────────────────────────
+// `npm run dev` is a shell that spawns the real server; killing the npm alone leaves
+// that server holding the port. Measured: a stop that looked clean left a dev server on
+// 3001 that outlived the app.
+const runSrc = fs.readFileSync(path.join(ROOT, 'ui/project-start.js'), 'utf8')
+is('the child leads its own process group', /detached: true/.test(runSrc), true)
+is('so the group can be stopped, not just the child', /process\.kill\(-child\.pid, 'SIGTERM'\)/.test(runSrc), true)
+is('and a group that ignores the ask is killed', /process\.kill\(-child\.pid, 'SIGKILL'\)/.test(runSrc), true)
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

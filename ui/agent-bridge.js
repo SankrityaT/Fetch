@@ -4921,6 +4921,12 @@ const projectArgName = p => (p && p.id && p.handle) || (p && p.path) || (p && p.
 async function projectsAllowed(ctx) {
   if (ctx && ctx.chat === true) return
   if (sessionAllowed.has('projects')) return
+  // This one had no standing yes at all: once, or until Fetch quits, and then it asked
+  // again on the next launch. It is the gate in front of naming a project, so it is the
+  // question a person who works this way sees most often, and answering it every
+  // restart is the asking that made somebody say they should not have to say this all
+  // the time. Revocable in Settings like every other.
+  if (allowedAlways('projects')) return
   const who = (ctx && ctx.client) || 'An agent'
   let answer
   if (typeof deps.confirmProjects === 'function') answer = await deps.confirmProjects(who)
@@ -4928,9 +4934,11 @@ async function projectsAllowed(ctx) {
     answer = await askPerson(`${who} wants to see the projects on this Mac.`,
       'Their names, folders, branches and remotes, from Conductor, Orca and Claude Code, what runs from one ' +
       'it names, and the first lines of that one\'s README. It goes to that agent\'s model.',
-      'Allow until Fetch quits', false, 'Allow once')
+      'Allow until Fetch quits', false, 'Allow once', false,
+      { alwaysLabel: 'Always allow' })
   }
   if (answer === 'session') { sessionAllowed.add('projects'); return }
+  if (answer === 'always') { rememberAlways('projects', 'See the projects on this Mac'); return }
   if (answer === 'once') return
   throw new Error(answer === 'unanswered'
     ? 'Fetch did not hand over the projects on this Mac: nobody answered the question on screen. Ask the person to tag the project in Fetch\'s chat, or to allow it.'
@@ -5047,6 +5055,33 @@ async function startProject(p, ctx) {
   return { ...out, says: plan.says }
 }
 
+/**
+ * Put a project's own page on screen, when it is serving and nothing is showing it.
+ *
+ * Its own small yes, because opening a browser puts a window on somebody's screen, and
+ * Fetch is otherwise careful never to. One Always allow ends the asking for that
+ * project. This is not the same act as starting it: the code is already running and
+ * this only looks at what it serves.
+ */
+async function showPage(p, url, ctx) {
+  const key = `show|${p.path}`
+  if (!sessionAllowed.has(key) && !allowedAlways(key)) {
+    const who = (ctx && ctx.client) || 'An agent'
+    const answer = await askPerson(
+      `${who} wants to open ${p.handle || p.name} to record it.`,
+      `${p.handle || p.name} is already serving at ${url}, and nothing on screen is showing it, ` +
+      `so there is no window to record. This opens that address in your browser and records that window.`,
+      `Let ${who} open ${p.handle || p.name} until Fetch quits`, false, 'Open it once', false,
+      { alwaysLabel: `Always open ${p.handle || p.name}` })
+    if (answer === 'unanswered') return { ok: false, why: `opening ${p.handle || p.name} needs the person's word and nobody was at the Mac to give it.` }
+    if (answer === 'no') return { ok: false, why: 'the person at the Mac said no.' }
+    if (answer === 'session') sessionAllowed.add(key)
+    if (answer === 'always') rememberAlways(key, `Open ${p.handle || p.name}`)
+  }
+  try { require('child_process').execFile('/usr/bin/open', [url]) } catch (e) { return { ok: false, why: (e && e.message) || String(e) } }
+  return { ok: true }
+}
+
 async function projectTarget(q, ctx = null) {
   const list = await projectList()
   const r = resolveProject(q, list)
@@ -5065,6 +5100,23 @@ async function projectTarget(q, ctx = null) {
       running = await projectRunning(p, 15000) || running
     } else if (go && go.refused) {
       running = { ...running, why: `${running.why} Fetch tried to start it and could not: ${go.refused}` }
+    }
+  }
+  // Serving, with nothing showing it. Fetch used to hand back the address and ask the
+  // person to go and open it, which is the same failure as naming the start command and
+  // stopping: the one thing standing between the request and the recording is a thing
+  // Fetch can do. It opens the page itself.
+  if (!running.pick) {
+    const serving = (running.candidates || []).find(c => c.kind === 'server' && c.url)
+    if (serving) {
+      const shown = await showPage(p, serving.url, ctx)
+      if (shown.ok) {
+        await new Promise(r2 => setTimeout(r2, 2500))
+        running = await projectRunning(p, 15000) || running
+        if (running.pick) began = { ...(began || {}), url: serving.url, opened: serving.url }
+      } else if (shown.why) {
+        running = { ...running, why: `${running.why} Fetch tried to open it and could not: ${shown.why}` }
+      }
     }
   }
   const pick = running.pick
