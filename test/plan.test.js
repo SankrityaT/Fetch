@@ -348,6 +348,33 @@ console.log('the frame\'s own texture: the ground\'s tooth under the film, and t
   is('and twice as slowly at 60, so a look grains the same at both', spec(0.2, 60).grainHold, 2)
 }
 
+console.log('the shell\'s tones are a contract, not a literal')
+{
+  // gl.js deviceOf() spreads Plan.SHELL[light?'light':'dark'] into the device spec, and
+  // that spec feeds the picture's cache key. An added, renamed or reordered key changes
+  // cache identity silently, which can desync the editor stage from the export: the
+  // 1 to 2 LSB parity that is the whole promise of one renderer, and which no other
+  // test names. So the key set is pinned here, before the tones move behind tokens.
+  const KEYS = ['shell', 'line', 'face', 'deep', 'text', 'sheen', 'tool', 'well']
+  is('SHELL.dark has exactly its eight keys, in order', Object.keys(Plan.SHELL.dark), KEYS)
+  is('SHELL.light has exactly its eight keys, in order', Object.keys(Plan.SHELL.light), KEYS)
+  // and the values themselves, so moving them behind a token table cannot change one
+  is('SHELL.dark is unchanged', Plan.SHELL.dark,
+    { shell: '#2A2420', line: '#FBFAF8', face: '#1F1B18', deep: '#1F1B18', text: '#BDB5AC', sheen: 0.07, tool: '#3A322C', well: '#1F1B18' })
+  is('SHELL.light is unchanged', Plan.SHELL.light,
+    { shell: '#E8E2DA', line: '#1A1714', face: '#F6F3EE', deep: '#D6CFC5', text: '#6E655C', sheen: 0.5, tool: '#FAF7F2', well: '#ECE6DE' })
+  // the tokens the tones will come from must already agree with them
+  const Tok = require('../ui/compositor/tokens')
+  const pairs = [['shell', 'shell'], ['face', 'surface'], ['deep', 'deep'], ['tool', 'tool'],
+    ['well', 'well'], ['text', 'text'], ['sheen', 'sheen'], ['line', 'line']]
+  for (const theme of ['dark', 'light']) {
+    is(`every ${theme} tone already equals its token`,
+      pairs.map(([k, t]) => Plan.SHELL[theme][k] === Tok.tok(theme, t)), pairs.map(() => true))
+  }
+  is('both shipped themes define every token',
+    ['dark', 'light'].map(t => Tok.assertComplete(t, t)), [true, true])
+}
+
 console.log('the drawn device, and the tilt')
 {
   const meta = { width: 1920, height: 1080, duration: 10, fps: 30 }
