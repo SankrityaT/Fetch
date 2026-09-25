@@ -60,6 +60,47 @@ const contrast = (a, b) => {
 // clear it; neither invisible case comes close.
 const READABLE = 4
 
+// A ground to stand the take on, a step away from the take's own.
+//
+// Direction one stands the take on a colour sampled out of that take, so the ground and
+// the take's own background are the same colour by construction and the take's edge
+// dissolves into it. Measured on the three shapes this takes: a true black app, a white
+// app and a warm dark one all come back with the take against the ground at 1.00:1, and
+// the only thing holding the picture together is the drawn shell, at 3.37, 1.10 and 1.38
+// to one. The white app is the worst of them, so this is not a thing about black.
+//
+// So the ground is the product's colour moved one step away from itself, along the line
+// to white for a dark ground and to black for a light one. Its hue comes with it, which
+// is what keeps it the product's own rather than a neutral Fetch picked: a navy app
+// stands on a lighter navy. A tenth of the range is about what a product shot on a sweep
+// of its own colour gets, and it is small enough that nobody reads it as a second colour.
+//
+// Only for a sampled ground. Where nothing was sampled the ground is Fetch's own and the
+// take is unknown, so there is no colour of its own for it to disappear into.
+// Not L.luma, and deliberately. L.luma linearises, which is what a contrast ratio wants
+// and exactly the wrong tool for a step: a fixed step in linear luminance is invisible at
+// the dark end and enormous at the light end. This is the sRGB code value, where a fixed
+// step is about evenly visible wherever it lands, which is why every ground below moves
+// by the same twenty to twenty-six levels.
+const level = h => {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16))
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+}
+function standOn(h) {
+  const l = level(h)
+  const up = l < 0.5
+  // luma is a weighted sum of the channels, so mixing every channel toward one end by k
+  // moves the luma by a known amount and the solve is exact rather than a search
+  const want = up ? Math.min(0.5, l + 0.10) : Math.max(0.5, l - 0.08)
+  const k = up ? (want - l) / (1 - l) : (l - want) / (l || 1)
+  if (!(k > 0)) return h
+  const to = up ? 255 : 0
+  return '#' + [1, 3, 5].map(i => {
+    const c = parseInt(h.slice(i, i + 2), 16)
+    return Math.max(0, Math.min(255, Math.round(c + (to - c) * k))).toString(16).padStart(2, '0').toUpperCase()
+  }).join('')
+}
+
 // Fetch's own ground, for the case where nothing was sampled. It is the dark theme's own
 // ink and the schema's own background default, so the honest empty answer is the house
 // answer rather than a fourth opinion invented here.
@@ -145,7 +186,7 @@ function directionsFor(input) {
       // standing in for `ink` is how a picture stops being warm.
       theme: { ...own, accent: accent || own.accent, text: ownText, font: family || own.font },
       look: {
-        background: { kind: 'solid', color: ground },
+        background: { kind: 'solid', color: bg ? standOn(ground) : ground },
         frame: { padding: 0.06, radius: 14, shadow: 0.5 },
         captions: { font: family || own.font, colour: onGround, highlight: 'word' },
       },

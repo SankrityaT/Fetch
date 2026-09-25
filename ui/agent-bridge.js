@@ -3326,6 +3326,25 @@ async function simReady(sim, args, ctx) {
     if (!r.ok) throw new Error(r.reason)
     changed.push(`installed ${path.basename(app)}`)
   }
+  // Measured before the app is in front of it, and only when this window has no
+  // rectangle yet. The glass is found by walking in from the bezel until the ring around
+  // the screen turns up, so an app painted black to its own edge hides the ring and the
+  // walk stops at the first edge inside the app instead. Measured on a real one: a
+  // near-black app gave a rectangle inset 35 px at the sides and 312 px at the top, which
+  // is the app's own content and not the screen, and it was turned down for being the
+  // wrong shape, leaving the device with no rectangle at all. Nothing could be tapped
+  // through it and no take of it carried a screen to crop to.
+  //
+  // The device's own home screen has never been black to its edge: it has a dock, icons
+  // and a wallpaper, and it is what is in front of the window in the moment between
+  // opening Simulator and launching anything. So the one picture that is certain to be
+  // readable is taken then. The rectangle belongs to the window rather than to whatever
+  // is on it, which is why readGlass already keeps the last good one across screens it
+  // cannot read; this is the first one, for a window that would otherwise never get it.
+  if (bundle && !glassOf(sim.window)) {
+    const before = await simSettled(sim.udid, sim.window ? 0 : 25000)
+    if (before && before.window && !glassOf(before.window)) await simMeasured(before).catch(() => null)
+  }
   if (bundle) {
     simAllowed('launch', sim, ['ready'])
     const r = await c.launch(sim.udid, bundle)

@@ -39,7 +39,25 @@ console.log('derived from a product')
     product: 'Harbour',
   })
   is('three directions', ds.length, 3)
-  is('the first stands on the product\'s own ground', ds[0].look.background.color, '#0B1020')
+  // A step off the product's own ground, not the ground itself. Standing the take on the
+  // colour sampled out of that take put its own background and the ground under it at
+  // 1.00:1 in every case measured, black, white and warm dark alike, so the take's edge
+  // dissolved and only the drawn shell held the picture together. The step is small and
+  // it keeps the hue: this navy stands on a lighter navy, not on a neutral.
+  {
+    const g = ds[0].look.background.color
+    is('the first stands a step off the product\'s own ground', g !== '#0B1020', true)
+    // Measured in sRGB code levels, not in L.luma: L.luma linearises, so the same visible
+    // step reads as 0.018 on this navy and would read as 0.08 on a white app. The step is
+    // the same size wherever it lands and that is the whole point of it.
+    const level = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16))
+      .reduce((n, c, i) => n + [0.2126, 0.7152, 0.0722][i] * c, 0)
+    const step = Math.abs(level(g) - level('#0B1020'))
+    is('and the step is enough to see and small enough not to read as a second colour',
+      step > 12 && step < 40, true)
+    is('and the ground keeps the product\'s hue', level(g) > level('#0B1020') &&
+      parseInt(g.slice(5, 7), 16) > parseInt(g.slice(1, 3), 16), true)
+  }
   is('its accent is the product\'s accent', ds[0].theme.accent, '#5B8CFF')
   is('and it is set in the face the product ships', ds[0].look.captions.font, 'Onest')
   is('a dark sampled ground takes the dark theme\'s neutrals', ds[0].theme.shell, T.THEMES.dark.shell)
