@@ -1147,17 +1147,24 @@ function prepare(opts = {}, meta = {}, ctx = {}) {
   // the place the layout gave the take and hands the take back what is left, so the
   // composition, the margins and the shadow stay exactly where they were.
   const end0 = edgeEnd(bg)
+  // Which tone the drawn shells take, asked once for the picture. device.theme is about
+  // one shell and frame.theme is about the look, so the narrower one wins where it was
+  // set and the wider one answers where it was not. Both default to auto, which is what
+  // every look already means and what shellTone has always done, so a look that names
+  // neither draws exactly what it drew before.
+  const tone = ['dark', 'light'].includes(L('device').theme) ? L('device').theme
+    : ['dark', 'light'].includes(L('frame').theme) ? L('frame').theme : 'auto'
   // the screen's corner is the device's own, floored at the window's (`corner`) so the
   // take's black corner never shows; frame.radius belongs to a take with no device
   const device = framed && !gl
-    ? devicePlan(L('device'), L('frame').chrome, g, corner, end0, bg,
+    ? devicePlan({ ...L('device'), theme: tone }, L('frame').chrome, g, corner, end0, bg,
       { viewport: view, captured: opts.captured, crop: opts.crop, screen: opts.screen,
         ...(at ? { at: { x: at.x, y: at.y, w: at.w, h: at.h } } : {}) })
     : null
   // A group has no one device and no one screen: each member carries its own, and what
   // stands in for the take everywhere else (the grade's reach, the caption band, a title
   // card, the keys) is the box the whole set stands in.
-  const group = gl ? placeGroup(G, gl, g, corner, end0, bg) : null
+  const group = gl ? placeGroup({ ...G, theme: ['dark', 'light'].includes(G.theme) ? G.theme : tone }, gl, g, corner, end0, bg) : null
   const rect = group ? group.box : device ? device.screen : { x: g.ox, y: g.oy, w: g.vidW, h: g.vidH }
   const rad = group ? 0 : device ? device.screen.r : radius
   // A tilt turns the whole framed take, the device and the camera bubble on it in one

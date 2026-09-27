@@ -862,5 +862,47 @@ console.log('the take at the store plan\'s box')
   } else is('an iPad preview plans', ipad.reason, null)
 }
 
+// ── which tone the drawn shell takes ─────────────────────────────────────
+// device.theme has always answered this for one shell. frame.theme answers it for the
+// look, so a preset can say what tone it is drawn in once rather than per device. The
+// narrower one wins where it is set. auto is what every look already means, which is why
+// naming it moves no golden; what needs pinning here is that the other two actually
+// override the ground, in both directions, and that device.theme still beats frame.theme.
+console.log('\nthe tone a drawn shell takes')
+{
+  const meta = { width: 1920, height: 1080, duration: 10, fps: 30 }
+  const shell = (bg, look) => Plan.prepare(
+    { backdrop: `color:${bg}`, inset: 0.08, look: { device: { kind: 'window' }, ...look } },
+    meta).device
+  const LIGHT = '#D8D8D8', DARK = '#141414'
+
+  is('auto reads the tone off the ground, as it always has',
+    [shell(LIGHT, {}).light, shell(DARK, {}).light], [true, false])
+  is('and says it was auto that answered',
+    [shell(LIGHT, {}).auto, shell(DARK, {}).auto], [true, true])
+
+  // the override has to work against the ground, or it is only agreeing with it
+  is('frame.theme dark turns a light ground graphite',
+    shell(LIGHT, { frame: { theme: 'dark' } }).light, false)
+  is('frame.theme light turns a dark ground bone',
+    shell(DARK, { frame: { theme: 'light' } }).light, true)
+  is('and neither of those is auto any more',
+    [shell(LIGHT, { frame: { theme: 'dark' } }).auto, shell(DARK, { frame: { theme: 'light' } }).auto],
+    [false, false])
+
+  // one shell's own answer beats the look's, or a group of mixed devices could not be
+  // written down at all
+  is('device.theme wins over frame.theme where both are set',
+    shell(DARK, { frame: { theme: 'light' }, device: { kind: 'window', theme: 'dark' } }).light, false)
+  is('and frame.theme still answers where the device says auto',
+    shell(DARK, { frame: { theme: 'light' }, device: { kind: 'window', theme: 'auto' } }).light, true)
+
+  // the tones themselves are the plan's own, so a named theme lands on the same two
+  // colour sets the ground would have chosen
+  is('a named tone takes the same shell colours the ground would have',
+    [shell(DARK, { frame: { theme: 'light' } }).shell, shell(LIGHT, {}).shell],
+    [Plan.SHELL.light.shell, Plan.SHELL.light.shell])
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

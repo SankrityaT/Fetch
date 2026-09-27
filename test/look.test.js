@@ -146,8 +146,8 @@ console.log('the inspector and the agent docs')
   // to. 39 of 63 fields were hidden from it by a flag that meant the opposite.
   const secs = L.sections()
   is('the inspector shows only what the renderer draws', secs.every(s => s.fields.every(x => L.draws(x, 'gl') && !x.hidden)), true)
-  is('and that is every field but the six nothing draws and the two dragged on the stage',
-    secs.reduce((n, s) => n + s.fields.length, 0), S.FIELDS.length - 8)
+  is('and that is every field but the five nothing draws and the two dragged on the stage',
+    secs.reduce((n, s) => n + s.fields.length, 0), S.FIELDS.length - 7)
   is('including the whole of Treatment, grain, device and focus',
     ['treatment', 'grain', 'device', 'focus'].map(id => (secs.find(s => s.id === id) || { fields: [] }).fields.length),
     ['treatment', 'grain', 'device', 'focus'].map(id => S.FIELDS.filter(x => x.section === id).length))
@@ -244,9 +244,10 @@ console.log('the render spec')
 
 console.log('a look names its theme')
 {
-  // frame.theme arrives before anything reads it, so the thing worth proving is that it
-  // is inert: auto everywhere, and a document written when the field did not exist comes
-  // back out of normalize exactly as it went in.
+  // auto is what every look already means, so the thing worth proving is that naming it
+  // changes nothing: a document written before the field existed comes back out of
+  // normalize on auto and otherwise exactly as it went in. That the other two values
+  // reach a pixel is the goldens' job, not this file's.
   is('a look\'s theme defaults to auto', L.defaults().frame.theme, 'auto')
   is('it takes its three values and nothing else',
     ['auto', 'dark', 'light', 'plaid'].map(v => L.validate({ frame: { theme: v } }).look.frame.theme),
