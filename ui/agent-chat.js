@@ -81,6 +81,8 @@ const ALLOWED = [
   'get_look_schema', 'list_looks', 'apply_look', 'save_look',
   // what the picture is for, asked once for a product and then never again
   'design_direction',
+  // the same recording, written down: one take is a video and a page of steps
+  'write_guide',
   // the photographs a take stands on: the bundled ones, and a search of Unsplash with
   // the person's own key, each one credited to whoever took it
   'photos',

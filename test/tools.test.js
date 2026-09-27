@@ -2371,6 +2371,29 @@ async function main() {
     assert.strictEqual(named('Impressed by the direction this is going.'), null)
   })
 
+  // A written guide's headings. The beat label under them is six words because it has to
+  // fit a chip on the timeline, and pasting a chip into a heading gives "Open a song, and
+  // you get", which reads as a bug rather than as a step. Found by generating a real
+  // guide and reading it, so it is pinned here.
+  t('a step is titled from its sentence, not from the timeline chip', () => {
+    const h = bridge.guideHeading
+    assert.strictEqual(h('Open a song, and you get', 'Open a song, and you get what a learner needs: the key and the tempo.'),
+      'Open a song', 'the first clause is the step, the rest is the body')
+    assert.strictEqual(h('And grid view shows every song', 'And grid view shows every song as its own piano roll, so they are easy to tell apart.'),
+      'Grid view shows every song as its own piano roll', 'a leading and is not part of the step')
+    // a clause too short to be a heading falls through to a clean cut of the sentence
+    // rather than to two words, and the cut lands on a word boundary
+    const short = h('Right', 'Right, so the thing you do next is open the settings panel over here.')
+    assert.ok(short.startsWith('Right, so the thing you do next is open'), `fell through wrong: ${JSON.stringify(short)}`)
+    assert.ok(short.length <= 70 && !/\s$/.test(short), `cut badly: ${JSON.stringify(short)}`)
+    // and a take with no speech still gets a heading, from the label it does have
+    assert.strictEqual(h('Moved to the sidebar', ''), 'Moved to the sidebar')
+    assert.strictEqual(h('', ''), '')
+    // no sentence is ever left cut mid word
+    const long = h('x', 'Supercalifragilistic expialidocious antidisestablishmentarianism floccinaucinihilipilification pneumonoultramicroscopic')
+    assert.ok(!/\s$/.test(long) && long.length <= 70, `heading ran long or ended on a space: ${JSON.stringify(long)}`)
+  })
+
   fs.rmSync(dir, { recursive: true, force: true })
   console.log(`\n${n} tool surface checks passed`)
 }

@@ -1603,6 +1603,28 @@ export function build() {
     },
     async args => text(await drive('transcribe', args, { timeoutMs: 10 * 60 * 1000 })))
 
+  server.registerTool(
+    'write_guide',
+    {
+      description:
+        'Write the recording down as a page of numbered steps, each with a picture of ' +
+        'that moment drawn in the take\'s own look. The steps are the take\'s own beats, ' +
+        'so they are cut where the narration pauses, and the words under each are what ' +
+        'was said there. A take with no transcript is transcribed first. Returns the path ' +
+        'to a Markdown file written beside the recording, with its images in a folder of ' +
+        'their own; read the file to check the wording. This is the second deliverable a ' +
+        'recording carries, for the person who searches at the moment they are stuck ' +
+        'rather than watching the video through.',
+      inputSchema: z.object({
+        path: z.string().describe('Absolute path to the recording.'),
+        title: z.string().optional().describe('Heading for the page. The take\'s name is used without one.'),
+        intro: z.string().optional().describe('A line under the heading saying what the guide is for.'),
+        transcribe: z.boolean().optional()
+          .describe('Default true: a take with no transcript gets one first. False refuses instead, for a take whose transcription would be slow.'),
+      }),
+    },
+    async args => text(await drive('doc.guide', args, { timeoutMs: 15 * 60 * 1000 })))
+
   return server
 }
 

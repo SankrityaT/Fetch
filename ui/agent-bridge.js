@@ -110,6 +110,7 @@ const TITLES = {
   'recordings.list': 'Listed recordings',
   probe: 'Read a file\'s details',
   transcribe: 'Transcribed a recording',
+  'doc.guide': 'Wrote the steps down',
   'edit.get': 'Read an edit',
   'edit.apply': 'Changed an edit',
   'edit.beats': 'Read the beats',
@@ -2072,6 +2073,110 @@ const ops = {
       ...(held.length ? { held: `${held.join(', ')} asked for more than the ${GAIN} dB Fetch lifts or drops one clip by, ` +
         'so the gain named there is as far as it goes. Write it, and tell the person that stretch was recorded too ' +
         'quietly to fix with a number.' } : {}) } }
+  },
+
+  // ── the take, written down ──────────────────────────────────────────────
+  // One recording is two deliverables. The video is what somebody watches, and the
+  // written steps are what they search for at the moment they are stuck, which is a
+  // different moment and usually a different person. Writing the second by hand means
+  // watching your own demo back and screenshotting it, so it is the thing that does not
+  // get done and the help centre goes stale.
+  //
+  // Everything this needs already existed and none of it was joined up: beats are the
+  // steps, because a beat is a span labelled with what was said in it (processor.js
+  // buildBeats), and where nothing was said they come off the pointer instead; the words
+  // are the transcript's own, sliced by each beat's span; and the pictures are the same
+  // draw preview_frame makes, off the saved document, so a guide is in the look the video
+  // is in rather than in raw pixels nobody styled.
+  //
+  // Markdown and real files on disk, not a payload: a guide is a thing the person keeps,
+  // and an agent that wants the text can read the file it is told about.
+  // the same m:ss a card and the timeline print, so a step's stamp reads as the moment
+  // the person would scrub to
+  async 'doc.guide'(args = {}, ctx) {
+    if (!args.path) throw new Error('path is required')
+    if (isShot(args.path)) throw notOnAShot('A guide')
+    if (!fs.existsSync(args.path)) throw new Error('no such file')
+    const meta = await deps.proc.probeMeta(args.path).catch(() => ({}))
+    const dur = (meta && meta.duration) || 0
+
+    // The steps. A take nobody has transcribed has none yet, so the transcript is made
+    // here rather than the call failing with an errand for the agent to run: it is the
+    // same op transcribe is, through the same queue, and the result says it happened.
+    let beats = deps.proc.beatsFor(args.path, dur)
+    let transcribed = false
+    if (!beats.length && args.transcribe !== false) {
+      await ops.transcribe({ path: args.path })
+      transcribed = true
+      beats = deps.proc.beatsFor(args.path, dur)
+    }
+    if (!beats.length) {
+      throw new Error('nothing in this take says where one step ends and the next begins: it has no speech to ' +
+        'cut on and no pointer track either. Record it with narration, or write the steps yourself.')
+    }
+    const steps = beats.slice(0, 40)
+
+    // What was actually said in each step, out of the transcript's own word times. The
+    // beat's label is six words for a timeline chip and is the heading; the body is the
+    // sentence it was cut from, which is the half worth reading.
+    let words = []
+    try { words = (JSON.parse(fs.readFileSync(deps.proc.sidecarIn(args.path, '.words.json'), 'utf8')).words) || [] } catch {}
+    const said = b => words.filter(w => +w.t >= b.start && +w.t < b.end).map(w => w.w).join(' ').trim()
+
+
+
+    // A picture per step, a moment into it rather than on its first frame: a step's first
+    // frame is the one before the thing it is about happens, because the words start
+    // before the click does.
+    const at = steps.map(b => r2(b.start + Math.min(1.5, Math.max(0.2, (b.end - b.start) / 2))))
+    const shots = []
+    for (let i = 0; i < at.length; i += 6) {
+      // The take's own look, with the burnt in captions turned off for these. On a video
+      // the caption is the narration; in a guide the same words are already the paragraph
+      // under the picture, so leaving them on prints every line twice and makes a step
+      // read as a video still rather than as documentation.
+      const r = await ops['edit.preview']({ path: args.path, at: at.slice(i, i + 6),
+        look: { captions: { show: false } } }, ctx)
+      shots.push(...((r && r.frames) || []))
+    }
+
+    // Beside the take, in a folder of its own, because a guide is a picture per step and
+    // loose jpgs next to the recording is somebody else's mess to tidy.
+    const home = deps.proc.takeDir(args.path) || path.dirname(args.path)
+    const name = path.parse(args.path).name
+    const dir = path.join(home, 'Guide')
+    fs.mkdirSync(path.join(dir, 'images'), { recursive: true })
+
+    const title = String(args.title || name).trim().slice(0, 120)
+    const lines = [`# ${title}`, '']
+    if (args.intro) lines.push(String(args.intro).trim().slice(0, 600), '')
+    steps.forEach((b, i) => {
+      const n = String(i + 1).padStart(2, '0')
+      const shot = shots[i]
+      let rel = null
+      if (shot && shot.image && fs.existsSync(shot.image)) {
+        rel = `images/${n}.jpg`
+        try { fs.copyFileSync(shot.image, path.join(dir, rel)) } catch { rel = null }
+      }
+      const body = said(b)
+      lines.push(`## ${i + 1}. ${guideHeading(b.label, body)}`, '')
+      if (rel) lines.push(`![Step ${i + 1}](${rel})`, '')
+      if (body) lines.push(body, '')
+      lines.push(`<sub>${atClock(b.start)} in</sub>`, '')
+    })
+    const file = path.join(dir, `${name}.md`)
+    fs.writeFileSync(file, lines.join('\n'))
+
+    return {
+      guide: file,
+      images: path.join(dir, 'images'),
+      steps: steps.length,
+      ...(beats.length > steps.length ? { note: `${beats.length} beats, and a guide stops at 40 steps.` } : {}),
+      ...(transcribed ? { transcribed: 'this take had no transcript, so one was made first' } : {}),
+      from: words.length ? 'what was said in the take' : 'the pointer, since nothing was said',
+      do_next: 'Read the file to check the wording. The steps are the take\'s own beats, so a step that is ' +
+        'wrong is a beat that is wrong: fix it in the guide, not in the recording.',
+    }
   },
 
   async transcribe(args = {}) {
@@ -4320,6 +4425,21 @@ function liftable(seen, m) {
 }
 
 const r2 = n => Math.round(n * 100) / 100
+// A step's heading, out of the sentence rather than out of the beat's label. A label is
+// six words because it has to fit a chip on the timeline, and six words of speech stops
+// wherever it stops: "Open a song, and you get" is a fine chip and a broken heading. So
+// the first clause of what was actually said is taken instead, which is where a spoken
+// step names itself, and the label is the fallback for a take with no speech in it.
+// A leading "and" goes, because every third sentence of a demo starts with one.
+function guideHeading(label, body) {
+  const cut = String(body || '').split(/(?<=[^.])[.,](?:\s|$)/)[0].trim().replace(/^and\s+/i, '')
+  const pick = cut.split(/\s+/).filter(Boolean).length >= 3 && cut.length <= 70 ? cut
+    : String(body || '').slice(0, 70).replace(/\s+\S*$/, '') || String(label || '')
+  return pick.charAt(0).toUpperCase() + pick.slice(1)
+}
+
+// m:ss, the way ui/edit-assist.js and the timeline already print a moment
+const atClock = s => `${Math.floor((+s || 0) / 60)}:${String(Math.floor((+s || 0) % 60)).padStart(2, '0')}`
 
 // The elements on the frame at `at`: the ones the agent already has when it looked at
 // about this moment, otherwise a fresh pass, registered so it can name what it got.
@@ -6332,6 +6452,9 @@ module.exports = { start, stop, socketPath, VERSION,
   // saved document: the picture on a proposal card comes from the first of these, and
   // anything offering a choice of looks from the second. Neither writes the document.
   frameOf, framesFor,
+  // a step's heading in a written guide, exercised by test/tools.test.js: the beat label
+  // it falls back to is sized for a timeline chip and reads as a broken sentence
+  guideHeading,
   // which of the three directions a look rule names, exercised by test/tools.test.js:
   // it is the whole of the short circuit that keeps design_direction to one asking
   // per product, and both ways it can be read wrong cost somebody a second answer
