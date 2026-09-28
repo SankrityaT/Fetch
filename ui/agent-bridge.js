@@ -257,13 +257,20 @@ const ops = {
     const heardPlan = Opts.audioFor(args, { simulator: !!sim, prefs: deps.getPrefs ? deps.getPrefs() : null })
     await enforceAccess({ ...args, kind: 'take', sim, sound: heardPlan }, ctx, proj && proj.seen)
 
-    // macOS sends no frames for the part of a window another covers, so a take of a
-    // covered window is a frozen picture. Say so before recording anything, with the
-    // way round it, rather than hand back a take of stale frames (occludedTake).
-    if (args.window != null && !args.allow_covered && deps.windowCovered) {
-      const hold = occludedTake(await deps.windowCovered(args.window).catch(() => null))
-      if (hold) return hold
-    }
+    // Whether anything is in front of the window, kept as a note rather than as a
+    // refusal. This used to refuse outright, on the belief that macOS sends no frames
+    // for a covered window and the take would freeze. That is not true of the filter
+    // Fetch records a window through: SCContentFilter(desktopIndependentWindow:) asks
+    // the window server for that window's own content, and what is stacked on top of it
+    // does not come into it. Measured on a window 96 percent behind two other apps: the
+    // app was switched away and back mid take and both switches are in the file.
+    //
+    // What can still freeze is an app that stops drawing when it is hidden, which is the
+    // app's own doing and cannot be known before recording. That is already measured
+    // after the fact from the take itself (stillNote, off the recorder's stillMs), which
+    // is the honest place for it: one reports what happened, this only guessed.
+    const hidden = occludedTake(args.window != null && deps.windowCovered
+      ? await deps.windowCovered(args.window).catch(() => null) : null) || {}
 
     // Where the glass sits inside that window, measured off one capture of it before a
     // frame of the take is recorded. Everything this take is worth downstream is that
@@ -338,14 +345,14 @@ const ops = {
         // take is the next call rather than a shot and a search.
         const screen = await simScreen(sim, { since: measuredAt })
         const seen = screen ? neverSeen(screen.path, screen.elements, about) : null
-        return { ...started, audio, simulator: simFacts(sim, bar), ...(screen ? { screen } : {}), ...(seen || {}), ...ofProject, ...rules }
+        return { ...started, audio, simulator: simFacts(sim, bar), ...(screen ? { screen } : {}), ...(seen || {}), ...hidden, ...ofProject, ...rules }
       }
       const picked = proj && proj.target && proj.target.pick.window
       return front && started && typeof started === 'object'
-        ? { ...started, audio, recording: { window: String(front.id), app: front.app, title: front.title || '', chosen: 'the app in front' }, ...rules }
+        ? { ...started, audio, recording: { window: String(front.id), app: front.app, title: front.title || '', chosen: 'the app in front' }, ...hidden, ...rules }
         : picked && started && typeof started === 'object'
-          ? { ...started, audio, recording: { window: String(picked.id), app: picked.app, title: picked.title || '', chosen: `the project's own window: ${proj.target.why}` }, ...ofProject, ...rules }
-          : (started && typeof started === 'object' ? { ...started, audio, ...ofProject, ...rules } : started)
+          ? { ...started, audio, recording: { window: String(picked.id), app: picked.app, title: picked.title || '', chosen: `the project's own window: ${proj.target.why}` }, ...hidden, ...ofProject, ...rules }
+          : (started && typeof started === 'object' ? { ...started, audio, ...hidden, ...ofProject, ...rules } : started)
     } catch (e) {
       takeProject = null
       // Nothing is left dressed for a take that never started, which is what the comment
@@ -6286,13 +6293,12 @@ const COVERED = 0.08
 function occludedTake(cov) {
   if (!cov || !(cov.covered > COVERED)) return null
   const out = {
-    recording: false, status: 'occluded',
     covered: Math.round(cov.covered * 100) / 100, covered_by: cov.by || [],
     note: `${Math.round(cov.covered * 100)}% of that window is behind ${(cov.by || []).join(', ') || 'other windows'}, ` +
-      'and macOS sends no frames for a covered window, so the take would freeze. Nothing was recorded. ' +
-      'Ask the person to bring the window to the front and call record_start again, or record its display ' +
-      'with record_start { display } and then apply_edit { crop } with the crop given here. ' +
-      'record_start { window, allow_covered: true } records it anyway.',
+      'and it is being recorded anyway: a window is captured through its own content and not off the screen, ' +
+      'so what is stacked over it is not in the picture and does not stop the frames. An app that pauses its ' +
+      'drawing while it is hidden is the one thing that would still freeze, and record_stop measures that on ' +
+      'the finished file rather than guessing at it here.',
   }
   try {
     const { screen } = require('electron')
@@ -6311,8 +6317,9 @@ function occludedTake(cov) {
 function stillNote(stillMs) {
   if (!(stillMs >= 3000)) return null
   return `The window showed nothing new for ${(stillMs / 1000).toFixed(1)} s, so that stretch of the video ` +
-    'holds one frozen picture. Usually another window was covering it: macOS sends no frames for a ' +
-    'covered window. Keep the recorded window uncovered while recording.'
+    'holds one frozen picture. Measured on the file rather than assumed. A window behind others still ' +
+    'records, so being covered is not the reason on its own; an app that stops drawing while it is hidden ' +
+    'is, and so is a screen that genuinely did not change.'
 }
 
 function start(d) {

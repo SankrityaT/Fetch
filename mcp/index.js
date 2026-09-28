@@ -134,8 +134,9 @@ export function build() {
         'without the Mac\'s own pointer; report yours with the pointer tool as you act, and ' +
         'the video draws a cursor there. With neither window nor display, Fetch records the window of ' +
         'the app in front (never Fetch itself), and the result names it; pass full_screen or display ' +
-        'only when the person asked for the whole screen. If the window is mostly covered by other windows, ' +
-        'nothing is recorded and this returns status "occluded" with what covers it, the ' +
+        'only when the person asked for the whole screen. A window behind other windows records normally, ' +
+        'because a window is captured through its own content rather than off the screen, so nothing ' +
+        'stacked over it is in the picture; the result says what covers it, the ' +
         'display it is on and the crop that shows just that window. ' +
         'With simulator, the device is resolved to its window and recorded there. ' +
         'With project, Fetch finds the window of what runs from that project at this moment (its own app, ' +
@@ -166,7 +167,7 @@ export function build() {
         full_screen: z.boolean().optional()
           .describe('Record the whole main display instead of a window. Only when the person asked for it.'),
         allow_covered: z.boolean().optional()
-          .describe('Record a window even when other windows cover it. Its covered part will not update.'),
+          .describe('Kept for callers that still send it. A covered window records either way now, so this changes nothing.'),
         mic: z.boolean().optional().describe('Include the microphone. Default off.'),
         system_audio: z.boolean().optional().describe(RecOpts.SYS_AUDIO_ARG_SAID),
         camera: z.boolean().optional().describe('Record the camera bubble. Default off; only when the person asked for their face.'),

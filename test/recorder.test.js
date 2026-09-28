@@ -15,16 +15,29 @@ is('a short pause on a static page is normal', stillNote(2900), null)
 const n = stillNote(6130)
 is('a long frozen stretch is reported', typeof n, 'string')
 is('with its length', /6\.1 s/.test(n), true)
-is('and the likely cause', /covered/.test(n), true)
+is('and that it was measured rather than assumed', /Measured on the file/.test(n), true)
+// it used to name being covered as the usual cause, which is wrong: a covered window
+// records. What actually freezes a take is an app that stops drawing while it is hidden.
+is('and it no longer blames being covered on its own', /stops drawing/.test(n), true)
 is('no em dashes', /\u2014/.test(n), false)
 
+// A window behind other windows used to be refused outright, on the belief that macOS
+// sends no frames for one and the take would freeze. It does not: a window is captured
+// through SCContentFilter(desktopIndependentWindow:), which asks the window server for
+// that window's own content, so what is stacked over it never comes into it. Measured on
+// a real window 96 percent behind two other apps: the app was switched away and back mid
+// take and both switches are in the file. So this is a note on a take that happened, not
+// a refusal of one that did not.
 console.log('a covered window before the take')
-is('an uncovered window records', occludedTake({ covered: 0, by: [], x: 0, y: 0, width: 800, height: 600 }), null)
-is('a sliver in front is fine', occludedTake({ covered: 0.05, by: ['Dock'], x: 0, y: 0, width: 800, height: 600 }), null)
+is('an uncovered window says nothing', occludedTake({ covered: 0, by: [], x: 0, y: 0, width: 800, height: 600 }), null)
+is('a sliver in front says nothing either', occludedTake({ covered: 0.05, by: ['Dock'], x: 0, y: 0, width: 800, height: 600 }), null)
 is('off screen or unknown, it goes ahead', occludedTake(null), null)
 const o = occludedTake({ covered: 0.42, by: ['Safari'], x: 100, y: 50, width: 800, height: 600 })
-is('a covered window is refused with a status', [o.recording, o.status, o.covered, o.covered_by], [false, 'occluded', 0.42, ['Safari']])
-is('it says what covers it and the way round', /Safari/.test(o.note) && /record_start/.test(o.note) && /crop/.test(o.note), true)
+is('a covered window is recorded, not refused', [o.recording, o.status], [undefined, undefined])
+is('and what covers it is still reported', [o.covered, o.covered_by], [0.42, ['Safari']])
+is('it names what is in front', /Safari/.test(o.note), true)
+is('and says the take is happening anyway', /recorded anyway/.test(o.note), true)
+is('and points at the one thing that would still freeze it', /pauses its\s+drawing/.test(o.note.replace(/\s+/g, ' ')) || /pauses its drawing/.test(o.note.replace(/\s+/g, ' ')), true)
 is('no em dashes there either', /\u2014/.test(o.note), false)
 
 // ── what a take listens to, and what its result says it heard ────────────
