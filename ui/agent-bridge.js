@@ -111,6 +111,7 @@ const TITLES = {
   probe: 'Read a file\'s details',
   transcribe: 'Transcribed a recording',
   'doc.guide': 'Wrote the steps down',
+  'record.scene': 'Marked a scene',
   'edit.get': 'Read an edit',
   'edit.apply': 'Changed an edit',
   'edit.beats': 'Read the beats',
@@ -408,6 +409,26 @@ const ops = {
   async 'record.pointer'(args = {}) {
     if (!deps.pointer) throw new Error('this version of Fetch cannot draw a pointer')
     return deps.pointer(args)
+  },
+
+  // What this part of the take is, said while it is being recorded.
+  //
+  // The director reads the code and knows the shoot before the shoot: which features
+  // matter, in what order, and what each one is for. None of that used to survive the
+  // recording. record_stop handed back one undivided take, so the editor after it had to
+  // guess where a scene turned, from silence or from taps, and those are where somebody
+  // paused rather than where the subject changed. A mark costs the director nothing: it
+  // is already there, about to do the thing.
+  //
+  // Stamped on the take's own clock in main.js, the same clock a drawn tap is stamped on,
+  // and carried onto the document at record_stop so every tool after it reads the same
+  // spans. The editor cuts, titles and paces by scene instead of by accident.
+  async 'record.scene'(args = {}) {
+    if (!deps.scene) throw new Error('this version of Fetch cannot mark a scene')
+    const r = deps.scene(args)
+    return { ...r,
+      do_next: 'Record the scene, then mark the next one as you reach it. record_stop writes them onto the ' +
+        'take, and get_edit hands them back with their ends filled in.' }
   },
 
   // Hold a take and let it go again, through the same hotkey the person's own Pause
@@ -3824,6 +3845,26 @@ async function afterTake(r) {
     if (src && fs.existsSync(src)) meta = await deps.proc.probeMeta(src).catch(() => null)
   } catch {}
   const out = await simAfterTake(r, meta)
+  // The director's own marks, onto the take they were made on. Read before anything
+  // else writes the document, and written after simAfterTake so a device take keeps the
+  // rectangle that call put there. The end of each scene is the next one's start, filled
+  // in on the way out rather than stored, so a take that is trimmed later cannot carry a
+  // scene that ends after it does.
+  let scenes = null
+  try {
+    // Off the sidecar main.js wrote at stop, not off the live take: by the time this
+    // runs the take object has been cleared, so what survived the stop is what is on disk.
+    let marks = null
+    try { marks = JSON.parse(fs.readFileSync(deps.proc.sidecarIn(src, '.scenes.json'), 'utf8')).scenes } catch {}
+    if (src && fs.existsSync(src) && marks && marks.length) {
+      const dur = (meta && meta.duration) || 0
+      scenes = marks.map((m, i) => ({ ...m,
+        end: i + 1 < marks.length ? marks[i + 1].start : (dur > m.start ? +dur.toFixed(2) : null) }))
+      const doc = deps.proc.readDoc(src, dur)
+      deps.proc.writeDoc(src, { ...doc, scenes })
+    }
+  } catch { /* a take whose document cannot be written still has its file */ }
+
   // A brief written before record_start was waiting for this file to exist.
   let job = null
   try {
@@ -3865,6 +3906,8 @@ async function afterTake(r) {
   const library = filing && src ? await fileInFolder(src, filing.folder).catch(() => null) : null
   return { ...out,
     ...(audio ? { audio } : {}),
+    ...(scenes ? { scenes, scenes_said: `${scenes.length} scene${scenes.length === 1 ? '' : 's'} the director marked ` +
+      'while it shot, now on the edit. get_edit hands them back, and every one is a span to cut, title or pace by.' } : {}),
     ...(library ? { library } : {}),
     ...(job ? { job: 'the brief you wrote before the take is now the job on it, and the steps that made the ' +
       'take are closed', plan: job.plan } : {}) }
@@ -6051,6 +6094,10 @@ function summarise(doc, path) {
       style: overlays.textStyle(textOnOutput(doc, t), outputLength(doc)), ...(t.subtitle ? { subtitle: t.subtitle } : {}),
     })),
     beats: (doc.beats || []).map(b => ({ id: b.id, start: r(b.start), end: r(b.end), label: b.label })),
+    // What the director said it was shooting, where it said it. Beats are cut from what
+    // was said and scenes from what was meant, so a silent demo has scenes and no beats.
+    ...((doc.scenes || []).length ? { scenes: doc.scenes.map(x => ({ id: x.id, name: x.name,
+      start: r(x.start), end: x.end == null ? null : r(x.end), ...(x.intent ? { intent: x.intent } : {}) })) } : {}),
     captions: { count: (doc.cues || []).length, burned: !!L.captions.show },
 
     crop: doc.crop, cropAR: doc.cropAR,

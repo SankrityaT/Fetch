@@ -317,6 +317,9 @@ app.whenReady().then(() => {
     }),
     nameTake: p => takeNamer.name(p, { local: true }),     // rename_recording without a name
     pointer: agentPointer,
+    // the director's own marks on the take it is shooting, read back by the editor
+    scene: agentScene,
+    takeScenes: () => (nativeRec && nativeRec.agent && nativeRec.scenes) || null,
     setPrefs: patch => {
       writePrefs(patch)
       if (control && !control.isDestroyed()) control.webContents.send('prefs-changed', patch)
@@ -1258,6 +1261,34 @@ function agentPointer(args = {}) {
   return { x: f.x, y: f.y, click: !!args.click, at: +(Math.max(0, at - t0) / 1000).toFixed(2), points: take.pointer.length }
 }
 
+/**
+ * A scene, stamped on the take's own clock as it is being recorded.
+ *
+ * A director that read the code knows what it wants filmed before anything is filmed,
+ * and record_stop used to hand back one undivided take: the editor after it had the
+ * whole shoot and no idea where the first thing ended and the second began, so it cut
+ * on silence or on taps, which are where somebody paused, not where a scene turned.
+ * Marking it while it happens is the only moment the answer is known for nothing: the
+ * director is already there, saying what it is about to do.
+ *
+ * Only a start. A scene runs until the next one starts, or until the take ends, so two
+ * marks cannot disagree about where the join is and nothing has to be closed.
+ */
+function agentScene(args = {}) {
+  const take = nativeRec
+  if (!take || !take.agent) throw new Error('no agent take is recording; a scene is marked on a take started with record_start')
+  if (recState === 'paused') throw new Error('the recording is paused, so this scene was not marked')
+  const name = String(args.name || '').trim().slice(0, 80)
+  if (!name) throw new Error('a scene needs a name: what this part of the take shows')
+  const at = Date.now()
+  const t0 = take.firstFrameAt || (take.started && take.started.startedAt) || at
+  const start = +(Math.max(0, at - t0) / 1000).toFixed(2)
+  const scene = { id: 'S' + (take.scenes.length + 1), name, start,
+    ...(args.intent ? { intent: String(args.intent).trim().slice(0, 300) } : {}) }
+  take.scenes.push(scene)
+  return { ...scene, scenes: take.scenes.length }
+}
+
 // What .pointer.json holds: t in seconds on the video clock, x, y fractions of the
 // recorded frame
 function pointerData(take, s) {
@@ -1490,7 +1521,7 @@ ipcMain.handle('native-start', async (e, opts = {}) => {
   const take = { proc: child, out, started: null, resolveStop: null, error: null, firstFrameAt: null, clicks: [],
     kind: opts.windowId ? 'window' : 'display' }
   nativeRec = take
-  if (agentTake) { take.agent = true; take.pointer = [] }
+  if (agentTake) { take.agent = true; take.pointer = []; take.scenes = [] }
   // so the export knows there is no pointer in these pixels to lift out
   if (opts.hideCursor) take.cursorHidden = true
 
@@ -1619,6 +1650,13 @@ ipcMain.handle('native-commit', async (e, tmp) => {
   if (ptr) {
     try { fs.writeFileSync(proc.sidecarOut(file, '.pointer.json'), JSON.stringify(ptr)) }
     catch (err) { console.error('pointer track not saved:', err.message) }
+  }
+  // The director's scene marks, beside the take like the pointer track and for the same
+  // reason: by the time the bridge writes the document the take object is gone, so what
+  // has to survive the stop is written to disk here while it is still in hand.
+  if (agentTake && agentTake.scenes && agentTake.scenes.length) {
+    try { fs.writeFileSync(proc.sidecarOut(file, '.scenes.json'), JSON.stringify({ v: 1, scenes: agentTake.scenes })) }
+    catch (err) { console.error('scenes not saved:', err.message) }
   }
   const cursor = cursorSamples && cursorSamples.native ? nativeCursorData(cursorSamples) : cursorSamples
   // In an agent's take the Mac's pointer was the person's, doing something else, and

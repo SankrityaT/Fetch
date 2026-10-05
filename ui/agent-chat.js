@@ -83,6 +83,8 @@ const ALLOWED = [
   'design_direction',
   // the same recording, written down: one take is a video and a page of steps
   'write_guide',
+  // the director saying what it is shooting, while it shoots
+  'scene',
   // the photographs a take stands on: the bundled ones, and a search of Unsplash with
   // the person's own key, each one credited to whoever took it
   'photos',

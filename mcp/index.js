@@ -1605,6 +1605,25 @@ export function build() {
     async args => text(await drive('transcribe', args, { timeoutMs: 10 * 60 * 1000 })))
 
   server.registerTool(
+    'scene',
+    {
+      description:
+        'Say what this part of the take is, while it is recording. A director that read the code knows the ' +
+        'shoot before the shoot; without this the take comes back undivided and whoever edits it has to guess ' +
+        'where one thing ended and the next began, from silence or from taps, which are where somebody paused ' +
+        'rather than where the subject turned. Mark a scene as you reach it: it is stamped on the take\'s own ' +
+        'clock, and a scene runs until the next one starts or the take ends, so there is nothing to close. ' +
+        'record_stop writes them onto the edit and get_edit hands them back, with their ends filled in, as ' +
+        'spans to cut, title and pace by. Only during a take started with record_start.',
+      inputSchema: z.object({
+        name: z.string().describe('What this part shows, in a few words, e.g. "the dashboard balance".'),
+        intent: z.string().optional()
+          .describe('Why it is in the film, for whoever edits it later, e.g. "the one number the whole product is about".'),
+      }),
+    },
+    async args => text(await drive('record.scene', args)))
+
+  server.registerTool(
     'write_guide',
     {
       description:

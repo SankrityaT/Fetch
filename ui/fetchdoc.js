@@ -47,6 +47,11 @@ function emptyDoc(src, dur) {
     src: src || null,
     dur: r3(dur || 0),
     clips: [], zooms: [], texts: [], cues: [], beats: [],
+    // What the director said each part of the shoot was, marked while it was recorded
+    // (main.js agentScene) and never inferred here. A span, like a beat, except a beat
+    // is cut from what was said and a scene is cut from what was meant, which is why
+    // both exist: a demo can say nothing and still turn from one feature to the next.
+    scenes: [],
     // redactions, lifts, spotlights, numbered steps and arrows drawn onto the frame for a stretch
     marks: [],
     // The agent's own cursor, [{t, x, y, click}] (see ui/pointer.js). null means the
@@ -575,7 +580,7 @@ function toRenderSpec(doc) {
  * { audio: { denoise: true } } turns denoise on without resetting the gain. v1 shapes
  * (look.gain, capStyle, backdrop, outAspect, hideMacCursor) are routed to their v2 place.
  */
-const LISTS = ['clips', 'zooms', 'texts', 'marks', 'cues', 'beats']
+const LISTS = ['clips', 'zooms', 'texts', 'marks', 'cues', 'beats', 'scenes']
 const OBJECTS = ['camera', 'audioTrack']
 
 // ── what the mark family reads of the clock ─────────────────────────────
