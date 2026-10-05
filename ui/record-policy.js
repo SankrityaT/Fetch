@@ -267,6 +267,9 @@ const SIM_ALIAS = {
 const SIM_FREE = [
   'list', 'list devicetypes', 'listapps', 'appinfo', 'get app container',
   'io enumerate', 'status bar list', 'ui appearance read', 'restore',
+  // reading what is on a device's screen changes nothing on it: the same capture a tap
+  // already takes afterwards, asked for on its own
+  'screen',
 ]
 
 // Asked. Needs the person's word in this conversation, in so many words. "Make me a

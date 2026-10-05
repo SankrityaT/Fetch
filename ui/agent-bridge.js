@@ -568,7 +568,7 @@ const ops = {
     // every one of those calls is a UDID the model has to carry for the whole take. boot
     // and go are not defaulted: those change something, and the thing they change has to
     // be named out loud.
-    const fallback = (action === 'tap' || action === 'restore') && takeSim ? takeSim.sim.udid : null
+    const fallback = (action === 'tap' || action === 'screen' || action === 'restore') && takeSim ? takeSim.sim.udid : null
     const found = Sim.resolve(sims, args.device != null ? args.device : fallback)
     if (!found.ok) {
       throw new Error(`${found.reason}${deviceHint(args.device)} simulator with action list says which devices are here.` +
@@ -578,7 +578,8 @@ const ops = {
     const out = action === 'ready' ? await simReady(sim, args, ctx)
       : action === 'go' ? await simGo(sim, args, ctx)
         : action === 'tap' ? await simTap(sim, args, ctx)
-          : await simRestore(sim)
+          : action === 'screen' ? await simLook(sim)
+            : await simRestore(sim)
     return fixed.moved.length ? { ...out, moved: fixed.moved } : out
   },
 
@@ -2769,7 +2770,7 @@ function projectFontNames() {
 // refused in ui/record-policy.js for exactly that reason: no audio track, and pixels
 // that never passed the policy.
 
-const SIM_DOES = ['list', 'ready', 'go', 'tap', 'restore']
+const SIM_DOES = ['list', 'screen', 'ready', 'go', 'tap', 'restore']
 
 // ── which kind of identifier an argument is ────────────────────────────────
 // Every simulator argument takes one kind of identifier: device a UDID or a name, app a
@@ -3349,6 +3350,35 @@ const simOnDoc = sim => ({
     ...(sim.density != null ? { density: sim.density } : {}),
   },
 })
+
+/**
+ * What is on the device's screen, now, and nothing else.
+ *
+ * Every other way to learn this changes something: ready boots, launches and dresses the
+ * status bar; tap has to tap; take_shot writes a picture into the person's Library. So an
+ * agent driving a flow had no way to look between two steps, and the two things it did
+ * instead are the two ways a shoot goes wrong. It holds an id from the screen before, and
+ * ids are minted per picture and refused once the screen has moved, which is correct and
+ * is also most of what broke. Or it gives up on ids and taps a point it worked out from a
+ * screenshot, which never refuses and lands wherever the screen happens to be.
+ *
+ * So: look, mint the ids on what is actually there, change nothing. Free in the policy
+ * for the same reason list is, except this one takes the picture list does not.
+ */
+async function simLook(sim) {
+  if (!sim.window) {
+    throw new Error(`${sim.name} has no window on screen, and the screen is read off its window. ` +
+      `simulator { action: 'ready', device: '${sim.name}' } opens it.`)
+  }
+  const since = Date.now()
+  await readGlass(sim.window, null, sim.screen)
+  const now = await simMeasured(sim)
+  const screen = await simScreen(now || sim, { since })
+  return { ...simFacts(now || sim, null),
+    ...(screen ? { screen } : {}),
+    do_next: 'These ids are the newest the device has handed out, so a tap aimed with one lands on what ' +
+      'is there now. Read again after anything that moves the screen rather than keeping one across it.' }
+}
 
 // ── conduct, which is checked before any spawn ───────────────────────────
 

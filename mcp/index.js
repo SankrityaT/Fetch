@@ -374,6 +374,13 @@ export function build() {
         'comes back with the elements on the glass and the ids a tap takes, so the next call is the ' +
         'tap. record_stop puts back the status bar and the appearance, as does the next launch of ' +
         'Fetch if it died mid take.\n' +
+        'screen: what is on that device\'s screen right now, with the element ids a tap takes, and ' +
+        'nothing on the device changed. This is how to look between two steps. Every other way to see ' +
+        'the screen does something: ready boots, launches and dresses the status bar, tap has to tap, ' +
+        'take_shot writes a picture into the person\'s Library. Without it a flow either keeps an id ' +
+        'from the screen before, which is refused the moment the screen moves, or gives up on ids and ' +
+        'taps a point read off a picture, which never refuses and lands wherever the screen now is. ' +
+        'Read again after anything that moves the screen.\n' +
         'go: open a deep link on the device. It lands on the same screen every time, where a run of ' +
         'taps does not, so prefer it for getting somewhere.\n' +
         'tap: send one touch, report it onto the take in the same call so the video draws a finger ' +
@@ -392,8 +399,8 @@ export function build() {
         'person installed and says so plainly when there is none. That is not a dead end: record them ' +
         'tapping and the finger is still drawn where they touched.',
       inputSchema: z.object({
-        action: z.enum(['list', 'ready', 'go', 'tap', 'restore'])
-          .describe('What to do. list is free; the rest need a device.'),
+        action: z.enum(['list', 'screen', 'ready', 'go', 'tap', 'restore'])
+          .describe('What to do. list and screen are free; the rest need a device.'),
         device: z.string().optional()
           .describe('The device: its UDID, or the name the person gave it, from list. Never the word booted, ' +
             'never a window id and never a bundle id. tap and restore take the device the recording in hand is ' +
