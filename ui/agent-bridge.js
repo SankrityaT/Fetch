@@ -4026,7 +4026,19 @@ async function simAfterTake(r, known) {
       // A finger, not an arrow, without anybody setting anything: the look decides the
       // mark and the take's target decides the look. Inert until ui/look-schema.js
       // carries cursor.style, because Look.merge keeps only what the schema names.
-      const look = { ...(doc.look || {}), cursor: { ...((doc.look || {}).cursor || {}), style: 'touch' } }
+      //
+      // And a phone round it, for the same reason and in the same breath. device.kind
+      // defaults to none, which is right for a window take and wrong for every take of a
+      // handset: the glass is cropped to the screen and then drawn as a bare rounded
+      // rectangle, so the status bar sits hard against the top corner with no bezel over
+      // it and the picture reads as a screenshot somebody cut badly. Reported that way
+      // more than once. Only where the rectangle was measured, because without it there
+      // is nothing to put a phone around, and only for a handset, since an iPad or a Mac
+      // take is not one. The person can still say none; this is the default they get.
+      const handset = sim && sim.family === 'iPhone' && sim.viewport
+      const look = { ...(doc.look || {}),
+        cursor: { ...((doc.look || {}).cursor || {}), style: 'touch' },
+        ...(handset ? { device: { ...((doc.look || {}).device || {}), kind: 'phone' } } : {}) }
       const out = deps.proc.writeDoc(src, { ...doc, look, ...simOnDoc(sim) })
       // Said by what was written. A take with nothing measured has no rectangle on it,
       // and saying the crop removes the Mac window there is the sentence the judge caught.

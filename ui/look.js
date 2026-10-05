@@ -161,8 +161,21 @@ function findPreset(name, userDir) {
   return list(userDir).find(p => p.name.toLowerCase() === key || p.label.toLowerCase() === key) || null
 }
 
-// what choosing a preset leaves alone (fields, or whole sections)
-const KEPT_BY_PRESET = ['frame.aspect', 'frame.chrome', 'captions', 'motion', 'cursor']
+// What choosing a preset leaves alone (fields, or whole sections).
+//
+// The line is what was captured against how it is styled. A preset is somebody picking a
+// look; it has no business deciding that a recording of a phone is not of a phone. The
+// three device fields here are facts the take arrived with: which machine it is, and the
+// title and address a browser was showing. device.theme is not one of them, because
+// which tone a shell is drawn in is exactly the kind of thing a preset is for.
+//
+// device.kind was missing from this list, and the whole way a simulator take looked hung
+// on it: record_stop sets it to phone, then the first apply_look reset it to none, so the
+// glass was drawn as a bare rounded rectangle with the status bar hard against the top
+// corner and no bezel over it. It read as a screenshot somebody had cut badly, and it was
+// reported that way more than once before this was found.
+const KEPT_BY_PRESET = ['frame.aspect', 'frame.chrome', 'captions', 'motion', 'cursor',
+  'device.kind', 'device.title', 'device.url']
 
 // The two frame.chrome settings that need the page's place in the window: remove crops
 // the real chrome off, clean crops it off and draws Fetch's own in its place. Neither
