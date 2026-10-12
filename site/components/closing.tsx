@@ -61,7 +61,17 @@ export function Closing() {
         </div>
 
         <div className="relative mx-auto flex max-w-[1240px] flex-wrap items-center justify-between gap-4 border-t border-ink-3/60 px-5 py-6 font-mono text-12 uppercase tracking-[0.08em] text-text-2 md:px-10">
-          <span>Fetch &copy; 2026 &middot; GPL-3.0</span>
+          <span>
+            Fetch &copy; 2026 &middot; GPL-3.0 &middot; Made by{" "}
+            <a
+              href="https://www.sankrityat.com"
+              target="_blank"
+              rel="noopener"
+              className="underline underline-offset-4 transition-colors duration-[120ms] hover:text-text-0"
+            >
+              Sankritya
+            </a>
+          </span>
           <span>Record it. Fetch it. Ship it.</span>
         </div>
       </footer>
