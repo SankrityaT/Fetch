@@ -220,7 +220,9 @@ a coordinate. The editor says what it means; the system finds it.
 
 The parts an agent should not be improvising:
 
-- **easing**. A push that starts hard reads as a jolt. The library eases in and settles.
+- **easing, measured in time**. A push that starts hard reads as a jolt. The library
+  eases in and settles, and it spends seconds doing it, never a frame count, because a
+  frame count is one move at 30fps and a different one at 60.
 - **depth**. How far `detail` goes is a function of the subject's size, not a number
   somebody picked.
 - **floor and ceiling**. A move too small reads as a mistake. Too big reads as panic.
@@ -241,6 +243,10 @@ recording.
   have moved on.
 - Two long scenes do not sit together. Neither do two short ones.
 - The last scene may breathe. The first may not.
+
+- A move the rhythm refuses is reported, not quietly dropped. "Three emphases asked
+  for, one of them too close behind another, two kept" is something the director has to
+  be able to read.
 
 Dead time is not trimmed at the end as a cleanup pass. It never gets in, because every
 scene is cut to its shot.
@@ -285,7 +291,10 @@ The critic watches the rendered film and answers, per scene, against the directo
 words:
 
 - **Did the proof appear?** The director wrote the sentence. Is that frame in the film?
-- **Can it be read?** Is the text large enough at this output size, is the contrast real.
+- **Can it be read?** Is the text large enough at this output size, is the contrast
+  real. There is a floor worth taking from people who deliver for a living: about 4.5%
+  of frame height for a caption, and a baseline no lower than 0.86 of the height. Under
+  the floor is a finding, not a matter of taste.
 - **Does the eye know where to go?** Is there one subject or three.
 - **Is it the right length?** Did it hold after it was understood.
 - **Is it in the product's language?** Faces, colours, radius, register, and nothing on
@@ -313,6 +322,37 @@ everything a composition in a real animation runtime needs. When a film wants mo
 the six shots, it leaves through that door rather than growing a seventh.
 
 Own the capture and the direction. Hand off the ceiling.
+
+### The door, measured
+
+A professional NLE was put on the other side of that door and probed live rather than
+imagined: an MCP of almost four hundred tools, a verified host with a project and a
+sequence open. Three things it settled.
+
+**The door is FCP7 XML, not an EDL.** `import_edl` there is refused by design, because
+CMX 3600 import opens a modal that blocks the bridge, and `import_fcp_xml` is the
+unattended route. An EDL is still the right thing to write out and to diff, so the edit
+decision list stays the artifact a person argues with. It is simply not the artifact that
+travels.
+
+**The handoff can never be the product.** That server will not style a caption track at
+all. The application exposes no scripting surface for it, so the server says so
+plainly and tells you to open a panel and do it by hand. A film
+whose captions have to be finished by a person in another application is not a film an
+agent made. Fetch draws its own captions, which is the entire reason it can finish one.
+
+**What a subject is, is ours.** Its punch-in planner takes a normalised `subject_point`,
+defaulting to x 0.5, y 0.4, for talking heads. Nothing in 393 tools turns a thing named
+in words into a box. That is the capability this spec assumes Fetch already has, and the
+reason the vocabulary can name a subject instead of a coordinate.
+
+What is worth taking is the discipline around the plan rather than the plan's contents. A
+plan there carries a `plan_revision` hash of itself; a preview revalidates it against the
+project and returns a token; an apply refuses the token if any target moved underneath it.
+Every stale element id that wrecked a shoot is the same bug that discipline exists to
+stop, so the edit decision list should carry the revision of the take it was written
+against, and applying it against a different one should fail rather than land somewhere
+adjacent.
 
 ---
 
