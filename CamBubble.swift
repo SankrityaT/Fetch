@@ -212,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
         let url = URL(fileURLWithPath: path)
         try? FileManager.default.removeItem(at: url)
         camStartPath = (path as NSString).deletingPathExtension + ".start.json"
+        try? FileManager.default.removeItem(atPath: donePath(for: url))
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         movieOut.startRecording(to: url, recordingDelegate: self)
@@ -244,8 +245,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, AVCaptureFileOutputRec
             if !FileManager.default.fileExists(atPath: outputFileURL.path), retries < 3 {
                 retries += 1
                 lastRecord = false
+                return                  // another attempt is coming: this is not a finish
             }
-        } else { NSLog("cam recording finished: \(outputFileURL.path)") }
+            finished(outputFileURL, error: e.localizedDescription)
+        } else {
+            NSLog("cam recording finished: \(outputFileURL.path)")
+            finished(outputFileURL, error: nil)
+        }
+    }
+
+    func donePath(for url: URL) -> String {
+        return (url.path as NSString).deletingPathExtension + ".done.json"
+    }
+
+    // This call is the one moment the movie is playable. AVFoundation writes the moov
+    // atom during stopRecording, and a camera take runs to hundreds of megabytes, so
+    // until that atom lands the file on disk is bytes no decoder will open. Nothing
+    // about its size says whether it is finished: between two flushes a file still
+    // being written looks exactly like a finished one. The app waits for this sidecar
+    // before it parks the take, because the alternative was copying an unplayable
+    // movie and deleting the original.
+    func finished(_ url: URL, error: String?) {
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+        var obj: [String: Any] = ["finishedAt": Int(Date().timeIntervalSince1970 * 1000),
+                                  "bytes": bytes ?? 0]
+        if let e = error { obj["error"] = e }
+        guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
+        try? data.write(to: URL(fileURLWithPath: donePath(for: url)), options: .atomic)
     }
 
     func startCamera(in view: BubbleView) {

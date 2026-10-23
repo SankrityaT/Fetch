@@ -1304,6 +1304,22 @@ function pointerData(take, s) {
     points: pointerLib.normalizeTrack(points) }
 }
 
+// The bubble's own word that its movie is finished, from didFinishRecordingTo: the one
+// moment the moov atom is on disk. A take's size cannot say this, since between two
+// flushes a file still being written looks exactly like a finished one. Nothing ever
+// started leaves nothing to wait for; otherwise finalising gets as long as it needs,
+// because the alternative is losing the take.
+const CAM_FINISH_WAIT_MS = +process.env.FETCH_CAM_FINISH_MS || 30000
+async function camFinished(out) {
+  const stem = out.replace(/\.[^.]+$/, ''), done = stem + '.done.json'
+  if (!fs.existsSync(done) && !fs.existsSync(out) && !fs.existsSync(stem + '.start.json')) return null
+  for (let i = 0; i * 100 < CAM_FINISH_WAIT_MS; i++) {
+    if (fs.existsSync(done)) { try { return JSON.parse(fs.readFileSync(done, 'utf8')) || {} } catch { return {} } }
+    await new Promise(r => setTimeout(r, 100))
+  }
+  return null
+}
+
 // Park the camera take beside the finished recording, with a sidecar describing how the
 // two line up in time.
 //
@@ -1320,21 +1336,18 @@ async function parkCamTake(file) {
   try {
     if (take.pausedAt) take.gaps.push([take.pausedAt, Date.now()])
     const dest = proc.sidecarOut(file, '.cam.mov')
-    // AVFoundation finalises the movie atom after stopRecording returns
-    for (let i = 0; i < 40 && !fs.existsSync(take.out); i++) await new Promise(r => setTimeout(r, 100))
-    let lastSize = -1
-    for (let i = 0; i < 40; i++) {
-      const sz = fs.existsSync(take.out) ? fs.statSync(take.out).size : 0
-      if (sz > 0 && sz === lastSize) break
-      lastSize = sz
-      await new Promise(r => setTimeout(r, 100))
-    }
-    if (fs.existsSync(take.out) && fs.statSync(take.out).size > 0) {
+    const stem = take.out.replace(/\.[^.]+$/, '')
+    // Wait for the bubble to say the movie is finished, then and only then park it.
+    // This used to wait for the file's size to settle and copy whatever was there, which
+    // copied a camera take with no moov atom and then deleted the source: the face was
+    // gone in the editor and the only copy that could have become playable with it.
+    const fin = await camFinished(take.out)
+    if (fin && !fin.error && fs.existsSync(take.out) && fs.statSync(take.out).size > 0) {
       fs.copyFileSync(take.out, dest)          // tmpdir and the save dir can be different volumes
       // read the start sidecar before deleting the take it is named after
       let started = null
-      try { started = JSON.parse(fs.readFileSync(take.out.replace(/\.[^.]+$/, '.start.json'), 'utf8')) } catch {}
-      try { fs.unlinkSync(take.out) } catch {}
+      try { started = JSON.parse(fs.readFileSync(stem + '.start.json', 'utf8')) } catch {}
+      for (const f of [take.out, stem + '.start.json', stem + '.done.json']) try { fs.unlinkSync(f) } catch {}
       const d = screen.getPrimaryDisplay()
       fs.writeFileSync(proc.sidecarOut(file, '.cam.json'), JSON.stringify({
         file: dest,
@@ -1349,9 +1362,12 @@ async function parkCamTake(file) {
         display: { w: d.bounds.width, h: d.bounds.height },
       }))
     } else {
-      // Say so. A missing face video discovered in the editor, minutes later, looks
-      // like the editor lost it.
-      console.error('the camera take was empty, so this recording has no face video')
+      // Say so, and keep the bytes. A missing face video discovered in the editor,
+      // minutes later, looks like the editor lost it.
+      const why = fin && fin.error ? 'the camera reported: ' + fin.error
+        : fin ? 'the camera take was empty' : 'the camera never said its take was finished'
+      console.error('this recording has no face video, ' + why
+        + (fs.existsSync(take.out) ? '. What it wrote is kept at ' + take.out : ''))
       if (control && !control.isDestroyed()) control.webContents.executeJavaScript(
         `toast('The camera did not record this take. The screen recording is fine.', 'bad', 9000)`).catch(() => {})
     }
