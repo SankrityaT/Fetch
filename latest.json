@@ -1,5 +1,5 @@
 {
-  "version": "1.3.2",
+  "version": "1.3.3",
   "url": "https://github.com/SankrityaT/Fetch/releases/latest/download/Fetch.dmg",
-  "notes": "Anything on screen now covers recording a simulator, so Fetch stops asking again per device. An app painted black to its own edge is measured properly, so it can be tapped and cropped. And a take no longer dissolves into the ground it stands on."
+  "notes": "Your camera take is kept when you stop. Fetch used to copy it before the camera had finished writing it, so the face was missing in the editor. A window behind other windows records. A take of a phone is drawn as a phone, and a preset no longer forgets that."
 }
